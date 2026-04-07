@@ -1,0 +1,35 @@
+providers:
+  openai_compat:
+    provider_name: openai_compat
+    api_base: http://localhost:8317/v1
+    api_key_env: your-api-key
+    default_model: gemini-3-flash(auto)
+    timeout_seconds: 30
+
+  openai:
+    provider_name: openai
+    api_base: https://api.openai.com/v1
+    api_key_env: OPENAI_API_KEY
+    default_model: gpt-4.1-mini
+    timeout_seconds: 30
+
+  chatgpt:
+    provider_name: chatgpt
+    api_base: https://api.openai.com/v1
+    api_key_env: OPENAI_API_KEY
+    default_model: gpt-4.1-mini
+    timeout_seconds: 30
+
+  gemini:
+    provider_name: gemini
+    api_base: https://generativelanguage.googleapis.com/v1beta
+    api_key_env: GEMINI_API_KEY
+    default_model: gemini-1.5-pro
+    timeout_seconds: 30
+
+  claude:
+    provider_name: claude
+    api_base: https://api.anthropic.com/v1
+    api_key_env: ANTHROPIC_API_KEY
+    default_model: claude-3-5-sonnet-latest
+    timeout_seconds: 30

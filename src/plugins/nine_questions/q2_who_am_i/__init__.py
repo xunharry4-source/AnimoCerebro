@@ -1,0 +1,4 @@
+from plugins.nine_questions.q2_who_am_i.q2_who_am_i_plugin import build_q2_who_am_i_plugin
+from plugins.nine_questions.q2_who_am_i.role_expansion_patch_plugin import build_q2_role_expansion_patch_plugin
+
+__all__ = ["build_q2_who_am_i_plugin", "build_q2_role_expansion_patch_plugin"]

@@ -1,0 +1,611 @@
+export type Locale = "zh-CN" | "en-US";
+
+export const pluginUsagePlaceLabels: Record<string, Record<Locale, string>> = {
+  metacognition: {
+    "zh-CN": "元认知调度",
+    "en-US": "Metacognition Scheduling",
+  },
+  temporal_review: {
+    "zh-CN": "时间复查流程",
+    "en-US": "Temporal Review Flow",
+  },
+  inspection: {
+    "zh-CN": "人工核查流程",
+    "en-US": "Operator Inspection Flow",
+  },
+};
+
+export const pluginDescriptorLabels: Record<string, Record<Locale, string>> = {
+  runtime_regression_detected: {
+    "zh-CN": "运行时回归",
+    "en-US": "Runtime Regression",
+  },
+  webhook_parse_regression: {
+    "zh-CN": "Webhook 解析异常",
+    "en-US": "Webhook Parsing Regression",
+  },
+  sanitize_false_negative_spike: {
+    "zh-CN": "净化漏检风险升高",
+    "en-US": "Sanitizer False-Negative Spike",
+  },
+  interpretation_regression: {
+    "zh-CN": "解释结果回归",
+    "en-US": "Interpretation Regression",
+  },
+  provider_regression: {
+    "zh-CN": "模型提供商能力回退",
+    "en-US": "Provider Regression",
+  },
+  execution_regression: {
+    "zh-CN": "执行能力回归",
+    "en-US": "Execution Regression",
+  },
+  sandbox_regression: {
+    "zh-CN": "沙盒推演回归",
+    "en-US": "Sandbox Regression",
+  },
+  market_prediction_regression: {
+    "zh-CN": "市场预测回归",
+    "en-US": "Market Prediction Regression",
+  },
+  weight_drift_detected: {
+    "zh-CN": "权重漂移",
+    "en-US": "Weight Drift Detected",
+  },
+  g25_audit_rejected: {
+    "zh-CN": "G25 审计拒绝",
+    "en-US": "G25 Audit Rejected",
+  },
+  metacognition: {
+    "zh-CN": "元认知调度触发",
+    "en-US": "Triggered by Metacognition",
+  },
+  inspection: {
+    "zh-CN": "人工核查触发",
+    "en-US": "Triggered by Operator Inspection",
+  },
+  temporal_review: {
+    "zh-CN": "时间复查触发",
+    "en-US": "Triggered by Temporal Review",
+  },
+  context_snapshot: {
+    "zh-CN": "上下文快照",
+    "en-US": "Context Snapshot",
+  },
+  working_memory: {
+    "zh-CN": "工作记忆",
+    "en-US": "Working Memory",
+  },
+  unsafe_external_action: {
+    "zh-CN": "遇到外部危险动作时禁用",
+    "en-US": "Disabled for Unsafe External Actions",
+  },
+  external_execution_requested: {
+    "zh-CN": "请求真实执行时禁用",
+    "en-US": "Disabled When External Execution Is Requested",
+  },
+};
+
+export const pluginStatusLabels: Record<
+  "candidate" | "sandbox_verified" | "active" | "degraded" | "revoked",
+  Record<Locale, string>
+> = {
+  candidate: { "zh-CN": "候选", "en-US": "Candidate" },
+  sandbox_verified: { "zh-CN": "沙盒验证通过", "en-US": "Sandbox Verified" },
+  active: { "zh-CN": "运行中", "en-US": "Active" },
+  degraded: { "zh-CN": "已降级", "en-US": "Degraded" },
+  revoked: { "zh-CN": "已撤销", "en-US": "Revoked" },
+};
+
+export const pluginBindingStatusLabels: Record<
+  "bound_active" | "bound_inactive" | "unbound",
+  Record<Locale, string>
+> = {
+  bound_active: { "zh-CN": "已接管", "en-US": "Bound Active" },
+  bound_inactive: { "zh-CN": "有插件未接管", "en-US": "Plugins Present, Not Bound" },
+  unbound: { "zh-CN": "未绑定", "en-US": "Unbound" },
+};
+
+export const healthLabels: Record<string, Record<Locale, string>> = {
+  healthy: { "zh-CN": "健康", "en-US": "Healthy" },
+  degraded: { "zh-CN": "降级", "en-US": "Degraded" },
+  unhealthy: { "zh-CN": "不健康", "en-US": "Unhealthy" },
+  unknown: { "zh-CN": "未知", "en-US": "Unknown" },
+};
+
+export const pluginManagementCopy = {
+  "zh-CN": {
+    title: "插件管理",
+    subtitle: "直接查看 CognitiveToolRegistry 当前内存状态，用于人工验收插件生命周期与失败计数。",
+    refresh: "刷新",
+    refreshing: "刷新中...",
+    language: "语言",
+    search: "搜索 Tool ID",
+    statusFilter: "状态过滤",
+    allStatuses: "全部状态",
+    interval: "轮询间隔",
+    autoRefresh: "自动轮询",
+    backendError: "无法连接到 Zentex 后端，请检查服务状态。",
+    alertPrefix: "当前存在需要人工介入的插件状态：",
+    featureFamily: "功能域",
+    featureGuides: "开发文档",
+    featureGuide: "功能说明",
+    familyGuide: "家族指南",
+    openGuide: "打开文档",
+    featureBindingStatus: "功能绑定状态",
+    activePlugins: "当前运行插件",
+    singlePluginMode: "单插件模式",
+    multiPluginMode: "多插件模式",
+    viewVersions: "查看版本",
+    backToFeatures: "返回功能列表",
+    noBoundPlugin: "该功能当前未绑定任何插件，说明这一路还没有真正接管。",
+    noVersions: "这个功能当前没有任何插件版本。",
+    toolId: "Tool ID",
+    version: "版本",
+    usedIn: "使用场景",
+    status: "生命周期状态",
+    usageCount: "使用次数",
+    failureCount: "失败次数",
+    description: "功能介绍",
+    actions: "管理操作",
+    forceEnable: "强制启用",
+    forceDisable: "强制关闭",
+    deletePlugin: "删除",
+    defaultPlugin: "系统默认插件",
+    officialOnlyHint: "只有正式版本允许强制启用",
+    protectedDeleteHint: "系统默认插件禁止删除",
+    deleteEnabledHint: "已启用插件禁止删除",
+    forceDisableHint: "仅运行中插件可强制关闭",
+    auditReasonPrompt: "请输入审计原因",
+    actionSuccessForceEnable: "插件已强制启用",
+    actionSuccessForceEnableWithAutoDisablePrefix: "插件已强制启用，并自动关闭冲突插件：",
+    actionSuccessForceDisable: "插件已强制关闭，并已执行回退检查",
+    actionSuccessDelete: "插件已删除",
+    actionFailed: "插件管理操作失败",
+    overrideDialogTitle: "排他性启用确认",
+    overrideDialogBody: "此功能不支持多插件并发，强制启动将自动关闭当前正在运行的版本。",
+    overrideDialogActiveLabel: "当前运行版本",
+    cancel: "取消",
+    continueAction: "继续启用",
+    empty: "没有匹配当前搜索条件的认知工具。",
+    purpose: "功能作用",
+    noPurpose: "未声明功能作用",
+    lifecycleTimes: "生命周期时间",
+    createdAt: "创建时间",
+    updatedAt: "更新时间",
+    startedAt: "启动时间",
+    stoppedAt: "停止时间",
+    lastUsedAt: "最近使用时间",
+    rollbackConditions: "回滚条件",
+    noRollbackConditions: "未声明回滚条件",
+    triggerConditions: "触发条件",
+    noTriggerConditions: "未声明触发条件",
+    requiredContext: "依赖上下文",
+    noRequiredContext: "未声明上下文依赖",
+    noUsedIn: "未声明使用场景",
+  },
+  "en-US": {
+    title: "Plugin & Cognitive Tool Management",
+    subtitle:
+      "Inspect live CognitiveToolRegistry state for manual acceptance of lifecycle transitions and failure counts.",
+    refresh: "Refresh",
+    refreshing: "Refreshing...",
+    language: "Language",
+    search: "Search Tool ID",
+    statusFilter: "Status",
+    allStatuses: "All Statuses",
+    interval: "Polling Interval",
+    autoRefresh: "Auto Refresh",
+    backendError: "Unable to connect to the Zentex backend. Check service status.",
+    alertPrefix: "Plugins requiring operator attention:",
+    featureFamily: "Feature Family",
+    featureGuides: "Development Docs",
+    featureGuide: "Feature Guide",
+    familyGuide: "Family Guide",
+    openGuide: "Open Guide",
+    featureBindingStatus: "Feature Binding",
+    activePlugins: "Active Plugins",
+    singlePluginMode: "Single-Plugin Mode",
+    multiPluginMode: "Multi-Plugin Mode",
+    viewVersions: "View Versions",
+    backToFeatures: "Back to Features",
+    noBoundPlugin:
+      "No plugin is currently bound to this feature. This path has not actually taken control yet.",
+    noVersions: "No plugin versions are currently registered for this feature.",
+    toolId: "Tool ID",
+    version: "Version",
+    usedIn: "Used In",
+    status: "Lifecycle",
+    usageCount: "Usage Count",
+    failureCount: "Failure Count",
+    description: "Description",
+    actions: "Actions",
+    forceEnable: "Force Enable",
+    forceDisable: "Force Disable",
+    deletePlugin: "Delete",
+    defaultPlugin: "System Default Plugin",
+    officialOnlyHint: "Only official-release plugins can be force-enabled",
+    protectedDeleteHint: "System default plugins cannot be deleted",
+    deleteEnabledHint: "Enabled plugins cannot be deleted",
+    forceDisableHint: "Only active plugins can be force-disabled",
+    auditReasonPrompt: "Enter audit reason",
+    actionSuccessForceEnable: "Plugin force-enabled",
+    actionSuccessForceEnableWithAutoDisablePrefix: "Plugin force-enabled and conflicting active plugins were auto-disabled: ",
+    actionSuccessForceDisable: "Plugin force-disabled and fallback was checked",
+    actionSuccessDelete: "Plugin deleted",
+    actionFailed: "Plugin management action failed",
+    overrideDialogTitle: "Exclusive Enable Confirmation",
+    overrideDialogBody: "This feature does not support multiple active plugins. Force-enabling will automatically disable the currently active version.",
+    overrideDialogActiveLabel: "Currently Active Versions",
+    cancel: "Cancel",
+    continueAction: "Continue",
+    empty: "No cognitive tools match the current filters.",
+    purpose: "Purpose",
+    noPurpose: "No purpose declared",
+    lifecycleTimes: "Lifecycle Timestamps",
+    createdAt: "Created At",
+    updatedAt: "Updated At",
+    startedAt: "Started At",
+    stoppedAt: "Stopped At",
+    lastUsedAt: "Last Used At",
+    rollbackConditions: "Rollback Conditions",
+    noRollbackConditions: "No rollback conditions declared",
+    triggerConditions: "Trigger Conditions",
+    noTriggerConditions: "No trigger conditions declared",
+    requiredContext: "Required Context",
+    noRequiredContext: "No required context declared",
+    noUsedIn: "No usage scope declared",
+  },
+} as const;
+
+export const dashboardCopy = {
+  "zh-CN": {
+    language: "语言",
+    title: "专业模式实时指挥台",
+    subtitle: "通过 FastAPI 聚合层实时观测主脑快照、认知工具状态与 Transcript 事件流。",
+    refresh: "手动刷新",
+    refreshing: "刷新中...",
+    pause: "紧急熔断 / 暂停",
+    resume: "恢复运行",
+    runtimeDegraded: "运行时当前处于降级模式。",
+    sessionDegradedPrefix: "会话存在降级标记：",
+    backendDisconnected: "无法连接到 Zentex 后端，请检查服务状态。",
+    streamParseError: "实时事件流解析失败。",
+    streamConnectionError: "实时事件流连接异常。",
+    streamReconnect: "实时事件流已断开，正在尝试重连。",
+    streamStatus: "WebSocket 事件流状态：",
+    streamConnected: "已连接",
+    streamReconnecting: "重连中",
+    streamConnecting: "连接中",
+    streamDisconnected: "已断开",
+    loading: "正在从 Zentex 后端拉取实时状态...",
+    workingMemory: "工作记忆",
+    focusSummary: "当前焦点摘要",
+    focusFallback: "后端未返回工作记忆状态",
+    noActiveTasks: "暂无活跃任务",
+    metacognition: "元认知与自我模型",
+    loadLevel: "认知负荷",
+    reasoningPosture: "推理姿态",
+    schedulerStatus: "调度状态",
+    reasoningMode: "当前推理模式",
+    runtime: "运行时",
+    reviewSection: "复查与超期",
+    reviewNow: "待立即复查",
+    overdue: "已超期待办",
+    noReviewNow: "暂无立即复查事项",
+    noOverdue: "暂无超期待办",
+    conflictCard: "认知冲突监控",
+    conflictType: "冲突类型",
+    severity: "严重度",
+    conflictResolution: "建议调和",
+    sourcePlugin: "来源插件",
+    noConflicts: "当前没有未解决的认知冲突。",
+    criticalConflictWarning: "检测到高危认知冲突，系统已触发保守降级并暂停扩展推理。",
+    pluginState: "认知工具与插件状态",
+    status: "状态",
+    health: "健康",
+    usageCount: "调用次数",
+    failureCount: "失败次数",
+    noPlugins: "当前没有已暴露到 Web 聚合层的插件状态。",
+    eventStream: "Transcript 实时事件流",
+    eventFilter: "事件类型过滤",
+    allEvents: "全部事件",
+    defaultEvents: "默认事件（隐藏插件审计）",
+    noEvents: "当前过滤条件下暂无事件流数据",
+    pauseDialog: "提交暂停干预",
+    resumeDialog: "提交恢复干预",
+    interventionReason: "干预原因",
+    interventionReasonRequired: "请填写干预原因。",
+    pauseSubmitted: "已提交暂停干预。",
+    resumeSubmitted: "已提交恢复干预。",
+    interventionSubmitFailed: "干预请求提交失败。",
+    cancel: "取消",
+    submit: "提交",
+    weightCard: "主观权重偏好",
+    weightFallbackWarning: "检测到权重漂移或审计拒绝，已安全回退至保守默认权重",
+    activeWeightPlugin: "当前权重插件",
+    weightPurpose: "权重取向",
+    riskTolerance: "风险容忍度",
+    costSensitivity: "成本敏感度",
+    creativityBias: "创意偏置",
+    continuityBias: "连续性偏置",
+    rationaleTags: "偏好标签",
+    noRationaleTags: "未声明偏好标签",
+    interactionMindCard: "社会心智模型",
+    interactionGoal: "当前意图假设",
+    interactionRole: "角色判断",
+    communicationStyle: "表达偏好",
+    misunderstandingRisk: "误解风险",
+    knowledgeDepth: "知识深度",
+    noInteractionMind: "当前没有可展示的社会心智状态。",
+    interactionMindWarning: "检测到误解风险，优先进行意图澄清",
+  },
+  "en-US": {
+    language: "Language",
+    title: "Pro Mode Realtime Command Center",
+    subtitle:
+      "Observe live brain snapshots, cognitive tool status, and transcript events through the FastAPI aggregation layer.",
+    refresh: "Refresh",
+    refreshing: "Refreshing...",
+    pause: "Emergency Stop / Pause",
+    resume: "Resume Runtime",
+    runtimeDegraded: "The runtime is currently operating in degraded mode.",
+    sessionDegradedPrefix: "Session degraded flags: ",
+    backendDisconnected: "Unable to connect to the Zentex backend. Check service status.",
+    streamParseError: "Failed to parse the realtime event stream.",
+    streamConnectionError: "Realtime event-stream connection failed.",
+    streamReconnect: "Realtime event stream disconnected. Reconnecting.",
+    streamStatus: "WebSocket event-stream status: ",
+    streamConnected: "Connected",
+    streamReconnecting: "Reconnecting",
+    streamConnecting: "Connecting",
+    streamDisconnected: "Disconnected",
+    loading: "Pulling realtime state from the Zentex backend...",
+    workingMemory: "Working Memory",
+    focusSummary: "Current Focus Summary",
+    focusFallback: "The backend did not return working-memory state.",
+    noActiveTasks: "No active tasks",
+    metacognition: "Metacognition & Self Model",
+    loadLevel: "Cognitive Load",
+    reasoningPosture: "Reasoning Posture",
+    schedulerStatus: "Scheduler Status",
+    reasoningMode: "Current Reasoning Mode",
+    runtime: "Runtime",
+    reviewSection: "Review & Overdue Items",
+    reviewNow: "Review Now",
+    overdue: "Overdue Items",
+    noReviewNow: "No items require immediate review.",
+    noOverdue: "No overdue items.",
+    conflictCard: "Cognitive Conflict Monitor",
+    conflictType: "Conflict Type",
+    severity: "Severity",
+    conflictResolution: "Suggested Resolution",
+    sourcePlugin: "Source Plugin",
+    noConflicts: "There are no unresolved cognitive conflicts.",
+    criticalConflictWarning:
+      "A critical cognitive conflict was detected. The system has switched to conservative degradation and paused expansion reasoning.",
+    pluginState: "Cognitive Tool & Plugin Status",
+    status: "Status",
+    health: "Health",
+    usageCount: "Usage Count",
+    failureCount: "Failure Count",
+    noPlugins: "No plugin state is currently exposed through the web aggregation layer.",
+    eventStream: "Transcript Realtime Event Stream",
+    eventFilter: "Event Type Filter",
+    allEvents: "All Events",
+    defaultEvents: "Default Events (Hide Plugin Audit)",
+    noEvents: "No events match the current filter.",
+    pauseDialog: "Submit Pause Intervention",
+    resumeDialog: "Submit Resume Intervention",
+    interventionReason: "Intervention Reason",
+    interventionReasonRequired: "Please provide an intervention reason.",
+    pauseSubmitted: "Pause intervention submitted.",
+    resumeSubmitted: "Resume intervention submitted.",
+    interventionSubmitFailed: "Failed to submit intervention request.",
+    cancel: "Cancel",
+    submit: "Submit",
+    weightCard: "Subjective Weight Preferences",
+    weightFallbackWarning:
+      "Weight drift or audit rejection detected. Safely rolled back to the conservative default profile.",
+    activeWeightPlugin: "Active Weight Plugin",
+    weightPurpose: "Preference Direction",
+    riskTolerance: "Risk Tolerance",
+    costSensitivity: "Cost Sensitivity",
+    creativityBias: "Creativity Bias",
+    continuityBias: "Continuity Bias",
+    rationaleTags: "Preference Tags",
+    noRationaleTags: "No preference tags declared",
+    interactionMindCard: "Interaction Mind",
+    interactionGoal: "Current Goal Hypothesis",
+    interactionRole: "Role Hint",
+    communicationStyle: "Communication Style",
+    misunderstandingRisk: "Misunderstanding Risk",
+    knowledgeDepth: "Knowledge Depth",
+    noInteractionMind: "No interaction-mind state is currently available.",
+    interactionMindWarning: "Misunderstanding risk detected. Prioritize intent clarification.",
+  },
+} as const;
+
+export const auditReplayCopy = {
+  "zh-CN": {
+    title: "审计与回放",
+    subtitle: "检索大模型请求与返回轨迹，定位九问如何驱动当前推理调用。",
+    requestId: "请求 ID",
+    decisionId: "决策 ID",
+    search: "查询",
+    refreshing: "查询中...",
+    backendError: "无法加载大模型审计轨迹，请检查后端状态。",
+    empty: "当前没有匹配的模型调用轨迹。",
+    phase: "阶段",
+    provider: "提供商",
+    model: "模型",
+    status: "状态",
+    traceChain: "调用链路溯源",
+    traceId: "追踪 ID",
+    recordedAt: "记录时间",
+    relatedEvents: "关联回放事件",
+    sourceModule: "来源模块",
+    invocationPhase: "调用阶段",
+    questionDriverRefs: "九问驱动问题",
+    requestJson: "原始请求 JSON",
+    responseJson: "原始响应 JSON",
+    requestDriver: "九问驱动来源",
+    error: "错误",
+    succeeded: "成功",
+    failed: "失败",
+    pending: "仅请求",
+  },
+  "en-US": {
+    title: "Audit & Replay",
+    subtitle: "Inspect model-provider request/response traces and how the nine-question flow assembled them.",
+    requestId: "Request ID",
+    decisionId: "Decision ID",
+    search: "Search",
+    refreshing: "Loading...",
+    backendError: "Failed to load model-provider audit traces. Check backend status.",
+    empty: "No model-provider traces match the current filters.",
+    phase: "Phase",
+    provider: "Provider",
+    model: "Model",
+    status: "Status",
+    traceChain: "Trace Chain",
+    traceId: "Trace ID",
+    recordedAt: "Recorded At",
+    relatedEvents: "Related Replay Events",
+    sourceModule: "Source Module",
+    invocationPhase: "Invocation Phase",
+    questionDriverRefs: "Question Driver Refs",
+    requestJson: "Raw Request JSON",
+    responseJson: "Raw Response JSON",
+    requestDriver: "Nine-Question Driver",
+    error: "Error",
+    succeeded: "Succeeded",
+    failed: "Failed",
+    pending: "Request Only",
+  },
+} as const;
+
+export const sharedTokenLabels: Record<string, Record<Locale, string>> = {
+  medium: { "zh-CN": "中", "en-US": "Medium" },
+  low: { "zh-CN": "低", "en-US": "Low" },
+  high: { "zh-CN": "高", "en-US": "High" },
+  observant: { "zh-CN": "观察型", "en-US": "Observant" },
+  inspection: { "zh-CN": "核查", "en-US": "Inspection" },
+  polling_transcript: { "zh-CN": "轮询事件流", "en-US": "Polling Transcript" },
+  healthy: { "zh-CN": "健康", "en-US": "Healthy" },
+  degraded: { "zh-CN": "降级", "en-US": "Degraded" },
+  unhealthy: { "zh-CN": "异常", "en-US": "Unhealthy" },
+  unknown: { "zh-CN": "未知", "en-US": "Unknown" },
+  candidate: { "zh-CN": "候选", "en-US": "Candidate" },
+  sandbox_verified: { "zh-CN": "沙盒验证通过", "en-US": "Sandbox Verified" },
+  active: { "zh-CN": "运行中", "en-US": "Active" },
+  revoked: { "zh-CN": "已撤销", "en-US": "Revoked" },
+  unresolved: { "zh-CN": "未解决", "en-US": "Unresolved" },
+  reconciling: { "zh-CN": "调和中", "en-US": "Reconciling" },
+  resolved: { "zh-CN": "已解决", "en-US": "Resolved" },
+  critical: { "zh-CN": "高危", "en-US": "Critical" },
+  "semantic_identity_conflict": { "zh-CN": "语义身份冲突", "en-US": "Semantic Identity Conflict" },
+  "budget_conflict": { "zh-CN": "预算冲突", "en-US": "Budget Conflict" },
+  "pause_expansion_reasoning_and_review_identity_constraints": {
+    "zh-CN": "暂停扩展推理并复查身份约束",
+    "en-US": "Pause expansion reasoning and review identity constraints",
+  },
+  "reduce_reasoning_branch_count_or_pause_expansion": {
+    "zh-CN": "减少推理分支数量或暂停扩展",
+    "en-US": "Reduce reasoning branch count or pause expansion",
+  },
+  "刷新插件状态面板": { "zh-CN": "刷新插件状态面板", "en-US": "Refresh Plugin Status Panel" },
+  "核查 degraded 工具": { "zh-CN": "核查 degraded 工具", "en-US": "Inspect Degraded Tools" },
+  "补全 UI 验收流程": { "zh-CN": "补全 UI 验收流程", "en-US": "Complete UI Acceptance Flow" },
+  llm_unavailable: { "zh-CN": "模型推理暂不可用", "en-US": "Model reasoning temporarily unavailable" },
+  general: { "zh-CN": "通用情境", "en-US": "General" },
+  market: { "zh-CN": "市场情境", "en-US": "Market" },
+  brief: { "zh-CN": "简短直达", "en-US": "Brief" },
+  structured: { "zh-CN": "结构化表达", "en-US": "Structured" },
+  evidence_first: { "zh-CN": "证据优先", "en-US": "Evidence First" },
+  conclusion_first: { "zh-CN": "结论优先", "en-US": "Conclusion First" },
+  correction: { "zh-CN": "对方纠正", "en-US": "Correction" },
+  frustration: { "zh-CN": "对方沮丧", "en-US": "Frustration" },
+  topic_shift: { "zh-CN": "突然换题", "en-US": "Topic Shift" },
+  contradiction: { "zh-CN": "前后矛盾", "en-US": "Contradiction" },
+  silence_after_complexity: { "zh-CN": "复杂说明后沉默", "en-US": "Silence After Complexity" },
+  "simulation-thought-sandbox": { "zh-CN": "通用思维沙盒", "en-US": "Thought Sandbox" },
+  "simulation-market-impact": { "zh-CN": "市场影响预测器", "en-US": "Market Impact Simulator" },
+  "Projected failure cascade under degraded runtime": {
+    "zh-CN": "当前运行态下可能触发灾难性失败级联",
+    "en-US": "Projected failure cascade under the current degraded runtime",
+  },
+  "插件总线": { "zh-CN": "插件总线", "en-US": "Plugin Bus" },
+  "Web 控制台": { "zh-CN": "Web 控制台", "en-US": "Web Console" },
+  "正在聚合插件状态与实时事件流。": {
+    "zh-CN": "正在聚合插件状态与实时事件流。",
+    "en-US": "Aggregating plugin status and realtime event stream.",
+  },
+};
+
+export function humanizeToken(token: string): string {
+  return token
+    .split(/[_-]/g)
+    .filter(Boolean)
+    .map((part) => part.charAt(0).toUpperCase() + part.slice(1))
+    .join(" ");
+}
+
+export function formatLocalizedToken(value: string | null | undefined, locale: Locale): string {
+  if (!value) {
+    return "--";
+  }
+  const normalized = value.trim();
+  return (
+    sharedTokenLabels[normalized]?.[locale]
+    || sharedTokenLabels[normalized.toLowerCase()]?.[locale]
+    || value
+  );
+}
+
+export function formatLocalizedDateTime(value: string | null, locale: Locale): string {
+  if (!value) {
+    return "--";
+  }
+  const parsed = new Date(value);
+  if (Number.isNaN(parsed.getTime())) {
+    return value;
+  }
+  return parsed.toLocaleString(locale);
+}
+
+export function formatUsagePlace(code: string, locale: Locale): string {
+  return pluginUsagePlaceLabels[code]?.[locale] || humanizeToken(code);
+}
+
+export function formatPluginDescriptor(code: string, locale: Locale): string {
+  return pluginDescriptorLabels[code]?.[locale] || humanizeToken(code);
+}
+
+export function formatPluginStatus(
+  status: "candidate" | "sandbox_verified" | "active" | "degraded" | "revoked",
+  locale: Locale,
+): string {
+  return pluginStatusLabels[status][locale];
+}
+
+export function formatPluginBindingStatus(
+  status: "bound_active" | "bound_inactive" | "unbound",
+  locale: Locale,
+): string {
+  return pluginBindingStatusLabels[status][locale];
+}
+
+export function formatHealthStatus(status: string | null, locale: Locale): string {
+  if (!status) {
+    return healthLabels.unknown[locale];
+  }
+  return healthLabels[status]?.[locale] || humanizeToken(status);
+}
+
+export function formatUserFacingError(locale: Locale): string {
+  if (locale === "zh-CN") {
+    return "无法连接到 Zentex 后端，请检查服务是否启动，然后刷新页面重试。";
+  }
+  return "Unable to connect to the Zentex backend. Check that the service is running, then refresh and try again.";
+}

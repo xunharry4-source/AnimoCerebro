@@ -1,2 +1,9 @@
 /venv/
 /src/admin-portal/node_modules/
+/.idea/inspectionProfiles/profiles_settings.xml
+/.idea/inspectionProfiles/Project_Default.xml
+/.idea/.gitignore
+/.idea/AnimoCerebro-external.iml
+/.idea/misc.xml
+/.idea/modules.xml
+/.idea/vcs.xml

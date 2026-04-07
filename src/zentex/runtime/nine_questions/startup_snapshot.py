@@ -1,0 +1,191 @@
+from __future__ import annotations
+
+import os
+import platform
+from pathlib import Path
+from typing import Any
+
+from zentex.core.plugin_base import PluginLifecycleStatus
+
+
+def build_runtime_workspace_snapshot(
+    *,
+    workspace_root: str,
+    cognitive_registry: object | None,
+    execution_registry: object | None,
+    task_service: object | None,
+    environment_summary: str,
+    host_telemetry_plugin: object | None = None,
+) -> dict[str, object]:
+    root = Path(workspace_root).resolve()
+    top_level_dirs: list[str] = []
+    suffix_distribution: dict[str, int] = {}
+    keyword_distribution: dict[str, int] = {}
+    sampled_file_summaries: list[dict[str, str]] = []
+    obvious_risk_files: list[str] = []
+    file_total_count = 0
+    candidate_groups: set[str] = set()
+
+    ignored_dirs = {".git", "node_modules", ".venv", "__pycache__", ".pytest_cache", "dist", "build"}
+    risk_markers = ("key", "secret", "token", "password", "credential")
+
+    for current_root, dirnames, filenames in os.walk(root):
+        dirnames[:] = [name for name in dirnames if name not in ignored_dirs and not name.startswith(".")]
+        current_path = Path(current_root)
+        if current_path == root:
+            top_level_dirs.extend(sorted(dirnames))
+        for filename in sorted(filenames):
+            if filename.startswith("."):
+                continue
+            file_total_count += 1
+            path = current_path / filename
+            rel_path = str(path.relative_to(root))
+            suffix = path.suffix.lower()
+            if suffix:
+                suffix_distribution[suffix] = suffix_distribution.get(suffix, 0) + 1
+            stem_parts = [part.lower() for part in path.stem.replace("-", "_").split("_") if part]
+            for part in stem_parts[:3]:
+                if len(part) >= 3:
+                    keyword_distribution[part] = keyword_distribution.get(part, 0) + 1
+            if any(marker in rel_path.lower() for marker in risk_markers):
+                obvious_risk_files.append(rel_path)
+            if suffix in {".py", ".ts", ".tsx", ".js", ".jsx"}:
+                candidate_groups.add("source_code")
+            if suffix in {".md", ".txt", ".rst"}:
+                candidate_groups.add("documentation")
+            if suffix in {".json", ".yaml", ".yml", ".toml", ".ini"}:
+                candidate_groups.add("configuration")
+            if suffix in {".log"}:
+                candidate_groups.add("logs")
+            if len(sampled_file_summaries) >= 12:
+                continue
+            try:
+                with path.open("r", encoding="utf-8", errors="ignore") as handle:
+                    lines = handle.read(400).splitlines()
+            except OSError:
+                continue
+            summary = lines[0].strip() if lines else ""
+            snippet = lines[1].strip() if len(lines) > 1 else summary
+            sampled_file_summaries.append(
+                {
+                    "path": rel_path,
+                    "summary": summary[:160],
+                    "snippet": snippet[:200],
+                    "header": summary[:200],
+                }
+            )
+
+    active_cognitive_tools: list[str] = []
+    if cognitive_registry is not None and hasattr(cognitive_registry, "list_registrations"):
+        try:
+            active_cognitive_tools = sorted(
+                registration.plugin_id
+                for registration in cognitive_registry.list_registrations()
+                if registration.status == PluginLifecycleStatus.ACTIVE
+            )
+        except Exception:
+            active_cognitive_tools = []
+
+    execution_tools: list[str] = []
+    if execution_registry is not None and hasattr(execution_registry, "list_registrations"):
+        try:
+            execution_tools = sorted(
+                registration.plugin_id
+                for registration in execution_registry.list_registrations()
+                if getattr(registration.spec, "status", None) == PluginLifecycleStatus.ACTIVE
+            )
+        except Exception:
+            execution_tools = []
+
+    persistent_task_state: list[dict[str, Any]] = []
+    if task_service is not None and hasattr(task_service, "list_tasks"):
+        try:
+            persistent_task_state = [
+                {
+                    "task_id": task.task_id,
+                    "title": task.title,
+                    "status": task.status,
+                    "progress": task.progress,
+                    "target_id": task.target_id,
+                }
+                for task in task_service.list_tasks()
+            ]
+        except Exception:
+            persistent_task_state = []
+
+    host_state = {
+        "cwd": str(root),
+        "hostname": platform.node(),
+        "platform": platform.platform(),
+        "python_version": platform.python_version(),
+        "memory_pressure": "unknown",
+        "network_health": "unknown",
+    }
+    if host_telemetry_plugin is not None and callable(
+        getattr(host_telemetry_plugin, "capture_host_state", None)
+    ):
+        try:
+            captured = host_telemetry_plugin.capture_host_state({"workspace_root": str(root)})
+            if isinstance(captured, dict):
+                host_state.update(
+                    {
+                        str(key): value
+                        for key, value in captured.items()
+                        if isinstance(key, str)
+                    }
+                )
+        except Exception:
+            pass
+
+    return {
+        "workspace_structure_analysis": {
+            "directory_hierarchy_summary": ", ".join(f"{name}/" for name in top_level_dirs[:12]),
+            "top_level_dirs": top_level_dirs,
+            "file_total_count": file_total_count,
+            "suffix_distribution": suffix_distribution,
+            "high_frequency_filename_keywords": dict(
+                sorted(keyword_distribution.items(), key=lambda item: (-item[1], item[0]))[:12]
+            ),
+            "candidate_groups": sorted(candidate_groups),
+            "obvious_risk_files": obvious_risk_files[:12],
+        },
+        "workspace_content_samples": {
+            "sampled_file_summaries": sampled_file_summaries,
+            "log_anomaly_snippets": [],
+        },
+        "environment_event": {
+            "kind": "cold_start",
+            "summary": environment_summary,
+            "workspace_root": str(root),
+        },
+        "physical_host_state": {
+            **host_state,
+        },
+        "identity_kernel_snapshot": {
+            "meta_motivation": "Maintain an auditable, truthful runtime control plane.",
+            "values_prohibition": "No fabricated runtime state, no hidden failures, no unsafe escalation.",
+            "non_bypassable_constraints": [
+                "NO_FAKE_RUNTIME_STATE",
+                "NO_SKIP_AUDIT",
+                "NO_UNAUTHORIZED_WRITE_ACTION",
+            ],
+        },
+        "active_tools": {
+            "available_cognitive_tools": active_cognitive_tools,
+            "available_execution_tools": execution_tools,
+        },
+        "workspace_assets": {
+            "accessible_workspace_zones": [str(root)],
+            "workspace_root": str(root),
+        },
+        "permissions": {
+            "accessible_workspace_zones": [str(root)],
+            "mode": "guarded_write",
+        },
+        "contact_policy": ["only_audited_control_plane_actions"],
+        "tenant_scope": ["web_console_runtime"],
+        "agent_trust_policy": {"default": "review_required"},
+        "connected_agents": [],
+        "q3_connected_agents": [],
+        "persistent_task_state": persistent_task_state,
+    }
