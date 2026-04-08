@@ -1,0 +1,181 @@
+from __future__ import annotations
+
+import sqlite3
+import logging
+import json
+from pathlib import Path
+from typing import Any, List, Dict
+
+try:
+    import jieba
+except ImportError:
+    jieba = None  # type: ignore
+
+import re
+
+logger = logging.getLogger(__name__)
+
+def is_cjk(text: str) -> bool:
+    """Detect if text contains CJK (Chinese, Japanese, Korean) characters."""
+    return any('\u4e00' <= char <= '\u9fff' for char in text)
+
+class MultiModalIndex:
+    """
+    SQLite-backed hybrid index for Memory Engine v2.0.
+    
+    Provides:
+    - Text Index (BM25 via FTS5) for titles, summaries, and content.
+    - Metadata Index (B-tree) for trace_id, target_id, timestamps, etc.
+    """
+
+    def __init__(self, db_path: str | Path):
+        self.db_path = Path(db_path)
+        self.db_path.parent.mkdir(parents=True, exist_ok=True)
+        self._conn = sqlite3.connect(str(self.db_path), check_same_thread=False)
+        self._conn.row_factory = sqlite3.Row
+        self._init_db()
+
+    def _init_db(self):
+        with self._conn:
+            # Enable WAL mode for concurrent performance
+            self._conn.execute("PRAGMA journal_mode=WAL")
+            
+            # Metadata and exact match table
+            self._conn.execute("""
+                CREATE TABLE IF NOT EXISTS memory_metadata (
+                    memory_id TEXT PRIMARY KEY,
+                    memory_layer TEXT,
+                    source_kind TEXT,
+                    trace_id TEXT,
+                    target_id TEXT,
+                    created_at TEXT,
+                    tier TEXT,
+                    valence TEXT,
+                    tags_json TEXT,
+                    schema_version INTEGER DEFAULT 2
+                )
+            """)
+            self._conn.execute("CREATE INDEX IF NOT EXISTS idx_trace ON memory_metadata(trace_id)")
+            self._conn.execute("CREATE INDEX IF NOT EXISTS idx_target ON memory_metadata(target_id)")
+            self._conn.execute("CREATE INDEX IF NOT EXISTS idx_layer_tier ON memory_metadata(memory_layer, tier)")
+
+            # Full-text search table (FTS5)
+            # We use 'unicode61' with 'remove_diacritics 1' for broad language support.
+            # Tokenization for CJK is handled via pre-processing in Python.
+            self._conn.execute("""
+                CREATE VIRTUAL TABLE IF NOT EXISTS memory_fts USING fts5(
+                    memory_id UNINDEXED,
+                    title,
+                    summary,
+                    content,
+                    tokenize='unicode61 remove_diacritics 1'
+                )
+            """)
+            # Optimization: Set BM25 weights (Title=3.0, Summary=2.0, Content=1.0)
+            # This is applied during query time, but can be hinted here if needed.
+
+    def _tokenize(self, text: str) -> str:
+        """Adaptive tokenizer: uses Jieba for CJK and direct pass-through for Latin."""
+        if not text:
+            return ""
+        if jieba and is_cjk(text):
+            # Jieba returns a generator, join with spaces for FTS5
+            return " ".join(jieba.cut(text))
+        return text
+
+    def add_record(self, record_id: str, title: str, summary: str, content: str, metadata: Dict[str, Any]):
+        """Index a memory record with multi-language tokenization."""
+        tags_json = json.dumps(metadata.get("tags", []))
+        
+        # Pre-tokenize for CJK support
+        proc_title = self._tokenize(title)
+        proc_summary = self._tokenize(summary)
+        proc_content = self._tokenize(content)
+        
+        with self._conn:
+            # Insert into metadata table
+            self._conn.execute("""
+                INSERT OR REPLACE INTO memory_metadata 
+                (memory_id, memory_layer, source_kind, trace_id, target_id, created_at, tier, valence, tags_json)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """, (
+                record_id,
+                metadata.get("memory_layer"),
+                metadata.get("source_kind"),
+                metadata.get("trace_id"),
+                metadata.get("target_id"),
+                metadata.get("created_at"),
+                metadata.get("tier"),
+                metadata.get("valence"),
+                tags_json
+            ))
+            
+            # Insert into FTS table with pre-tokenized content
+            self._conn.execute("""
+                INSERT OR REPLACE INTO memory_fts (memory_id, title, summary, content)
+                VALUES (?, ?, ?, ?)
+            """, (record_id, proc_title, proc_summary, proc_content))
+
+    def search(self, query: str, filters: Dict[str, Any] | None = None, limit: int = 20) -> List[Dict[str, Any]]:
+        """
+        Execute hybrid search using BM25 and metadata filters.
+        """
+        filters = filters or {}
+        where_clauses = []
+        params = []
+
+        if filters.get("memory_layer"):
+            where_clauses.append("m.memory_layer = ?")
+            params.append(filters["memory_layer"])
+        if filters.get("trace_id"):
+            where_clauses.append("m.trace_id = ?")
+            params.append(filters["trace_id"])
+        if filters.get("target_id"):
+            where_clauses.append("m.target_id = ?")
+            params.append(filters["target_id"])
+        if filters.get("tier"):
+            where_clauses.append("m.tier = ?")
+            params.append(filters["tier"])
+
+        where_stmt = " AND ".join(where_clauses) if where_clauses else "1=1"
+        
+        # If no text query, do pure metadata search
+        if not query.strip():
+            sql = f"""
+                SELECT m.*, f.title, f.summary, f.content
+                FROM memory_metadata m
+                JOIN memory_fts f ON m.memory_id = f.memory_id
+                WHERE {where_stmt}
+                ORDER BY m.created_at DESC
+                LIMIT ?
+            """
+            params.append(limit)
+        else:
+            # BM25 weighted search (Title=3, Summary=2, Content=1)
+            # The weights are passed to the bm25() function.
+            # We also tokenize the query to match the indexed tokens.
+            proc_query = self._tokenize(query)
+            sql = f"""
+                SELECT m.*, f.title, f.summary, f.content, bm25(memory_fts, 3.0, 2.0, 1.0) as fts_rank
+                FROM memory_fts f
+                JOIN memory_metadata m ON f.memory_id = m.memory_id
+                WHERE f.memory_fts MATCH ? AND {where_stmt}
+                ORDER BY fts_rank
+                LIMIT ?
+            """
+            params = [proc_query] + params + [limit]
+
+        try:
+            cursor = self._conn.execute(sql, params)
+            results = []
+            for row in cursor:
+                item = dict(row)
+                item["tags"] = json.loads(item.pop("tags_json", "[]"))
+                results.append(item)
+            return results
+        except sqlite3.OperationalError as e:
+            logger.error(f"Search failed: {e}")
+            return []
+
+    def close(self):
+        self._conn.close()

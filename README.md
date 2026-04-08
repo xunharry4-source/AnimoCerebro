@@ -6,11 +6,13 @@
 
 ## Overview
 
-AnimoCerebro is the brain layer for agents and host systems. It is responsible for reasoning, role inference, goal generation, risk assessment, memory accumulation, delegation advice, and long-term experience exchange. It is not a forced executor, not a default reply engine, and not a replacement for an existing host architecture.
+AnimoCerebro is the **Brain** for Agents and Host Systems. It provides an **External Brain** for all AI species, including Agents and openCLaw. It empowers AI with **autonomy, reflection, learning, and self-upgrading** capabilities, enabling it to **act autonomously** based on the results of the "Nine Questions" cognitive loop.
+
+AnimoCerebro is responsible for reasoning, role inference, goal generation, risk assessment, memory accumulation, delegation advice, and long-term experience exchange. It is the core engine for AI to achieve high-level cognition and independent action.
 
 ## What It Is
 
-AnimoCerebro is built around a nine-question cognitive loop:
+AnimoCerebro is built around a **nine-question cognitive loop**, which drives AI's autonomous decision-making:
 
 1. Where am I
 2. Who am I
@@ -22,14 +24,16 @@ AnimoCerebro is built around a nine-question cognitive loop:
 8. What should I do
 9. How should I do it
 
+**AI can autonomously drive subsequent tasks based on the results of these nine questions, with clear goals and boundaries.**
+
 ## Positioning
 
-Use AnimoCerebro as:
+AnimoCerebro is:
 
-- a brain layer for one agent
-- an advisory sidecar for an existing system
-- a coordination brain for multi-agent environments
-- an external brain attached to a host such as OpenClaw
+- **The Core Brain for AI**: Providing reasoning, learning, reflection, and self-evolutionary capabilities for Agents.
+- **A Universal External Brain**: Capable of attaching to openCLaw, various Agent frameworks, or existing host systems.
+- **An Autonomous Behavior Engine**: Enabling autonomous decisions and actions based on cognitive analysis.
+- **A Long-term Experience Layer**: Empowering AI with continuous learning across tasks and time.
 
 Do not treat it as:
 
@@ -220,3 +224,16 @@ See:
 - [Deployment And Integration](详细部署与集成说明.md)
 - [Help Guide](帮助文档.md)
 - [Protocol Overview](当前对接协议.md)
+- More documentation can be found in the `docs/` directory.
+
+## Contact
+
+**Let's build a soulful brain together!**
+
+- Join the discussion via [GitHub Issues](https://github.com/xunharry4-source/AnimoCerebro/issues) or [GitHub Discussions](https://github.com/xunharry4-source/AnimoCerebro/discussions).
+- If you have any ideas or suggestions, feel free to submit a Pull Request or open an Issue.
+
+## License
+
+This project is licensed under the [GNU GPL v3](LICENSE).
+

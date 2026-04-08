@@ -2,12 +2,13 @@
 
 ## 1. 项目定位与核心愿景
 
-**AnimoCerebro**（意为“灵魂大脑”）是基于 **Zentex** 框架构建的下一代智能体大脑运行时系统。它的核心目标是提供一个高度纪律化、可审计、且具有自我意识（Metacognition）的认知执行环境。
+**AnimoCerebro**（意为“灵魂大脑”）是 Agent 与宿主系统的**核心大脑**，为 Agent、openCLaw 等所有 AI 提供**外挂大脑**支持。它的核心目标是赋予 AI **自主、反思、学习、自我升级**的能力，使其能够根据“九问”认知循环的结果**自主做事**。
 
-相比于传统的无状态 LLM 调用，Zentex 强调：
+相比于传统的无状态 LLM 调用，AnimoCerebro 强调：
 
+- **自主性 (Autonomy)**：基于认知框架自主生成目标并驱动执行。
+- **反思与学习 (Reflection & Learning)**：通过经验交换与记忆提炼实现持续进化与**自我升级**。
 - **连续性 (Continuity)**：通过 `BrainSession` 与 `Transcript` 记录长期记忆。
-- **纪律性 (Discipline)**：插件必须符合严格的生命周期与副作用约束。
 - **透明度 (Observability)**：通过 Web Console 实时可视化认知的每一个微小步骤。
 
 ---

@@ -2,26 +2,21 @@
 
 ## Positioning
 
-AnimoCerebro is a brain layer for agents and host systems.
+AnimoCerebro is the **Brain** for Agents and Host Systems. It provides a universal **External Brain** for all AI species, including individual Agents and host platforms like openCLaw.
 
-Its responsibility is:
+It is responsible for giving AI:
+- **Autonomy**: Independent goal generation, execution drive, and **self-upgrading**.
+- **Reflection**: Constant self-assessment and meta-cognition.
+- **Learning**: Long-term experience exchange and memory consolidation.
 
-- reasoning
-- role inference
-- goal generation
-- risk judgment
-- memory accumulation
-- delegation advice
-
-It is not:
-
-- the default executor
-- a forced takeover layer
-- a mandatory replacement for an existing host architecture
+Its core cognitive responsibilities include:
+- reasoning & role inference
+- goal generation & risk judgment
+- memory accumulation & delegation advice
 
 ## Core Loop
 
-The system is organized around the nine-question cognitive loop:
+The system is organized around the **nine-question cognitive loop**. This loop is the foundation of AI autonomy; the brain can **act autonomously** based on the results of these questions:
 
 1. Where am I
 2. Who am I
@@ -32,6 +27,8 @@ The system is organized around the nine-question cognitive loop:
 7. What should I not do even if I can
 8. What should I do
 9. How should I do it
+
+**AI drives subsequent actions independently once these nine questions establish the situational and moral boundaries.**
 
 ## Core Runtime Shape
 
