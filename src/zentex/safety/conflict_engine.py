@@ -11,6 +11,21 @@ class StaleWriteError(RuntimeError):
     """Raised when a reconciliation plan targets an outdated snapshot version."""
 
 
+class ConflictSource(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    source_type: str = Field(min_length=1)
+    reference_id: str
+
+
+class SelfCorrectionTrigger(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    trigger_id: str = Field(default_factory=lambda: str(uuid4()))
+    conflict_id: str
+    action: str
+    priority: int = 0
+    created_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
+
+
 class CognitiveConflictReport(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
@@ -94,6 +109,72 @@ class CognitiveConflictEngine:
 
     def list_unresolved_conflicts(self) -> List[CognitiveConflictReport]:
         return list(self._shared_state.unresolved_conflicts)
+
+    def detect(self, working_memory: Any, self_model: Any, agenda: Any) -> List[CognitiveConflictReport]:
+        """
+        Scan for Goal, Evidence, Memory, Budget, and Confidence conflicts.
+        """
+        detected: List[CognitiveConflictReport] = []
+        
+        wm_dict = working_memory if isinstance(working_memory, dict) else getattr(working_memory, "__dict__", {})
+        sm_dict = self_model if isinstance(self_model, dict) else getattr(self_model, "__dict__", {})
+        
+        # Confidence conflict via ConfidenceDriftIndicator
+        weaknesses = sm_dict.get("recent_weaknesses", [])
+        if isinstance(weaknesses, list) and any(getattr(w, "pattern_type", "") == "overconfidence" or (isinstance(w, dict) and w.get("pattern_type") == "overconfidence") for w in weaknesses):
+            detected.append(
+                CognitiveConflictReport(
+                    conflict_type="confidence",
+                    severity="high",
+                    suggested_resolution="downgrade_confidence",
+                    source_plugin_id="core.self_model",
+                )
+            )
+            
+        # Basic structural evaluation hooks
+        if wm_dict.get("goal_conflict"):
+            detected.append(CognitiveConflictReport(conflict_type="goal", severity="high", suggested_resolution="reconcile_goals", source_plugin_id="core.working_memory"))
+        if wm_dict.get("evidence_conflict"):
+            detected.append(CognitiveConflictReport(conflict_type="evidence", severity="medium", suggested_resolution="review_evidence", source_plugin_id="core.working_memory"))
+        if wm_dict.get("memory_conflict"):
+            detected.append(CognitiveConflictReport(conflict_type="memory", severity="high", suggested_resolution="reconcile_memory", source_plugin_id="core.working_memory"))
+        if wm_dict.get("budget_conflict"):
+            detected.append(CognitiveConflictReport(conflict_type="budget", severity="medium", suggested_resolution="downgrade_reasoning_depth", source_plugin_id="core.metacognition"))
+            
+        if detected:
+            self.ingest_reports(detected)
+            
+        return detected
+
+    def generate_triggers(self) -> List[SelfCorrectionTrigger]:
+        """
+        Create SelfCorrectionTrigger objects from unresolved conflicts.
+        Consumed by B7 MetaCognitionController.
+        """
+        triggers = []
+        for conflict in self._shared_state.unresolved_conflicts:
+            triggers.append(
+                SelfCorrectionTrigger(
+                    conflict_id=conflict.conflict_id,
+                    action="pause_and_evaluate",
+                    priority=self._severity_rank(conflict.severity)
+                )
+            )
+        return triggers
+
+    def detect_cognitive_risks_phase4(self, signals: Any) -> List[CognitiveConflictReport]:
+        """Integration boundary for ThinkLoop Phase 4."""
+        return self.detect(
+            signals.get("working_memory"),
+            signals.get("self_model"),
+            signals.get("agenda")
+        ) if isinstance(signals, dict) else []
+
+    def consume_triggers_b7(self, metacognition_controller: Any) -> None:
+        """Integration boundary for B7 MetaCognitionController."""
+        triggers = self.generate_triggers()
+        if hasattr(metacognition_controller, "receive_triggers"):
+            metacognition_controller.receive_triggers(triggers)
 
     def build_reconciliation_plan(self, conflict_ids: List[str]) -> ReconciliationPlan:
         return ReconciliationPlan(

@@ -110,6 +110,7 @@ class BrainSession:
 
         # Session-local nine-question snapshot cache (hot-path readable, no inference here).
         self.current_nine_question_state: NineQuestionState = NineQuestionState()
+        self.active_evolution_result: Optional[Dict[str, Any]] = None
 
     def restore_from_transcript(self) -> "BrainSession":
         """通过 Transcript 回放恢复当前会话的内存态。"""
@@ -188,6 +189,7 @@ class BrainSession:
             ("decision", BrainTranscriptEntryType.DECISION_SYNTHESIZED, "think_loop"),
             ("reflection", BrainTranscriptEntryType.REFLECTION_PERSISTED, "think_loop"),
             ("consolidation", BrainTranscriptEntryType.CONSOLIDATION_COMPLETED, "think_loop"),
+            ("evolution_result", BrainTranscriptEntryType.CONTEXT_SNAPSHOT_WRITTEN, "think_loop"),
             ("human_intervention", BrainTranscriptEntryType.HUMAN_INTERVENTION_APPLIED, "human_supervisor"),
         ]
         for key, entry_type, source in event_specs:

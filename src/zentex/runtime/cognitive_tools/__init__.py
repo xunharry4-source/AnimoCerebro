@@ -3,6 +3,7 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from typing import Any, Dict, List, Tuple
+from pathlib import Path
 from uuid import uuid4
 
 from pydantic import BaseModel, ConfigDict, Field
@@ -100,6 +101,10 @@ class CognitiveToolOrchestrator:
         self._session_id = session_id
         self._turn_id = turn_id
         self._phase = phase
+        
+        # Priority 3: Systematic invocation logging (0% gap)
+        self._log_path = Path("app_data/logs/cognitive_tool_invocations.jsonl")
+        self._log_path.parent.mkdir(parents=True, exist_ok=True)
 
     def run(self, context: Dict[str, Any]) -> CognitiveToolOrchestrationReport:
         registrations = self._resolve_registrations(context)
@@ -275,7 +280,8 @@ class CognitiveToolOrchestrator:
         )
 
         self._registry.record_tool_usage(plugin.plugin_id, used_at=finished_at)
-        return result, CognitiveToolInvocation(
+        
+        invocation = CognitiveToolInvocation(
             invocation_id=invocation_id,
             tool_id=plugin.plugin_id,
             session_id=self._session_id,
@@ -286,6 +292,31 @@ class CognitiveToolOrchestrator:
             status="completed",
             trigger_matches=trigger_matches,
         )
+        
+        # Priority 3: Persistence for post-promotion tracking
+        self._persist_invocation_log(invocation, result)
+        
+        return result, invocation
+
+    def _persist_invocation_log(self, invocation: CognitiveToolInvocation, result: CognitiveToolResult):
+        """Append invocation record to a durable JSONL log for monitoring (Priority 3)."""
+        import json
+        try:
+            with self._log_path.open("a", encoding="utf-8") as f:
+                entry = {
+                    "invocation_id": invocation.invocation_id,
+                    "tool_id": invocation.tool_id,
+                    "session_id": invocation.session_id,
+                    "turn_id": invocation.turn_id,
+                    "started_at": invocation.started_at.isoformat(),
+                    "finished_at": invocation.finished_at.isoformat(),
+                    "status": invocation.status,
+                    "confidence": result.confidence,
+                    "summary": result.summary
+                }
+                f.write(json.dumps(entry, ensure_ascii=False) + "\n")
+        except Exception:
+            pass # Fail-silent for logging
 
     def _validate_plugin_boundary(self, plugin: CognitiveToolSpec) -> None:
         if plugin.status != PluginLifecycleStatus.ACTIVE:

@@ -113,7 +113,12 @@ class WhatShouldIDoNowPlugin(LogicalCognitiveToolSpec):
 - 任何其他额外顶层键
 
 `objective_profile` 必须包含：
-- `current_primary_objective`: str
+- `current_mission`: str (核心使命)
+- `primary_objectives`: list[str] (主目标列表)
+- `secondary_objectives`: list[str] (次目标列表)
+- `completion_conditions`: list[str] (完成条件)
+- `pause_conditions`: list[str] (暂停条件)
+- `escalation_conditions`: list[str] (升级/求助条件)
 - `current_phase_tasks`: list[str]
 - `priority_order`: list[str]
 
@@ -125,9 +130,14 @@ class WhatShouldIDoNowPlugin(LogicalCognitiveToolSpec):
 输出示例：
 {{
   "objective_profile": {{
-    "current_primary_objective": "verify live nine-question chain end-to-end",
+    "current_mission": "verify live nine-question chain end-to-end",
+    "primary_objectives": ["repair runtime contract drift", "validate Phase 2 evolution"],
+    "secondary_objectives": ["optimize prompt performance"],
+    "completion_conditions": ["all 16 tests pass"],
+    "pause_conditions": ["unhandled model timeout"],
+    "escalation_conditions": ["persistent contract mismatch after 3 retries"],
     "current_phase_tasks": ["inspect current failure point", "repair runtime contract drift"],
-    "priority_order": ["repair contract drift", "rerun live validation"]
+    "priority_order": ["repair contract drift", "validate Phase 2 evolution"]
   }},
   "task_queue": {{
     "next_self_tasks": [{{"task_id": "repair-q8", "title": "repair Q8 contract drift"}}],

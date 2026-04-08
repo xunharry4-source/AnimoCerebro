@@ -15,8 +15,8 @@ from zentex.cognition.social_mind import InteractionMindEngine
 from zentex.common.plugin_registry import AbstractPluginRegistry
 from zentex.core.model_provider_spec import ModelProviderSpec
 from zentex.core.plugin_base import BasePluginSpec, PluginLifecycleStatus
-from zentex.memory.consolidation import ConsolidationEngine
-from zentex.memory.enhanced import EnhancedMemoryService
+from zentex.memory import ConsolidationEngine
+from zentex.memory import EnhancedMemoryService
 from zentex.mcp.adapter import McpAdapterPlugin
 from zentex.mcp.service import McpIntegrationService
 from zentex.runtime.cognitive_tools.registry import CognitiveToolRegistry

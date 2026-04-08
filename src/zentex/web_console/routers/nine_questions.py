@@ -10,8 +10,10 @@ import tempfile
 from time import perf_counter
 from uuid import uuid4
 
+from typing import Any, Dict, List, Optional
 from fastapi import APIRouter, HTTPException
 from fastapi import Request
+from fastapi.params import Depends # Added missing Depends
 from pydantic import BaseModel
 
 from zentex.common.plugin_registry import PluginNotBoundError
@@ -1872,6 +1874,15 @@ def _build_trace_detail(store: BrainTranscriptStore, trace_id: str) -> ModelProv
     )
 
 
+@router.get("/nine-questions/objectives")
+async def get_evolution_objectives(request: Request):
+    runtime: BrainRuntime = get_runtime(request)
+    session: BrainSession | None = runtime.active_session
+    if not session:
+        raise HTTPException(status_code=404, detail="No active session")
+    return getattr(session, "active_evolution_result", {})
+
+
 @router.get("/nine-questions/latest-report", response_model=NineQuestionsReportPayload)
 async def get_latest_nine_questions_report(request: Request):
     runtime: BrainRuntime = get_runtime(request)
@@ -1886,6 +1897,7 @@ async def get_latest_nine_questions_report(request: Request):
         state = getattr(runtime, "nine_question_state", None)
     if not isinstance(state, NineQuestionState):
         raise HTTPException(status_code=503, detail="NineQuestionState is not attached to the runtime.")
+
 
     final_questions: list[NineQuestionReportItem] = []
     for i in range(1, 10):

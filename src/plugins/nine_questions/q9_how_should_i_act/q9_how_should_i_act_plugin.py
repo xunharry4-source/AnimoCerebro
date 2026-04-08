@@ -33,31 +33,45 @@ from zentex.core.plugin_family import PostureSpec
 logger = logging.getLogger(__name__)
 
 
-class EvaluationStyle(str, Enum):
-    EVIDENCE_FIRST = "evidence_first"
-    BALANCED = "balanced"
-    FAST_FAIL = "fast_fail"
-
-
-class RiskTolerance(str, Enum):
-    ZERO_TOLERANCE = "zero_tolerance"
-    LOW = "low"
-    MEDIUM = "medium"
-    HIGH = "high"
-
-
-class ActionPostureProfile(BaseModel):
+class EvaluationProfile(BaseModel):
     """
-    Q9 Result: Action Posture and Execution Style.
-    Sets the tone for the G31A Execution Controller.
+    Q9 Result: Evaluation Standards.
+    Derived from Q3/Q4/Q7.
     """
     model_config = ConfigDict(extra="forbid", frozen=True)
 
-    evaluation_style: EvaluationStyle = Field(..., description="The logic/evidence threshold for actions.")
-    risk_tolerance: RiskTolerance = Field(..., description="The current risk envelope.")
-    action_rhythm: str = Field(..., description="Instructions on execution pacing and feedback.")
-    confirmation_strategy: str = Field(..., description="The human-in-the-loop requirement strategy.")
-    evolution_direction: str = Field(..., description="What to focus on learning during this action.")
+    role_context: str = Field(..., description="Current role context.")
+    resource_context: str = Field(..., description="Current resource status summary.")
+    risk_level: str = Field(..., description="Overall risk level.")
+    evaluation_weights: Dict[str, float] = Field(..., description="Weights for accuracy/speed/risk_control/creativity/continuity.")
+    conservative_mode_triggered: bool = Field(default=False)
+    evaluation_style: str = Field(..., description="logic/evidence threshold.")
+
+
+class EvolutionProfile(BaseModel):
+    """
+    Q9 Result: Evolution boundaries.
+    """
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    allowed_directions: List[str] = Field(default_factory=list)
+    risk_threshold: float = Field(default=0.1)
+    forbidden_directions: List[str] = Field(default_factory=list)
+    validation_requirements: List[str] = Field(default_factory=list)
+
+
+class EscalationProfile(BaseModel):
+    """
+    Q9 Result: Escalation and Reconfirm rules.
+    """
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    pause_conditions: List[str] = Field(default_factory=list)
+    help_request_conditions: List[str] = Field(default_factory=list)
+    confirmation_required_conditions: List[str] = Field(default_factory=list)
+    revisit_conditions: List[str] = Field(default_factory=list)
+    rollback_conditions: List[str] = Field(default_factory=list)
+
 
 
 class HowShouldIActPlugin(LogicalCognitiveToolSpec):
@@ -126,32 +140,46 @@ class HowShouldIActPlugin(LogicalCognitiveToolSpec):
 {posture_catalog}
 
 ### 任务
-生成严格 JSON，且顶层不要再包裹任何额外对象。
-只能输出以下 5 个键：
-- `evaluation_style`: one of `evidence_first`, `balanced`, `fast_fail`
-- `risk_tolerance`: one of `zero_tolerance`, `low`, `medium`, `high`
-- `action_rhythm`: string
-- `confirmation_strategy`: string
-- `evolution_direction`: string
-
-禁止输出以下风格化说明字段：
-- `posture_id`
-- `active_postures`
-- `core_tone`
-- `linguistic_style`
-- `operational_intensity`
-- `risk_appetite`
-- `interaction_protocol`
-- `posture_justification`
-- `style_constraints`
+只有输出以下 3 个对象：
+- `evaluation_profile`:
+    - `role_context`: str
+    - `resource_context`: str
+    - `risk_level`: str
+    - `evaluation_weights`: dict (keys: accuracy, speed, risk_control, creativity, continuity)
+    - `conservative_mode_triggered`: bool
+    - `evaluation_style`: str
+- `evolution_profile`:
+    - `allowed_directions`: list[str]
+    - `risk_threshold`: float
+    - `forbidden_directions`: list[str]
+    - `validation_requirements`: list[str]
+- `escalation_profile`:
+    - `pause_conditions`: list[str]
+    - `help_request_conditions`: list[str]
+    - `confirmation_required_conditions`: list[str]
+    - `revisit_conditions`: list[str]
+    - `rollback_conditions`: list[str]
 
 输出示例：
 {{
-  "evaluation_style": "evidence_first",
-  "risk_tolerance": "low",
-  "action_rhythm": "bounded incremental verification",
-  "confirmation_strategy": "require human confirmation before write actions",
-  "evolution_direction": "improve runtime binding and contract consistency"
+  "evaluation_profile": {{
+    "role_context": "security auditor",
+    "resource_context": "limited time, high compute availability",
+    "risk_level": "medium",
+    "evaluation_weights": {{"accuracy": 0.4, "speed": 0.1, "risk_control": 0.3, "creativity": 0.1, "continuity": 0.1}},
+    "conservative_mode_triggered": true,
+    "evaluation_style": "evidence_first"
+  }},
+  "evolution_profile": {{
+    "allowed_directions": ["optimize audit logic", "expand plugin binding"],
+    "risk_threshold": 0.05,
+    "forbidden_directions": ["bypass auth check"],
+    "validation_requirements": ["unit testing required"]
+  }},
+  "escalation_profile": {{
+    "pause_conditions": ["detected unauthorized modification"],
+    "confirmation_required_conditions": ["applying system-wide patches"]
+  }}
 }}
 """
 
@@ -198,7 +226,9 @@ class HowShouldIActPlugin(LogicalCognitiveToolSpec):
             )
             elapsed_ms = int((perf_counter() - started) * 1000)
 
-            profile = ActionPostureProfile.model_validate(result_raw)
+            eval_prof = EvaluationProfile.model_validate(result_raw.get("evaluation_profile", {}))
+            evol_prof = EvolutionProfile.model_validate(result_raw.get("evolution_profile", {}))
+            esc_prof = EscalationProfile.model_validate(result_raw.get("escalation_profile", {}))
 
             record_model_completed(
                 transcript_store,
@@ -211,7 +241,7 @@ class HowShouldIActPlugin(LogicalCognitiveToolSpec):
                     "decision_id": decision_id,
                     "question_ref": "我应该如何行动",
                     "caller_context": caller_context.model_dump(mode="json"),
-                    "result": profile.model_dump(mode="json"),
+                    "result": result_raw,
                     "raw_response": json_safe_payload(getattr(provider, "last_raw_response", None)),
                     "token_usage": json_safe_payload(getattr(provider, "last_token_usage", None)),
                     "model": json_safe_payload(getattr(provider, "last_model_name", None)),
@@ -219,7 +249,11 @@ class HowShouldIActPlugin(LogicalCognitiveToolSpec):
                 },
             )
 
-            return profile.model_dump(mode="json")
+            return {
+                "evaluation_profile": eval_prof.model_dump(mode="json"),
+                "evolution_profile": evol_prof.model_dump(mode="json"),
+                "escalation_profile": esc_prof.model_dump(mode="json"),
+            }
 
         except Exception as exc:
             record_model_failed(
@@ -252,7 +286,9 @@ class HowShouldIActPlugin(LogicalCognitiveToolSpec):
                 }
             ],
             context_updates={
-                "q9_action_posture_profile": result,
+                "q9_evaluation_profile": result.get("evaluation_profile"),
+                "q9_evolution_profile": result.get("evolution_profile"),
+                "q9_escalation_profile": result.get("escalation_profile"),
             },
             confidence=0.8,
         )

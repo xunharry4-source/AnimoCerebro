@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from pathlib import Path
+import os
 import tempfile
 
 from fastapi import FastAPI, Request
@@ -25,7 +26,8 @@ from zentex.runtime.cognitive_tools.registry import CognitiveToolRegistry
 from zentex.runtime.runtime import BrainRuntime
 from zentex.runtime.session import BrainSession
 from zentex.tasks.service import TaskManagementService
-from zentex.memory.enhanced import EnhancedMemoryService
+from zentex.memory import EnhancedMemoryService, EpisodeGraphMemoryAdapter
+from zentex.memory import KuzuGraphMemoryClient
 from zentex.upgrade.evidence import UpgradeEvidenceService
 from zentex.upgrade.execution import UpgradeExecutionService
 from zentex.upgrade.ledger import UpgradeAuditStore, UpgradeMemoryStore
@@ -172,6 +174,16 @@ def create_web_console_app(
         app.state.plugin_feature_catalog = plugin_feature_catalog
     if runtime is not None:
         app.state.runtime = runtime
+    kuzu_adapter = None
+    cluster_mode = os.environ.get("ZENTEX_CLUSTER_MODE", "false").lower() == "true"
+    if not cluster_mode:
+        try:
+            kuzu_client = KuzuGraphMemoryClient(db_path=".zentex/kuzu_db")
+            kuzu_adapter = EpisodeGraphMemoryAdapter(graph_client=kuzu_client)
+        except Exception:
+            pass
+
+
     resolved_enhanced_memory_service = (
         enhanced_memory_service
         if isinstance(enhanced_memory_service, EnhancedMemoryService)
@@ -184,6 +196,8 @@ def create_web_console_app(
                 episodic_store_path=default_runtime_root / "enhanced_episodic.jsonl",
                 management_store_path=default_runtime_root / "enhanced_management.json",
                 audit_store_path=default_runtime_root / "enhanced_memory_audit.jsonl",
+                episodic_sink=kuzu_adapter,
+                episodic_recall_client=kuzu_adapter,
             )
         )
     )

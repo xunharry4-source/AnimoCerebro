@@ -105,14 +105,18 @@ try:
         OutcomeComparison,
         ScenarioBranch,
     )
-    from zentex.memory.consolidation import (
+    from zentex.memory import (
         ConsolidationCycle,
         ConsolidationEngine,
         ForgettableNoiseRule,
         MemoryPromotionCandidate,
         PatternStabilityScore,
     )
-    from zentex.memory.enhanced import EnhancedMemoryService
+    from zentex.memory import EnhancedMemoryService, EpisodeGraphMemoryAdapter
+    from zentex.memory import KuzuGraphMemoryClient
+    from zentex.runtime.working_memory import WorkingMemoryController, FocusBudget
+    from zentex.runtime.self_model import LivingSelfModelEngine
+    from zentex.runtime.metacognition import MetaCognitionController
     from zentex.runtime.temporal import CognitiveTemporalEngine
     from zentex.runtime.transcript import (
         BrainTranscriptEntry,
@@ -539,17 +543,39 @@ def _seed_runtime(
             completed_at=datetime.now(timezone.utc),
         )
     )
+    kuzu_adapter = None
+    cluster_mode = os.environ.get("ZENTEX_CLUSTER_MODE", "false").lower() == "true"
+    if not cluster_mode:
+        try:
+            kuzu_client = KuzuGraphMemoryClient(db_path=".zentex/kuzu_db")
+            kuzu_adapter = EpisodeGraphMemoryAdapter(graph_client=kuzu_client)
+        except Exception as e:
+            logger.warning(f"Failed to initialize KuzuDB graph client: {e}")
+            kuzu_adapter = None
+
+
     enhanced_memory_service = EnhancedMemoryService(
         semantic_store_path=Path(".zentex/runtime/enhanced_semantic.jsonl"),
         procedural_store_path=Path(".zentex/runtime/enhanced_procedural.jsonl"),
         episodic_store_path=Path(".zentex/runtime/enhanced_episodic.jsonl"),
         management_store_path=Path(".zentex/runtime/enhanced_management.json"),
         audit_store_path=Path(".zentex/runtime/enhanced_memory_audit.jsonl"),
+        episodic_sink=kuzu_adapter,
+        episodic_recall_client=kuzu_adapter,
     )
     runtime = BrainRuntime(
         default_workspace=".",
         transcript_store=transcript_store,
         runtime_memory_store=enhanced_memory_service,
+        working_memory_controller=WorkingMemoryController(
+            budget=FocusBudget(
+                max_active_focus=3,
+                max_suspended_focus=5,
+                overflow_policy="drop_oldest"
+            )
+        ),
+        living_self_model_engine=LivingSelfModelEngine(),
+        metacognition_controller=MetaCognitionController(),
         temporal_engine=temporal_engine,
         conflict_engine=conflict_engine,
         simulation_engine=simulation_engine,

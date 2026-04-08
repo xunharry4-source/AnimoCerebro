@@ -11,6 +11,9 @@ from zentex.tasks.errors import TaskStateError
 from zentex.tasks.registry import TaskRegistry
 from zentex.tasks.persistence import TaskPersistence
 from zentex.runtime.transcript import BrainTranscriptEntryType
+from zentex.common.state import SharedStateStore
+from zentex.common.locking import get_lock_for_resource
+from zentex.common.coordination import LeaderElection
 
 logger = logging.getLogger(__name__)
 
@@ -33,6 +36,17 @@ class TaskManagementService:
         self.transcript_store = transcript_store
         self.persistence = persistence
         self.auto_save = auto_save
+
+        # Cluster-friendly shared state pools
+        self._shared_tasks = SharedStateStore("tasks")
+        self._shared_idempotency = SharedStateStore("tasks:idempotency")
+        self._shared_interventions = SharedStateStore("tasks:interventions")
+        self._shared_suspensions = SharedStateStore("tasks:suspensions")
+        
+        self._auto_resume_leader = LeaderElection("task-auto-resume", ttl_ms=10000)
+
+        # Local cache for object references (only for this process)
+        self._tasks: Dict[str, ZentexTask] = {}
         
         if decomposer is None:
             if not allow_rule_based_test_stub:
@@ -42,15 +56,6 @@ class TaskManagementService:
                 )
             decomposer = TaskDecomposerPlugin()
         self.decomposer = decomposer
-        
-        self._tasks: Dict[str, ZentexTask] = {}
-        self._idempotency_log: Dict[str, str] = {} # key -> task_id
-        self._intervention_receipts: Dict[str, Dict[str, Any]] = {}
-        self._suspended_tasks: Dict[str, SuspendedTask] = {} # task_id -> suspension info
-        
-        # Load existing data if persistence is available
-        if self.persistence:
-            self._load_from_persistence()
 
     def list_tasks(self, 
                  status: Optional[TaskStatus] = None,
@@ -77,34 +82,44 @@ class TaskManagementService:
         return tasks
 
     def get_task(self, task_id: str) -> Optional[ZentexTask]:
-        return self._tasks.get(task_id)
+        # Favor shared state as source of truth
+        return self._shared_tasks.get(task_id, ZentexTask)
 
     async def create_task(self, payload: Dict[str, Any]) -> ZentexTask:
-        # Check idempotency
+        # Check idempotency (Shared)
         key = payload.get("idempotency_key")
-        if key and key in self._idempotency_log:
-            logger.warning(f"Duplicate task submission with idempotency_key: {key}")
-            return self._tasks[self._idempotency_log[key]]
-
-        task_id = str(uuid4())[:8]
-        # Validating mandatory fields via ZentexTask model
-        task = ZentexTask(
-            task_id=task_id,
-            **payload
-        )
-        
-        self._tasks[task_id] = task
         if key:
-            self._idempotency_log[key] = task_id
+            existing_id = self._shared_idempotency.get(key)
+            if existing_id:
+                logger.warning(f"Duplicate task submission with idempotency_key: {key}")
+                return self.get_task(existing_id)
+
+        # Distributed lock to prevent race during creation
+        lock_id = key if key else f"new-task-{uuid4()}"
+        with get_lock_for_resource(f"task-create:{lock_id}"):
+            # Re-check idempotency inside lock
+            if key:
+                existing_id = self._shared_idempotency.get(key)
+                if existing_id:
+                    return self.get_task(existing_id)
+
+            task_id = str(uuid4())[:8]
+            task = ZentexTask(
+                task_id=task_id,
+                **payload
+            )
             
-        self._record_audit(task_id, "TASK_CREATED", {"payload": payload})
-        self._save_to_persistence()
-        
-        # Auto-decompose missions
-        if task.task_type == TaskType.MISSION:
-            asyncio.create_task(self.decompose_and_dispatch_mission(task))
+            self._shared_tasks.set(task_id, task)
+            if key:
+                self._shared_idempotency.set(key, task_id)
+                
+            self._record_audit(task_id, "TASK_CREATED", {"payload": payload})
             
-        return task
+            # Auto-decompose missions
+            if task.task_type == TaskType.MISSION:
+                asyncio.create_task(self.decompose_and_dispatch_mission(task))
+                
+            return task
 
     async def decompose_and_dispatch_mission(self, mission_task: ZentexTask):
         """
@@ -266,7 +281,7 @@ class TaskManagementService:
         original_status = task.status
         task.update_status(TaskStatus.SUSPENDED, remarks=f"Suspended: {reason}")
         
-        # Create suspension record
+        # Create suspension record (Shared)
         suspended_task = SuspendedTask(
             task_id=task_id,
             original_status=original_status,
@@ -276,13 +291,14 @@ class TaskManagementService:
             auto_resume_at=auto_resume_at
         )
         
-        self._suspended_tasks[task_id] = suspended_task
+        self._shared_suspensions.set(task_id, suspended_task)
+        self._shared_tasks.set(task_id, task) # Update task status in shared store
+        
         self._record_audit(task_id, "TASK_SUSPENDED", {
             "reason": reason,
             "recovery_conditions": recovery_conditions,
             "auto_resume_at": auto_resume_at.isoformat() if auto_resume_at else None
         })
-        self._save_to_persistence()
         
         return task
 
@@ -295,7 +311,7 @@ class TaskManagementService:
         if task.status != TaskStatus.SUSPENDED:
             raise TaskStateError(f"Task {task_id} is not suspended")
             
-        suspension_info = self._suspended_tasks.get(task_id)
+        suspension_info = self._shared_suspensions.get(task_id, SuspendedTask)
         if not suspension_info:
             raise KeyError(f"No suspension info found for task {task_id}")
             
@@ -304,41 +320,44 @@ class TaskManagementService:
                           remarks=remarks or f"Resumed from suspension: {suspension_info.suspension_reason}")
         
         # Clean up suspension record
-        del self._suspended_tasks[task_id]
+        self._shared_suspensions.delete(task_id)
+        self._shared_tasks.set(task_id, task)
         
         self._record_audit(task_id, "TASK_RESUMED", {
             "original_status": suspension_info.original_status.value,
             "suspension_reason": suspension_info.suspension_reason,
             "remarks": remarks
         })
-        self._save_to_persistence()
         
         return task
 
     def get_suspended_task(self, task_id: str) -> Optional[SuspendedTask]:
         """Get suspension information for a task"""
-        return self._suspended_tasks.get(task_id)
+        return self._shared_suspensions.get(task_id, SuspendedTask)
 
     def list_suspended_tasks(self) -> List[SuspendedTask]:
         """List all suspended tasks"""
-        return list(self._suspended_tasks.values())
+        all_suspensions = self._shared_suspensions.list_all(SuspendedTask)
+        return list(all_suspensions.values())
 
     async def check_auto_resume_tasks(self) -> List[ZentexTask]:
         """Check and auto-resume tasks whose auto_resume_at time has arrived"""
+        if not self._auto_resume_leader.try_acquire():
+            return [] # Only the leader node performs auto-resume
+
         now = datetime.now(timezone.utc)
         resumed_tasks = []
         
-        for task_id, suspension_info in list(self._suspended_tasks.items()):
+        all_suspensions = self._shared_suspensions.list_all(SuspendedTask)
+        for task_id, suspension_info in all_suspensions.items():
             if suspension_info.auto_resume_at and suspension_info.auto_resume_at <= now:
                 try:
-                    resumed_task = self.resume_task(task_id, "Auto-resumed by system")
+                    resumed_task = self.resume_task(task_id, "Auto-resumed by system leader")
                     resumed_tasks.append(resumed_task)
                     logger.info(f"Auto-resumed task {task_id}")
                 except Exception as e:
                     logger.error(f"Failed to auto-resume task {task_id}: {e}")
-                    
-        if resumed_tasks:
-            self._save_to_persistence()
+        
         return resumed_tasks
 
     def bulk_update_status(self, 

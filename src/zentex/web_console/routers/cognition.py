@@ -7,7 +7,7 @@ from fastapi import Depends
 
 from zentex.cognition.simulation import CounterfactualSimulationEngine
 from zentex.cognition.social_mind import InteractionMindEngine
-from zentex.memory.consolidation import ConsolidationEngine
+from zentex.memory import ConsolidationEngine
 from zentex.runtime.temporal import CognitiveTemporalEngine
 from zentex.safety.conflict_engine import CognitiveConflictEngine
 from zentex.web_console.contracts.runtime import (
@@ -100,3 +100,12 @@ def get_consolidation_cycles(
     return ConsolidationCyclesPayload(
         cycles=[cycle.model_dump(mode="json") if hasattr(cycle, "model_dump") else {} for cycle in cycles]
     )
+
+
+@router.post("/memory/consolidation/trigger")
+def trigger_consolidation(
+    consolidation_engine: Annotated[ConsolidationEngine, Depends(get_consolidation_engine)],
+) -> dict[str, str]:
+    """Manual trigger for memory consolidation via Web Console (Sub-function 59 gap)."""
+    cycle_id = consolidation_engine.submit_cycle(trigger_reason="manual_web_console")
+    return {"status": "triggered", "cycle_id": cycle_id}

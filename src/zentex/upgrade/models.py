@@ -20,6 +20,16 @@ from zentex.upgrade.plugin.models import (
     PluginUpgradeCandidate,
     PluginUpgradeRequest,
 )
+from zentex.upgrade.base_models import (
+    UpgradeTargetKind,
+    SelfUpgradeProposal,
+    CandidatePatch,
+    VerificationBundle,
+    PromotionDecision,
+)
+from typing import List, Dict, Any, Optional
+from uuid import uuid4
+from datetime import datetime, UTC
 
 
 class UpgradeDecisionAction(str, Enum):

@@ -42,3 +42,4 @@ class BrainTurnResult:
     trace_id: Optional[str] = None
     phase_trace_ids: Dict[str, str] = field(default_factory=dict)
     nine_question_state: Optional[Any] = None
+    evolution_result: Optional[Dict[str, Any]] = None

@@ -23,14 +23,18 @@ def build_learning_plan() -> LearningPlanResponse:
     directions: List[LearningDirectionPlanItem] = []
     for d in LearningDirection:
         meta = describe_direction(d)
+        
+        fallback_title = meta.get("title_zh") or meta.get("title_en") or d.name
+        fallback_desc = meta.get("description") or "暂无可用描述 / No description available"
+
         directions.append(
             LearningDirectionPlanItem(
                 id=d.value,
-                architecture_ref=meta["ref"],
-                title_zh=meta["title_zh"],
-                title_en=meta["title_en"],
-                body_zh=meta["body_zh"],
-                body_en=meta["body_en"],
+                architecture_ref=meta.get("ref", "UNKNOWN"),
+                title_zh=meta.get("title_zh", fallback_title),
+                title_en=meta.get("title_en", fallback_title),
+                body_zh=meta.get("body_zh", fallback_desc),
+                body_en=meta.get("body_en", fallback_desc),
             )
         )
     redlines = LearningRedlinesSummary(

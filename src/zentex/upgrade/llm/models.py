@@ -27,6 +27,10 @@ class LLMUpgradeRequest(BaseModel):
     change_scope: UpgradeChangeScope = UpgradeChangeScope.MINOR
     objective_summary: str = Field(min_length=1)
     validation_commands: list[str] = Field(default_factory=list)
+    # DSPy primitives (Function 59 gap)
+    dspy_signature: str | None = None
+    dspy_module: str | None = None
+    dspy_metric: str | None = None
 
 
 class LLMUpgradeExecutionPlan(BaseModel):
@@ -40,6 +44,9 @@ class LLMUpgradeExecutionPlan(BaseModel):
     dataset_refs: list[str] = Field(default_factory=list)
     validation_commands: list[str] = Field(default_factory=list)
     required_artifacts: list[str] = Field(default_factory=list)
+    # DSPy runtime options
+    dspy_signature: str | None = None
+    dspy_metric: str | None = None
 
 
 class LLMUpgradeCandidate(BaseModel):
@@ -54,3 +61,6 @@ class LLMUpgradeCandidate(BaseModel):
     objective_summary: str = Field(min_length=1)
     execution_plan: LLMUpgradeExecutionPlan
     release_gate: list[str] = Field(default_factory=list)
+    # Metadata for registry (Function 59 gap)
+    dspy_signature: str | None = None
+    dspy_module: str | None = None

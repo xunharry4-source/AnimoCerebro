@@ -1,13 +1,66 @@
 from __future__ import annotations
 
 """
-Memory domain exports / 记忆功能域导出。
+Zentex Memory Engine - Common Interface / 统一对外接口
 
-该包只承载长期记忆、离线巩固、遗忘与沉淀机制。运行时调度逻辑不得继续
-堆在这里之外的 `runtime/` 目录中。
+This module serves as the primary entry point for the Zentex memory domain. 
+Internally reorganized into 6 sub-domains (storage, query, consolidation, security, management, plugins).
 """
 
-from zentex.memory.consolidation import (
+# ── 1. Management & Coordination ──────────────────────────────────────────
+from zentex.memory.management.classification import (
+    EmotionalValence,
+    MemoryTier,
+    MEMORY_WORTHY_EVENTS,
+    compute_content_hash,
+    tier_for_source,
+    valence_for_transcript_event,
+    valence_for_upgrade_outcome,
+)
+from zentex.memory.management.enhanced import (
+    EnhancedMemoryRecord,
+    EnhancedMemoryService,
+    EpisodeGraphMemoryAdapter,
+    ManagedEnhancedMemoryRecord,
+    MemoryAuditEvent,
+    MemoryManagementState,
+    MemoryRecallHit,
+)
+from zentex.memory.management.confidence import (
+    ConfidenceCalculator,
+    ConfidenceResult,
+    MemoryClarity,
+)
+from zentex.memory.management.versioning import (
+    MemoryVersion,
+    VersionBranch,
+    VersionChain,
+    VersionDiff,
+    VersionedMemoryStore,
+)
+from zentex.memory.management.portability import (
+    ContaminationEvent,
+    MemoryExporter,
+    MemoryImportError,
+    MemoryImporter,
+    MemoryPackage,
+    MemoryPackageManifest,
+    MemoryPackageRecord,
+)
+
+# ── 2. Query & Retrieval ──────────────────────────────────────────────────
+from zentex.memory.query.hybrid_retrieval import (
+    HybridRetrievalEngine,
+    QueryClassifier,
+    QueryType,
+    RetrievalResult,
+)
+from zentex.memory.query.deep_recall import DeepRecallEngine
+from zentex.memory.query.temporal import TemporalEngine
+
+# ── 3. Consolidation & Lifecycle ──────────────────────────────────────────
+from zentex.memory.consolidation.consolidation import (
+    ConsolidationEngine,
     ConsolidationCycle,
     ConsolidationPluginOutput,
     ConsolidationQueue,
@@ -18,33 +71,87 @@ from zentex.memory.consolidation import (
     MemoryPromotionCandidate,
     PatternStabilityScore,
     StaleWriteError,
-    ConsolidationEngine,
 )
-from zentex.memory.enhanced import (
-    EnhancedMemoryRecord,
-    EnhancedMemoryService,
-    ManagedEnhancedMemoryRecord,
-    MemoryAuditEvent,
-    MemoryManagementState,
-    MemoryRecallHit,
+from zentex.memory.consolidation.lifecycle import (
+    AccessRecord,
+    ConsolidationQualityReport,
+    LifecycleEvent,
+    MemoryAccessTracker,
+    MemoryDecayConfig,
+    MemoryLifecycleManager,
+)
+from zentex.memory.consolidation.bridge import (
+    ConsolidationToEnhancedBridge,
+    ConsolidationScheduler,
+)
+
+# ── 4. Security & Governance ──────────────────────────────────────────────
+from zentex.memory.security.encryption import (
+    EnterpriseEncryptionService,
+)
+from zentex.memory.security.quarantine import (
+    MemoryGate,
+    MemoryRejectedError,
+    QuarantineDecision,
+    QuarantinedMemoryStore,
+    StagedMemoryRecord,
+    build_default_gates,
+)
+from zentex.memory.security.consistency import (
+    ConsistencyAuditReport,
+    ConsistencyViolation,
+    CrossLayerConsistencyChecker,
+    ViolationType,
+)
+from zentex.memory.security.provenance import (
+    MemoryLineageGraph,
+    ProvenanceEdge,
+    ProvenanceNode,
+    ProvenanceNodeKind,
+    ProvenanceTracker,
+)
+
+# ── 5. Storage & Persistence ──────────────────────────────────────────────
+from zentex.memory.storage.storage_manager import (
+    HierarchicalMemoryStorage,
+    RotationPolicy,
+    StoragePartition,
+)
+from zentex.memory.storage.storage_format import MessagePackSerializer
+from zentex.memory.storage.compression import TieredCompressionService
+from zentex.memory.storage.inverted_index import MultiModalIndex
+from zentex.memory.storage.vector_search import VectorSearchEngine
+from zentex.memory.storage.kuzu_backend import KuzuGraphMemoryClient
+from zentex.memory.storage.structured import (
+    EntityRegistry,
+    EntityType,
+    MultimodalMemoryHint,
+    RelationshipType,
+    RuleBasedEntityExtractor,
+    TypedEntity,
+    TypedRelationship,
 )
 
 __all__ = [
-    "ConsolidationCycle",
-    "ConsolidationPluginOutput",
-    "ConsolidationQueue",
-    "ConsolidationTaskHandle",
-    "ConsolidationTaskRequest",
-    "ConsolidationTaskRejectedError",
-    "ForgettableNoiseRule",
-    "MemoryPromotionCandidate",
-    "PatternStabilityScore",
-    "StaleWriteError",
-    "ConsolidationEngine",
-    "EnhancedMemoryRecord",
-    "EnhancedMemoryService",
-    "ManagedEnhancedMemoryRecord",
-    "MemoryAuditEvent",
-    "MemoryManagementState",
-    "MemoryRecallHit",
+    # Management
+    "EnhancedMemoryRecord", "EnhancedMemoryService", "EpisodeGraphMemoryAdapter",
+    "ManagedEnhancedMemoryRecord", "MemoryAuditEvent", "MemoryManagementState",
+    "MemoryRecallHit", "MemoryTier", "EmotionalValence", "ConfidenceCalculator",
+    "MemoryVersion", "MemoryPackage",
+    
+    # Query
+    "HybridRetrievalEngine", "QueryClassifier", "RetrievalResult",
+    "DeepRecallEngine", "TemporalTimelineEngine",
+
+    # Consolidation
+    "ConsolidationEngine", "ConsolidationCycle", "MemoryLifecycleManager",
+    "ConsolidationToEnhancedBridge",
+
+    # Security
+    "EnterpriseEncryptionService", "QuarantinedMemoryStore", "ProvenanceTracker",
+    "CrossLayerConsistencyChecker",
+
+    # Storage
+    "HierarchicalMemoryStorage", "KuzuGraphMemoryClient", "MessagePackSerializer",
+    "TieredCompressionService", "MultiModalIndex", "VectorSearchEngine",
 ]

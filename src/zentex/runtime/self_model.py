@@ -44,11 +44,21 @@ class CognitiveStateProfile:
 
 
 @dataclass(frozen=True)
+class EmotionLikeSignal:
+    signal_id: str
+    signal_type: str  # tension, alert, suspicion, stable, expectation
+    intensity: float
+    source_context: str
+
+
+@dataclass(frozen=True)
 class RecentWeaknessPattern:
     pattern_id: str
     pattern_type: str
     frequency: int
     severity: str
+    evidence_refs: List[str]
+    last_seen_at: float
 
 
 @dataclass(frozen=True)
@@ -56,6 +66,9 @@ class ConfidenceDriftIndicator:
     statement_confidence: float
     evidence_support: float
     drift_score: float
+    triggered_alert: bool
+    created_at: float
+    expires_at: float
 
 
 @dataclass(frozen=True)
@@ -64,6 +77,10 @@ class LivingSelfModel:
     recent_strengths: List[str]
     recent_weaknesses: List[RecentWeaknessPattern]
     current_cognitive_load: str
+    identity_anchor_ref: Optional[str]
+    current_risk_tolerance: str
+    current_uncertainty_tolerance: str
+    current_confidence_style: str
 
 
 class LivingSelfModelEngine:
@@ -86,22 +103,14 @@ class LivingSelfModelEngine:
     - package switches must support rollback and auditable revocation
     """
 
-    def update_self_model(
+    def detect_weakness_pattern(
         self,
-        *,
-        current_state: Any,
-        recent_strengths: List[str] | None = None,
-        recent_weaknesses: List[RecentWeaknessPattern] | None = None,
-        current_cognitive_load: Optional[str] = None,
-        failure_signals: Any = None,
-        confidence_signals: Any = None,
-    ) -> Tuple[LivingSelfModel, Optional[ConfidenceDriftIndicator], Dict[str, Any]]:
-        state_profile = self._coerce_state_profile(current_state)
-        weaknesses = list(recent_weaknesses or [])
-        strengths = list(recent_strengths or [])
-        recommendations: Dict[str, Any] = {}
-        drift_indicator: Optional[ConfidenceDriftIndicator] = None
-
+        weaknesses: List[RecentWeaknessPattern],
+        failure_signals: Any,
+        state_profile: CognitiveStateProfile,
+        recommendations: Dict[str, Any]
+    ) -> Tuple[List[RecentWeaknessPattern], CognitiveStateProfile]:
+        import time
         failure_count = self._extract_failure_count(failure_signals)
         if failure_count >= 2:
             state_profile = CognitiveStateProfile(
@@ -117,10 +126,21 @@ class LivingSelfModelEngine:
                     pattern_type="continuous_failures",
                     frequency=failure_count,
                     severity="high",
+                    evidence_refs=[],
+                    last_seen_at=time.time()
                 )
             )
             recommendations["risk_tolerance"] = "lower"
+        return weaknesses, state_profile
 
+    def check_confidence_drift(
+        self,
+        weaknesses: List[RecentWeaknessPattern],
+        confidence_signals: Any,
+        state_profile: CognitiveStateProfile,
+        recommendations: Dict[str, Any]
+    ) -> Tuple[Optional[ConfidenceDriftIndicator], List[RecentWeaknessPattern], CognitiveStateProfile]:
+        import time
         drift_indicator = self._detect_confidence_drift(confidence_signals)
         if drift_indicator is not None:
             state_profile = CognitiveStateProfile(
@@ -136,22 +156,75 @@ class LivingSelfModelEngine:
                     pattern_type="overconfidence",
                     frequency=1,
                     severity="high" if drift_indicator.drift_score >= 0.5 else "medium",
+                    evidence_refs=[],
+                    last_seen_at=time.time()
                 )
             )
             recommendations["expression_posture"] = "more_conservative"
+        return drift_indicator, weaknesses, state_profile
 
+    def apply_load_adjustment(
+        self,
+        current_cognitive_load: Optional[str],
+        state_profile: CognitiveStateProfile,
+        recommendations: Dict[str, Any]
+    ) -> str:
         effective_load = current_cognitive_load or state_profile.load_level
         if effective_load == "high":
             recommendations["attention_budget_cap"] = {
                 "suggested_max_active_focus": 2,
                 "reason": "high_cognitive_load",
             }
+        return effective_load
+
+    def load_identity_package(self, package: Any) -> None:
+        """Integration boundary for Identity Package Plugins."""
+        pass
+
+    def evaluate_think_loop_signals(self, signals: Any) -> None:
+        """Integration with ThinkLoop Phase 9."""
+        pass
+
+    def update_self_model(
+        self,
+        *,
+        current_state: Any,
+        recent_strengths: List[str] | None = None,
+        recent_weaknesses: List[RecentWeaknessPattern] | None = None,
+        current_cognitive_load: Optional[str] = None,
+        failure_signals: Any = None,
+        confidence_signals: Any = None,
+        identity_anchor_ref: Optional[str] = None,
+        current_risk_tolerance: str = "medium",
+        current_uncertainty_tolerance: str = "medium",
+        current_confidence_style: str = "balanced",
+    ) -> Tuple[LivingSelfModel, Optional[ConfidenceDriftIndicator], Dict[str, Any]]:
+        state_profile = self._coerce_state_profile(current_state)
+        weaknesses = list(recent_weaknesses or [])
+        strengths = list(recent_strengths or [])
+        recommendations: Dict[str, Any] = {}
+
+        weaknesses, state_profile = self.detect_weakness_pattern(
+            weaknesses, failure_signals, state_profile, recommendations
+        )
+        
+        drift_indicator, weaknesses, state_profile = self.check_confidence_drift(
+            weaknesses, confidence_signals, state_profile, recommendations
+        )
+
+        effective_load = self.apply_load_adjustment(
+            current_cognitive_load, state_profile, recommendations
+        )
 
         model = LivingSelfModel(
             current_state=state_profile,
             recent_strengths=strengths,
             recent_weaknesses=weaknesses,
             current_cognitive_load=effective_load,
+            identity_anchor_ref=identity_anchor_ref,
+            current_risk_tolerance=recommendations.get("risk_tolerance", current_risk_tolerance),
+            current_uncertainty_tolerance=current_uncertainty_tolerance,
+            current_confidence_style=current_confidence_style,
         )
         return model, drift_indicator, recommendations
 
@@ -165,11 +238,15 @@ class LivingSelfModelEngine:
         drift_score = max(0.0, statement_confidence - evidence_support)
 
         # High-confidence / low-evidence states are treated as confidence drift.
+        import time
         if statement_confidence >= 0.7 and evidence_support <= 0.4 and drift_score >= 0.25:
             return ConfidenceDriftIndicator(
                 statement_confidence=statement_confidence,
                 evidence_support=evidence_support,
                 drift_score=drift_score,
+                triggered_alert=True,
+                created_at=time.time(),
+                expires_at=time.time() + 3600
             )
         return None
 

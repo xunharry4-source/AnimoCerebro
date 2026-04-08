@@ -89,6 +89,8 @@ class ToolInvocationPlan:
     phase_order: List[str]
     fallback_plan: List[str]
     explanation: str
+    parallel_groups: List[List[str]] = field(default_factory=list)
+    serial_groups: List[List[str]] = field(default_factory=list)
 
 
 @dataclass(frozen=True)
@@ -138,13 +140,22 @@ class MetaCognitionController:
       auditable reasons for transcript projection
     """
 
+    def apply_subjective_weight_profile(self, profile: Any) -> None:
+        """Integration boundary for SubjectiveWeightProfile Plugins."""
+        pass
+
+    def retrieve_think_loop_context(self) -> Any:
+        """Integration boundary for ThinkLoop Phase 6 context."""
+        return None
+        
     def generate_decisions(
         self,
-        working_memory: Any,
-        living_self_model: Any,
+        working_memory: Any, # Allows WorkingMemoryFrame or dict dict coercion
+        living_self_model: Any, # Allows LivingSelfModel or dict coercion
         budget: Any,
         agenda: Any,
         tool_registry: Any,
+        nine_q_state: Any = None,
     ) -> Tuple[ReasoningModeDecision, ToolInvocationPlan, EscalationDecision]:
         """
         Generate the three internal control decisions for the current turn.
@@ -341,6 +352,8 @@ class MetaCognitionController:
             phase_order=phase_order,
             fallback_plan=fallback_plan,
             explanation=explanation,
+            parallel_groups=[[t] for t in selected_tools[:2]] if len(selected_tools) >= 2 else [],
+            serial_groups=[[t for t in selected_tools]],
         )
 
     def _build_escalation_decision(

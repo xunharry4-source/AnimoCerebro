@@ -13,7 +13,7 @@ from typing import Any, Dict, List
 
 from zentex.core.models import CognitiveToolSpec
 from zentex.core.plugin_base import PluginHealthStatus, PluginLifecycleStatus
-from zentex.memory.consolidation import (
+from zentex.memory import (
     ConsolidationPluginOutput,
     ForgettableNoiseRule,
     MemoryPromotionCandidate,

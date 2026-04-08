@@ -34,6 +34,9 @@ class AttentionItem:
     blocked: bool
     interruptible: bool
     resume_hint: Optional[str]
+    uncertainty: Optional[float] = 0.0
+    source_ref: Optional[str] = None
+    summary: Optional[str] = None
 
 
 @dataclass(frozen=True)
@@ -44,10 +47,20 @@ class FocusBudget:
 
 
 @dataclass(frozen=True)
+class AttentionShiftEvent:
+    event_id: str
+    previous_focus_id: Optional[str]
+    new_focus_id: str
+    shift_reason: str
+    timestamp_ms: int
+
+
+@dataclass(frozen=True)
 class WorkingMemoryFrame:
     frame_id: str
     active_focus_ids: List[str]
     suspended_focus_ids: List[str]
+    recently_considered_refs: List[str]
     attention_budget: FocusBudget
     context_summary: str
 
@@ -69,9 +82,14 @@ class WorkingMemoryController:
         self._items: Dict[str, AttentionItem] = {}
         self._active_focus_ids: List[str] = []
         self._suspended_focus_ids: List[str] = []
+        self._recently_considered_refs: List[str] = []
 
     def upsert_focus(self, item: AttentionItem) -> WorkingMemoryFrame:
         self._items[item.focus_id] = item
+        if item.source_ref and item.source_ref not in self._recently_considered_refs:
+            self._recently_considered_refs.append(item.source_ref)
+            if len(self._recently_considered_refs) > 100:
+                self._recently_considered_refs.pop(0)
         if item.focus_id in self._suspended_focus_ids:
             self._suspended_focus_ids.remove(item.focus_id)
         if item.focus_id in self._active_focus_ids:
@@ -107,6 +125,9 @@ class WorkingMemoryController:
                 blocked=item.blocked,
                 interruptible=item.interruptible,
                 resume_hint=resume_hint,
+                uncertainty=item.uncertainty,
+                source_ref=item.source_ref,
+                summary=item.summary,
             )
         self._suspend_item(focus_id)
         return self.get_frame()
@@ -118,11 +139,31 @@ class WorkingMemoryController:
             self._suspended_focus_ids.remove(focus_id)
         return self.upsert_focus(self._items[focus_id])
 
+    def emit_attention_shift(self, previous_id: Optional[str], new_id: str, reason: str) -> AttentionShiftEvent:
+        import time
+        return AttentionShiftEvent(
+            event_id=str(uuid4()),
+            previous_focus_id=previous_id,
+            new_focus_id=new_id,
+            shift_reason=reason,
+            timestamp_ms=int(time.time() * 1000)
+        )
+
+    def persist_to_store(self, store_adapter: Any) -> None:
+        """Integration boundary for BrainSession/BrainTranscriptStore persistence."""
+        if hasattr(store_adapter, "save_frame"):
+            store_adapter.save_frame(self.get_frame())
+
+    def evaluate_thinkloop(self, signals: Any) -> None:
+        """Integration with ThinkLoop Phase 3 & 4."""
+        pass
+
     def get_frame(self) -> WorkingMemoryFrame:
         return WorkingMemoryFrame(
             frame_id=str(uuid4()),
             active_focus_ids=list(self._active_focus_ids),
             suspended_focus_ids=list(self._suspended_focus_ids),
+            recently_considered_refs=list(self._recently_considered_refs),
             attention_budget=self.budget,
             context_summary=self._build_context_summary(),
         )
@@ -151,6 +192,9 @@ class WorkingMemoryController:
             blocked=candidate.blocked,
             interruptible=candidate.interruptible,
             resume_hint=resume_hint,
+            uncertainty=candidate.uncertainty,
+            source_ref=candidate.source_ref,
+            summary=candidate.summary,
         )
         self._active_focus_ids.remove(interrupt_candidate_id)
         self._suspend_item(interrupt_candidate_id)

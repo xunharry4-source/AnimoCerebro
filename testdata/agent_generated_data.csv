@@ -1,0 +1,11 @@
+id,name,value,category,status,created_at,score,description,is_valid,priority,tags
+1,Item_kFfhPn,435.96,D,active,2026-04-06T18:33:00.208008+00:00,52,Random item 1 - MrqeQgrHYZ,False,4,"tag2,tag3,tag1"
+2,Item_GO8Nnz,197.27,C,active,2026-04-06T18:33:00.208121+00:00,77,Random item 2 - Jkh5nN7Gvc,False,3,"tag2,tag1"
+3,Item_hSVPYP,844.87,D,inactive,2026-04-06T18:33:00.208536+00:00,53,Random item 3 - 16kos9ld68,True,4,tag3
+4,Item_v712zl,507.53,D,inactive,2026-04-06T18:33:00.208555+00:00,2,Random item 4 - TlaPD8WH58,False,1,"tag2,tag5,tag1"
+5,Item_WZfCDW,372.15,B,active,2026-04-06T18:33:00.208566+00:00,80,Random item 5 - C2FazCc4vY,True,3,"tag4,tag1,tag3"
+6,Item_i0DvkN,862.95,C,active,2026-04-06T18:33:00.208576+00:00,79,Random item 6 - Y4vZKLwO36,True,4,tag2
+7,Item_0Ywkmr,307.1,C,inactive,2026-04-06T18:33:00.208586+00:00,59,Random item 7 - NM3PrjluJm,False,1,"tag4,tag1,tag2"
+8,Item_Fb7F5v,867.86,A,pending,2026-04-06T18:33:00.208596+00:00,81,Random item 8 - mAmSImUwLZ,False,2,tag5
+9,Item_2447CG,76.42,B,active,2026-04-06T18:33:00.208606+00:00,88,Random item 9 - bVxeq0jx8t,False,5,"tag1,tag4"
+10,Item_z82Meb,356.88,B,pending,2026-04-06T18:33:00.208616+00:00,68,Random item 10 - EcQ8DFyeaN,False,1,tag1

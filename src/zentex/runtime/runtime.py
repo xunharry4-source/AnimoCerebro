@@ -24,6 +24,8 @@ from zentex.runtime.transcript import BrainTranscriptStore
 from zentex.runtime.nine_questions.router import NineQuestionRouter, build_event
 from zentex.runtime.nine_questions.state import NineQuestionState
 from zentex.runtime.nine_questions.executor import NineQuestionExecutor
+from zentex.common.state import SharedStateStore
+from zentex.common.locking import get_lock_for_resource
 
 
 class BrainRuntime:
@@ -121,21 +123,26 @@ class BrainRuntime:
         self.interaction_mind_engine = interaction_mind_engine
         self.consolidation_engine = consolidation_engine
 
+        # Cluster-friendly shared state
+        self._shared_sessions = SharedStateStore(f"{self.runtime_id}:sessions")
+        # Keep local _sessions for object-level reference (caching), 
+        # but source from shared state.
         self._sessions: dict[str, BrainSession] = {}
         self.active_session: BrainSession | None = None
 
         # Manual intervention control-plane state (used by ThinkLoop gating).
         self.intervention_state: dict[str, Any] | None = None
         self._priority_intervention_memory: dict[str, Any] | None = None
-        self._intervention_receipts: dict[str, dict[str, Any]] = {}
+        self._shared_intervention_receipts = SharedStateStore(f"{self.runtime_id}:interventions")
 
         # Session-local nine-question snapshot cache (shared by default session).
+        # Note: In a real cluster, the NineQuestionState itself needs a centralized version/sync.
         self.nine_question_state = NineQuestionState()
         self.nine_question_router = NineQuestionRouter()
         self.nine_question_bootstrap_status = "idle"
         self.nine_question_bootstrap_trace_id: str | None = None
         self.nine_question_bootstrap_error: str | None = None
-        self._nine_question_bootstrap_lock = Lock()
+        self._nine_question_bootstrap_lock = get_lock_for_resource(f"{self.runtime_id}:nq_bootstrap")
 
     def create_session(self, session_id: str) -> Any:
         from zentex.runtime.session import BrainSession
@@ -147,24 +154,38 @@ class BrainRuntime:
         )
         # Ensure session reads the canonical cache instance (hot-path read-only).
         session.current_nine_question_state = self.nine_question_state
+        
         self._sessions[session_id] = session
+        # Persist session metadata to shared store
+        self._shared_sessions.set(session_id, {"session_id": session_id, "created_at": datetime.now(timezone.utc).isoformat()})
+        
         if self.active_session is None:
             self.active_session = session
         return session
 
     def get_session(self, session_id: str) -> Any:
-        try:
+        if session_id in self._sessions:
             return self._sessions[session_id]
-        except KeyError as exc:
-            raise KeyError(f"Unknown session_id: {session_id}") from exc
+        
+        # Check if it exists in shared state (maybe created by another node)
+        metadata = self._shared_sessions.get(session_id)
+        if metadata:
+            # Reconstruct session shell on this node
+            return self.create_session(session_id)
+            
+        raise KeyError(f"Unknown session_id: {session_id}")
 
     def get_runtime_state(self) -> BrainRuntimeState:
         snapshot_at = datetime.now(timezone.utc)
         self.last_runtime_snapshot_at = snapshot_at
+        
+        # Get session IDs from shared store for cluster-wide visibility
+        all_sessions = self._shared_sessions.list_all()
+        
         return BrainRuntimeState(
             runtime_id=self.runtime_id,
             started_at=self.started_at,
-            active_session_ids=sorted(self._sessions.keys()),
+            active_session_ids=sorted(all_sessions.keys()),
             default_workspace=self.default_workspace,
             identity_kernel_ref=self.identity_kernel_ref,
             tool_registry_version=self.tool_registry_version,
@@ -358,7 +379,7 @@ class BrainRuntime:
     def get_intervention_receipt(self, idempotency_key: str) -> dict[str, Any] | None:
         if not idempotency_key:
             return None
-        receipt = self._intervention_receipts.get(idempotency_key)
+        receipt = self._shared_intervention_receipts.get(idempotency_key)
         if receipt is None:
             return None
         return dict(receipt)
@@ -366,7 +387,7 @@ class BrainRuntime:
     def store_intervention_receipt(self, idempotency_key: str, receipt: dict[str, Any]) -> None:
         if not idempotency_key:
             raise ValueError("idempotency_key must not be empty")
-        self._intervention_receipts[idempotency_key] = dict(receipt)
+        self._shared_intervention_receipts.set(idempotency_key, dict(receipt))
 
     def build_priority_intervention_working_memory(self) -> dict[str, Any]:
         memory = self.peek_priority_intervention_memory()

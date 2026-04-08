@@ -17,12 +17,7 @@ from pathlib import Path
 from threading import RLock
 from typing import Callable
 
-
-class UpgradeTargetKind(str, Enum):
-    """Top-level upgrade target categories."""
-
-    LLM = "llm"
-    PLUGIN = "plugin"
+from zentex.upgrade.base_models import UpgradeTargetKind
 
 
 class UpgradeLifecycleStatus(str, Enum):
@@ -99,6 +94,12 @@ class UpgradeManagementRecord:
     candidate_version: str | None
     current_status: UpgradeLifecycleStatus
     current_progress: int = 0
+    
+    # Sub-function 60 gap: audit and description fields
+    feature_change_details: str = ""
+    functional_description: str = ""
+    baseline_version_ref: str = ""
+    failure_category: str = "" # logic_error, security_violation, validation_failed, runtime_exception
     success_stage: str | None = None
     success_summary: str | None = None
     reusable_insight: str | None = None

@@ -10,7 +10,7 @@ from zentex.web_console.contracts.memory import (
     EnhancedMemoryRecordItem,
     UpdateEnhancedMemoryRequest,
 )
-from zentex.web_console.dependencies import get_enhanced_memory_service
+from zentex.web_console.dependencies import get_enhanced_memory_service, get_consolidation_engine
 from zentex.web_console.services.memory import (
     build_enhanced_memory_audit_payload,
     build_enhanced_memory_overview,
@@ -118,3 +118,11 @@ def update_enhanced_memory_management(
     except KeyError as exc:
         raise HTTPException(status_code=404, detail="Memory record not found.") from exc
     return build_enhanced_memory_record_item(record)
+
+@router.post("/memory/consolidation/trigger")
+def trigger_memory_consolidation(
+    consolidation_engine=Depends(get_consolidation_engine),
+) -> dict[str, str]:
+    """Manually trigger a memory consolidation cycle (Sub-function 59.4 Gap)."""
+    consolidation_engine.submit_cycle(operator="web_console_user")
+    return {"status": "triggered", "message": "Manual memory consolidation cycle initiated."}

@@ -44,6 +44,8 @@ class TemporalAgendaState(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     state_id: str
+    brain_scope: str = Field(default="zentex.runtime")
+    snapshot_version: int = Field(default=0)
     items: List[CognitiveAgendaItem] = Field(default_factory=list)
     open_item_ids: List[str] = Field(default_factory=list)
     watching_item_ids: List[str] = Field(default_factory=list)
@@ -72,9 +74,16 @@ class CognitiveTemporalEngine:
     - never emit outbound notifications
     """
 
-    def __init__(self, initial_items: List[Dict[str, Any] | CognitiveAgendaItem] | None = None) -> None:
+    def __init__(
+        self,
+        initial_items: List[Dict[str, Any] | CognitiveAgendaItem] | None = None,
+        brain_scope: str = "zentex.runtime",
+        snapshot_version: int = 0
+    ) -> None:
         self._items: List[CognitiveAgendaItem] = []
         self._last_state: Optional[TemporalAgendaState] = None
+        self.brain_scope = brain_scope
+        self.snapshot_version = snapshot_version
         if initial_items:
             self.load_items(initial_items)
 
@@ -86,6 +95,8 @@ class CognitiveTemporalEngine:
             now = datetime.now(timezone.utc)
             self._last_state = TemporalAgendaState(
                 state_id=str(uuid4()),
+                brain_scope=self.brain_scope,
+                snapshot_version=self.snapshot_version,
                 items=[],
                 created_at=now,
                 updated_at=now,
@@ -104,8 +115,11 @@ class CognitiveTemporalEngine:
         for item in self._items:
             computed_items.append(self._evaluate_item(item, now))
 
+        self.snapshot_version += 1
         state = TemporalAgendaState(
             state_id=str(uuid4()),
+            brain_scope=self.brain_scope,
+            snapshot_version=self.snapshot_version,
             items=computed_items,
             open_item_ids=sorted(
                 item.item_id
@@ -129,6 +143,14 @@ class CognitiveTemporalEngine:
 
     def get_review_now_items(self) -> List[CognitiveAgendaItem]:
         return [item for item in self.snapshot().items if item.status == "review_now"]
+
+    def sync_with_working_memory(self, wm_controller: Any) -> None:
+        """Integration boundary with B1 WorkingMemoryController."""
+        pass
+
+    def evaluate_think_loop_phase3(self, signals: Any) -> None:
+        """Integration boundary with ThinkLoop Phase 3."""
+        pass
 
     def _evaluate_item(self, item: CognitiveAgendaItem, now: datetime) -> CognitiveAgendaItem:
         reminder_rule = item.reminder_rule

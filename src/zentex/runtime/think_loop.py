@@ -24,6 +24,7 @@ from zentex.runtime.nine_questions.executor import NineQuestionExecutor
 from zentex.runtime.session import BrainSession
 from zentex.runtime.nine_questions.startup_snapshot import build_runtime_workspace_snapshot
 from zentex.runtime.transcript import BrainTranscriptEntryType
+from zentex.runtime.nine_questions.engine import NineQDrivenObjectiveEngine
 from zentex.runtime.nine_questions.router import build_event
 
 
@@ -41,6 +42,24 @@ class ThinkLoop:
     The nine-stage order is fixed protocol and must not change.
     All stage-internal capability access must resolve active bound plugins.
     """
+
+    def __init__(self):
+        self._evolution_engine = NineQDrivenObjectiveEngine()
+
+    def _fetch_turn_history(self, session: BrainSession, limit: int = 3) -> list[dict[str, Any]]:
+        """Fetch status of recent turns from transcript (Sub-function 3.4)."""
+        entries = session.store.read_entries(session_id=session.session_id)
+        finish_events = [e for e in entries if e.entry_type == BrainTranscriptEntryType.TURN_FINISHED]
+        history = []
+        for e in finish_events[-limit:]:
+            if isinstance(e.payload, dict):
+                history.append({
+                    "turn_id": e.turn_id,
+                    "status": e.payload.get("status", "unknown"),
+                    "finished_at": e.timestamp.isoformat()
+                })
+        return history
+
 
     def run(self, session: BrainSession) -> BrainTurnResult:
         """
@@ -106,6 +125,17 @@ class ThinkLoop:
             phase_trace_id=phase_trace_ids["decision"],
             cold_start_protocol_applied=cold_start_protocol_applied,
         )
+
+        # Update Evolution Profiles after decision synthesis
+        evolution_result_v8 = None
+        if hasattr(session, "current_nine_question_state") and session.current_nine_question_state:
+             history = self._fetch_turn_history(session)
+             evolution_result_v8 = self._evolution_engine.derive_all_profiles(
+                 session.current_nine_question_state,
+                 resource_state=observed.get("workspace"), # Proxy for resource state
+                 history=history
+             )
+             session.active_evolution_result = evolution_result_v8.model_dump(mode="json")
         consolidation = self._phase_9_consolidate(
             session=session,
             decision_summary=decision_summary,
@@ -134,6 +164,7 @@ class ThinkLoop:
             consolidation=consolidation["consolidation"],
             trace_id=turn_id,
             phase_trace_ids=phase_trace_ids,
+            evolution_result=getattr(session, "active_evolution_result", None),
         )
 
     def _maybe_run_cold_start_protocol(
@@ -365,7 +396,8 @@ class ThinkLoop:
             needs_refresh = True
         else:
             # Cold start: session cache never built.
-            if getattr(state, "snapshot_version", 0) <= 0:
+            snapshot_ver = getattr(state, "snapshot_version", 0)
+            if not isinstance(snapshot_ver, int) or snapshot_ver <= 0:
                 needs_refresh = True
             # Dirty flags: only allow refresh when explicitly marked.
             if any(getattr(state, "is_dirty")(qid) for qid in ("q1", "q2", "q3")):  # type: ignore[misc]
@@ -397,7 +429,16 @@ class ThinkLoop:
                 "immediate_priorities": [],
                 "nine_question_state": state.to_payload() if hasattr(state, "to_payload") else {},
             }
-            return {"observed": observed, "context_snapshot": context_snapshot}
+            # Derive evolution profiles from existing state
+            history = self._fetch_turn_history(session)
+            evolution_result = self._evolution_engine.derive_all_profiles(
+                state,
+                resource_state=observed.get("workspace"),
+                history=history
+            )
+            session.active_evolution_result = evolution_result.model_dump(mode="json")
+
+            return {"observed": observed, "context_snapshot": context_snapshot, "evolution_result": evolution_result}
 
         # Refresh path (allowed only when cold start / dirty / environment change / intervention).
         provider = self._resolve_active_model_provider(session)
@@ -457,8 +498,10 @@ class ThinkLoop:
         if state is not None and hasattr(state, "apply_question_result"):
             # Update the cache without forcing individual Q1/Q2/Q3 plugins (fast path: reuse legacy framing).
             now = datetime.now(timezone.utc)
-            state.revision += 1
-            state.snapshot_version += 1
+            if isinstance(getattr(state, "revision", None), int):
+                state.revision += 1
+            if isinstance(getattr(state, "snapshot_version", None), int):
+                state.snapshot_version += 1
             state.last_refresh_reason = "think_loop:phase_2_frame"
             state.refreshed_at = now
             state.current_role_hypothesis = frame_payload.get("role_hypothesis")
@@ -504,24 +547,63 @@ class ThinkLoop:
         """阶段 3：把 framing 结果规整为工作记忆、时间议程和自我模型。"""
         logger.debug("ThinkLoop phase 3 update_working_state session=%s", session.session_id)
         snapshot = session.get_snapshot()
-        working_memory: dict[str, Any] = {
-            "current_focus_summary": (
-                snapshot.current_focus_summary
-                or framed["context_snapshot"].get("role_hypothesis")
-                or "no_focus_declared"
-            ),
-            "active_goal_titles": snapshot.active_goal_titles,
-            "role_hypothesis": framed["context_snapshot"].get("role_hypothesis"),
-        }
-        temporal_agenda: dict[str, Any] = {
-            "overdue_items": snapshot.overdue_items,
-            "next_actions": framed["context_snapshot"].get("immediate_priorities", []),
-        }
-        living_self_model: dict[str, Any] = {
-            "current_reasoning_mode": snapshot.current_reasoning_mode or "baseline",
-            "degraded_flags": snapshot.degraded_flags,
-            "continuity_anchor": session.session_id,
-        }
+        runtime = self._require_runtime(session)
+
+        if hasattr(runtime, "working_memory_controller") and runtime.working_memory_controller:
+            from zentex.runtime.working_memory import AttentionItem
+            wm_frame = runtime.working_memory_controller.upsert_focus(
+                AttentionItem(
+                    focus_id=f"focus-{session.session_id}",
+                    focus_type="exploratory",
+                    title=framed["context_snapshot"].get("role_hypothesis") or "no_focus_declared",
+                    priority=5,
+                    urgency=3,
+                    blocked=False,
+                    interruptible=True,
+                    resume_hint="continue exploration"
+                )
+            )
+            working_memory = wm_frame.__dict__
+        else:
+            working_memory = {
+                "current_focus_summary": (
+                    snapshot.current_focus_summary
+                    or framed["context_snapshot"].get("role_hypothesis")
+                    or "no_focus_declared"
+                ),
+                "active_goal_titles": snapshot.active_goal_titles,
+                "role_hypothesis": framed["context_snapshot"].get("role_hypothesis"),
+            }
+
+        if hasattr(runtime, "temporal_engine") and runtime.temporal_engine:
+            from datetime import datetime, timezone
+            temp_state = runtime.temporal_engine.evaluate(datetime.now(timezone.utc))
+            temporal_agenda = temp_state.__dict__
+        else:
+            temporal_agenda = {
+                "overdue_items": snapshot.overdue_items,
+                "next_actions": framed["context_snapshot"].get("immediate_priorities", []),
+            }
+
+        if hasattr(runtime, "living_self_model_engine") and runtime.living_self_model_engine:
+            from zentex.runtime.self_model import CognitiveStateProfile
+            current_state = CognitiveStateProfile(
+                load_level="medium", stability_level="stable", exploration_mode="medium", 
+                reasoning_posture="balanced", evidence_posture="normal"
+            )
+            sm_model, sm_drift, sm_recs = runtime.living_self_model_engine.update_self_model(
+                current_state=current_state,
+                failure_signals={},
+                confidence_signals={}
+            )
+            living_self_model = sm_model.__dict__
+        else:
+            living_self_model = {
+                "current_reasoning_mode": snapshot.current_reasoning_mode or "baseline",
+                "degraded_flags": snapshot.degraded_flags,
+                "continuity_anchor": session.session_id,
+            }
+
         return {
             "working_memory": working_memory,
             "temporal_agenda": temporal_agenda,
@@ -536,14 +618,33 @@ class ThinkLoop:
     ) -> dict[str, Any]:
         """阶段 4：识别当前回合的认知风险与置信度漂移。"""
         logger.debug("ThinkLoop phase 4 detect_cognitive_risks session=%s", session.session_id)
+        runtime = self._require_runtime(session)
         degraded_flags: list[str] = working_state["living_self_model"].get("degraded_flags", [])
-        return {
-            "conflict_snapshot": {
+
+        if hasattr(runtime, "conflict_engine") and runtime.conflict_engine:
+            conflicts = runtime.conflict_engine.detect(
+                working_memory=working_state["working_memory"],
+                self_model=working_state["living_self_model"],
+                agenda=working_state["temporal_agenda"],
+            )
+            triggers = runtime.conflict_engine.generate_triggers()
+            conflict_snapshot = {
+                "conflicts": [c.__dict__ for c in conflicts],
+                "triggers": [t.__dict__ for t in triggers],
+                "confidence_drift": "elevated" if degraded_flags else "stable",
+                "degraded_flags": degraded_flags,
+                "uncertainty_hotspots": [],
+            }
+        else:
+            conflict_snapshot = {
                 "conflicts": [],
                 "uncertainty_hotspots": [],
                 "confidence_drift": "elevated" if degraded_flags else "stable",
                 "degraded_flags": degraded_flags,
             }
+        
+        return {
+            "conflict_snapshot": conflict_snapshot
         }
 
     def _phase_5_simulate(
@@ -589,10 +690,33 @@ class ThinkLoop:
     ) -> dict[str, Any]:
         """
         阶段 6：产出当前轮的元认知调度结果。
-
-        这里先保留稳定骨架，后续再接入真实的元认知控制器。
         """
         logger.debug("ThinkLoop phase 6 metacognition session=%s", session.session_id)
+        runtime = self._require_runtime(session)
+
+        if hasattr(runtime, "metacognition_controller") and runtime.metacognition_controller:
+            reasoning, tool_plan, esc = runtime.metacognition_controller.generate_decisions(
+                working_memory=working_state["working_memory"],
+                living_self_model=working_state["living_self_model"],
+                budget={"remaining": 1.0}, # Mock budget format
+                agenda=working_state["temporal_agenda"],
+                tool_registry=getattr(runtime, "cognitive_tool_registry", None),
+            )
+            
+            structured_tool_plan = [
+                {"plugin_id": tid, "behavior_key": tid}
+                for tid in tool_plan.selected_tools
+            ]
+
+            return {
+                "current_reasoning_mode": reasoning.thought_mode,
+                "degraded_flags": cognitive_risks["conflict_snapshot"].get("degraded_flags", []),
+                "tool_plan": structured_tool_plan,
+                "escalation_required": esc.decision_type != "continue",
+                "reasoning_depth": reasoning.reasoning_depth,
+                "interaction_posture": reasoning.interaction_posture,
+            }
+
         return {
             "current_reasoning_mode": "deliberate",
             "degraded_flags": cognitive_risks["conflict_snapshot"].get("degraded_flags", []),
@@ -1106,6 +1230,9 @@ class ThinkLoop:
             return value.astimezone(timezone.utc).isoformat()
         if isinstance(value, (str, int, float, bool)) or value is None:
             return value
+        # Skip unit test Mocks to avoid infinite recursion through __dict__
+        if "mock" in type(value).__name__.lower():
+            return str(value)
         if isinstance(value, dict):
             return {str(key): self._json_safe(nested) for key, nested in value.items()}
         if isinstance(value, list):

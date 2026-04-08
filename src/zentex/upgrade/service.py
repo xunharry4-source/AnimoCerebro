@@ -9,7 +9,7 @@ decides whether to skip, upgrade, or create based on explicit intent payloads,
 then delegates to the specialized upgrade planners.
 """
 
-from zentex.memory.enhanced import EnhancedMemoryService
+from zentex.memory import EnhancedMemoryService
 from zentex.upgrade.llm.service import DSPyLLMUpgradeService
 from zentex.upgrade.models import (
     LLMUpgradeDecision,

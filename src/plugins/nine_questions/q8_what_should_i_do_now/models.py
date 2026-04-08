@@ -7,14 +7,18 @@ from pydantic import BaseModel, Field, ConfigDict
 
 class ObjectiveProfile(BaseModel):
     """
-    Q8 Result: Primary Objective and Phase Task breakdown.
-    The ultimate synthetic decision of the Nine Questions cycle.
+    Q8 Result: Comprehensive Objective Profile.
+    Includes primary/secondary objectives and lifecycle conditions.
     """
     model_config = ConfigDict(extra="forbid", frozen=True)
 
-    current_primary_objective: str = Field(..., description="The highly condensed core focus for now.")
-    current_phase_tasks: List[str] = Field(..., description="Step-by-step breakdown of the current phase.")
-    priority_order: List[str] = Field(..., description="Explicit order of execution.")
+    current_mission: str = Field(..., description="The highly condensed core focus for now.")
+    primary_objectives: List[str] = Field(default_factory=list, description="Top priority objectives.")
+    secondary_objectives: List[str] = Field(default_factory=list, description="Lower priority or parallel objectives.")
+    completion_conditions: List[str] = Field(default_factory=list, description="Conditions for success.")
+    pause_conditions: List[str] = Field(default_factory=list, description="Conditions requiring a temporary halt.")
+    escalation_conditions: List[str] = Field(default_factory=list, description="Conditions requiring human or higher-level intervention.")
+    priority_order: List[str] = Field(..., description="Explicit order of execution for current tasks.")
 
 
 class AutonomousTaskQueue(BaseModel):

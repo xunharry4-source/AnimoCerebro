@@ -23,6 +23,8 @@ from typing import Any, Dict, Iterable, List, Optional, Tuple, Union
 from uuid import uuid4
 from collections.abc import Callable
 
+from zentex.common.locking import get_lock_for_resource
+
 
 JSONScalar = Union[str, int, float, bool, None]
 JSONValue = Union[JSONScalar, List["JSONValue"], Dict[str, "JSONValue"]]
@@ -108,7 +110,7 @@ class BrainTranscriptStore:
         entry_listeners: Iterable[Callable[[BrainTranscriptEntry], None]] | None = None,
     ) -> None:
         self._file_path = Path(file_path)
-        self._write_lock = Lock()
+        self._write_lock = get_lock_for_resource(str(self._file_path))
         self._revision_condition = Condition()
         self._revision = 0
         self._entries_cache: list[BrainTranscriptEntry] | None = None

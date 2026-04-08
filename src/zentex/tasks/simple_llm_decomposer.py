@@ -112,12 +112,14 @@ class LLMTaskDecompositionPlugin:
             llm_response = self._call_llm(prompt)
             
             if not llm_response:
-                logger.error("LLM call failed, using fallback decomposition")
-                return self._fallback_decomposition(mission_title, mission_content)
+                raise RuntimeError(f"[LLM MANDATORY] Mission decomposition failed for '{mission_title}': LLM returned no response.")
             
             # 解析LLM响应
             subtasks = self._parse_llm_response(llm_response)
             
+            if not subtasks:
+                raise RuntimeError(f"[LLM MANDATORY] Mission decomposition failed for '{mission_title}': Failed to parse subtasks from LLM response.")
+
             # 启用优化时进行后处理
             if self.enable_optimization:
                 subtasks = self._optimize_subtasks(subtasks)
@@ -127,7 +129,7 @@ class LLMTaskDecompositionPlugin:
             
         except Exception as e:
             logger.error(f"Failed to decompose mission {mission_title}: {e}")
-            return self._fallback_decomposition(mission_title, mission_content)
+            raise RuntimeError(f"[LLM MANDATORY] Mission decomposition failed for '{mission_title}': {str(e)}") from e
     
     def _build_decomposition_prompt(self, mission_title: str, mission_content: str, 
                                  context: Optional[Dict[str, Any]]) -> str:
@@ -284,33 +286,6 @@ class LLMTaskDecompositionPlugin:
                 task["estimated_duration"] = self.min_task_size * 60
         
         return subtasks
-    
-    def _fallback_decomposition(self, title: str, content: str) -> List[Dict[str, Any]]:
-        """后备拆解方案"""
-        return [
-            {
-                "local_id": "fallback-analysis",
-                "title": f"基础分析: {title}",
-                "task_type": TaskType.COGNITIVE_STEP,
-                "content": f"分析 {content} 的基本需求",
-                "objective": "明确任务目标和范围",
-                "requirements": ["需求分析", "目标确认"],
-                "depends_on": [],
-                "coordination_mode": CoordinationMode.SEQUENTIAL,
-                "estimated_duration": 30
-            },
-            {
-                "local_id": "fallback-execution",
-                "title": f"基础执行: {title}",
-                "task_type": TaskType.COGNITIVE_STEP,
-                "content": f"执行 {content} 的主要工作",
-                "objective": "完成任务的核心目标",
-                "requirements": ["执行主要工作", "验证结果"],
-                "depends_on": ["fallback-analysis"],
-                "coordination_mode": CoordinationMode.PARALLEL,
-                "estimated_duration": 60
-            }
-        ]
     
     def health_check(self) -> Dict[str, Any]:
         """插件健康检查"""

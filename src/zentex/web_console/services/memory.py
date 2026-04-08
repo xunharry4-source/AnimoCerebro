@@ -2,7 +2,7 @@ from __future__ import annotations
 
 """Builders for enhanced memory management web-console payloads."""
 
-from zentex.memory.enhanced import (
+from zentex.memory import (
     EnhancedMemoryService,
     ManagedEnhancedMemoryRecord,
     MemoryAuditEvent,

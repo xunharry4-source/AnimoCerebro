@@ -1,78 +1,55 @@
-# Agent Management Module
+# Agents Module / 智能体模块
 
-## Overview
-The Agent Management module handles the lifecycle of external and internal agents within the Zentex ecosystem. It provides secure registration, capability discovery (handshake), safety auditing, and task dispatching.
+## Overview / 概述
 
-## Key Components
+This module provides agent management, coordination, and service capabilities for the Zentex system. It handles agent lifecycle, registration, and bridge functionality between internal and external agents.
 
-### 1. AgentManager (`zentex.agents.manager`)
-- Acts as a registry for `AgentAsset` objects.
-- Manages in-memory state of all known agents.
-- Handles CRUD operations on agent assets.
+本模块为Zentex系统提供智能体管理、协调和服务能力。它处理智能体生命周期、注册以及内部和外部智能体之间的桥接功能。
 
-### 2. AgentBridge (`zentex.agents.bridge`)
-- Low-level network communication layer using `httpx`.
-- Implements the standard protocol for:
-  - `/handshake`: Capability discovery.
-  - `/execute`: Task dispatch.
-  - `/status`: Health monitoring.
+## Module Independence / 模块独立性
 
-### 3. AgentCoordinationService (`zentex.agents.service`)
-- High-level orchestration and business logic.
-- Enforces security redlines:
-  - New agents start with `AgentTrustLevel.PENDING`.
-  - Mandatory handshake and safety audit before promotion to `TRUSTED`.
-- Maintains a permanent audit trail in the `BrainTranscriptStore`.
-- Provides helper methods for UI (inbox, receipts, goals).
+**This is an independent functional module.** / **这是一个独立的功能模块。**
 
-## Standard Protocol
+- Modules should NOT directly access internal implementation files / 其他模块不应直接访问内部实现文件
+- All interactions must go through the unified public interface defined in `__init__.py` / 所有交互必须通过 `__init__.py` 中定义的统一公共接口进行
+- Internal files (`manager.py`, `service.py`, `bridge.py`) are implementation details / 内部文件（`manager.py`、`service.py`、`bridge.py`）是实现细节
 
-Any agent wishing to integrate with Zentex MUST implement the following endpoints:
+## Public Interface / 公共接口
 
-### POST `/handshake`
-- **Request**: `Authorization: Bearer <token>`
-- **Response**: 
-  ```json
-  {
-    "agent_id": "string",
-    "version": "string",
-    "capabilities": [{"name": "string", "description": "string"}],
-    "latency_ms": 12.5
-  }
-  ```
+The unified public interface is exposed through `__init__.py`:
 
-### POST `/execute`
-- **Request**: `{"task_id": "...", "payload": {...}}`
-- **Response**: `{"status": "success", "result": {...}}`
-
-### GET `/status`
-- **Response**: `200 OK` (if healthy)
-
-## Usage Example
+通过 `__init__.py` 暴露的统一公共接口：
 
 ```python
-from zentex.agents.manager import AgentManager
-from zentex.agents.service import AgentCoordinationService, AgentRegistrationRequest
-
-# Initialize
-manager = AgentManager()
-service = AgentCoordinationService(manager, transcript_store)
-
-# 1. Register
-request = AgentRegistrationRequest(
-    name="research-agent",
-    agent_name="Research Pro",
-    version="1.0.0",
-    function_description="Searches for academic papers",
-    endpoint="https://agent.example.com",
-    auth_token="secure-token-123",
-    role_tag="research"
+from zentex.agents import (
+    AgentManager,           # Agent lifecycle management / 智能体生命周期管理
+    AgentAsset,             # Agent asset representation / 智能体资产表示
+    AgentStatus,            # Agent status enumeration / 智能体状态枚举
+    AgentTrustLevel,        # Trust level enumeration / 信任级别枚举
+    AgentCoordinationService,  # Coordination service / 协调服务
+    AgentRegistrationRequest,  # Registration request model / 注册请求模型
+    AgentBridge,            # Component bridge / 组件桥接
 )
-asset = await service.register_agent(request)
-
-# 2. Handshake (Discovery)
-await service.perform_handshake(asset.agent_id)
-
-# 3. Dispatch Task
-result = await service.dispatch_task(asset.agent_id, {"query": "quantum computing"})
 ```
+
+## Core Components / 核心组件
+
+- **AgentManager** (`manager.py`): Manages agent registration, status, and lifecycle / 管理智能体注册、状态和生命周期
+- **AgentCoordinationService** (`service.py`): Handles agent coordination and communication / 处理智能体协调和通信
+- **AgentBridge** (`bridge.py`): Bridges internal and external agent systems / 桥接内部和外部智能体系统
+
+## Usage Example / 使用示例
+
+```python
+from zentex.agents import AgentManager, AgentCoordinationService
+
+# Use only the public interface / 仅使用公共接口
+manager = AgentManager()
+service = AgentCoordinationService(manager)
+```
+
+## Design Principle / 设计原则
+
+⚠️ **IMPORTANT**: Other modules must import from `zentex.agents` only, never from `zentex.agents.manager` or other internal paths.
+
+⚠️ **重要提示**：其他模块只能从 `zentex.agents` 导入，绝不能从 `zentex.agents.manager` 或其他内部路径导入。

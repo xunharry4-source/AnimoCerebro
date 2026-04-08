@@ -17,7 +17,7 @@ from zentex.upgrade.ledger import (
     UpgradeMemoryStore,
 )
 from zentex.upgrade.management import UpgradeManagementRecord
-from zentex.memory.enhanced import EnhancedMemoryService
+from zentex.memory import EnhancedMemoryService
 
 
 class UpgradeEvidenceService:
