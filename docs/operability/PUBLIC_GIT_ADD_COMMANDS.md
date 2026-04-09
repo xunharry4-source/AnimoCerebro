@@ -62,7 +62,7 @@ If you also want to publish the OpenClaw integration path, add:
 
 ```bash
 git add \
-  integrations/openclaw-plugin \
+  Agent \
   scripts/openclaw-plugin-probe.mjs \
   scripts/openclaw-plugin-real-check.mjs \
   scripts/openclaw-plugin-real-setup.mjs \
@@ -76,7 +76,7 @@ git add \
 
 ```bash
 git add \
-  integrations/openclaw-plugin \
+  Agent \
   scripts/openclaw-plugin-probe.mjs \
   scripts/openclaw-plugin-real-check.mjs \
   scripts/openclaw-plugin-real-setup.mjs \

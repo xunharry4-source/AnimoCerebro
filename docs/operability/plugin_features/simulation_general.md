@@ -9,5 +9,5 @@
 - 默认/回退方向：自身即为通用兜底沙盒；若不可用，则预演链显式中断
 - 管理红线：绝对不可产生物理副作用
 - 家族级规范：
-  - [Simulation DEVELOPMENT_GUIDE](/Users/harry/Documents/git/AnimoCerebro/src/plugins/simulation/DEVELOPMENT_GUIDE.md)
+  - [Simulation DEVELOPMENT_GUIDE](src/plugins/simulation/DEVELOPMENT_GUIDE.md)
 

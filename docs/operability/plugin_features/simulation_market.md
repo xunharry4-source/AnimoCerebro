@@ -9,5 +9,5 @@
 - 默认/回退方向：回退到通用思维沙盒 `ThoughtSandbox`
 - 管理红线：最终结论若依赖 LLM，必须 fail-closed
 - 家族级规范：
-  - [Simulation DEVELOPMENT_GUIDE](/Users/harry/Documents/git/AnimoCerebro/src/plugins/simulation/DEVELOPMENT_GUIDE.md)
+  - [Simulation DEVELOPMENT_GUIDE](src/plugins/simulation/DEVELOPMENT_GUIDE.md)
 

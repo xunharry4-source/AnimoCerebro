@@ -32,14 +32,14 @@ The system is organized around the **nine-question cognitive loop**. This loop i
 
 ## Core Runtime Shape
 
-The current public architecture has these layers:
+The current public architecture is organized into these primary functional domains (located in `src/zentex/`):
 
-1. cognition and orchestration
-2. safety and audit
-3. memory and reflection
-4. delegation and collaboration
-5. host adapters
-6. web and observability
+1. **cognition**: core orchestration, meta-cognition, and think-loop execution
+2. **memory**: long-term experience exchange and consolidation
+3. **bridge**: host adapter protocol gates (e.g., OpenClaw bridge)
+4. **safety**: risk assessment, audits, and sanity gates
+5. **network**: multi-agent collaboration and cluster coordination
+6. **cluster**: high-availability runtime base and session management
 
 ## Public Design Boundaries
 

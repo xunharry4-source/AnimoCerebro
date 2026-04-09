@@ -113,8 +113,8 @@ animocerebro web start --state-dir .animocerebro/state --config animocerebro_vis
 ## 5. Step 2: Build And Install The Plugin / 第二步：构建并安装插件
 
 ```bash
-npm --prefix integrations/openclaw-plugin run build
-openclaw plugins install ./integrations/openclaw-plugin
+npm --prefix Agent run build
+openclaw plugins install ./Agent
 ```
 
 For an isolated local dev home:
@@ -327,4 +327,4 @@ No. The main design is registration, sync, delegation, and writeback. It is not 
 - [OPENCLAW_HOST_ADAPTER_PROTOCOL.md](OPENCLAW_HOST_ADAPTER_PROTOCOL.md)
 - [OPENCLAW_HOST_ADAPTER_ARCHITECTURE.md](OPENCLAW_HOST_ADAPTER_ARCHITECTURE.md)
 - [OPENCLAW_PLUGIN_REAL_TEST.md](../operability/OPENCLAW_PLUGIN_REAL_TEST.md)
-- [README.md](../../integrations/openclaw-plugin/README.md)
+- [README.md](../../Agent/README.md)

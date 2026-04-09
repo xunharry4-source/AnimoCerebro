@@ -1,8 +1,10 @@
 SHELL := /bin/zsh
 
-.PHONY: help backend-install frontend-install frontend-dev frontend-test backend-test test dev restart-dev
+.PHONY: help install start backend-install frontend-install frontend-dev frontend-test backend-test test dev restart-dev
 
 help:
+	@echo "make install           One-click installation for both backend and frontend"
+	@echo "make start             One-click start for both backend and frontend"
 	@echo "make frontend-install  Install admin-portal dependencies"
 	@echo "make frontend-dev      Start Vite dev server"
 	@echo "make frontend-test     Run frontend tests"
@@ -11,6 +13,11 @@ help:
 	@echo "make test              Run backend + frontend tests"
 	@echo "make dev               Start frontend + backend (uvicorn --ws websockets-sansio)"
 	@echo "make restart-dev       Restart dev stack with the same WebSocket runtime contract"
+
+install:
+	./scripts/setup_env.sh
+
+start: dev
 
 backend-install:
 	python3 -m venv .venv

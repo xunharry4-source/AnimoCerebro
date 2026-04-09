@@ -9,5 +9,5 @@
 - 默认/回退方向：回退到默认正式版摘要工具
 - 管理红线：禁止把摘要插件当作大模型主决策器使用
 - 家族级规范：
-  - [Cognitive DEVELOPMENT_GUIDE](/Users/harry/Documents/git/AnimoCerebro/src/plugins/cognitive/DEVELOPMENT_GUIDE.md)
+  - [Cognitive DEVELOPMENT_GUIDE](src/plugins/cognitive/DEVELOPMENT_GUIDE.md)
 

@@ -3,7 +3,7 @@
 本文档用于说明 `src` 目录下新增功能模块的职责划分与 Zentex 的整体技术架构，便于后续开发、协作与部署时统一边界。
 
 按功能组织的插件开发规范索引见：
-- [PLUGIN_GUIDES.md](/Users/harry/Documents/git/AnimoCerebro/docs/operability/PLUGIN_GUIDES.md)
+- [PLUGIN_GUIDES.md](docs/operability/PLUGIN_GUIDES.md)
 
 ## 开发一键命令（最常用）
 
@@ -13,7 +13,7 @@
 - 一键重启：`make restart-dev`（等价 `./scripts/restart_dev.sh`，会先清理端口占用再拉起）
 
 更完整的启动、端口覆盖与测试说明见：
-- [STARTUP_AND_TEST.md](/Users/harry/Documents/git/AnimoCerebro/docs/operability/STARTUP_AND_TEST.md)
+- [STARTUP_AND_TEST.md](docs/operability/STARTUP_AND_TEST.md)
 
 ## 目录清单
 

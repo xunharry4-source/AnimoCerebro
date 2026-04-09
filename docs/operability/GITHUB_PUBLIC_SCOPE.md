@@ -17,9 +17,10 @@ This document defines the practical file scope for a public GitHub release of th
 Include these by default:
 
 - source code under `src/`
-- integration code under `integrations/`
+- independent agent code under `Agent/`
 - scripts under `scripts/`
 - public docs under `docs/`
+- configuration templates under `config/`
 - public entry docs in the repository root
 - tests and test fixtures that do not contain secrets
 - package and dependency manifests
@@ -30,9 +31,10 @@ Include these by default:
 默认应提交这些内容：
 
 - `src/` 下的源码
-- `integrations/` 下的集成代码
+- `Agent/` 下的独立智能体代码
 - `scripts/` 下的脚本
 - `docs/` 下的公开文档
+- `config/` 下的配置模板
 - 仓库根目录的公开入口文档
 - 不含密钥的测试和测试样例
 - 包管理与依赖声明文件
@@ -87,10 +89,11 @@ Exclude these by default:
 ## 5. Public Directories / 可公开目录
 
 - `src/`
-- `integrations/`
+- `Agent/`
 - `scripts/`
 - `docs/`
 - `tests/`
+- `config/`
 - `deploy/`
 - `docker/`
 - `alembic/`

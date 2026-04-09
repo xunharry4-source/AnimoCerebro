@@ -2,7 +2,7 @@
 
 更新时间：`2026-04-01`
 
-本文档记录 `integrations/openclaw-plugin/` 与 Zentex `openClaw bridge API` 的真实安装、启用和联调过程，目的是避免下次重复踩坑。
+本文档记录 `Agent/` 与 Zentex `openClaw bridge API` 的真实安装、启用和联调过程，目的是避免下次重复踩坑。
 
 ## 结论先看
 
@@ -197,13 +197,13 @@ python3 -m venv .venv
 正确顺序：
 
 ```bash
-npm --prefix integrations/openclaw-plugin run build
-HOME=/tmp/openclaw-home openclaw --dev plugins install -l ./integrations/openclaw-plugin
+npm --prefix Agent run build
+HOME=/tmp/openclaw-home openclaw --dev plugins install -l ./Agent
 ```
 
 原因：
 
-- 插件入口现在指向 `integrations/openclaw-plugin/dist/index.js`
+- 插件入口现在指向 `Agent/dist/index.js`
 - 如果不先构建，真实 OpenClaw 运行时没有可加载的 JS 产物
 
 ### 3. 用隔离 HOME 做真实联调
@@ -258,9 +258,9 @@ HOME=/tmp/openclaw-home openclaw --dev gateway run --port 19001 --force --allow-
 ### 插件构建与单测
 
 ```bash
-npm --prefix integrations/openclaw-plugin run build
+npm --prefix Agent run build
 npm run openclaw-plugin:test
-npm run web:test -- --run src/studio/src/App.test.tsx
+npm run web:test -- --run src/admin-portal/src/App.test.tsx
 npm run web:build
 npm run openclaw-plugin:probe
 ```
@@ -269,7 +269,7 @@ npm run openclaw-plugin:probe
 
 - `pytest -q tests/test_openclaw_bridge_api.py tests/test_g31_web_console_api.py` 通过，当前为 `28 passed`
 - `openclaw-plugin:test` 通过，当前为 `6 files / 20 tests passed`
-- `web:test -- --run src/studio/src/App.test.tsx` 通过，当前为 `13 passed`
+- `web:test -- --run src/admin-portal/src/App.test.tsx` 通过，当前为 `13 passed`
 - `web:build` 通过
 - `probe` 输出完整 JSON 报告，覆盖 6 类 `think-task` 和 4 类 `think-action`
 
@@ -341,7 +341,7 @@ HOME=/tmp/openclaw-home openclaw --dev plugins inspect zentex-brain-bridge
 本次真实结果已经确认：
 
 - `Status: loaded`
-- `Source: ./integrations/openclaw-plugin/dist/index.js`
+- `Source: ./Agent/dist/index.js`
 - 已注册：
   - `gateway_start`
   - `before_tool_call`
@@ -478,7 +478,7 @@ curl http://127.0.0.1:18989/api/web/agents/openclaw-local/handshake
 本轮已经补过：
 
 - 插件入口从源码改为编译产物
-- 新增 `integrations/openclaw-plugin/tsconfig.json`
+- 新增 `Agent/tsconfig.json`
 - 新增插件本地 `build` 脚本
 - Hook 对事件字段名做了更宽兼容：
   - `message/body/content/text/input`
@@ -498,7 +498,7 @@ cd <repo-root>
 python3 -m venv .venv
 .venv/bin/pip install -e .
 
-npm --prefix integrations/openclaw-plugin run build
+npm --prefix Agent run build
 npm run openclaw-plugin:test
 npm run openclaw-plugin:probe
 pytest -q tests/test_openclaw_bridge_api.py

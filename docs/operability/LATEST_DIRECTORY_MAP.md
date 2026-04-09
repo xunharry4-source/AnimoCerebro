@@ -14,7 +14,7 @@
 - **最新更新**：九问插件体系完整落地（Q1-Q9），测试覆盖率达到 291+ 用例。
 
 按功能组织的插件开发规范索引见：
-- [PLUGIN_GUIDES.md](/Users/harry/Documents/git/AnimoCerebro/docs/operability/PLUGIN_GUIDES.md)
+- [PLUGIN_GUIDES.md](docs/operability/PLUGIN_GUIDES.md)
 
 ## 最新目录树
 

@@ -9,5 +9,5 @@
 - 默认/回退方向：回退到上一个稳定正式版模型插件；若无可用插件，主脑 fail-closed
 - 管理红线：绝对禁止规则兜底，绝对禁止返回假 JSON 冒充模型结果
 - 家族级规范：
-  - [Model Providers DEVELOPMENT_GUIDE](/Users/harry/Documents/git/AnimoCerebro/src/plugins/model_providers/DEVELOPMENT_GUIDE.md)
+  - [Model Providers DEVELOPMENT_GUIDE](src/plugins/model_providers/DEVELOPMENT_GUIDE.md)
 

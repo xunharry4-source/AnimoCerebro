@@ -1,6 +1,6 @@
-![AnimoCerebro Logo](docs/logo.jpeg)
-
 # AnimoCerebro
+
+![AnimoCerebro Logo](docs/logo.jpeg)
 
 [Chinese README](README.zh.md)
 
@@ -54,22 +54,14 @@ Primary protocol docs:
 
 ## Documentation Map
 
-- [Technical Whitepaper (EN)](WHITEPAPER.md)
-- [技术白皮书 (ZH)](技术白皮书.md)
-- [Quick Start](快速开始-复制即用.md)
-- [Deployment And Integration](详细部署与集成说明.md)
-- [Single-Prod Docker](docs/operability/SINGLE_PROD_DOCKER.md)
-- [Cluster-Core Docker](docs/operability/CLUSTER_CORE_DOCKER.md)
-- [Core Foundations](docs/architecture/CORE_FOUNDATIONS.md)
-- [Cognitive Tool Interface](docs/architecture/COGNITIVE_TOOL_INTERFACE.md)
-- [OpenClaw Host Adapter Protocol](docs/integrations/OPENCLAW_HOST_ADAPTER_PROTOCOL.md)
-- [OpenClaw Integration Guide](docs/integrations/OPENCLAW_INTEGRATION_GUIDE.md)
-- [Public Release Checklist](docs/operability/PUBLIC_RELEASE_CHECKLIST.md)
-- [GitHub Public Scope](docs/operability/GITHUB_PUBLIC_SCOPE.md)
-- [Public Git Add Commands](docs/operability/PUBLIC_GIT_ADD_COMMANDS.md)
-- [Help Guide](帮助文档.md)
-- [Short Help Entry](helo.md)
-- [Testing Guide](测试文档.md)
+- [Technical Whitepaper](WHITEPAPER.md) (Design Philosophy)
+- [Quick Start & Startup](docs/operability/STARTUP_AND_TEST.md) (One-Click methods)
+- [Runtime & Implementation](docs/operability/RUNTIME_AND_TESTS.md) (Detailed architecture)
+- [Functional Modules](docs/operability/FUNCTION_MODULES.md) (Feature breakdown)
+- [Core Foundations](docs/architecture/CORE_FOUNDATIONS.md) (Cognitive loop & layers)
+- [GitHub Public Scope](docs/operability/GITHUB_PUBLIC_SCOPE.md) (File inclusion rules)
+- [Agent Integration](Agent/README.md) (Standard protocol for external agents)
+- [Agent Integration Guide](Agent/INTEGRATION_GUIDE.md) (How to connect your system)
 
 ## Integration Model
 
@@ -97,25 +89,82 @@ If a feature requires a live LLM, the live call must actually happen. When crede
 
 The same standard applies to testing: any test that does not execute the real project logic under test is invalid and forbidden. Mocks or stubs may isolate external dependencies, but they cannot replace the product's own core logic and still be counted as proof.
 
-## Install
+## 📦 Installation
 
-Recommended: Python 3.11+
+### Environment Preparation
+
+Before installing, ensure your environment meets the following requirements:
+- **Python**: 3.11 or higher
+- **Node.js**: LTS version (for web console)
+- **API Keys**: You will need API keys from providers like Google (Gemini), OpenAI, or Anthropic (Claude) for full cognitive capabilities.
+
+### One-Click Installation
+
+Install both backend and frontend dependencies in one go:
 
 ```bash
-bash scripts/start.sh
+make install
 ```
 
-Manual install:
+*Behind the scenes, this runs `./scripts/setup_env.sh`.*
+
+### Manual Install
+
+If you prefer manual steps:
 
 ```bash
+# Backend
 python -m venv .venv
 source .venv/bin/activate
 pip install -e .[dev]
+
+# Frontend
+cd src/admin-portal && npm install
 ```
 
-CLI:
+## 🚀 Quick Start
 
-- `animocerebro`
+### One-Click Start
+
+Start both backend and frontend (Vite dev server + Uvicorn):
+
+```bash
+make start
+```
+
+*Behind the scenes, this runs `./scripts/dev_all.sh`.*
+
+### Manual Start
+
+Start components separately:
+
+```bash
+# Start everything using script (wrapped by make start)
+./scripts/dev_all.sh
+
+# Start backend only
+animocerebro
+
+# Start frontend (hot reload)
+cd src/admin-portal && npm run dev
+```
+
+## ⚙️ Configuration
+
+The system is configured via YAML files. The primary configuration directory is `config/`.
+
+- **Model Providers**: `config/provider_tools.yml` defines API bases, models, and environment variable keys for LLM providers.
+- **System Settings**: Local runtime state and environment variables can be used to further tune the brain's behavior.
+
+Example `config/provider_tools.yml` entry:
+
+```yaml
+gemini:
+  provider_name: gemini
+  api_base: https://generativelanguage.googleapis.com/v1beta
+  api_key_env: GEMINI_API_KEY
+  default_model: gemini-1.5-pro
+```
 
 ## LLM Providers
 
@@ -162,8 +211,6 @@ or:
 {"api_key": "your-key-here"}
 ```
 
-## Quick Start
-
 Start with zero arguments:
 
 ```bash
@@ -188,42 +235,40 @@ Start the web console:
 animocerebro web start --state-dir .animocerebro/state --config animocerebro_vision.yaml --host 127.0.0.1 --port 8899
 ```
 
-Frontend hot reload:
+## Integration Model
 
-```bash
-bash scripts/web-dev.sh
-```
+AnimoCerebro is designed for minimal intrusion:
+- **Execution stays with the Host**: Your system keeps full control.
+- **Brain as an Advisor**: AnimoCerebro provides reasoning, delegation advice, and memory.
+- **Standard Protocol**: Connect via REST/WebSocket using the `Agent/` standard interface.
+
+See [Agent Integration Guide](Agent/INTEGRATION_GUIDE.md) for more details.
 
 ## OpenClaw
 
-OpenClaw is currently the first implemented host adapter. The adapter does not take over OpenClaw. It registers OpenClaw to AnimoCerebro, syncs host capabilities and runtime state, receives delegated work, and writes back receipts, escalations, and experience.
-
-The web console can display and copy the currently configured OpenClaw bridge token from the local AnimoCerebro process.
+OpenClaw is a primary host adapter legacy. While `integrations/` is now consolidated into the standardized `Agent/` hub, the protocol remains compatible.
 
 See:
-
-- [Protocol Overview](当前对接协议.md)
 - [OpenClaw Integration Guide](docs/integrations/OPENCLAW_INTEGRATION_GUIDE.md)
 - [OpenClaw Host Adapter Protocol](docs/integrations/OPENCLAW_HOST_ADAPTER_PROTOCOL.md)
 - [OpenClaw Host Adapter Architecture](docs/integrations/OPENCLAW_HOST_ADAPTER_ARCHITECTURE.md)
 
 ## Repository Structure
 
-- `src/zentex`: core backend and services
-- `src/studio`: web frontend
-- `integrations/`: adapters such as OpenClaw
-- `tests/`: automated tests
-- `scripts/`: bootstrap, development, and real-check scripts
-- `docs/`: operability and design docs
+- `src/zentex`: core backend and services (cognition, memory, safety, etc.)
+- `src/plugins`: functional plugin implementations (model providers, sensory, simulation, etc.)
+- `src/admin-portal`: web management frontend
+- `Agent/`: independent agents for testing and integration examples
+- `tests/`: automated end-to-end and unit tests
+- `scripts/`: primary startup, development, and maintenance scripts
+- `docs/`: comprehensive technical architecture and operability docs
+- `config/`: central system configuration files
 
 ## Next Reading
 
-- [Technical Whitepaper (EN)](WHITEPAPER.md)
-- [技术白皮书 (ZH)](技术白皮书.md)
-- [Quick Start](快速开始-复制即用.md)
-- [Deployment And Integration](详细部署与集成说明.md)
-- [Help Guide](帮助文档.md)
-- [Protocol Overview](当前对接协议.md)
+- [Overview & Quick Start](docs/operability/STARTUP_AND_TEST.md)
+- [Functional Implementation](docs/operability/FUNCTION_MODULES.md)
+- [Core Foundations](docs/architecture/CORE_FOUNDATIONS.md)
 - More documentation can be found in the `docs/` directory.
 
 ## Contact
@@ -236,4 +281,3 @@ See:
 ## License
 
 This project is licensed under the [GNU GPL v3](LICENSE).
-

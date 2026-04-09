@@ -9,5 +9,5 @@
 - 默认/回退方向：回退到默认浏览器执行器；仍需强制走 SafetyGate 与 CloudAudit
 - 管理红线：不可旁路 CloudAudit
 - 家族级规范：
-  - [Execution DEVELOPMENT_GUIDE](/Users/harry/Documents/git/AnimoCerebro/src/plugins/execution/DEVELOPMENT_GUIDE.md)
+  - [Execution DEVELOPMENT_GUIDE](src/plugins/execution/DEVELOPMENT_GUIDE.md)
 

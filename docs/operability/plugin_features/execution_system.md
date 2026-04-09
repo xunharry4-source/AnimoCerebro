@@ -9,5 +9,5 @@
 - 默认/回退方向：回退到系统默认正式版执行器；无可用执行器时 fail-closed
 - 管理红线：不可旁路 SafetyGate
 - 家族级规范：
-  - [Execution DEVELOPMENT_GUIDE](/Users/harry/Documents/git/AnimoCerebro/src/plugins/execution/DEVELOPMENT_GUIDE.md)
+  - [Execution DEVELOPMENT_GUIDE](src/plugins/execution/DEVELOPMENT_GUIDE.md)
 

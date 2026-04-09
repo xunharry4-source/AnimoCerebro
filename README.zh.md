@@ -1,6 +1,6 @@
-![AnimoCerebro Logo](docs/logo.jpeg)
-
 # AnimoCerebro
+
+![AnimoCerebro Logo](docs/logo.jpeg)
 
 [English + 中文](README.md) | 中文详细版
 
@@ -62,20 +62,14 @@ AnimoCerebro 是：
 
 ## 文档入口
 
-- 快速开始：[快速开始-复制即用.md](快速开始-复制即用.md)
-- 部署与集成：[详细部署与集成说明.md](详细部署与集成说明.md)
-- 单机 Docker：[SINGLE_PROD_DOCKER.md](docs/operability/SINGLE_PROD_DOCKER.md)
-- 集群 Docker：[CLUSTER_CORE_DOCKER.md](docs/operability/CLUSTER_CORE_DOCKER.md)
-- 公开架构：[CORE_FOUNDATIONS.md](docs/architecture/CORE_FOUNDATIONS.md)
-- 公开认知工具接口：[COGNITIVE_TOOL_INTERFACE.md](docs/architecture/COGNITIVE_TOOL_INTERFACE.md)
-- 公开 OpenClaw 适配文档：[OPENCLAW_HOST_ADAPTER_PROTOCOL.md](docs/integrations/OPENCLAW_HOST_ADAPTER_PROTOCOL.md)
-- OpenClaw 集成手册：[OPENCLAW_INTEGRATION_GUIDE.md](docs/integrations/OPENCLAW_INTEGRATION_GUIDE.md)
-- 公开发布清单：[PUBLIC_RELEASE_CHECKLIST.md](docs/operability/PUBLIC_RELEASE_CHECKLIST.md)
-- GitHub 公开提交范围：[GITHUB_PUBLIC_SCOPE.md](docs/operability/GITHUB_PUBLIC_SCOPE.md)
-- 公开暂存命令：[PUBLIC_GIT_ADD_COMMANDS.md](docs/operability/PUBLIC_GIT_ADD_COMMANDS.md)
-- 帮助文档：[帮助文档.md](帮助文档.md)
-- 简短帮助入口：[helo.md](helo.md)
-- 测试文档：[测试文档.md](测试文档.md)
+- [技术白皮书](WHITEPAPER.md)（设计理念）
+- [快速开始与启动](docs/operability/STARTUP_AND_TEST.md)（一键启动方法）
+- [运行时与测试说明](docs/operability/RUNTIME_AND_TESTS.md)（详细架构与测试覆盖）
+- [功能模块说明](docs/operability/FUNCTION_MODULES.md)（功能拆解与技术架构）
+- [核心架构说明](docs/architecture/CORE_FOUNDATIONS.md)（认知循环与分层）
+- [GitHub 公开范围](docs/operability/GITHUB_PUBLIC_SCOPE.md)（提交规则）
+- [Agent 接入说明](Agent/README.md)（外部 Agent 标准接口）
+- [Agent 接入指南](Agent/INTEGRATION_GUIDE.md)（如何对接您的系统）
 
 ## 接入模型
 
@@ -103,25 +97,81 @@ AnimoCerebro 的设计目标是最小侵入：
 
 同样的标准也适用于测试：任何不执行被测真实项目逻辑的测试，都是无效且禁止的。mock 或 stub 可以隔离外部不稳定依赖，但不能替代产品自身核心逻辑后还被当成功能正确证据。
 
-## 安装
+## 📦 安装指南
 
-推荐 Python 3.11+
+### 环境准备
+
+在开始安装之前，请确保您的环境满足以下要求：
+- **Python**: 3.11 或更高版本
+- **Node.js**: LTS 版本（用于 Web 控制台）
+- **API 密钥**: 您需要从 Google (Gemini)、OpenAI 或 Anthropic (Claude) 等提供商处获取 API 密钥，以启用完整的认知能力。
+
+### 一键安装
+
+一次性安装后端与前端的所有依赖：
 
 ```bash
-bash scripts/start.sh
+make install
 ```
 
-手动安装：
+*注：该命令实际运行的是 `./scripts/setup_env.sh`。*
+
+### 手动安装
+
+如果你更喜欢手动分步骤安装：
 
 ```bash
+# 后端
 python -m venv .venv
 source .venv/bin/activate
 pip install -e .[dev]
+
+# 前端
+cd src/admin-portal && npm install
 ```
 
-CLI：
+## 🚀 快速启动
 
-- `animocerebro`
+### 一键启动
+
+同时启动后端服务（Uvicorn）与前端控制台（Vite）：
+
+```bash
+make start
+```
+
+*注：该命令实际运行的是 `./scripts/dev_all.sh`。*
+
+### 手动启动
+
+单独启动各组件：
+
+```bash
+# 使用脚本启动全部（由 make start 封装）
+./scripts/dev_all.sh
+
+# 仅启动后端
+animocerebro
+
+# 仅启动前端（带热更新）
+cd src/admin-portal && npm run dev
+```
+
+## ⚙️ 配置说明
+
+系统通过 YAML 文件进行配置，主要的配置目录为 `config/`。
+
+- **模型提供商 (Model Providers)**: `config/provider_tools.yml` 定义了各个 LLM 提供商的 API 基地址、模型名称以及环境变量密钥。
+- **系统设置**: 可以通过本地运行态状态和环境变量进一步微调主脑的行为。
+
+`config/provider_tools.yml` 示例配置：
+```yaml
+gemini:
+  provider_name: gemini
+  api_base: https://generativelanguage.googleapis.com/v1beta
+  api_key_env: GEMINI_API_KEY
+  default_model: gemini-1.5-pro
+```
 
 ## LLM Provider 配置
 
@@ -168,8 +218,6 @@ llm:
 {"api_key": "your-key-here"}
 ```
 
-## 快速启动
-
 零参数启动：
 
 ```bash
@@ -194,40 +242,40 @@ animocerebro run --state-dir .animocerebro/state --config animocerebro_vision.ya
 animocerebro web start --state-dir .animocerebro/state --config animocerebro_vision.yaml --host 127.0.0.1 --port 8899
 ```
 
-前端热更新：
+## 接入模型
 
-```bash
-bash scripts/web-dev.sh
-```
+AnimoCerebro 的设计目标是最小侵入：
+- **执行权保留在宿主**：您的系统继续保持完全控制。
+- **大脑作为顾问**：AnimoCerebro 提供推理、委托建议和记忆支持。
+- **标准协议对接**：使用 `Agent/` 提供的标准 REST/WebSocket 接口进行接入。
+
+详见：[Agent 接入指南](Agent/INTEGRATION_GUIDE.md)。
 
 ## OpenClaw 接入
 
-OpenClaw 是当前第一个落地的宿主适配实例。适配器不会接管 OpenClaw，而是把 OpenClaw 注册到 AnimoCerebro，同步宿主能力与运行状态，接收委托任务，并回写回执、升级和经验。
-
-Web 控制台现在可以显示并复制当前本地 AnimoCerebro 进程里已配置的 OpenClaw bridge token。
+OpenClaw 是主要的宿主适配器历史实例。虽然 `integrations/` 目录已整合到标准化的 `Agent/` 中，但协议保持兼容。
 
 详见：
-
-- [当前对接协议.md](当前对接协议.md)
 - [OPENCLAW_INTEGRATION_GUIDE.md](docs/integrations/OPENCLAW_INTEGRATION_GUIDE.md)
 - [OPENCLAW_HOST_ADAPTER_PROTOCOL.md](docs/integrations/OPENCLAW_HOST_ADAPTER_PROTOCOL.md)
 - [OPENCLAW_HOST_ADAPTER_ARCHITECTURE.md](docs/integrations/OPENCLAW_HOST_ADAPTER_ARCHITECTURE.md)
 
 ## 仓库结构
 
-- `src/zentex`: 核心后端与服务
-- `src/studio`: Web 前端
-- `integrations/`: 各类宿主适配器
-- `tests/`: 自动化测试
-- `scripts/`: 启动、开发和真实验收脚本
-- `docs/`: 运维和设计文档
+- `src/zentex`: 核心后端与服务（包括认知、记忆、安全等模块）
+- `src/plugins`: 功能插件实现（模型提供商、感知、模拟等）
+- `src/admin-portal`: Web 后台管理前端
+- `Agent/`: 独立的外部测试 Agent 与集成示例
+- `tests/`: 自动化端到端测试与单元测试
+- `scripts/`: 主要的开发、启动与维护脚本
+- `docs/`: 完整的技术架构与运维文档
+- `config/`: 中央系统配置文件目录
 
 ## 下一步阅读
 
-- 只想复制就跑：[快速开始-复制即用.md](快速开始-复制即用.md)
-- 想看部署细节：[详细部署与集成说明.md](详细部署与集成说明.md)
-- 想看接入帮助：[帮助文档.md](帮助文档.md)
-- 想看协议细节：[当前对接协议.md](当前对接协议.md)
+- [快速开始与启动说明](docs/operability/STARTUP_AND_TEST.md)
+- [功能实现概览](docs/operability/FUNCTION_MODULES.md)
+- [核心架构说明](docs/architecture/CORE_FOUNDATIONS.md)
 - 更多文档见 `docs/` 目录。
 
 ## 联系我们
