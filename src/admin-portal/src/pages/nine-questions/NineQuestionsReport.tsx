@@ -1,3 +1,4 @@
+import { useTranslation } from "react-i18next";
 import { useEffect, useState } from "react";
 import { Alert, Box, Button, CircularProgress, Stack, Typography } from "@mui/material";
 import { DataGrid, GridColDef } from "@mui/x-data-grid";
@@ -5,12 +6,13 @@ import { useNavigate } from "react-router-dom";
 
 import {
   ReportPayload,
-  fetchNineQuestionsReport,
+  fetchNineQuestionsStatus,
   getQuestionDisplayLabel,
   runAllNineQuestions,
 } from "./nineQuestionsApi";
 
 export default function NineQuestionsReport() {
+  const { t } = useTranslation();
   const navigate = useNavigate();
   const [report, setReport] = useState<ReportPayload | null>(null);
   const [loading, setLoading] = useState(true);
@@ -36,11 +38,11 @@ export default function NineQuestionsReport() {
     setLoading(true);
     setError(null);
     try {
-      const data = await fetchNineQuestionsReport();
+      const data = await fetchNineQuestionsStatus();
       setReport(data.report);
       setNotice(data.notice);
     } catch (err: any) {
-      setError(err?.message || "获取九问报告失败");
+      setError(err?.message || t("nineQuestions.fetchError"));
     } finally {
       setLoading(false);
     }
@@ -52,21 +54,21 @@ export default function NineQuestionsReport() {
     try {
       await runAllNineQuestions(true);
       await loadReport();
-      setNotice("已强制执行一轮正式九问流程，列表已刷新。");
+      setNotice(t("nineQuestions.forceRunSuccess"));
     } catch (err: any) {
-      setError(err?.message || "强制执行九问失败");
+      setError(err?.message || t("nineQuestions.forceRunError"));
     } finally {
       setRunningAll(false);
     }
   };
 
   const columns: GridColDef[] = [
-    { field: "question_label", headerName: "问题标识", flex: 1.1, minWidth: 190 },
-    { field: "title", headerName: "问题名称", flex: 0.8, minWidth: 120 },
-    { field: "cache_status", headerName: "主脑缓存状态", flex: 0.75, minWidth: 120 },
-    { field: "timestamp", headerName: "最后更新时间", flex: 1, minWidth: 180 },
-    { field: "provider_name", headerName: "Provider", flex: 1, minWidth: 170 },
-    { field: "summary", headerName: "摘要", flex: 1.4, minWidth: 240 },
+    { field: "question_label", headerName: t("nineQuestions.label"), flex: 1.1, minWidth: 190 },
+    { field: "title", headerName: t("nineQuestions.name"), flex: 0.8, minWidth: 120 },
+    { field: "cache_status", headerName: t("nineQuestions.cacheStatus"), flex: 0.75, minWidth: 120 },
+    { field: "timestamp", headerName: t("nineQuestions.lastUpdate"), flex: 1, minWidth: 180 },
+    { field: "provider_name", headerName: t("nineQuestions.provider"), flex: 1, minWidth: 170 },
+    { field: "summary", headerName: t("nineQuestions.summary"), flex: 1.4, minWidth: 240 },
   ];
 
   if (loading) {
@@ -91,9 +93,9 @@ export default function NineQuestionsReport() {
       <Box sx={{ py: 8, display: "grid", placeItems: "center" }}>
         <Stack spacing={2} alignItems="center">
           <CircularProgress />
-          <Typography variant="h6">大脑冷启动中：正在执行全量九问推演...</Typography>
+          <Typography variant="h6">{t("nineQuestions.initializingTitle")}</Typography>
           <Typography variant="body2" color="text.secondary">
-            {report.status_message || "正在构建初始认知快照，请稍候。"}
+            {report.status_message || t("nineQuestions.initializingMessage")}
           </Typography>
         </Stack>
       </Box>
@@ -105,10 +107,10 @@ export default function NineQuestionsReport() {
       <Stack direction="row" justifyContent="space-between" alignItems="center" sx={{ mb: 3 }}>
         <Box>
           <Typography variant="h4" gutterBottom>
-            9问测试页
+            {t("app.nav.nineQuestions.title")}
           </Typography>
           <Typography variant="body2" color="text.secondary">
-            九问总览列表，支持从真实主脑缓存钻取到详情与独立沙箱测试。
+            {t("nineQuestions.subtitle")}
           </Typography>
           <Typography variant="body2" color="text.secondary">
             Session: {report?.session_id || "-"} | Snapshot: v{report?.snapshot_version ?? 0} / rev{" "}
@@ -117,10 +119,10 @@ export default function NineQuestionsReport() {
         </Box>
         <Stack direction="row" spacing={1}>
           <Button variant="contained" onClick={() => void loadReport()} disabled={runningAll}>
-            刷新列表
+            {t("common.refreshList")}
           </Button>
           <Button variant="outlined" onClick={() => void handleForceRunAll()} disabled={runningAll}>
-            {runningAll ? "正在执行 9 问..." : "强制运行一次 9 问"}
+            {runningAll ? t("nineQuestions.running") : t("nineQuestions.forceRun")}
           </Button>
         </Stack>
       </Stack>

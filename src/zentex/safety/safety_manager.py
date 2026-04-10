@@ -799,7 +799,7 @@ class SafetyManager:
             SafetyStatus with all subsystems' state
         """
         status = SafetyStatus(
-            brain_scope=self._config.brain_scope,
+            overall_status="healthy",
         )
 
         # Conflict engine status

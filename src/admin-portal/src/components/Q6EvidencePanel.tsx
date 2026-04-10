@@ -1,4 +1,5 @@
 import React from "react";
+import { useTranslation } from "react-i18next";
 import {
   Alert, Box, Card, CardContent, Chip, Grid, Stack, Typography, Accordion, AccordionSummary, AccordionDetails, List, ListItem, ListItemText, ListItemIcon
 } from "@mui/material";
@@ -20,6 +21,7 @@ interface Q6EvidencePanelProps {
 export const Q6EvidencePanel: React.FC<Q6EvidencePanelProps> = ({
   evidence, inference, providerName, elapsedMs = 0,
 }) => {
+  const { t } = useTranslation();
   return (
     <Stack spacing={3} sx={{ mt: 2 }}>
       {/* Partition 0: Inference Metadata */}
@@ -27,7 +29,7 @@ export const Q6EvidencePanel: React.FC<Q6EvidencePanelProps> = ({
         <Box sx={{ display: "flex", gap: 1, mb: 1 }}>
           {providerName && (
             <Chip
-              label={`Guardrail Engine: ${providerName}`}
+              label={`${t("nineQuestions.guardrailEngine")}: ${providerName}`}
               size="small"
               variant="outlined"
               color="primary"
@@ -35,7 +37,7 @@ export const Q6EvidencePanel: React.FC<Q6EvidencePanelProps> = ({
           )}
           {elapsedMs > 0 && (
             <Chip
-              label={`Latency: ${elapsedMs}ms`}
+              label={`${t("common.latency")}: ${elapsedMs}ms`}
               size="small"
               variant="outlined"
             />
@@ -47,11 +49,11 @@ export const Q6EvidencePanel: React.FC<Q6EvidencePanelProps> = ({
       <Card variant="outlined" sx={{ borderLeft: '4px solid', borderLeftColor: 'warning.main' }}>
         <CardContent>
           <Typography variant="h6" gutterBottom sx={{ fontWeight: 'bold' }}>
-            【前置约束证据区 (Constraint Evidence)】
+            {t("nineQuestions.constraintEvidence")}
           </Typography>
           <Grid container spacing={3}>
             <Grid size={{ xs: 12, md: 6 }}>
-              <Typography variant="subtitle2" gutterBottom color="text.secondary">可行动作与授权边界 (Actionable & Auth Boundaries):</Typography>
+              <Typography variant="subtitle2" gutterBottom color="text.secondary">{t("nineQuestions.actionableAuthBoundaries")}:</Typography>
               <Stack direction="row" spacing={1} useFlexGap flexWrap="wrap" sx={{ mb: 2 }}>
                 {evidence.actionable_space && evidence.actionable_space.map((act, i) => (
                   <Chip key={`act-${i}`} label={act} size="small" color="primary" variant="outlined" />
@@ -63,7 +65,7 @@ export const Q6EvidencePanel: React.FC<Q6EvidencePanelProps> = ({
             </Grid>
             <Grid size={{ xs: 12, md: 6 }}>
               <Typography variant="subtitle2" gutterBottom color="error.main" sx={{ display: 'flex', alignItems: 'center', gap: 0.5 }}>
-                <GavelIcon fontSize="small" /> 不可绕过约束 (Non-Bypassable Constraints):
+                <GavelIcon fontSize="small" /> {t("nineQuestions.nonBypassableConstraints")}:
               </Typography>
               <List dense sx={{ bgcolor: 'error.50', borderRadius: 1 }}>
                 {evidence.non_bypassable_constraints && evidence.non_bypassable_constraints.length > 0 ? (
@@ -74,7 +76,7 @@ export const Q6EvidencePanel: React.FC<Q6EvidencePanelProps> = ({
                     </ListItem>
                   ))
                 ) : (
-                  <ListItem><ListItemText primary="未发现系统级刚性约束" /></ListItem>
+                  <ListItem><ListItemText primary={t("nineQuestions.noSystemRigidConstraints")} /></ListItem>
                 )}
               </List>
             </Grid>
@@ -87,10 +89,10 @@ export const Q6EvidencePanel: React.FC<Q6EvidencePanelProps> = ({
         <Card variant="outlined" sx={{ borderLeft: '4px solid', borderLeftColor: 'info.main' }}>
           <CardContent>
             <Typography variant="h6" gutterBottom sx={{ fontWeight: 'bold' }}>
-              【长效记忆与补丁区 (Historical Patches)】
+              {t("nineQuestions.historicalPatches")}
             </Typography>
             <Typography variant="body2" color="text.secondary" sx={{ mb: 1 }}>
-              系统捕获到以下历史失败或红线纠正的降级补丁，严禁重复试错：
+              {t("nineQuestions.historicalPatchesDesc")}
             </Typography>
             <Stack spacing={1}>
               {evidence.historical_strategy_patches.map((patch, i) => (
@@ -98,7 +100,7 @@ export const Q6EvidencePanel: React.FC<Q6EvidencePanelProps> = ({
                   <AccordionSummary expandIcon={<ExpandMoreIcon />}>
                     <Box sx={{ display: 'flex', alignItems: 'center', gap: 1 }}>
                       <HistoryEduIcon color="action" fontSize="small" />
-                      <Typography variant="subtitle2">历史补丁 #00{i + 1}</Typography>
+                      <Typography variant="subtitle2">{t("nineQuestions.historicalPatchLabel")} #00{i + 1}</Typography>
                     </Box>
                   </AccordionSummary>
                   <AccordionDetails>
@@ -117,7 +119,7 @@ export const Q6EvidencePanel: React.FC<Q6EvidencePanelProps> = ({
       <Card variant="outlined" sx={{ border: '2px solid', borderColor: 'error.main' }}>
         <CardContent>
           <Typography variant="h6" gutterBottom sx={{ fontWeight: 'bold', color: 'error.main' }}>
-            【终极禁区判定区 (Forbidden Zone Profile)】
+            {t("nineQuestions.forbiddenZoneProfile")}
           </Typography>
           
           {inference ? (
@@ -125,7 +127,7 @@ export const Q6EvidencePanel: React.FC<Q6EvidencePanelProps> = ({
               
               {/* 绝对红线 (Alert Error) */}
               <Box>
-                <Typography variant="subtitle2" gutterBottom color="error.dark">绝对红线判决 (Absolute Red Lines):</Typography>
+                <Typography variant="subtitle2" gutterBottom color="error.dark">{t("nineQuestions.absoluteRedLines")}:</Typography>
                 {inference.absolute_red_lines && inference.absolute_red_lines.length > 0 ? (
                   <Stack spacing={1} data-testid="q6-absolute-red-lines">
                     {inference.absolute_red_lines.map((redline, i) => (
@@ -135,20 +137,20 @@ export const Q6EvidencePanel: React.FC<Q6EvidencePanelProps> = ({
                     ))}
                   </Stack>
                 ) : (
-                  <Alert severity="success" sx={{ py: 0 }}>未触发绝对红线否决</Alert>
+                  <Alert severity="success" sx={{ py: 0 }}>{t("nineQuestions.noAbsoluteRedLineTriggered")}</Alert>
                 )}
               </Box>
 
               {/* 被否决策略 (Red Chips) */}
               <Box>
-                <Typography variant="subtitle2" gutterBottom color="error.main">已拦截的高危策略 (Prohibited Strategies):</Typography>
+                <Typography variant="subtitle2" gutterBottom color="error.main">{t("nineQuestions.prohibitedStrategies")}:</Typography>
                 <Stack direction="row" spacing={1} useFlexGap flexWrap="wrap" data-testid="q6-prohibited-strategies">
                   {inference.prohibited_strategies && inference.prohibited_strategies.length > 0 ? (
                     inference.prohibited_strategies.map((strat, i) => (
                       <Chip key={i} label={strat} color="error" />
                     ))
                   ) : (
-                    <Chip label="暂无否决" size="small" variant="outlined" />
+                    <Chip label={t("nineQuestions.noVeto")} size="small" variant="outlined" />
                   )}
                 </Stack>
               </Box>
@@ -156,7 +158,7 @@ export const Q6EvidencePanel: React.FC<Q6EvidencePanelProps> = ({
               <Grid container spacing={2}>
                 <Grid size={{ xs: 12, md: 6 }}>
                   {/* 性能交换禁令 (List) */}
-                  <Typography variant="subtitle2" gutterBottom color="warning.dark">性能交换禁令 (Tradeoff Bans):</Typography>
+                  <Typography variant="subtitle2" gutterBottom color="warning.dark">{t("nineQuestions.tradeoffBans")}:</Typography>
                   <List dense sx={{ bgcolor: 'warning.50', borderRadius: 1 }}>
                     {inference.performance_tradeoff_bans && inference.performance_tradeoff_bans.length > 0 ? (
                       inference.performance_tradeoff_bans.map((ban, i) => (
@@ -166,13 +168,13 @@ export const Q6EvidencePanel: React.FC<Q6EvidencePanelProps> = ({
                         </ListItem>
                       ))
                     ) : (
-                      <ListItem><ListItemText primary="无可观风险交换约束" /></ListItem>
+                      <ListItem><ListItemText primary={t("nineQuestions.noSignificantRiskExchange")} /></ListItem>
                     )}
                   </List>
                 </Grid>
                 <Grid size={{ xs: 12, md: 6 }}>
                   {/* 污染风险点 (Warning Alerts) */}
-                  <Typography variant="subtitle2" gutterBottom color="warning.dark">污染评估 (Contamination Risks):</Typography>
+                  <Typography variant="subtitle2" gutterBottom color="warning.dark">{t("nineQuestions.contaminationRisks")}:</Typography>
                   <Stack spacing={1}>
                     {inference.contamination_risks && inference.contamination_risks.length > 0 ? (
                       inference.contamination_risks.map((risk, i) => (
@@ -181,7 +183,7 @@ export const Q6EvidencePanel: React.FC<Q6EvidencePanelProps> = ({
                         </Alert>
                       ))
                     ) : (
-                      <Alert severity="success" sx={{ py: 0 }}>沙箱上下文纯净度验证通过</Alert>
+                      <Alert severity="success" sx={{ py: 0 }}>{t("nineQuestions.sandboxContextPure")}</Alert>
                     )}
                   </Stack>
                 </Grid>
@@ -189,7 +191,7 @@ export const Q6EvidencePanel: React.FC<Q6EvidencePanelProps> = ({
 
             </Stack>
           ) : (
-            <Alert severity="info" sx={{ mt: 2 }}>等待红线推断数据同步...</Alert>
+            <Alert severity="info" sx={{ mt: 2 }}>{t("nineQuestions.waitingRedlineSync")}</Alert>
           )}
         </CardContent>
       </Card>

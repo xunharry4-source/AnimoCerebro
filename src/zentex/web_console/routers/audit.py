@@ -1,16 +1,11 @@
-from __future__ import annotations
-from typing import List
-
-
-from fastapi import APIRouter
+from typing import Any, List
 from typing_extensions import Annotated
-from fastapi import Depends
-
-from zentex.runtime.runtime import BrainRuntime
+from fastapi import APIRouter, Depends
 from zentex.web_console.contracts.audit import AuditPagePayload, TurnAuditPagePayload
 from zentex.web_console.contracts.model_provider import ModelProviderTraceItem
 from zentex.web_console.dependencies import get_runtime
 from zentex.web_console.services.audit import build_audit_page, build_model_provider_traces, build_turn_audit_page
+from zentex.runtime.runtime import BrainRuntime
 
 
 router = APIRouter()

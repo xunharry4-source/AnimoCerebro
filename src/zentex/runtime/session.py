@@ -392,6 +392,13 @@ class BrainSession:
                 snapshots = payload.get("question_snapshots")
                 if isinstance(snapshots, dict):
                     state.question_snapshots = dict(snapshots)
+                    # Log restoration for debugging
+                    import logging
+                    logger = logging.getLogger(__name__)
+                    logger.info(
+                        f"[Nine Questions Restore] Restored {len(state.question_snapshots)}/9 snapshots: "
+                        f"{sorted(state.question_snapshots.keys())}"
+                    )
                 state.environment_fingerprint = payload.get("environment_fingerprint")
                 state.agent_signature = payload.get("agent_signature")
                 self.current_nine_question_state = state

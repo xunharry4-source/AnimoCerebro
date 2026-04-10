@@ -3,7 +3,7 @@ from __future__ import annotations
 from datetime import timezone
 from typing import Any, Dict, Optional
 
-from zentex.runtime.transcript import BrainTranscriptEntry
+from zentex.runtime.models import BrainTranscriptEntry
 from zentex.web_console.contracts.transcript import TranscriptEventPayload
 
 

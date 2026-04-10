@@ -6,7 +6,7 @@ from pydantic import BaseModel, ConfigDict, Field
 
 
 class LLMTokenUsagePayload(BaseModel):
-    model_config = ConfigDict(extra="forbid", frozen=True)
+    model_config = ConfigDict(extra="ignore", frozen=True)
 
     input_tokens: int = 0
     output_tokens: int = 0
@@ -14,7 +14,7 @@ class LLMTokenUsagePayload(BaseModel):
 
 
 class LLMTracePayload(BaseModel):
-    model_config = ConfigDict(extra="forbid", frozen=True)
+    model_config = ConfigDict(extra="ignore", frozen=True)
 
     request_id: str | None = None
     decision_id: str | None = None

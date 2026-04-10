@@ -2,9 +2,7 @@ from __future__ import annotations
 
 from datetime import timezone
 from typing import Any, Dict, List, Tuple
-
-from zentex.runtime.runtime import BrainRuntime
-from zentex.runtime.transcript import BrainTranscriptEntry, BrainTranscriptEntryType
+from zentex.runtime.models import BrainTranscriptEntry, BrainTranscriptEntryType
 from zentex.web_console.contracts.audit import (
     AuditPagePayload,
     AuditRecordItem,
@@ -16,7 +14,7 @@ from zentex.web_console.contracts.model_provider import ModelProviderTraceItem
 from zentex.web_console.contracts.transcript import TranscriptEventPayload
 
 
-def build_model_provider_traces(runtime: BrainRuntime) -> List[ModelProviderTraceItem]:
+def build_model_provider_traces(runtime: Any) -> List[ModelProviderTraceItem]:
     entries: List[BrainTranscriptEntry] = runtime.transcript_store.get_entries_snapshot()
     entries_by_trace_id: Dict[str, List[BrainTranscriptEntry]] = {}
     for entry in entries:

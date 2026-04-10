@@ -858,3 +858,51 @@ class TaskServiceInterface:
                 "error": str(e),
                 "error_code": "BULK_ARCHIVE_FAILED"
             }
+    
+    # === Verification Operations ===
+    
+    async def complete_task_with_verification(
+        self, 
+        task_id: str, 
+        result: Dict[str, Any],
+        remarks: Optional[str] = None
+    ) -> Dict[str, Any]:
+        """
+        Complete a task with verification workflow.
+        
+        Args:
+            task_id: Task ID
+            result: Worker's submission result
+            remarks: Optional remarks
+            
+        Returns:
+            Completion result with verification details
+        """
+        try:
+            return await self._service.complete_task_with_verification(
+                task_id, result, remarks
+            )
+        except Exception as e:
+            logger.error(f"Failed to complete task with verification {task_id}: {e}")
+            return {
+                "success": False,
+                "error": str(e),
+                "error_code": "VERIFICATION_COMPLETION_FAILED"
+            }
+    
+    def get_verification_engine_status(self) -> Dict[str, Any]:
+        """
+        Get verification engine status.
+        
+        Returns:
+            Verification engine status information
+        """
+        try:
+            return self._service.get_verification_engine_status()
+        except Exception as e:
+            logger.error(f"Failed to get verification engine status: {e}")
+            return {
+                "success": False,
+                "error": str(e),
+                "error_code": "VERIFICATION_STATUS_FAILED"
+            }

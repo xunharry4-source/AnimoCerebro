@@ -1,4 +1,5 @@
 import { useEffect, useState } from "react";
+import { useTranslation } from "react-i18next";
 import {
   Alert,
   Button,
@@ -54,6 +55,7 @@ type TestPageProps = {
 };
 
 export default function TestPage({ onNavigate }: TestPageProps) {
+  const { t } = useTranslation();
   const [items, setItems] = useState<ModelFeatureCatalogItem[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
@@ -74,10 +76,10 @@ export default function TestPage({ onNavigate }: TestPageProps) {
         try {
           const status = await fetchLlmStatus(true);
           setLlmAvailable(status.available);
-          setLlmHint(status.available ? null : (status.hint ?? `LLM 不可用：${status.reason ?? "unknown"}`));
+          setLlmHint(status.available ? null : (status.hint ?? t("test.llmUnavailable", { reason: status.reason ?? "unknown" })));
         } catch {
           setLlmAvailable(false);
-          setLlmHint("LLM 状态检查失败，请检查后端。");
+          setLlmHint(t("test.llmStatusCheckFailed"));
         }
 
         const response = await fetch("/api/web/tests/model-features", {
@@ -89,7 +91,7 @@ export default function TestPage({ onNavigate }: TestPageProps) {
         setItems((await response.json()) as ModelFeatureCatalogItem[]);
         setError(null);
       } catch {
-        setError("无法加载模型功能测试清单，请检查后端状态。");
+        setError(t("test.catalogLoadFailed"));
       } finally {
         setLoading(false);
       }
@@ -114,7 +116,7 @@ export default function TestPage({ onNavigate }: TestPageProps) {
       setHistoryError(null);
     } catch {
       setHistoryItems([]);
-      setHistoryError("无法加载该功能的历史测试记录。");
+      setHistoryError(t("test.historyLoadFailed"));
     } finally {
       setHistoryLoading(false);
     }
@@ -134,7 +136,7 @@ export default function TestPage({ onNavigate }: TestPageProps) {
       setRunLogError(null);
     } catch {
       setSelectedRunLog(null);
-      setRunLogError("无法加载该条测试记录的详细日志。");
+      setRunLogError(t("test.runLogLoadFailed"));
     } finally {
       setRunLogLoading(false);
     }
@@ -143,14 +145,14 @@ export default function TestPage({ onNavigate }: TestPageProps) {
   return (
     <Stack spacing={2}>
       <Typography variant="h4" component="h1">
-        测试页面
+        {t("test.title")}
       </Typography>
       <Typography variant="body2" color="text.secondary">
-        当前列出所有已接入大模型调用的可测试功能，支持手动注入参数并观察输出效果。
+        {t("test.subtitle")}
       </Typography>
       {llmAvailable === false ? (
         <Alert severity="error">
-          LLM 不可用，已禁止所有测试功能操作。{llmHint ? ` (${llmHint})` : ""}
+          {t("test.llmDisabled")}{llmHint ? ` (${llmHint})` : ""}
         </Alert>
       ) : null}
       <Card variant="outlined">
@@ -158,7 +160,7 @@ export default function TestPage({ onNavigate }: TestPageProps) {
           {loading ? (
             <Stack direction="row" spacing={1} alignItems="center">
               <CircularProgress size={18} />
-              <Typography variant="body2">加载中...</Typography>
+              <Typography variant="body2">{t("common.loading")}</Typography>
             </Stack>
           ) : error ? (
             <Alert severity="error">{error}</Alert>
@@ -166,9 +168,9 @@ export default function TestPage({ onNavigate }: TestPageProps) {
             <Table>
               <TableHead>
                 <TableRow>
-                  <TableCell>测试功能名</TableCell>
-                  <TableCell>功能说明</TableCell>
-                  <TableCell width={240}>操作</TableCell>
+                  <TableCell>{t("test.featureName")}</TableCell>
+                  <TableCell>{t("test.featureDescription")}</TableCell>
+                  <TableCell width={240}>{t("common.actions")}</TableCell>
                 </TableRow>
               </TableHead>
               <TableBody>
@@ -183,7 +185,7 @@ export default function TestPage({ onNavigate }: TestPageProps) {
                         onClick={() => onNavigate(`test-feature:${feature.feature_id}`)}
                         disabled={llmAvailable === false}
                       >
-                        进入
+                        {t("test.enter")}
                       </Button>
                       <Button
                         size="small"
@@ -192,7 +194,7 @@ export default function TestPage({ onNavigate }: TestPageProps) {
                         sx={{ ml: 1 }}
                         disabled={llmAvailable === false}
                       >
-                        查看历史
+                        {t("test.viewHistory")}
                       </Button>
                     </TableCell>
                   </TableRow>
@@ -207,24 +209,24 @@ export default function TestPage({ onNavigate }: TestPageProps) {
         <Card variant="outlined">
           <CardContent>
             <Stack spacing={2}>
-              <Typography variant="h6">历史测试记录：{selectedFeatureId}</Typography>
+              <Typography variant="h6">{t("test.historyTitle", { featureId: selectedFeatureId })}</Typography>
               {historyLoading ? (
                 <Stack direction="row" spacing={1} alignItems="center">
                   <CircularProgress size={18} />
-                  <Typography variant="body2">加载历史记录中...</Typography>
+                  <Typography variant="body2">{t("test.loadingHistory")}</Typography>
                 </Stack>
               ) : historyError ? (
                 <Alert severity="error">{historyError}</Alert>
               ) : historyItems.length === 0 ? (
-                <Alert severity="info">该功能暂无历史测试记录。</Alert>
+                <Alert severity="info">{t("test.noHistoryRecords")}</Alert>
               ) : (
                 <Table>
                   <TableHead>
                     <TableRow>
-                      <TableCell>测试运行ID</TableCell>
-                      <TableCell>开始时间</TableCell>
-                      <TableCell>请求/Token</TableCell>
-                      <TableCell width={140}>操作</TableCell>
+                      <TableCell>{t("test.testRunId")}</TableCell>
+                      <TableCell>{t("test.startTime")}</TableCell>
+                      <TableCell>{t("test.requestTokenStats")}</TableCell>
+                      <TableCell width={140}>{t("common.actions")}</TableCell>
                     </TableRow>
                   </TableHead>
                   <TableBody>
@@ -242,7 +244,7 @@ export default function TestPage({ onNavigate }: TestPageProps) {
                             onClick={() => void loadRunLog(item.test_run_id)}
                             disabled={llmAvailable === false}
                           >
-                            查看日志
+                            {t("test.viewLog")}
                           </Button>
                         </TableCell>
                       </TableRow>
@@ -254,13 +256,13 @@ export default function TestPage({ onNavigate }: TestPageProps) {
               {runLogLoading ? (
                 <Stack direction="row" spacing={1} alignItems="center">
                   <CircularProgress size={18} />
-                  <Typography variant="body2">加载日志中...</Typography>
+                  <Typography variant="body2">{t("test.loadingLog")}</Typography>
                 </Stack>
               ) : runLogError ? (
                 <Alert severity="error">{runLogError}</Alert>
               ) : selectedRunLog ? (
                 <Stack spacing={1}>
-                  <Typography variant="subtitle1">记录详细日志：{selectedRunLog.item.test_run_id}</Typography>
+                  <Typography variant="subtitle1">{t("test.logDetailTitle", { runId: selectedRunLog.item.test_run_id })}</Typography>
                   <pre style={{ margin: 0, whiteSpace: "pre-wrap" }}>
                     {JSON.stringify(selectedRunLog, null, 2)}
                   </pre>

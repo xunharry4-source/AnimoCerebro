@@ -4,11 +4,11 @@
 
 ## 一、核心契约与继承底座
 
-- 所有新插件必须最终继承 [BasePluginSpec](/Users/harry/Documents/git/AnimoCerebro/src/zentex/core/plugin_base.py)。
+- 所有新插件必须最终继承 [BasePluginSpec](../../zentex/core/plugin_base.py)。
 - 并根据职责实现以下专属契约之一：
-  - [SignalIngestPlugin](/Users/harry/Documents/git/AnimoCerebro/src/zentex/core/sensory_spec.py)
-  - [SignalSanitizePlugin](/Users/harry/Documents/git/AnimoCerebro/src/zentex/core/sensory_spec.py)
-  - [SignalInterpretPlugin](/Users/harry/Documents/git/AnimoCerebro/src/zentex/core/sensory_spec.py)
+  - [SignalIngestPlugin](../../zentex/core/sensory_spec.py)
+  - [SignalSanitizePlugin](../../zentex/core/sensory_spec.py)
+  - [SignalInterpretPlugin](../../zentex/core/sensory_spec.py)
 - 插件物理代码必须放在 `src/plugins/sensory/` 下。
 - 净化器的输出必须是 `SanitizedSignal`，解释器输入也必须是 `SanitizedSignal`。
 

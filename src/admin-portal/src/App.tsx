@@ -14,6 +14,7 @@ import { Link as RouterLink, Navigate, Route, Routes, useLocation } from "react-
 import RealtimeDashboard from "./pages/dashboard/RealtimeDashboard";
 import MemoryReasoning from "./pages/dashboard/MemoryReasoning";
 import SimulationExplorer from "./pages/dashboard/SimulationExplorer";
+import HealthDashboard from "./pages/dashboard/HealthDashboard";
 import NineQuestionsReport from "./pages/nine-questions/NineQuestionsReport";
 
 // Q1-Q9 Isolated Audit Components (Zentex G31A Compliance)
@@ -39,95 +40,109 @@ import Q9Test from "./pages/nine-questions/q9/Q9Test";
 import NineQuestionDetailPage from "./pages/nine-questions/NineQuestionDetailPage";
 import NineQuestionSandboxPage from "./pages/nine-questions/NineQuestionSandboxPage";
 import AgentAssetManager from "./pages/agents/AgentAssetManager";
+import AgentDetail from "./pages/agents/AgentDetail";
 import ZentexTaskManager from "./pages/tasks/ZentexTaskManager";
 import PluginManagement from "./pages/plugins/PluginManagement";
 import UpgradeManagement from "./pages/upgrades/UpgradeManagement";
+import UpgradeDetailPage from "./pages/upgrades/UpgradeDetailPage";
 import CliAssetManager from "./pages/cli/CliAssetManager";
+import CliToolDetailPage from "./pages/cli/CliToolDetailPage";
 import McpServerDashboard from "./pages/mcp/McpServerDashboard";
+import McpServerDetail from "./pages/mcp/McpServerDetail";
 import AuditReplay from "./pages/audit/AuditReplay";
 import LearningDashboard from "./pages/learning/LearningDashboard";
 import { fetchLlmStatus, type LLMStatus } from "./api/llmStatus";
-import { useEffect, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 
 const DRAWER_WIDTH = 240;
 
-const NAV_ITEMS: Array<{ path: string; matchPrefix: string; title: string; subtitle: string }> = [
+import { useTranslation } from "react-i18next";
+
+const NAV_ITEMS = (t: any) => [
   {
     path: "/console/dashboard",
     matchPrefix: "/console/dashboard",
-    title: "实时指挥台",
-    subtitle: "运行态总览",
+    title: t("app.nav.dashboard.title"),
+    subtitle: t("app.nav.dashboard.subtitle"),
   },
   {
     path: "/console/nine-questions",
     matchPrefix: "/console/nine-questions",
-    title: "9问测试页",
-    subtitle: "列表 / 详情 / 沙箱",
+    title: t("app.nav.nineQuestions.title"),
+    subtitle: t("app.nav.nineQuestions.subtitle"),
   },
   {
     path: "/console/agents",
     matchPrefix: "/console/agents",
-    title: "Agent 管理",
-    subtitle: "资产与任务流水",
+    title: t("app.nav.agents.title"),
+    subtitle: t("app.nav.agents.subtitle"),
   },
   {
     path: "/console/tasks",
     matchPrefix: "/console/tasks",
-    title: "任务管理",
-    subtitle: "状态机与人工干预",
+    title: t("app.nav.tasks.title"),
+    subtitle: t("app.nav.tasks.subtitle"),
   },
   {
     path: "/console/memory",
     matchPrefix: "/console/memory",
-    title: "记忆与推理",
-    subtitle: "内部待办与复查",
+    title: t("app.nav.memory.title"),
+    subtitle: t("app.nav.memory.subtitle"),
   },
   {
     path: "/console/simulation",
     matchPrefix: "/console/simulation",
-    title: "多分支模拟",
-    subtitle: "世界模型对比",
+    title: t("app.nav.simulation.title"),
+    subtitle: t("app.nav.simulation.subtitle"),
   },
   {
     path: "/console/plugins",
     matchPrefix: "/console/plugins",
-    title: "插件管理",
-    subtitle: "认知工具验收",
+    title: t("app.nav.plugins.title"),
+    subtitle: t("app.nav.plugins.subtitle"),
   },
   {
     path: "/console/upgrades",
     matchPrefix: "/console/upgrades",
-    title: "升级管理",
-    subtitle: "LLM / 插件演化",
+    title: t("app.nav.upgrades.title"),
+    subtitle: t("app.nav.upgrades.subtitle"),
   },
   {
     path: "/console/cli-tools",
     matchPrefix: "/console/cli-tools",
-    title: "CLI 管理",
-    subtitle: "外部命令接入",
+    title: t("app.nav.cli.title"),
+    subtitle: t("app.nav.cli.subtitle"),
   },
   {
     path: "/console/mcp-servers",
     matchPrefix: "/console/mcp-servers",
-    title: "MCP 管理",
-    subtitle: "外部能力接入",
+    title: t("app.nav.mcp.title"),
+    subtitle: t("app.nav.mcp.subtitle"),
   },
   {
     path: "/console/audit",
     matchPrefix: "/console/audit",
-    title: "审计与回放",
-    subtitle: "大模型通信调试",
+    title: t("app.nav.audit.title"),
+    subtitle: t("app.nav.audit.subtitle"),
   },
   {
     path: "/console/learning",
     matchPrefix: "/console/learning",
-    title: "受控学习",
-    subtitle: "学习引擎与溯源",
+    title: t("app.nav.learning.title"),
+    subtitle: t("app.nav.learning.subtitle"),
+  },
+  {
+    path: "/console/health",
+    matchPrefix: "/console/health",
+    title: t("app.nav.health.title"),
+    subtitle: t("app.nav.health.subtitle"),
   },
 ];
 
 export default function App() {
+  const { t, i18n } = useTranslation();
   const location = useLocation();
+  const navItems = useMemo(() => NAV_ITEMS(t), [t]);
   const [llmStatus, setLlmStatus] = useState<LLMStatus | null>(null);
   const [llmStatusError, setLlmStatusError] = useState<string | null>(null);
 
@@ -160,14 +175,14 @@ export default function App() {
       >
         <Toolbar>
           <Stack spacing={0.5}>
-            <Typography variant="h6">Zentex Pro Mode</Typography>
+            <Typography variant="h6">{t("app.title")}</Typography>
             <Typography variant="body2" color="text.secondary">
-              核心器官插件管理台
+              {t("app.subtitle")}
             </Typography>
           </Stack>
         </Toolbar>
         <List sx={{ px: 1 }}>
-          {NAV_ITEMS.map((item) => (
+          {navItems.map((item) => (
             <ListItemButton
               key={item.path}
               component={RouterLink}
@@ -230,15 +245,20 @@ export default function App() {
           <Route path="/console/nine-questions/:q_id" element={<NineQuestionDetailPage />} />
           <Route path="/console/nine-questions/:q_id/sandbox" element={<NineQuestionSandboxPage />} />
           <Route path="/console/agents" element={<AgentAssetManager />} />
+          <Route path="/console/agents/:agentId" element={<AgentDetail />} />
           <Route path="/console/tasks" element={<ZentexTaskManager />} />
           <Route path="/console/memory" element={<MemoryReasoning />} />
           <Route path="/console/simulation" element={<SimulationExplorer />} />
           <Route path="/console/plugins" element={<PluginManagement />} />
           <Route path="/console/upgrades" element={<UpgradeManagement />} />
+          <Route path="/console/upgrades/:record_id" element={<UpgradeDetailPage />} />
           <Route path="/console/cli-tools" element={<CliAssetManager />} />
+          <Route path="/console/cli-tools/:toolName" element={<CliToolDetailPage />} />
           <Route path="/console/mcp-servers" element={<McpServerDashboard />} />
+          <Route path="/console/mcp-servers/:server_id" element={<McpServerDetail />} />
           <Route path="/console/audit" element={<AuditReplay />} />
           <Route path="/console/learning" element={<LearningDashboard />} />
+          <Route path="/console/health" element={<HealthDashboard />} />
           <Route path="*" element={<Navigate to="/console/dashboard" replace />} />
         </Routes>
       </Box>

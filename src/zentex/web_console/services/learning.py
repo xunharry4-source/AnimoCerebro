@@ -8,7 +8,7 @@ from fastapi import Request
 from zentex.learning.budget import ReasoningBudget
 from zentex.learning.directions import LearningDirection, describe_direction
 from zentex.learning.engine import LEARNING_SESSION_ID, run_learning_cycle
-from zentex.runtime.transcript import BrainTranscriptEntryType, BrainTranscriptStore
+from zentex.runtime.models import BrainTranscriptEntryType
 from zentex.web_console.contracts.learning import (
     LearningDirectionPlanItem,
     LearningHistoryRow,
@@ -58,7 +58,7 @@ def _payload_summary(payload: Dict[str, Any]) -> str:
     return str(payload.get("note") or payload.get("phase") or payload.get("kind") or "")
 
 
-def build_learning_history(store: BrainTranscriptStore, *, limit: int = 200) -> List[LearningHistoryRow]:
+def build_learning_history(store: Any, *, limit: int = 200) -> List[LearningHistoryRow]:
     rows: List[LearningHistoryRow] = []
     for entry in reversed(store.get_entries_snapshot()):
         if entry.session_id != LEARNING_SESSION_ID:

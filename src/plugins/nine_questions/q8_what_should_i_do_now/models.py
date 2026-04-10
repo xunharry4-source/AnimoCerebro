@@ -18,6 +18,7 @@ class ObjectiveProfile(BaseModel):
     completion_conditions: List[str] = Field(default_factory=list, description="Conditions for success.")
     pause_conditions: List[str] = Field(default_factory=list, description="Conditions requiring a temporary halt.")
     escalation_conditions: List[str] = Field(default_factory=list, description="Conditions requiring human or higher-level intervention.")
+    current_phase_tasks: List[str] = Field(default_factory=list, description="Specific tasks for the current phase.")
     priority_order: List[str] = Field(..., description="Explicit order of execution for current tasks.")
 
 

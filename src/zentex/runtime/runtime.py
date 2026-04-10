@@ -17,8 +17,13 @@ from pathlib import Path
 from threading import Lock
 from typing import Any
 from uuid import uuid4
+from typing import TYPE_CHECKING
 
-from plugins.provider_tools import build_default_provider_tools
+if TYPE_CHECKING:
+    from zentex.runtime.session import BrainSession
+    from zentex.cognition.motivation import MotivationEngine, MetaDrive
+
+from zentex.core.identity import IdentityKernelStore
 from zentex.core.models import BrainRuntimeState
 from zentex.runtime.transcript import BrainTranscriptStore
 from zentex.runtime.nine_questions.router import NineQuestionRouter, build_event
@@ -26,6 +31,7 @@ from zentex.runtime.nine_questions.state import NineQuestionState
 from zentex.runtime.nine_questions.executor import NineQuestionExecutor
 from zentex.common.state import SharedStateStore
 from zentex.common.locking import get_lock_for_resource
+from zentex.runtime.cognitive_tools.registry import CognitiveToolRegistry
 
 
 class BrainRuntime:
@@ -59,8 +65,11 @@ class BrainRuntime:
         ready-to-run runtime without manually threading the LLM dependency
         through each layer.
         """
+        from zentex.llm import get_llm_service
 
-        llm_tool = build_default_provider_tools()[llm_tool_name]
+        llm_service = get_llm_service()
+        llm_tool = llm_service.get_provider(llm_tool_name)
+        
         return cls(
             runtime_id=runtime_id,
             default_workspace=default_workspace,
@@ -107,10 +116,12 @@ class BrainRuntime:
         self.runtime_memory_store = runtime_memory_store
         self.transcript_store = transcript_store or self._build_default_transcript_store()
         self.reflection_store = reflection_store
-        self.identity_store = identity_store
+        self.identity_store = identity_store or IdentityKernelStore()
         self._attach_runtime_memory_listener()
 
-        self.tool_registry = tool_registry
+        self.tool_registry = tool_registry or CognitiveToolRegistry(
+            transcript_store=self.transcript_store
+        )
         self.llm_tool = llm_tool
 
         self.working_memory_controller = working_memory_controller
@@ -122,6 +133,9 @@ class BrainRuntime:
         self.simulation_engine = simulation_engine
         self.interaction_mind_engine = interaction_mind_engine
         self.consolidation_engine = consolidation_engine
+
+        from zentex.cognition.motivation import MotivationEngine
+        self.motivation_engine = MotivationEngine()
 
         # Cluster-friendly shared state
         self._shared_sessions = SharedStateStore(f"{self.runtime_id}:sessions")
@@ -194,6 +208,7 @@ class BrainRuntime:
             read_only_mode=self.read_only_mode,
             degraded_mode=self.degraded_mode,
             manual_confirmation_required=self.manual_confirmation_required,
+            identity_verified=self.verify_identity_continuity(),
             last_runtime_snapshot_at=snapshot_at,
         )
 
@@ -247,6 +262,37 @@ class BrainRuntime:
         if self.degraded_mode:
             return "degraded"
         return "ready"
+
+    def verify_identity_continuity(self) -> bool:
+        """
+        Verify the continuity lock of the current identity kernel.
+        
+        If no identity_kernel_ref is set, verification is skipped (True).
+        """
+        if not self.identity_kernel_ref:
+            return True
+        
+        if not self.identity_store:
+            return False
+            
+        return self.identity_store.verify_continuity(self.identity_kernel_ref)
+
+    def get_current_motivations(self) -> list[Any]:
+        """
+        Derive active motivations from the current identity and nine-question state.
+        """
+        if not self.identity_kernel_ref or not self.identity_store:
+            return []
+            
+        kernel = self.identity_store.get_kernel(self.identity_kernel_ref)
+        if not kernel:
+            return []
+            
+        from zentex.cognition.motivation import MotivationEngine
+        return self.motivation_engine.generate_motivations(
+            identity=kernel,
+            nine_q_state=self.nine_question_state
+        )
 
     def refresh_nine_question_state(
         self,

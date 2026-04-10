@@ -87,6 +87,15 @@ class McpCognitiveToolPlugin(CognitiveToolSpec):
             phase="invoked",
             payload={"arguments": arguments},
         )
+        # Start supervision record
+        from zentex.supervision.ai_supervisor import get_ai_supervisor
+        supervisor = get_ai_supervisor()
+        supervision_record = supervisor.start_monitoring(
+            task_id=turn_id,
+            action_type=f"mcp_cognitive:{self._tool_name}",
+            parameters={"server_id": self._server_id, "tool_name": self._tool_name, **arguments}
+        )
+
         try:
             raw = self._transport.invoke_tool(
                 self._server_config,
@@ -94,7 +103,9 @@ class McpCognitiveToolPlugin(CognitiveToolSpec):
                 arguments=arguments,
                 trace_id=trace_id,
             )
+            supervisor.update_execution(supervision_record.record_id, "completed", result=raw)
         except Exception as exc:
+            supervisor.update_execution(supervision_record.record_id, "failed", error=str(exc))
             self._record_event(
                 session_id=session_id,
                 turn_id=turn_id,
@@ -189,6 +200,15 @@ class McpExecutionDomainPlugin(ExecutionDomainPlugin):
             phase="invoked",
             payload={"arguments": arguments},
         )
+        # Start supervision record
+        from zentex.supervision.ai_supervisor import get_ai_supervisor
+        supervisor = get_ai_supervisor()
+        supervision_record = supervisor.start_monitoring(
+            task_id=turn_id,
+            action_type=f"mcp_execution:{self._tool_name}",
+            parameters={"server_id": self._server_id, "tool_name": self._tool_name, **arguments}
+        )
+
         try:
             raw = self._transport.invoke_tool(
                 self._server_config,
@@ -196,7 +216,9 @@ class McpExecutionDomainPlugin(ExecutionDomainPlugin):
                 arguments=arguments,
                 trace_id=trace_id,
             )
+            supervisor.update_execution(supervision_record.record_id, "completed", result=raw)
         except Exception as exc:
+            supervisor.update_execution(supervision_record.record_id, "failed", error=str(exc))
             self._record_event(
                 session_id=session_id,
                 turn_id=turn_id,

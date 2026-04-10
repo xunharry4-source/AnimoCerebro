@@ -2,13 +2,14 @@ from __future__ import annotations
 
 import logging
 from datetime import datetime, timezone
-from typing import Any, Dict, List
+from typing import Any, Dict, List, Optional
 from uuid import uuid4
 
 from pydantic import BaseModel, ConfigDict, Field
 
 from zentex.core.model_provider_spec import ModelProviderCallerContext, ModelProviderSpec
-from zentex.runtime.transcript import BrainTranscriptEntryType, BrainTranscriptStore
+from zentex.runtime.service import get_runtime_service
+from zentex.runtime.transcript import BrainTranscriptEntryType
 from zentex.tasks.models import CoordinationMode, TaskType
 
 logger = logging.getLogger(__name__)
@@ -45,15 +46,15 @@ class LLMTaskDecomposerPlugin:
         self,
         *,
         model_provider: ModelProviderSpec,
-        transcript_store: BrainTranscriptStore,
+        transcript_store: Optional[Any] = None,
         session_id: str = "task-management",
     ) -> None:
         self._model_provider = model_provider
-        self._transcript_store = transcript_store
+        self._transcript_store = transcript_store or get_runtime_service().get_transcript_store()
         self._session_id = session_id
 
     def decompose_mission(self, mission_title: str, mission_content: str) -> List[Dict[str, Any]]:
-        if not isinstance(self._transcript_store, BrainTranscriptStore):
+        if self._transcript_store is None:
             raise RuntimeError("transcript_store is required for auditable replay")
         if self._model_provider is None or not hasattr(self._model_provider, "generate_json"):
             raise RuntimeError("LLM MANDATORY: missing active ModelProvider for task decomposition")

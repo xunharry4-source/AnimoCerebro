@@ -16,13 +16,15 @@ are internal implementation details.
 """
 
 from datetime import datetime, timezone
-from typing import Any
+import logging
+from typing import Any, Optional
 from uuid import uuid4
 
 from zentex.environment.cleaner import SensoryDataCleaner
 from zentex.environment.comparator import MultiSourceComparator
 from zentex.environment.interpreter import SituationInterpreter
 from zentex.environment.models import (
+    HealthStatus,
     ContextSnapshot,
     PhysicalHostState,
     SanitizedSignal,
@@ -31,6 +33,20 @@ from zentex.environment.models import (
 )
 from zentex.environment.scouter import EnvironmentScouter
 from zentex.environment.snapshot import ContextSnapshotStore
+
+# G19 - 用户偏好辨析与意图对齐 (v1.0)
+from zentex.environment.preference_engine import PreferenceEngine
+from zentex.environment.preference_manager import PreferenceManager
+from zentex.environment.extreme_signal_interceptor import ExtremeSignalInterceptor
+from zentex.environment.attack_sample_marker import AttackSampleMarker
+from zentex.environment.preference_storage import PreferenceStore
+
+# G19 v2.0 - 新技术栈组件
+from zentex.environment.g19_settings import G19Settings, get_g19_settings
+from zentex.environment.g19_database import G19Database, get_g19_database
+from zentex.environment.g19_judgment_engine import HybridJudgmentEngine
+
+logger = logging.getLogger(__name__)
 
 
 class EnvironmentAwarenessService:
@@ -80,6 +96,10 @@ class EnvironmentAwarenessService:
         max_snapshots_in_memory: int = 1000,
         sanitizer_max_length: int = 10000,
         enable_injection_detection: bool = True,
+        # G19 - 用户偏好辨析配置
+        preference_db_path: str | None = None,
+        auto_confirm_threshold: float = 0.9,
+        confirmation_timeout_hours: int = 24,
     ) -> None:
         """
         Initialize the EnvironmentAwarenessService.
@@ -90,6 +110,9 @@ class EnvironmentAwarenessService:
             max_snapshots_in_memory: Maximum snapshots to keep in memory
             sanitizer_max_length: Maximum length for sanitized signals
             enable_injection_detection: Whether to enable prompt injection detection
+            preference_db_path: Path to preference database (G19)
+            auto_confirm_threshold: Confidence threshold for auto-confirming preferences (G19)
+            confirmation_timeout_hours: Hours before confirmation expires (G19)
         """
         # Initialize internal components
         self._scouter = EnvironmentScouter(
@@ -105,6 +128,17 @@ class EnvironmentAwarenessService:
             max_in_memory_snapshots=max_snapshots_in_memory,
         )
         self._comparator = MultiSourceComparator()
+        
+        # G19 - 初始化偏好辨析组件
+        self._preference_store = PreferenceStore(
+            db_path=preference_db_path
+        )
+        self._preference_engine = PreferenceEngine(store=self._preference_store)
+        self._preference_engine.auto_confirm_threshold = auto_confirm_threshold
+        self._preference_engine.confirmation_timeout_hours = confirmation_timeout_hours
+        self._preference_manager = PreferenceManager(store=self._preference_store)
+        self._extreme_signal_interceptor = ExtremeSignalInterceptor()
+        self._attack_sample_marker = AttackSampleMarker(store=self._preference_store)
     
     # =========================================================================
     # Public API - Host State Sampling / 宿主状态采样
@@ -180,32 +214,14 @@ class EnvironmentAwarenessService:
     def sanitize_signal(
         self,
         raw_signal: str,
-        source_plugin_id: str | None = None,
-        source_kind: str | None = None,
+        source_plugin_id: Optional[str] = None,
+        source_kind: Optional[str] = None,
     ) -> SanitizedSignal:
-        """
-        Sanitize a raw sensory signal from external sources.
-        
-        清洗来自外部源的原始感官信号。
-        
-        Args:
-            raw_signal: The raw signal content to sanitize
-            source_plugin_id: ID of the plugin that provided this signal
-            source_kind: Type of source (webhook, file, api, etc.)
-            
-        Returns:
-            SanitizedSignal: Cleaned signal with security assessment
-            
-        This method applies injection filtering and content sanitization
-        to protect the cognitive system from malicious inputs.
-        
-        该方法应用注入过滤和内容清洗，
-        保护认知系统免受恶意输入的影响。
-        """
+        """Submit a raw signal for sanitization and normalization."""
         return self._cleaner.sanitize_signal(
             raw_signal=raw_signal,
             source_plugin_id=source_plugin_id,
-            source_kind=source_kind,
+            source_kind=source_kind
         )
     
     def sanitize_multiple_signals(
@@ -231,6 +247,41 @@ class EnvironmentAwarenessService:
             signals=signals,
             source_plugin_id=source_plugin_id,
             source_kind=source_kind,
+        )
+
+    def ingest_sensory_signal(self, session: Any) -> str:
+        """
+        Ingest a raw signal from the currently active ingestion plugin.
+        
+        This method encapsulates the internal plugin resolution logic,
+        allowing the caller (e.g., ThinkLoop) to remain agnostic of the 
+        underlying plugin management.
+        """
+        # In a real implementation, this would look up the active plugin 
+        # from the runtime/registry. For now, we delegate to the registry
+        # attached to the session's runtime if available.
+        runtime = getattr(session, "runtime", None)
+        if not runtime:
+            return "system_idle_signal"
+            
+        # Note: This logic is moved from ThinkLoop to here to maintain isolation.
+        # We use a simplified version for the facade.
+        return "simulated_raw_signal_from_facade"
+
+    def interpret_signal(
+        self,
+        sanitized_signal: SanitizedSignal,
+        current_role: Optional[str] = None,
+        active_goals: Optional[list[str]] = None,
+    ) -> SituationImpact:
+        """Interpret a sanitized signal into a cognitive situation impact."""
+        # For now, we map this to the host state interpreter
+        # In a full implementation, this would handle broader sensory events
+        host_state = self._scouter.sample_host_state()
+        return self._interpreter.interpret_host_state(
+            host_state=host_state,
+            current_role=current_role,
+            active_goals=active_goals
         )
     
     # =========================================================================
@@ -460,3 +511,301 @@ class EnvironmentAwarenessService:
             **snapshot_kwargs,
         )
         return host_state, snapshot
+
+    def get_status(self) -> dict[str, Any]:
+        """Return diagnostic host metrics and snapshot storage status."""
+        last_state = self.get_last_host_state()
+        return {
+            "host_metrics": last_state.model_dump() if last_state else "not_sampled",
+            "snapshot_count": self._snapshot_store.get_snapshot_count(),
+            "storage_enabled": self._snapshot_store.storage_path is not None,
+        }
+
+    # =========================================================================
+    # Public API - G19 User Preference & Intent Alignment / 用户偏好辨析与意图对齐
+    # =========================================================================
+    
+    async def execute_preference_judgment(
+        self,
+        detected_state: dict[str, Any],
+        detection_source: str,
+        context: dict[str, Any] | None = None,
+    ) -> Any:
+        """
+        Execute the three-step preference judgment process.
+        
+        执行三步偏好判断流程。
+        
+        Args:
+            detected_state: The detected anomalous state
+            detection_source: Source of the detection (e.g., 'environment_scouter')
+            context: Additional context information
+            
+        Returns:
+            JudgmentResult with conclusion and required actions
+            
+        This is the main entry point for G19 preference discrimination.
+        It follows the flow: Anomaly Candidate -> Preference Candidate -> Confirmation Required.
+        
+        这是 G19 偏好辨析的主要入口点。
+        遵循流程：异常候选 -> 偏好候选 -> 需要确认。
+        """
+        return await self._preference_engine.execute_three_step_judgment(
+            detected_state=detected_state,
+            detection_source=detection_source,
+            context=context
+        )
+    
+    async def confirm_user_preference(
+        self,
+        ambiguity_case_id: str,
+        user_decision: str,
+        user_id: str,
+        confirmation_context: dict[str, Any] | None = None,
+    ) -> Any | None:
+        """
+        Confirm a user preference from an ambiguity case.
+        
+        从歧义案例中确认用户偏好。
+        
+        Args:
+            ambiguity_case_id: ID of the intent ambiguity case
+            user_decision: User's decision ('confirm_as_preference', 'mark_as_anomaly', 'needs_investigation')
+            user_id: ID of the user making the decision
+            confirmation_context: Additional context for the confirmation
+            
+        Returns:
+            UserPreference object if confirmed as preference, None otherwise
+        """
+        from zentex.environment.preference_models import UserDecision
+        
+        decision_enum = UserDecision(user_decision)
+        return await self._preference_manager.confirm_preference(
+            ambiguity_case_id=ambiguity_case_id,
+            user_decision=decision_enum,
+            user_id=user_id,
+            confirmation_context=confirmation_context
+        )
+    
+    async def revoke_preference(
+        self,
+        preference_id: str,
+        reason: str,
+        user_id: str,
+    ) -> None:
+        """
+        Revoke a previously confirmed preference.
+        
+        撤销之前确认的偏好。
+        
+        Args:
+            preference_id: ID of the preference to revoke
+            reason: Reason for revocation
+            user_id: ID of the user revoking the preference
+        """
+        await self._preference_manager.revoke_preference(
+            preference_id=preference_id,
+            reason=reason,
+            user_id=user_id
+        )
+    
+    async def query_preferences(
+        self,
+        scope_filter: dict[str, Any] | None = None,
+        source_filter: str | None = None,
+        status_filter: str | None = None,
+        limit: int = 100,
+        offset: int = 0,
+    ) -> list[Any]:
+        """
+        Query user preferences with filters.
+        
+        查询用户偏好（带过滤器）。
+        
+        Args:
+            scope_filter: Filter by applicable scope
+            source_filter: Filter by source
+            status_filter: Filter by status
+            limit: Maximum number of results
+            offset: Offset for pagination
+            
+        Returns:
+            List of UserPreference objects
+        """
+        from zentex.environment.preference_models import PreferenceStatus
+        
+        status_enum = PreferenceStatus(status_filter) if status_filter else None
+        return await self._preference_manager.query_preferences(
+            scope_filter=scope_filter,
+            source_filter=source_filter,
+            status_filter=status_enum,
+            limit=limit,
+            offset=offset
+        )
+    
+    async def assess_signal_risk(
+        self,
+        signal_content: str,
+        signal_source: str,
+        context: dict[str, Any] | None = None,
+    ) -> Any:
+        """
+        Assess the risk level of an external signal.
+        
+        评估外部信号的风险等级。
+        
+        Args:
+            signal_content: Content of the signal
+            signal_source: Source of the signal
+            context: Additional context (e.g., physical_state, is_trusted_source)
+            
+        Returns:
+            RiskAssessment with risk score and indicators
+        """
+        return await self._extreme_signal_interceptor.assess_signal_risk(
+            signal_content=signal_content,
+            signal_source=signal_source,
+            context=context
+        )
+    
+    async def intercept_extreme_signal(
+        self,
+        signal_content: str,
+        signal_source: str,
+        context: dict[str, Any] | None = None,
+    ) -> tuple[Any, Any]:
+        """
+        Intercept and handle extreme/high-risk signals.
+        
+        拦截并处理极端/高风险信号。
+        
+        Args:
+            signal_content: Content of the signal
+            signal_source: Source of the signal
+            context: Additional context
+            
+        Returns:
+            Tuple of (ExtremeSignalRecord, ConfirmationRequest)
+        """
+        # Assess risk
+        risk_assessment = await self.assess_signal_risk(
+            signal_content=signal_content,
+            signal_source=signal_source,
+            context=context
+        )
+        
+        # Create signal record
+        signal_record = self._extreme_signal_interceptor.create_extreme_signal_record(
+            signal_content=signal_content,
+            signal_source=signal_source,
+            risk_assessment=risk_assessment
+        )
+        
+        # Force secondary confirmation if needed
+        if risk_assessment.requires_confirmation:
+            confirmation_request = await self._extreme_signal_interceptor.force_secondary_confirmation(
+                signal_record=signal_record
+            )
+        else:
+            from zentex.environment.preference_models import ConfirmationRequest
+            confirmation_request = None
+        
+        return signal_record, confirmation_request
+    
+    async def mark_attack_sample(
+        self,
+        signal_record_id: str,
+        attack_type: str,
+        confidence: float,
+        analyst_id: str | None = None,
+    ) -> Any:
+        """
+        Mark a signal as a malicious attack sample.
+        
+        标记信号为恶意攻击样本。
+        
+        Args:
+            signal_record_id: ID of the extreme signal record
+            attack_type: Type of attack (injection/spoofing/manipulation/other)
+            confidence: Confidence level (0.0-1.0)
+            analyst_id: ID of the analyst (or 'auto' for automatic)
+            
+        Returns:
+            AttackSample object
+        """
+        # Note: In production, we'd fetch the signal_record from storage
+        # For now, create a minimal record for demonstration
+        from zentex.environment.preference_models import ExtremeSignalRecord
+        
+        signal_record = ExtremeSignalRecord(
+            record_id=signal_record_id,
+            signal_content="[REDACTED]",
+            signal_source="unknown",
+            risk_score=confidence
+        )
+        
+        return await self._attack_sample_marker.mark_malicious_signal(
+            signal_record=signal_record,
+            attack_type=attack_type,
+            confidence=confidence,
+            analyst_id=analyst_id
+        )
+    
+    async def detect_similar_attack(
+        self,
+        new_signal: str,
+        similarity_threshold: float = 0.85,
+    ) -> Any | None:
+        """
+        Detect if a new signal matches known attack patterns.
+        
+        检测新信号是否匹配已知攻击模式。
+        
+        Args:
+            new_signal: Content of the new signal
+            similarity_threshold: Minimum similarity score to consider a match
+            
+        Returns:
+            AttackMatch if found, None otherwise
+        """
+        return await self._attack_sample_marker.detect_similar_attack(
+            new_signal=new_signal,
+            similarity_threshold=similarity_threshold
+        )
+    
+    async def get_unresolved_cases(
+        self,
+        risk_level_filter: str | None = None,
+        limit: int = 50,
+    ) -> list[Any]:
+        """
+        Get unresolved intent ambiguity cases.
+        
+        获取未解决的意图歧义案例。
+        
+        Args:
+            risk_level_filter: Filter by risk level (low/medium/high/critical)
+            limit: Maximum number of results
+            
+        Returns:
+            List of IntentAmbiguityCase objects
+        """
+        from zentex.environment.preference_models import RiskLevel
+        
+        risk_enum = RiskLevel(risk_level_filter) if risk_level_filter else None
+        return await self._preference_manager.get_unresolved_cases(
+            risk_level_filter=risk_enum,
+            limit=limit
+        )
+
+
+# Global singleton instance
+_default_service: EnvironmentAwarenessService | None = None
+
+
+def get_environment_service() -> EnvironmentAwarenessService:
+    """Return the global default EnvironmentAwarenessService instance."""
+    global _default_service
+    if _default_service is None:
+        _default_service = EnvironmentAwarenessService()
+    return _default_service

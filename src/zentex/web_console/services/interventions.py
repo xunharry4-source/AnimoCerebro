@@ -5,13 +5,11 @@ from typing import Any, Dict
 
 from fastapi import HTTPException, Request
 
-from zentex.runtime.runtime import BrainRuntime
-from zentex.runtime.session import BrainSession
-from zentex.runtime.transcript import BrainTranscriptEntryType
+from zentex.runtime.models import BrainTranscriptEntryType
 from zentex.web_console.contracts.interventions import InterventionRequest
 
 
-def post_intervention(payload: InterventionRequest, runtime: BrainRuntime, request: Request) -> Dict[str, Any]:
+def post_intervention(payload: InterventionRequest, runtime: Any, request: Request) -> Dict[str, Any]:
     session = getattr(request.app.state, "session", None)
     if session is not None and not isinstance(session, BrainSession):
         session = None

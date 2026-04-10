@@ -84,7 +84,27 @@ class MultiModalIndex:
         return text
 
     def add_record(self, record_id: str, title: str, summary: str, content: str, metadata: Dict[str, Any]):
-        """Index a memory record with multi-language tokenization."""
+        """Index a memory record with multi-language tokenization.
+        
+        Args:
+            record_id: Unique identifier for the memory record
+            title: Record title (will be tokenized for search)
+            summary: Record summary (will be tokenized for search)
+            content: Record content (will be tokenized for search)
+            metadata: Additional metadata including memory_layer, tags, etc.
+            
+        Raises:
+            ValueError: If record_id is empty
+        """
+        # ✅ Validate and sanitize inputs to prevent SQLite errors
+        if not record_id:
+            raise ValueError("record_id cannot be empty")
+        
+        # Ensure text fields are strings (not None)
+        title = str(title) if title is not None else ""
+        summary = str(summary) if summary is not None else ""
+        content = str(content) if content is not None else ""
+        
         tags_json = json.dumps(metadata.get("tags", []))
         
         # Pre-tokenize for CJK support
@@ -92,29 +112,57 @@ class MultiModalIndex:
         proc_summary = self._tokenize(summary)
         proc_content = self._tokenize(content)
         
-        with self._conn:
-            # Insert into metadata table
-            self._conn.execute("""
-                INSERT OR REPLACE INTO memory_metadata 
-                (memory_id, memory_layer, source_kind, trace_id, target_id, created_at, tier, valence, tags_json)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
-            """, (
-                record_id,
-                metadata.get("memory_layer"),
-                metadata.get("source_kind"),
-                metadata.get("trace_id"),
-                metadata.get("target_id"),
-                metadata.get("created_at"),
-                metadata.get("tier"),
-                metadata.get("valence"),
-                tags_json
-            ))
+        # 📝 Audit log: Index operation
+        logger.debug(
+            f"Indexing record: id={record_id}, layer={metadata.get('memory_layer')}, "
+            f"title_len={len(proc_title)}, summary_len={len(proc_summary)}, content_len={len(proc_content)}"
+        )
+        
+        # 🛡️ Safety: Ensure all FTS fields are valid strings (None protection)
+        safe_title = proc_title if proc_title is not None else ""
+        safe_summary = proc_summary if proc_summary is not None else ""
+        safe_content = proc_content if proc_content is not None else ""
+        
+        try:
+            with self._conn:
+                # Insert into metadata table
+                self._conn.execute("""
+                    INSERT OR REPLACE INTO memory_metadata 
+                    (memory_id, memory_layer, source_kind, trace_id, target_id, created_at, tier, valence, tags_json)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """, (
+                    record_id,
+                    metadata.get("memory_layer"),
+                    metadata.get("source_kind"),
+                    metadata.get("trace_id"),
+                    metadata.get("target_id"),
+                    metadata.get("created_at"),
+                    metadata.get("tier"),
+                    metadata.get("valence"),
+                    tags_json
+                ))
+                
+                # Insert into FTS table with pre-tokenized content
+                self._conn.execute("""
+                    INSERT OR REPLACE INTO memory_fts (memory_id, title, summary, content)
+                    VALUES (?, ?, ?, ?)
+                """, (record_id, safe_title, safe_summary, safe_content))
+                
+            # 📝 Audit log: Success
+            logger.debug(f"Successfully indexed record: {record_id}")
             
-            # Insert into FTS table with pre-tokenized content
-            self._conn.execute("""
-                INSERT OR REPLACE INTO memory_fts (memory_id, title, summary, content)
-                VALUES (?, ?, ?, ?)
-            """, (record_id, proc_title, proc_summary, proc_content))
+        except sqlite3.Error as e:
+            # 📝 Audit log: Failure with detailed diagnostics
+            logger.error(
+                f"Failed to index record {record_id}: {e}. "
+                f"Title: '{title[:50] if title else 'None'}...', "
+                f"Summary: '{summary[:50] if summary else 'None'}...', "
+                f"Content len: {len(content) if content else 0}, "
+                f"Safe title type: {type(safe_title).__name__}, "
+                f"Safe summary type: {type(safe_summary).__name__}, "
+                f"Safe content type: {type(safe_content).__name__}"
+            )
+            raise
 
     def search(self, query: str, filters: Dict[str, Any] | None = None, limit: int = 20) -> List[Dict[str, Any]]:
         """

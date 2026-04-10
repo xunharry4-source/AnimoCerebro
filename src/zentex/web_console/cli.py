@@ -42,7 +42,7 @@ def validate_websocket_runtime() -> None:
 
 def validate_web_console_startup() -> None:
     validate_websocket_runtime()
-    from zentex.web_console.dev_server import build_dev_server_app
+    from zentex.boot.web_dev import build_dev_server_app
 
     build_dev_server_app()
 

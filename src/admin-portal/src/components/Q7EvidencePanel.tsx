@@ -1,4 +1,5 @@
 import React from "react";
+import { useTranslation } from "react-i18next";
 import {
   Alert, Box, Card, CardContent, Chip, Grid, Stack, Typography, Accordion, AccordionSummary, AccordionDetails, List, ListItem, ListItemText, ListItemIcon, ListItemAvatar, Avatar
 } from "@mui/material";
@@ -23,6 +24,7 @@ interface Q7EvidencePanelProps {
 export const Q7EvidencePanel: React.FC<Q7EvidencePanelProps> = ({
   evidence, inference, providerName, elapsedMs = 0,
 }) => {
+  const { t } = useTranslation();
   return (
     <Stack spacing={3} sx={{ mt: 2 }}>
       {/* Partition 0: Inference Metadata */}
@@ -30,7 +32,7 @@ export const Q7EvidencePanel: React.FC<Q7EvidencePanelProps> = ({
         <Box sx={{ display: "flex", gap: 1, mb: 1 }}>
           {providerName && (
             <Chip
-              label={`Fallback Planner Engine: ${providerName}`}
+              label={`${t("nineQuestions.fallbackPlannerEngine")}: ${providerName}`}
               size="small"
               variant="outlined"
               color="primary"
@@ -38,7 +40,7 @@ export const Q7EvidencePanel: React.FC<Q7EvidencePanelProps> = ({
           )}
           {elapsedMs > 0 && (
             <Chip
-              label={`Latency: ${elapsedMs}ms`}
+              label={`${t("common.latency")}: ${elapsedMs}ms`}
               size="small"
               variant="outlined"
             />
@@ -52,23 +54,23 @@ export const Q7EvidencePanel: React.FC<Q7EvidencePanelProps> = ({
           <Card variant="outlined" sx={{ borderLeft: '4px solid', borderLeftColor: 'error.main' }}>
             <CardContent>
               <Typography variant="h6" gutterBottom sx={{ fontWeight: 'bold' }}>
-                【前置瓶颈与红线约束区 (Bottlenecks & Constraints)】
+                {t("nineQuestions.bottlenecksConstraints")}
               </Typography>
 
               <Grid container spacing={2}>
                 <Grid size={{ xs: 12, md: 6 }}>
-                  <Typography variant="subtitle2" gutterBottom color="text.secondary">致命资源瓶颈 (Resource Bottlenecks):</Typography>
+                  <Typography variant="subtitle2" gutterBottom color="text.secondary">{t("nineQuestions.resourceBottlenecks")}:</Typography>
                   <Stack direction="row" spacing={1} useFlexGap flexWrap="wrap" sx={{ mb: 2 }}>
                     {evidence.resource_bottlenecks && evidence.resource_bottlenecks.length > 0 ? (
                       evidence.resource_bottlenecks.map((res, i) => (
                         <Chip key={`res-${i}`} label={res} size="small" variant="outlined" />
                       ))
                     ) : (
-                      <Chip label="暂无明确资源瓶颈" size="small" />
+                      <Chip label={t("nineQuestions.noResourceBottlenecks")} size="small" />
                     )}
                   </Stack>
 
-                  <Typography variant="subtitle2" gutterBottom color="text.secondary">能力上限与授权边界 (Limits & Auth Boundaries):</Typography>
+                  <Typography variant="subtitle2" gutterBottom color="text.secondary">{t("nineQuestions.limitsAuthBoundaries")}:</Typography>
                   <Stack direction="row" spacing={1} useFlexGap flexWrap="wrap">
                     {evidence.capability_limits && evidence.capability_limits.map((cap, i) => (
                       <Chip key={`cap-${i}`} label={cap} size="small" color="secondary" variant="outlined" />
@@ -81,7 +83,7 @@ export const Q7EvidencePanel: React.FC<Q7EvidencePanelProps> = ({
 
                 <Grid size={{ xs: 12, md: 6 }}>
                   <Typography variant="subtitle2" gutterBottom color="error.dark" sx={{ display: 'flex', alignItems: 'center', gap: 0.5 }}>
-                    <ErrorOutlineIcon fontSize="small" /> 绝对越界红线 (Q6 Absolute Red Lines):
+                    <ErrorOutlineIcon fontSize="small" /> {t("nineQuestions.absoluteRedLinesQ6")}:
                   </Typography>
                   <Box data-testid="q7-absolute-red-lines">
                     {evidence.absolute_red_lines && evidence.absolute_red_lines.length > 0 ? (
@@ -93,7 +95,7 @@ export const Q7EvidencePanel: React.FC<Q7EvidencePanelProps> = ({
                         ))}
                       </Stack>
                     ) : (
-                      <Alert severity="success">未接收到任何退回红线指令</Alert>
+                      <Alert severity="success">{t("nineQuestions.noRetreatRedlines")}</Alert>
                     )}
                   </Box>
                 </Grid>
@@ -108,10 +110,10 @@ export const Q7EvidencePanel: React.FC<Q7EvidencePanelProps> = ({
             <Card variant="outlined" sx={{ borderLeft: '4px solid', borderLeftColor: 'info.main' }}>
               <CardContent>
                 <Typography variant="h6" gutterBottom sx={{ fontWeight: 'bold' }}>
-                  【历史失败经验避坑区 (Historical Patches)】
+                  {t("nineQuestions.historicalFailurePatches")}
                 </Typography>
                 <Typography variant="body2" color="text.secondary" sx={{ mb: 1 }}>
-                  基于前车之鉴提取的长效防误闭环指导（已强制折叠以免疫满屏攻击）：
+                  {t("nineQuestions.historicalFailurePatchesDesc")}
                 </Typography>
                 <Stack spacing={1}>
                   {evidence.historical_failure_patches.map((patch, i) => (
@@ -119,7 +121,7 @@ export const Q7EvidencePanel: React.FC<Q7EvidencePanelProps> = ({
                       <AccordionSummary expandIcon={<ExpandMoreIcon />}>
                         <Box sx={{ display: 'flex', alignItems: 'center', gap: 1 }}>
                           <HistoryEduIcon color="action" fontSize="small" />
-                          <Typography variant="subtitle2">历史补丁 #00{i + 1}</Typography>
+                          <Typography variant="subtitle2">{t("nineQuestions.historicalPatchLabel")} #00{i + 1}</Typography>
                         </Box>
                       </AccordionSummary>
                       <AccordionDetails>
@@ -140,7 +142,7 @@ export const Q7EvidencePanel: React.FC<Q7EvidencePanelProps> = ({
           <Card variant="outlined" sx={{ border: '2px solid', borderColor: 'primary.main' }}>
             <CardContent>
               <Typography variant="h6" gutterBottom sx={{ fontWeight: 'bold', color: 'primary.main' }}>
-                【终极降级预案区 (Alternative Strategy Profile)】
+                {t("nineQuestions.alternativeStrategyProfile")}
               </Typography>
               
               {inference ? (
@@ -149,7 +151,7 @@ export const Q7EvidencePanel: React.FC<Q7EvidencePanelProps> = ({
                   {/* 降级策略 (warning Alerts) */}
                   <Grid size={{ xs: 12, md: 6 }} data-testid="q7-degradation-strategies">
                     <Typography variant="subtitle2" gutterBottom color="warning.dark" sx={{ display: 'flex', alignItems: 'center', gap: 0.5 }}>
-                      <WarningAmberIcon fontSize="small" /> 核心功能降级策略 (Degradation Strategies):
+                      <WarningAmberIcon fontSize="small" /> {t("nineQuestions.degradationStrategies")}:
                     </Typography>
                     {inference.degradation_strategies && inference.degradation_strategies.length > 0 ? (
                       <Stack spacing={1}>
@@ -160,14 +162,14 @@ export const Q7EvidencePanel: React.FC<Q7EvidencePanelProps> = ({
                         ))}
                       </Stack>
                     ) : (
-                      <Alert severity="info" variant="outlined" sx={{ py: 0 }}>无需启用降级状态</Alert>
+                      <Alert severity="info" variant="outlined" sx={{ py: 0 }}>{t("nineQuestions.noDegradationNeeded")}</Alert>
                     )}
                   </Grid>
 
                   {/* 探索动作 (blue Chips) */}
                   <Grid size={{ xs: 12, md: 6 }}>
                     <Typography variant="subtitle2" gutterBottom color="info.dark" sx={{ display: 'flex', alignItems: 'center', gap: 0.5 }}>
-                      <HardwareIcon fontSize="small" /> 低风险探索尝试 (Exploratory Actions):
+                      <HardwareIcon fontSize="small" /> {t("nineQuestions.exploratoryActions")}:
                     </Typography>
                     <Stack direction="row" spacing={1} useFlexGap flexWrap="wrap">
                       {inference.exploratory_actions && inference.exploratory_actions.length > 0 ? (
@@ -175,7 +177,7 @@ export const Q7EvidencePanel: React.FC<Q7EvidencePanelProps> = ({
                           <Chip key={i} label={act} color="info" />
                         ))
                       ) : (
-                        <Chip label="暂无可用探索试探" size="small" variant="outlined" />
+                        <Chip label={t("nineQuestions.noExploratoryProbes")} size="small" variant="outlined" />
                       )}
                     </Stack>
                   </Grid>
@@ -185,7 +187,7 @@ export const Q7EvidencePanel: React.FC<Q7EvidencePanelProps> = ({
                       {/* 安全备选动作 (List) */}
                       <Grid size={{ xs: 12, md: 6 }}>
                         <Typography variant="subtitle2" gutterBottom color="success.dark" sx={{ display: 'flex', alignItems: 'center', gap: 0.5 }}>
-                          <VerifiedUserIcon fontSize="small" /> 绝对安全替代方案 (Fallback Plans):
+                          <VerifiedUserIcon fontSize="small" /> {t("nineQuestions.fallbackPlans")}:
                         </Typography>
                         <Box sx={{ border: '1px solid', borderColor: 'divider', borderRadius: 1 }}>
                           <List dense>
@@ -197,7 +199,7 @@ export const Q7EvidencePanel: React.FC<Q7EvidencePanelProps> = ({
                                 </ListItem>
                               ))
                             ) : (
-                              <ListItem><ListItemText primary="未提供替代安全方案" /></ListItem>
+                              <ListItem><ListItemText primary={t("nineQuestions.noFallbackPlansProvided")} /></ListItem>
                             )}
                           </List>
                         </Box>
@@ -206,7 +208,7 @@ export const Q7EvidencePanel: React.FC<Q7EvidencePanelProps> = ({
                       {/* 协作切换 (Cards / Avatars) */}
                       <Grid size={{ xs: 12, md: 6 }}>
                         <Typography variant="subtitle2" gutterBottom sx={{ display: 'flex', alignItems: 'center', gap: 0.5 }}>
-                          <GroupAddIcon fontSize="small" /> 转移求助与协作倒换 (Collaboration Switches):
+                          <GroupAddIcon fontSize="small" /> {t("nineQuestions.collaborationSwitches")}:
                         </Typography>
                         <List disablePadding>
                           {inference.collaboration_switches && inference.collaboration_switches.length > 0 ? (
@@ -218,7 +220,7 @@ export const Q7EvidencePanel: React.FC<Q7EvidencePanelProps> = ({
                                   </Avatar>
                                 </ListItemAvatar>
                                 <ListItemText
-                                  primary={sw.target_agent || sw.agent || sw.name || `紧急协作切换点 #${i + 1}`}
+                                  primary={sw.target_agent || sw.agent || sw.name || `${t("nineQuestions.emergencyCollabSwitch")} #${i + 1}`}
                                   secondaryTypographyProps={{ component: 'div' as any }}
                                   secondary={
                                     <Stack spacing={0.5} sx={{ mt: 0.5 }}>
@@ -233,7 +235,7 @@ export const Q7EvidencePanel: React.FC<Q7EvidencePanelProps> = ({
                               </ListItem>
                             ))
                           ) : (
-                            <Alert severity="info" sx={{ py: 0 }}>无可用的降级协作网络</Alert>
+                            <Alert severity="info" sx={{ py: 0 }}>{t("nineQuestions.noDegradedCollabNetwork")}</Alert>
                           )}
                         </List>
                       </Grid>
@@ -242,7 +244,7 @@ export const Q7EvidencePanel: React.FC<Q7EvidencePanelProps> = ({
 
                 </Grid>
               ) : (
-                <Alert severity="info" sx={{ mt: 2 }}>等待降级策略树建立...</Alert>
+                <Alert severity="info" sx={{ mt: 2 }}>{t("nineQuestions.waitingDegradationTree")}</Alert>
               )}
             </CardContent>
           </Card>

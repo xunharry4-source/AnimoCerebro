@@ -1,3 +1,4 @@
+import { useTranslation } from "react-i18next";
 import { useEffect, useState } from "react";
 import {
   Accordion,
@@ -22,7 +23,9 @@ import {
   TraceDetail,
   fetchNineQuestionTrace,
   fetchNineQuestionsReport,
+  fetchNineQuestionDetail,
   getQuestionDisplayLabel,
+  getNineQuestionIntro,
 } from "./nineQuestionsApi";
 import Q1EvidencePanel from "../../components/Q1EvidencePanel";
 import Q2EvidencePanel from "../../components/Q2EvidencePanel";
@@ -57,6 +60,7 @@ import {
 } from "./nineQuestionsApi";
 
 export default function NineQuestionDetailPage() {
+  const { t } = useTranslation();
   const { q_id: qId = "" } = useParams();
   const [report, setReport] = useState<ReportPayload | null>(null);
   const [traceDetail, setTraceDetail] = useState<TraceDetail | null>(null);
@@ -72,21 +76,27 @@ export default function NineQuestionDetailPage() {
     setLoading(true);
     setError(null);
     try {
-      const reportData = await fetchNineQuestionsReport();
-      setReport(reportData.report);
-      setNotice(reportData.notice);
-      const question = reportData.report.questions.find((item) => item.question_id === qId);
-      if (!question) {
-        throw new Error(`未找到 ${qId} 对应的九问结果`);
-      }
-      if (question.trace_id) {
-        const trace = await fetchNineQuestionTrace(question.trace_id);
+      const data = await fetchNineQuestionDetail(qId);
+      setReport({
+        session_id: "loading",
+        status: "ready",
+        status_message: null,
+        last_turn_id: "0",
+        snapshot_version: 0,
+        revision: 0,
+        refreshed_at: null,
+        last_refresh_reason: null,
+        question_driver_refs: [],
+        questions: [data],
+      });
+      if (data.trace_id) {
+        const trace = await fetchNineQuestionTrace(data.trace_id);
         setTraceDetail(trace);
       } else {
         setTraceDetail(null);
       }
     } catch (err: any) {
-      setError(err?.message || "加载九问详情失败");
+      setError(err?.message || t("nineQuestions.fetchDetailError"));
     } finally {
       setLoading(false);
     }
@@ -102,8 +112,11 @@ export default function NineQuestionDetailPage() {
 
   const question = report?.questions.find((item) => item.question_id === qId);
   if (!question) {
-    return <Alert severity="error">未找到对应的九问记录。</Alert>;
+    return <Alert severity="error">{t("nineQuestions.notFound")}</Alert>;
   }
+
+  // 获取当前问题的介绍信息
+  const intro = getNineQuestionIntro(qId);
   const q1Evidence = question.question_id === "q1" ? question.preprocessed_evidence || traceDetail?.preprocessed_evidence : null;
   const q1Inference = question.question_id === "q1" ? question.inference_result || traceDetail?.inference_result : null;
   const q2Evidence = question.question_id === "q2" ? question.preprocessed_evidence || traceDetail?.preprocessed_evidence : null;
@@ -156,6 +169,39 @@ export default function NineQuestionDetailPage() {
           {notice}
         </Alert>
       ) : null}
+
+      {/* 问题介绍栏目 */}
+      {intro && (
+        <Card variant="outlined" sx={{ mb: 3, bgcolor: "primary.50", borderColor: "primary.main" }}>
+          <CardContent>
+            <Typography variant="h6" gutterBottom color="primary.main" fontWeight="bold">
+              📖 问题说明
+            </Typography>
+            <Stack spacing={2}>
+              <Box>
+                <Typography variant="subtitle2" color="text.secondary" gutterBottom>
+                  🎯 目标
+                </Typography>
+                <Typography variant="body1">{intro.goal}</Typography>
+              </Box>
+              <Divider />
+              <Box>
+                <Typography variant="subtitle2" color="text.secondary" gutterBottom>
+                  📊 期望获得的数据
+                </Typography>
+                <Typography variant="body1">{intro.expectedData}</Typography>
+              </Box>
+              <Divider />
+              <Box>
+                <Typography variant="subtitle2" color="text.secondary" gutterBottom>
+                  ✨ 最终输出
+                </Typography>
+                <Typography variant="body1">{intro.finalOutput}</Typography>
+              </Box>
+            </Stack>
+          </CardContent>
+        </Card>
+      )}
 
       <Card variant="outlined" sx={{ mb: 3 }}>
         <CardContent>
@@ -262,7 +308,7 @@ export default function NineQuestionDetailPage() {
           <Stack spacing={2}>
             <Accordion defaultExpanded>
               <AccordionSummary expandIcon={<ExpandMoreIcon />}>
-                <Typography variant="subtitle2">Prompt 原文</Typography>
+                <Typography variant="subtitle2">{t("nineQuestions.promptOriginal")}</Typography>
               </AccordionSummary>
               <AccordionDetails>
                 <Box
@@ -285,7 +331,7 @@ export default function NineQuestionDetailPage() {
 
             <Accordion>
               <AccordionSummary expandIcon={<ExpandMoreIcon />}>
-                <Typography variant="subtitle2">Context 原文</Typography>
+                <Typography variant="subtitle2">{t("nineQuestions.contextOriginal")}</Typography>
               </AccordionSummary>
               <AccordionDetails>
                 <Box component="pre" sx={{ m: 0, p: 2, bgcolor: "action.hover", borderRadius: 1, overflow: "auto" }}>
@@ -296,7 +342,7 @@ export default function NineQuestionDetailPage() {
 
             <Accordion>
               <AccordionSummary expandIcon={<ExpandMoreIcon />}>
-                <Typography variant="subtitle2">Result 原文</Typography>
+                <Typography variant="subtitle2">{t("nineQuestions.resultOriginal")}</Typography>
               </AccordionSummary>
               <AccordionDetails>
                 <Box component="pre" sx={{ m: 0, p: 2, bgcolor: "action.hover", borderRadius: 1, overflow: "auto" }}>

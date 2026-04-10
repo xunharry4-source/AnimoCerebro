@@ -24,6 +24,7 @@ import {
 } from "../nineQuestionsApi";
 import Q9EvidencePanel from "../../../components/Q9EvidencePanel";
 import LLMTracePanel from "../../../components/LLMTracePanel";
+import NineQuestionIntroCard from "../../../components/NineQuestionIntroCard";
 
 function resolveErrorGuidance(errMsg: string): { title: string; action: string } {
   if (errMsg.includes("No active session") || errMsg.includes("没有活动 session")) {
@@ -117,6 +118,10 @@ export default function Q9Detail() {
           进入独立沙箱测试
         </Button>
       </Stack>
+
+
+      {/* 问题介绍栏目 */}
+      <NineQuestionIntroCard questionId="q9" />
 
       <Card variant="outlined">
         <CardContent>

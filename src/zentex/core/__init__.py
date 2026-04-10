@@ -22,8 +22,11 @@ from zentex.core.models import (
 from zentex.core.simulation_spec import SimulationDomainPlugin
 from zentex.core.model_provider_spec import ModelProviderSpec
 from zentex.core.feature_family import FeatureFamily
+from zentex.core.service import CoreService, get_core_service
 
 __all__ = [
+    "CoreService",
+    "get_core_service",
     # Plugin base classes / 插件基类
     "BasePluginSpec",
     "FunctionalPluginSpec",

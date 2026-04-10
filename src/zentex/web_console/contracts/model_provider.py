@@ -9,7 +9,7 @@ from zentex.web_console.contracts.transcript import TranscriptEventPayload
 
 
 class ModelProviderTraceItem(BaseModel):
-    model_config = ConfigDict(extra="forbid", frozen=True)
+    model_config = ConfigDict(extra="ignore", frozen=True)
 
     trace_id: str
     request_id: str

@@ -81,6 +81,7 @@ class UpgradeCountSummary(BaseModel):
     ongoing: int = Field(ge=0)
     completed: int = Field(ge=0)
     failed: int = Field(ge=0)
+    cancelled: int = Field(ge=0)
 
 
 class UpgradeRecordCollection(BaseModel):
@@ -100,6 +101,25 @@ class UpgradeOverviewPayload(BaseModel):
     plugins: UpgradeCountSummary
     recent_llm: list[UpgradeRecordItem] = Field(default_factory=list)
     recent_plugins: list[UpgradeRecordItem] = Field(default_factory=list)
+
+
+class LifecycleGroupedRecords(BaseModel):
+    """Records grouped by lifecycle view for tabbed display."""
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    count: int = Field(ge=0)
+    items: list[UpgradeRecordItem] = Field(default_factory=list)
+
+
+class UpgradesByLifecycleViewPayload(BaseModel):
+    """Response payload for upgrades grouped by lifecycle view."""
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    ongoing: LifecycleGroupedRecords
+    waiting: LifecycleGroupedRecords
+    failed: LifecycleGroupedRecords
+    cancelled: LifecycleGroupedRecords
+    completed: LifecycleGroupedRecords
 
 
 class UpgradeActionRequest(BaseModel):

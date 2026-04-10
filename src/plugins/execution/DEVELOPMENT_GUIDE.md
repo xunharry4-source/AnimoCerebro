@@ -4,7 +4,7 @@
 
 ## 一、核心契约与继承底座
 
-- 所有新插件必须最终继承 [BasePluginSpec](/Users/harry/Documents/git/AnimoCerebro/src/zentex/core/plugin_base.py)，并直接实现 [ExecutionDomainPlugin](/Users/harry/Documents/git/AnimoCerebro/src/zentex/core/execution_spec.py)。
+- 所有新插件必须最终继承 [BasePluginSpec](../../zentex/core/plugin_base.py)，并直接实现 [ExecutionDomainPlugin](../../zentex/core/execution_spec.py)。
 - 插件物理代码必须放在 `src/plugins/execution/` 下。
 - 必须实现：
   - `execute_action(intent, context) -> ActionExecutionReceipt`

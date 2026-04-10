@@ -13,6 +13,7 @@ import {
   TraceDetail,
 } from "../nineQuestionsApi";
 import LLMTracePanel from "../../../components/LLMTracePanel";
+import NineQuestionIntroCard from "../../../components/NineQuestionIntroCard";
 import MountedPluginsZone from "../../../components/MountedPluginsZone";
 import Q4EvidencePanel from "../../../components/Q4EvidencePanel";
 
@@ -61,6 +62,8 @@ export default function Q4Detail() {
         </Box>
         <Button component={RouterLink} to="/console/nine-questions/q4/test" variant="contained" color="warning">进入独立沙箱测试</Button>
       </Stack>
+
+      <NineQuestionIntroCard questionId="q4" />
 
       <MountedPluginsZone plugins={question.mounted_plugins || []} />
 

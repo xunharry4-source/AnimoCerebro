@@ -1,10 +1,12 @@
 /**
  * Upgrade management console for LLM optimization and plugin evolution jobs.
  *
- * This page lets operators inspect waiting, ongoing, completed, and failed
- * upgrade or plugin creation records without digging through raw audit events.
+ * This page displays upgrades in tabbed view by lifecycle status (ongoing, waiting,
+ * failed, cancelled, completed) and allows navigation to detail pages.
  */
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useState } from "react";
+import { useNavigate } from "react-router-dom";
+import { useTranslation } from "react-i18next";
 import {
   Alert,
   Box,
@@ -13,12 +15,10 @@ import {
   CardContent,
   Chip,
   CircularProgress,
-  Divider,
-  Drawer,
-  MenuItem,
   Paper,
-  Select,
   Stack,
+  Tab,
+  Tabs,
   Table,
   TableBody,
   TableCell,
@@ -31,26 +31,20 @@ import {
 import {
   cancelUpgradeRecord,
   cleanupFailedCandidate,
-  fetchUpgradeAuditEvents,
-  fetchUpgradeCollection,
-  fetchUpgradeMemoryRecords,
   fetchUpgradeOverview,
-  fetchUpgradeRecord,
-  type UpgradeAuditEventItem,
-  type UpgradeLifecycle,
-  type UpgradeMemoryRecordItem,
+  fetchUpgradesByLifecycleView,
   type UpgradeOverviewPayload,
-  type UpgradeRecordCollection,
   type UpgradeRecordItem,
   type UpgradeTargetKind,
+  type UpgradesByLifecycleViewPayload,
 } from "./upgradesApi";
 
-const LIFECYCLE_OPTIONS: UpgradeLifecycle[] = [
-  "all",
-  "waiting",
-  "ongoing",
-  "completed",
-  "failed",
+const TAB_LABELS = (t: (key: string) => string) => [
+  { label: t("upgrades.tabOngoing"), value: "ongoing" },
+  { label: t("upgrades.tabWaiting"), value: "waiting" },
+  { label: t("upgrades.tabFailed"), value: "failed" },
+  { label: t("upgrades.tabCancelled"), value: "cancelled" },
+  { label: t("upgrades.tabCompleted"), value: "completed" },
 ];
 
 function getLifecycleChipColor(
@@ -89,17 +83,14 @@ function formatDateTime(value?: string | null): string {
 }
 
 export default function UpgradeManagement() {
+  const { t } = useTranslation();
+  const navigate = useNavigate();
   const [targetKind, setTargetKind] = useState<UpgradeTargetKind>("llm");
-  const [lifecycle, setLifecycle] = useState<UpgradeLifecycle>("all");
-  const [pluginAction, setPluginAction] = useState<"all" | "upgrade" | "create">("all");
+  const [activeTab, setActiveTab] = useState(0);
   const [overview, setOverview] = useState<UpgradeOverviewPayload | null>(null);
-  const [collection, setCollection] = useState<UpgradeRecordCollection | null>(null);
-  const [selectedRecord, setSelectedRecord] = useState<UpgradeRecordItem | null>(null);
-  const [selectedAuditEvents, setSelectedAuditEvents] = useState<UpgradeAuditEventItem[]>([]);
-  const [selectedMemoryRecords, setSelectedMemoryRecords] = useState<UpgradeMemoryRecordItem[]>([]);
+  const [tabData, setTabData] = useState<UpgradesByLifecycleViewPayload | null>(null);
   const [loadingOverview, setLoadingOverview] = useState(true);
-  const [loadingList, setLoadingList] = useState(true);
-  const [detailLoading, setDetailLoading] = useState(false);
+  const [loadingTabs, setLoadingTabs] = useState(true);
   const [actionLoadingRecordId, setActionLoadingRecordId] = useState<string | null>(null);
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
 
@@ -110,22 +101,22 @@ export default function UpgradeManagement() {
       setOverview(payload);
       setErrorMessage(null);
     } catch (error) {
-      setErrorMessage(error instanceof Error ? error.message : "升级总览加载失败");
+      setErrorMessage(error instanceof Error ? error.message : t("upgrades.overviewLoadFailed"));
     } finally {
       setLoadingOverview(false);
     }
   };
 
-  const loadCollection = async () => {
-    setLoadingList(true);
+  const loadTabData = async () => {
+    setLoadingTabs(true);
     try {
-      const payload = await fetchUpgradeCollection(targetKind, lifecycle, pluginAction);
-      setCollection(payload);
+      const payload = await fetchUpgradesByLifecycleView(targetKind);
+      setTabData(payload);
       setErrorMessage(null);
     } catch (error) {
-      setErrorMessage(error instanceof Error ? error.message : "升级列表加载失败");
+      setErrorMessage(error instanceof Error ? error.message : t("upgrades.dataLoadFailed"));
     } finally {
-      setLoadingList(false);
+      setLoadingTabs(false);
     }
   };
 
@@ -134,75 +125,55 @@ export default function UpgradeManagement() {
   }, []);
 
   useEffect(() => {
-    void loadCollection();
-  }, [targetKind, lifecycle, pluginAction]);
+    void loadTabData();
+  }, [targetKind]);
 
-  const summary = useMemo(() => {
-    if (!overview) {
-      return null;
-    }
-    return targetKind === "llm" ? overview.llm : overview.plugins;
-  }, [overview, targetKind]);
-
-  const handleOpenRecord = async (recordId: string) => {
-    setDetailLoading(true);
-    try {
-      const [record, auditEvents, memoryRecords] = await Promise.all([
-        fetchUpgradeRecord(recordId),
-        fetchUpgradeAuditEvents(recordId),
-        fetchUpgradeMemoryRecords(recordId),
-      ]);
-      setSelectedRecord(record);
-      setSelectedAuditEvents(auditEvents);
-      setSelectedMemoryRecords(memoryRecords);
-      setErrorMessage(null);
-    } catch (error) {
-      setErrorMessage(error instanceof Error ? error.message : "升级详情加载失败");
-    } finally {
-      setDetailLoading(false);
-    }
-  };
+  const summary = overview ? (targetKind === "llm" ? overview.llm : overview.plugins) : null;
+  const currentTabRecords = tabData ? tabData[TAB_LABELS(t)[activeTab].value as keyof UpgradesByLifecycleViewPayload] : null;
 
   const handleCancel = async (record: UpgradeRecordItem) => {
-    const reason = window.prompt("请输入取消原因");
+    const reason = window.prompt(t("upgrades.cancelReasonPrompt"));
     if (!reason || !reason.trim()) {
       return;
     }
     setActionLoadingRecordId(record.record_id);
     try {
-      const updated = await cancelUpgradeRecord(record.record_id, reason.trim());
-      setSelectedRecord((current) => (current?.record_id === updated.record_id ? updated : current));
+      await cancelUpgradeRecord(record.record_id, reason.trim());
       await loadOverview();
-      await loadCollection();
+      await loadTabData();
       setErrorMessage(null);
     } catch (error) {
-      setErrorMessage(error instanceof Error ? error.message : "取消升级失败");
+      setErrorMessage(error instanceof Error ? error.message : t("upgrades.cancelFailed"));
     } finally {
       setActionLoadingRecordId(null);
     }
   };
 
   const handleCleanupFailedCandidate = async (record: UpgradeRecordItem) => {
-    const reason = window.prompt("请输入清理失败候选版本原因");
+    const reason = window.prompt(t("upgrades.cleanupReasonPrompt"));
     if (!reason || !reason.trim()) {
       return;
     }
     setActionLoadingRecordId(record.record_id);
     try {
-      const updated = await cleanupFailedCandidate(record.record_id, reason.trim());
-      setSelectedRecord((current) => (current?.record_id === updated.record_id ? updated : current));
+      await cleanupFailedCandidate(record.record_id, reason.trim());
       await loadOverview();
-      await loadCollection();
+      await loadTabData();
       setErrorMessage(null);
     } catch (error) {
-      setErrorMessage(error instanceof Error ? error.message : "清理失败候选版本失败");
+      setErrorMessage(error instanceof Error ? error.message : t("upgrades.cleanupFailed"));
     } finally {
       setActionLoadingRecordId(null);
     }
   };
 
+  const handleRowClick = (recordId: string) => {
+    navigate(`/console/upgrades/${recordId}`);
+  };
+
   return (
     <Stack spacing={3} data-testid="upgrade-management-root">
+      {/* Header */}
       <Stack
         direction={{ xs: "column", md: "row" }}
         justifyContent="space-between"
@@ -211,31 +182,32 @@ export default function UpgradeManagement() {
       >
         <Box>
           <Typography variant="h4" component="h1" gutterBottom>
-            升级管理
+            {t("upgrades.title")}
           </Typography>
           <Typography variant="body1" color="text.secondary">
-            查看 LLM 升级、插件升级、插件创建的 waiting / ongoing / completed / failed 状态。
+            {t("upgrades.subtitle")}
           </Typography>
         </Box>
         <Button
           variant="contained"
           onClick={() => {
             void loadOverview();
-            void loadCollection();
+            void loadTabData();
           }}
-          disabled={loadingOverview || loadingList}
+          disabled={loadingOverview || loadingTabs}
         >
-          {loadingOverview || loadingList ? "刷新中…" : "刷新"}
+          {loadingOverview || loadingTabs ? t("common.refreshing") : t("common.refresh")}
         </Button>
       </Stack>
 
-      {errorMessage ? <Alert severity="error">{errorMessage}</Alert> : null}
+      {errorMessage && <Alert severity="error">{errorMessage}</Alert>}
 
+      {/* Overview Cards */}
       <Stack direction={{ xs: "column", md: "row" }} spacing={2}>
         <Card variant="outlined" sx={{ flex: 1 }}>
           <CardContent>
             <Typography variant="subtitle1" gutterBottom>
-              LLM Upgrade
+              {t("upgrades.llmUpgrade")}
             </Typography>
             {loadingOverview || overview === null ? (
               <CircularProgress size={20} />
@@ -246,6 +218,7 @@ export default function UpgradeManagement() {
                 <Chip label={`Ongoing: ${overview.llm.ongoing}`} color="info" variant="outlined" />
                 <Chip label={`Completed: ${overview.llm.completed}`} color="success" variant="outlined" />
                 <Chip label={`Failed: ${overview.llm.failed}`} color="error" variant="outlined" />
+                <Chip label={`Cancelled: ${overview.llm.cancelled}`} color="default" variant="outlined" />
               </Stack>
             )}
           </CardContent>
@@ -253,7 +226,7 @@ export default function UpgradeManagement() {
         <Card variant="outlined" sx={{ flex: 1 }}>
           <CardContent>
             <Typography variant="subtitle1" gutterBottom>
-              Plugin Evolution
+              {t("upgrades.pluginEvolution")}
             </Typography>
             {loadingOverview || overview === null ? (
               <CircularProgress size={20} />
@@ -264,13 +237,15 @@ export default function UpgradeManagement() {
                 <Chip label={`Ongoing: ${overview.plugins.ongoing}`} color="info" variant="outlined" />
                 <Chip label={`Completed: ${overview.plugins.completed}`} color="success" variant="outlined" />
                 <Chip label={`Failed: ${overview.plugins.failed}`} color="error" variant="outlined" />
+                <Chip label={`Cancelled: ${overview.plugins.cancelled}`} color="default" variant="outlined" />
               </Stack>
             )}
           </CardContent>
         </Card>
       </Stack>
 
-      <Stack direction={{ xs: "column", md: "row" }} spacing={2} alignItems={{ md: "center" }}>
+      {/* Target Kind Filter */}
+      <Stack direction="row" spacing={2} alignItems="center">
         <Stack direction="row" spacing={1}>
           <Button
             variant={targetKind === "llm" ? "contained" : "outlined"}
@@ -286,68 +261,71 @@ export default function UpgradeManagement() {
           </Button>
         </Stack>
 
-        <Select
-          size="small"
-          value={lifecycle}
-          onChange={(event) => setLifecycle(event.target.value as UpgradeLifecycle)}
-          data-testid="upgrade-lifecycle-filter"
-        >
-          {LIFECYCLE_OPTIONS.map((option) => (
-            <MenuItem key={option} value={option}>
-              {option}
-            </MenuItem>
-          ))}
-        </Select>
-
-        {targetKind === "plugin" ? (
-          <Select
-            size="small"
-            value={pluginAction}
-            onChange={(event) => setPluginAction(event.target.value as "all" | "upgrade" | "create")}
-            data-testid="upgrade-plugin-action-filter"
-          >
-            <MenuItem value="all">all actions</MenuItem>
-            <MenuItem value="upgrade">upgrade only</MenuItem>
-            <MenuItem value="create">create only</MenuItem>
-          </Select>
-        ) : null}
-
-        {summary ? (
+        {summary && (
           <Typography variant="body2" color="text.secondary">
-            当前筛选统计: all {summary.all} / waiting {summary.waiting} / ongoing {summary.ongoing} / completed {summary.completed} / failed {summary.failed}
+            {t("upgrades.currentFilterStats", {
+              all: summary.all,
+              waiting: summary.waiting,
+              ongoing: summary.ongoing,
+              completed: summary.completed,
+              failed: summary.failed,
+              cancelled: summary.cancelled
+            })}
           </Typography>
-        ) : null}
+        )}
       </Stack>
 
-      {loadingList || collection === null ? (
+      {/* Tabs */}
+      <Paper variant="outlined">
+        <Tabs
+          value={activeTab}
+          onChange={(_, newValue) => setActiveTab(newValue)}
+          variant="scrollable"
+          scrollButtons="auto"
+        >
+          {TAB_LABELS(t).map((tab, index) => {
+            const count = tabData ? tabData[tab.value as keyof UpgradesByLifecycleViewPayload]?.count ?? 0 : 0;
+            return (
+              <Tab
+                key={tab.value}
+                label={`${tab.label} (${count})`}
+                data-testid={`upgrade-tab-${tab.value}`}
+              />
+            );
+          })}
+        </Tabs>
+      </Paper>
+
+      {/* Tab Content */}
+      {loadingTabs ? (
         <Paper variant="outlined">
           <Stack alignItems="center" justifyContent="center" sx={{ py: 8 }}>
             <CircularProgress />
           </Stack>
         </Paper>
-      ) : (
+      ) : currentTabRecords ? (
         <Paper variant="outlined">
           <TableContainer>
             <Table>
               <TableHead>
                 <TableRow>
-                  <TableCell>Title</TableCell>
-                  <TableCell>Target</TableCell>
-                  <TableCell>Action</TableCell>
-                  <TableCell>Status</TableCell>
-                  <TableCell>Progress</TableCell>
-                  <TableCell>Version</TableCell>
-                  <TableCell>Audit / Memory</TableCell>
-                  <TableCell align="right">Actions</TableCell>
+                  <TableCell>{t("upgrades.colTitle")}</TableCell>
+                  <TableCell>{t("upgrades.colTarget")}</TableCell>
+                  <TableCell>{t("upgrades.colAction")}</TableCell>
+                  <TableCell>{t("common.status")}</TableCell>
+                  <TableCell>{t("upgrades.colProgress")}</TableCell>
+                  <TableCell>{t("upgrades.colVersion")}</TableCell>
+                  <TableCell>{t("upgrades.colAuditMemory")}</TableCell>
+                  <TableCell align="right">{t("common.actions")}</TableCell>
                 </TableRow>
               </TableHead>
               <TableBody>
-                {collection.items.map((item) => (
+                {currentTabRecords.items.map((item) => (
                   <TableRow
                     key={item.record_id}
                     hover
                     sx={{ cursor: "pointer" }}
-                    onClick={() => void handleOpenRecord(item.record_id)}
+                    onClick={() => handleRowClick(item.record_id)}
                   >
                     <TableCell>
                       <Typography variant="subtitle2">{item.title}</Typography>
@@ -384,13 +362,7 @@ export default function UpgradeManagement() {
                     <TableCell>{item.audit_status} / {item.memory_status}</TableCell>
                     <TableCell align="right">
                       <Stack direction="row" spacing={1} justifyContent="flex-end">
-                        <Button size="small" variant="outlined" onClick={(event) => {
-                          event.stopPropagation();
-                          void handleOpenRecord(item.record_id);
-                        }}>
-                          查看
-                        </Button>
-                        {item.can_cancel ? (
+                        {item.can_cancel && (
                           <Button
                             size="small"
                             color="warning"
@@ -401,10 +373,10 @@ export default function UpgradeManagement() {
                               void handleCancel(item);
                             }}
                           >
-                            取消
+                            {t("common.cancel")}
                           </Button>
-                        ) : null}
-                        {item.can_cleanup_failed_candidate ? (
+                        )}
+                        {item.can_cleanup_failed_candidate && (
                           <Button
                             size="small"
                             color="error"
@@ -415,268 +387,27 @@ export default function UpgradeManagement() {
                               void handleCleanupFailedCandidate(item);
                             }}
                           >
-                            清理失败候选
+                            {t("upgrades.cleanupFailedCandidate")}
                           </Button>
-                        ) : null}
+                        )}
                       </Stack>
                     </TableCell>
                   </TableRow>
                 ))}
-                {collection.items.length === 0 ? (
+                        {currentTabRecords.items.length === 0 && (
                   <TableRow>
                     <TableCell colSpan={8}>
-                      <Typography variant="body2" color="text.secondary">
-                        当前筛选下没有记录。
+                      <Typography variant="body2" color="text.secondary" align="center" sx={{ py: 4 }}>
+                        {t("upgrades.noRecordsInCategory")}
                       </Typography>
                     </TableCell>
                   </TableRow>
-                ) : null}
+                )}
               </TableBody>
             </Table>
           </TableContainer>
         </Paper>
-      )}
-
-      <Drawer anchor="right" open={selectedRecord !== null} onClose={() => {
-        setSelectedRecord(null);
-        setSelectedAuditEvents([]);
-        setSelectedMemoryRecords([]);
-      }}>
-        <Box sx={{ width: { xs: 320, sm: 460 }, p: 3 }} data-testid="upgrade-detail-drawer">
-          {detailLoading ? (
-            <CircularProgress />
-          ) : selectedRecord ? (
-            <Stack spacing={2}>
-              <Box>
-                <Typography variant="h5" gutterBottom>
-                  {selectedRecord.title}
-                </Typography>
-                <Stack direction="row" spacing={1} useFlexGap flexWrap="wrap">
-                  <Chip label={selectedRecord.target_kind} />
-                  <Chip label={selectedRecord.action} variant="outlined" />
-                  <Chip
-                    label={selectedRecord.current_status}
-                    color={getLifecycleChipColor(selectedRecord.current_status)}
-                    variant="outlined"
-                  />
-                </Stack>
-              </Box>
-
-              <Divider />
-
-              <Typography variant="body2">
-                <strong>Target:</strong> {selectedRecord.target_id}
-              </Typography>
-              <Typography variant="body2">
-                <strong>Reason:</strong> {selectedRecord.reason}
-              </Typography>
-              <Typography variant="body2">
-                <strong>Trace / Request:</strong> {selectedRecord.trace_id} / {selectedRecord.request_id}
-              </Typography>
-              {selectedRecord.source_event_id ? (
-                <Typography variant="body2">
-                  <strong>Source Event:</strong> {selectedRecord.source_event_id}
-                </Typography>
-              ) : null}
-              {selectedRecord.parent_record_id ? (
-                <Typography variant="body2">
-                  <strong>Parent Record:</strong> {selectedRecord.parent_record_id}
-                </Typography>
-              ) : null}
-              <Typography variant="body2">
-                <strong>Function Summary:</strong> {selectedRecord.function_summary}
-              </Typography>
-              <Typography variant="body2">
-                <strong>Change Summary:</strong> {selectedRecord.change_summary}
-              </Typography>
-              <Typography variant="body2">
-                <strong>Version:</strong> {selectedRecord.previous_version ? `${selectedRecord.previous_version} -> ` : ""}
-                {selectedRecord.candidate_version || selectedRecord.current_version}
-              </Typography>
-              <Typography variant="body2">
-                <strong>Progress:</strong> {selectedRecord.current_progress}%
-              </Typography>
-              <Typography variant="body2">
-                <strong>Audit / Memory:</strong> {selectedRecord.audit_status} / {selectedRecord.memory_status}
-              </Typography>
-              <Typography variant="body2">
-                <strong>Created:</strong> {formatDateTime(selectedRecord.created_at)}
-              </Typography>
-              <Typography variant="body2">
-                <strong>Updated:</strong> {formatDateTime(selectedRecord.updated_at)}
-              </Typography>
-              {selectedRecord.source_path ? (
-                <Typography variant="body2">
-                  <strong>Source Path:</strong> {selectedRecord.source_path}
-                </Typography>
-              ) : null}
-              {selectedRecord.candidate_path ? (
-                <Typography variant="body2">
-                  <strong>Candidate Path:</strong> {selectedRecord.candidate_path}
-                </Typography>
-              ) : null}
-              {selectedRecord.evidence_refs.length > 0 ? (
-                <Typography variant="body2">
-                  <strong>Evidence Refs:</strong> {selectedRecord.evidence_refs.join(", ")}
-                </Typography>
-              ) : null}
-              {selectedRecord.success_summary ? (
-                <Typography variant="body2">
-                  <strong>Success Summary:</strong> {selectedRecord.success_summary}
-                </Typography>
-              ) : null}
-              {selectedRecord.success_stage ? (
-                <Typography variant="body2">
-                  <strong>Success Stage:</strong> {selectedRecord.success_stage}
-                </Typography>
-              ) : null}
-              {selectedRecord.reusable_insight ? (
-                <Typography variant="body2">
-                  <strong>Reusable Insight:</strong> {selectedRecord.reusable_insight}
-                </Typography>
-              ) : null}
-              {selectedRecord.successful_command ? (
-                <Typography variant="body2">
-                  <strong>Successful Command:</strong> {selectedRecord.successful_command}
-                </Typography>
-              ) : null}
-              {(selectedRecord.success_artifact_refs ?? []).length > 0 ? (
-                <Typography variant="body2">
-                  <strong>Success Artifacts:</strong> {(selectedRecord.success_artifact_refs ?? []).join(", ")}
-                </Typography>
-              ) : null}
-              {selectedRecord.promotion_hint ? (
-                <Typography variant="body2">
-                  <strong>Promotion Hint:</strong> {selectedRecord.promotion_hint}
-                </Typography>
-              ) : null}
-              {(selectedRecord.success_tags ?? []).length > 0 ? (
-                <Typography variant="body2">
-                  <strong>Success Tags:</strong> {(selectedRecord.success_tags ?? []).join(", ")}
-                </Typography>
-              ) : null}
-              {selectedRecord.failure_reason ? (
-                <Alert severity="error">
-                  <strong>Failure:</strong> {selectedRecord.failure_reason}
-                </Alert>
-              ) : null}
-              {selectedRecord.failure_summary ? (
-                <Typography variant="body2">
-                  <strong>Failure Summary:</strong> {selectedRecord.failure_summary}
-                </Typography>
-              ) : null}
-              {selectedRecord.failure_stage ? (
-                <Typography variant="body2">
-                  <strong>Failure Stage:</strong> {selectedRecord.failure_stage}
-                </Typography>
-              ) : null}
-              {selectedRecord.failure_code ? (
-                <Typography variant="body2">
-                  <strong>Failure Code:</strong> {selectedRecord.failure_code}
-                </Typography>
-              ) : null}
-              {selectedRecord.root_cause_hypothesis ? (
-                <Typography variant="body2">
-                  <strong>Root Cause Hypothesis:</strong> {selectedRecord.root_cause_hypothesis}
-                </Typography>
-              ) : null}
-              {selectedRecord.failed_command ? (
-                <Typography variant="body2">
-                  <strong>Failed Command:</strong> {selectedRecord.failed_command}
-                </Typography>
-              ) : null}
-              {(selectedRecord.failed_artifact_refs ?? []).length > 0 ? (
-                <Typography variant="body2">
-                  <strong>Failed Artifacts:</strong> {(selectedRecord.failed_artifact_refs ?? []).join(", ")}
-                </Typography>
-              ) : null}
-              {selectedRecord.retryable !== undefined && selectedRecord.retryable !== null ? (
-                <Typography variant="body2">
-                  <strong>Retryable:</strong> {selectedRecord.retryable ? "yes" : "no"}
-                </Typography>
-              ) : null}
-              {selectedRecord.prevention_hint ? (
-                <Typography variant="body2">
-                  <strong>Prevention Hint:</strong> {selectedRecord.prevention_hint}
-                </Typography>
-              ) : null}
-              {(selectedRecord.learning_tags ?? []).length > 0 ? (
-                <Typography variant="body2">
-                  <strong>Learning Tags:</strong> {(selectedRecord.learning_tags ?? []).join(", ")}
-                </Typography>
-              ) : null}
-
-              <Divider />
-
-              <Box>
-                <Typography variant="subtitle2" gutterBottom>
-                  审计事件
-                </Typography>
-                <Stack spacing={1}>
-                  {selectedAuditEvents.length === 0 ? (
-                    <Typography variant="body2" color="text.secondary">
-                      暂无审计事件。
-                    </Typography>
-                  ) : selectedAuditEvents.map((event) => (
-                    <Paper key={event.event_id} variant="outlined" sx={{ p: 1.5 }}>
-                      <Typography variant="body2">
-                        <strong>{event.event_type}</strong> · {formatDateTime(event.created_at)}
-                      </Typography>
-                      <Typography variant="body2" color="text.secondary">
-                        {event.summary}
-                      </Typography>
-                    </Paper>
-                  ))}
-                </Stack>
-              </Box>
-
-              <Box>
-                <Typography variant="subtitle2" gutterBottom>
-                  记忆记录
-                </Typography>
-                <Stack spacing={1}>
-                  {selectedMemoryRecords.length === 0 ? (
-                    <Typography variant="body2" color="text.secondary">
-                      暂无记忆记录。
-                    </Typography>
-                  ) : selectedMemoryRecords.map((item) => (
-                    <Paper key={item.memory_id} variant="outlined" sx={{ p: 1.5 }}>
-                      <Typography variant="body2">
-                        <strong>{item.event_type}</strong> · {formatDateTime(item.created_at)}
-                      </Typography>
-                      <Typography variant="body2" color="text.secondary">
-                        {item.summary}
-                      </Typography>
-                    </Paper>
-                  ))}
-                </Stack>
-              </Box>
-              <Stack direction="row" spacing={1}>
-                {selectedRecord.can_cancel ? (
-                  <Button
-                    color="warning"
-                    variant="outlined"
-                    disabled={actionLoadingRecordId === selectedRecord.record_id}
-                    onClick={() => void handleCancel(selectedRecord)}
-                  >
-                    取消升级
-                  </Button>
-                ) : null}
-                {selectedRecord.can_cleanup_failed_candidate ? (
-                  <Button
-                    color="error"
-                    variant="outlined"
-                    disabled={actionLoadingRecordId === selectedRecord.record_id}
-                    onClick={() => void handleCleanupFailedCandidate(selectedRecord)}
-                  >
-                    清理失败候选
-                  </Button>
-                ) : null}
-              </Stack>
-            </Stack>
-          ) : null}
-        </Box>
-      </Drawer>
+      ) : null}
     </Stack>
   );
 }

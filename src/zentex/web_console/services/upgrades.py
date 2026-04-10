@@ -24,6 +24,8 @@ from zentex.web_console.contracts.upgrades import (
     UpgradeOverviewPayload,
     UpgradeRecordCollection,
     UpgradeRecordItem,
+    LifecycleGroupedRecords,
+    UpgradesByLifecycleViewPayload,
 )
 
 
@@ -137,3 +139,55 @@ def build_upgrade_audit_event_item(event: UpgradeAuditEvent) -> UpgradeAuditEven
 
 def build_upgrade_memory_record_item(record: UpgradeMemoryRecord) -> UpgradeMemoryRecordItem:
     return UpgradeMemoryRecordItem.model_validate(record.model_dump())
+
+
+def build_upgrades_by_lifecycle_view(
+    store: UpgradeManagementStore,
+    *,
+    target_kind: UpgradeTargetKind | None = None,
+    plugin_action: str | None = None,
+) -> UpgradesByLifecycleViewPayload:
+    """Build upgrades grouped by lifecycle view for tabbed display."""
+    all_records = store.list_records(
+        target_kind=target_kind,
+        lifecycle=UpgradeLifecycleView.ALL,
+        action=plugin_action if target_kind == UpgradeTargetKind.PLUGIN else None,
+    )
+    
+    # Group records by lifecycle view
+    grouped: dict[str, list[UpgradeManagementRecord]] = {
+        "ongoing": [],
+        "waiting": [],
+        "failed": [],
+        "cancelled": [],
+        "completed": [],
+    }
+    
+    for record in all_records:
+        view = record.lifecycle_view().value
+        if view in grouped:
+            grouped[view].append(record)
+    
+    # Build response
+    return UpgradesByLifecycleViewPayload(
+        ongoing=LifecycleGroupedRecords(
+            count=len(grouped["ongoing"]),
+            items=[build_upgrade_record_item(r) for r in grouped["ongoing"]],
+        ),
+        waiting=LifecycleGroupedRecords(
+            count=len(grouped["waiting"]),
+            items=[build_upgrade_record_item(r) for r in grouped["waiting"]],
+        ),
+        failed=LifecycleGroupedRecords(
+            count=len(grouped["failed"]),
+            items=[build_upgrade_record_item(r) for r in grouped["failed"]],
+        ),
+        cancelled=LifecycleGroupedRecords(
+            count=len(grouped["cancelled"]),
+            items=[build_upgrade_record_item(r) for r in grouped["cancelled"]],
+        ),
+        completed=LifecycleGroupedRecords(
+            count=len(grouped["completed"]),
+            items=[build_upgrade_record_item(r) for r in grouped["completed"]],
+        ),
+    )

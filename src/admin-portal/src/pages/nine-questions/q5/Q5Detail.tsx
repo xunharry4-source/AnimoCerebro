@@ -25,6 +25,7 @@ import {
 import Q5EvidencePanel from "../../../components/Q5EvidencePanel";
 import MountedPluginsZone from "../../../components/MountedPluginsZone";
 import LLMTracePanel from "../../../components/LLMTracePanel";
+import NineQuestionIntroCard from "../../../components/NineQuestionIntroCard";
 
 function resolveErrorGuidance(errMsg: string): { title: string; action: string } {
   if (errMsg.includes("No active session") || errMsg.includes("没有活动 session")) {
@@ -115,6 +116,8 @@ export default function Q5Detail() {
       <Alert severity="error" sx={{ mb: 3, fontWeight: "bold" }}>
         [合规警戒] Q5 审计已划定认知动作的终极禁区。任何越权推演均已被物理阻断，请核实 PermissionBoundaryProfile。
       </Alert>
+
+      <NineQuestionIntroCard questionId="q5" />
 
       <Card variant="outlined" sx={{ mb: 3 }}>
         <CardContent>

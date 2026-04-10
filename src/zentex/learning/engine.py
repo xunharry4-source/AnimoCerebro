@@ -7,7 +7,8 @@ from typing_extensions import Self
 from zentex.core.model_provider_spec import ModelProviderSpec
 from zentex.learning.budget import ReasoningBudget
 from zentex.learning.directions import LearningDirection, describe_direction
-from zentex.runtime.transcript import BrainTranscriptEntryType, BrainTranscriptStore
+from zentex.runtime.service import get_runtime_service
+from zentex.runtime.transcript import BrainTranscriptEntryType
 
 LEARNING_SESSION_ID = "learning_engine"
 
@@ -25,7 +26,7 @@ class LearningCycleResult(dict):
 
 async def run_learning_cycle(
     *,
-    store: BrainTranscriptStore,
+    store: Optional[Any] = None,
     direction: LearningDirection,
     provider: Optional[ModelProviderSpec] = None,
     budget: Optional[ReasoningBudget] = None,
@@ -40,7 +41,11 @@ async def run_learning_cycle(
     turn_id = "cycle_" + trace_id[:8]
     meta = describe_direction(direction)
 
-    store.write_entry(
+    if store is None:
+        store = get_runtime_service().get_transcript_store()
+
+    if store:
+        store.write_entry(
         session_id=LEARNING_SESSION_ID,
         turn_id=turn_id,
         entry_type=BrainTranscriptEntryType.LEARNING_ENGINE_EVENT,
@@ -55,14 +60,15 @@ async def run_learning_cycle(
     )
 
     if dry_run:
-        store.write_entry(
-            session_id=LEARNING_SESSION_ID,
-            turn_id=turn_id,
-            entry_type=BrainTranscriptEntryType.LEARNING_ENGINE_EVENT,
-            payload={"kind": "dry_run_ack"},
-            source="zentex.learning.engine",
-            trace_id=trace_id,
-        )
+        if store:
+            store.write_entry(
+                session_id=LEARNING_SESSION_ID,
+                turn_id=turn_id,
+                entry_type=BrainTranscriptEntryType.LEARNING_ENGINE_EVENT,
+                payload={"kind": "dry_run_ack"},
+                source="zentex.learning.engine",
+                trace_id=trace_id,
+            )
         return LearningCycleResult(status="dry_run", trace_id=trace_id)
 
     if load_factor > 0.8:
@@ -138,7 +144,7 @@ async def run_learning_cycle(
 
 async def start_learning(
     *,
-    store: BrainTranscriptStore,
+    store: Optional[Any] = None,
     direction: str | LearningDirection,
     provider: Optional[ModelProviderSpec] = None,
     doc_url: Optional[str] = None,
@@ -176,6 +182,9 @@ async def start_learning(
     if doc_url:
         extra_context = {"doc_url": doc_url}
 
+    if store is None:
+        store = get_runtime_service().get_transcript_store()
+
     return await run_learning_cycle(
         store=store,
         direction=direction,
@@ -207,7 +216,7 @@ def list_available_directions() -> list[Dict[str, Any]]:
 
 
 def get_learning_status(
-    store: BrainTranscriptStore,
+    store: Optional[Any] = None,
     *,
     trace_id: Optional[str] = None,
     limit: int = 20,
@@ -223,6 +232,17 @@ def get_learning_status(
     Returns:
         包含可用方向、最近事件等信息的字典。
     """
+    if store is None:
+        store = get_runtime_service().get_transcript_store()
+
+    if not store:
+        return {
+            "available_directions": list_available_directions(),
+            "recent_events_count": 0,
+            "recent_events": [],
+            "error": "Transcript store not available"
+        }
+
     entries = store.read_by_session_id(LEARNING_SESSION_ID)
     if trace_id:
         entries = [e for e in entries if e.trace_id == trace_id]

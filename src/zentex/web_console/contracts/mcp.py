@@ -56,3 +56,32 @@ class McpToolTestCallResult(BaseModel):
     tool_name: str
     trace_id: str
     payload: dict[str, object] = Field(default_factory=dict)
+
+
+class McpTaskSummary(BaseModel):
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    record_id: str
+    task_id: Optional[str] = None
+    action_type: str
+    status: str
+    start_time: str
+    end_time: Optional[str] = None
+    duration_seconds: Optional[float] = None
+    verification_status: str
+    error: Optional[str] = None
+
+
+class McpServerDetailItem(BaseModel):
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    server_id: str
+    transport_type: str
+    status: str
+    tool_count: int
+    credit_score: int
+    total_tasks_run: int
+    success_rate: float
+    uptime_seconds: int
+    tools: List[McpServerToolItem]
+    error_message: Optional[str] = None

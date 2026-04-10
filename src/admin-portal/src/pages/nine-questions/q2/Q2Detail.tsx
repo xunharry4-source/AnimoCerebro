@@ -25,6 +25,7 @@ import {
 import Q2EvidencePanel from "../../../components/Q2EvidencePanel";
 import MountedPluginsZone from "../../../components/MountedPluginsZone";
 import LLMTracePanel from "../../../components/LLMTracePanel";
+import NineQuestionIntroCard from "../../../components/NineQuestionIntroCard";
 
 function resolveErrorGuidance(errMsg: string): { title: string; action: string } {
   if (errMsg.includes("No active session") || errMsg.includes("没有活动 session")) {
@@ -103,6 +104,10 @@ export default function Q2Detail() {
         </Box>
         <Button component={RouterLink} to="/console/nine-questions/q2/test" variant="contained" color="warning" data-testid="q2-sandbox-nav-button">进入独立沙箱测试</Button>
       </Stack>
+
+
+      {/* 问题介绍栏目 */}
+      <NineQuestionIntroCard questionId="q2" />
 
       <Card variant="outlined" sx={{ mb: 3 }}>
         <CardContent>

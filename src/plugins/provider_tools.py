@@ -21,7 +21,7 @@ from urllib import error as urllib_error
 from urllib import request as urllib_request
 
 from pydantic import BaseModel, ConfigDict, Field
-from zentex.core.config import CONFIG_DIR, load_required_mapping_section
+from zentex.core.config import CONFIG_DIR, load_required_mapping_section, load_yaml_config
 
 try:
     from openai import (
@@ -431,3 +431,28 @@ def build_default_provider_tools(
         "gemini": GeminiTool(configs["gemini"]),
         "claude": ClaudeTool(configs["claude"]),
     }
+
+def get_default_provider_key(
+    config_path: Union[str, Path] = DEFAULT_PROVIDER_CONFIG_PATH,
+) -> str:
+    """
+    Resolve the default provider key using the following precedence:
+    1. ZENTEX_DEFAULT_PROVIDER environment variable
+    2. 'default_provider' key in config/provider_tools.yml
+    3. 'openai' if OPENAI_API_KEY is present in env, else 'openai_compat'
+    """
+    env_default = os.getenv("ZENTEX_DEFAULT_PROVIDER")
+    if env_default and env_default.strip():
+        return env_default.strip()
+
+    try:
+        from zentex.core.config import load_yaml_config
+        payload = load_yaml_config(config_path)
+        config_default = payload.get("default_provider")
+        if config_default and isinstance(config_default, str) and config_default.strip():
+            return config_default.strip()
+    except Exception:
+        pass
+
+    return "openai" if os.getenv("OPENAI_API_KEY") else "openai_compat"
+

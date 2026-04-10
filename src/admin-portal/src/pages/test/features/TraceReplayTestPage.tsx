@@ -1,25 +1,27 @@
 import { Button, Card, CardContent, Stack, Typography } from "@mui/material";
+import { useTranslation } from "react-i18next";
 
 type TraceReplayTestPageProps = {
   onBack: () => void;
 };
 
 export default function TraceReplayTestPage({ onBack }: TraceReplayTestPageProps) {
+  const { t } = useTranslation();
   return (
     <Stack spacing={2}>
       <Typography variant="h4" component="h1">
-        溯源链路测试
+        {t("test.traceReplayTitle")}
       </Typography>
       <Card variant="outlined">
         <CardContent>
           <Stack spacing={2}>
-            <Typography variant="subtitle1">验证 Trace 聚合、事件回放与上下文摘要是否一致。</Typography>
+            <Typography variant="subtitle1">{t("test.traceReplaySubtitle")}</Typography>
             <Typography variant="body2" color="text.secondary">
-              在这里执行溯源链路相关测试，例如按 trace_id 拉取并检查事件顺序与关键字段。
+              {t("test.traceReplayDescription")}
             </Typography>
             <Stack direction="row">
               <Button variant="outlined" onClick={onBack}>
-                返回测试列表
+                {t("test.backToTestList")}
               </Button>
             </Stack>
           </Stack>

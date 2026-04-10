@@ -4,6 +4,7 @@ from pathlib import Path
 import os
 import tempfile
 
+from typing import Any
 from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
@@ -23,8 +24,6 @@ from zentex.core.model_provider_spec import (
 )
 from zentex.core.plugin_base import BasePluginSpec, PluginHealthStatus, PluginLifecycleStatus
 from zentex.runtime.cognitive_tools.registry import CognitiveToolRegistry
-from zentex.runtime.runtime import BrainRuntime
-from zentex.runtime.session import BrainSession
 from zentex.tasks.service import TaskManagementService
 from zentex.memory import EnhancedMemoryService, EpisodeGraphMemoryAdapter
 from zentex.memory import KuzuGraphMemoryClient
@@ -112,15 +111,17 @@ def _map_llm_exception(exc: ModelProviderError) -> tuple[int, dict[str, object]]
     )
 
 
-def create_web_console_app(
+def create_app(
     *,
     cognitive_tool_registry: CognitiveToolRegistry | None = None,
     plugin_registry: AbstractPluginRegistry[object] | None = None,
     weight_assembler: WeightPluginAssembler | None = None,
+    plugin_service: Any | None = None,  # SystemPluginService instance
     managed_plugins: list[BasePluginSpec] | None = None,
     plugin_feature_catalog: list[PluginFeatureCatalogItem] | None = None,
-    runtime: BrainRuntime | None = None,
-    session: BrainSession | None = None,
+    runtime: Any | None = None,
+    session: Any | None = None,
+    transcript_store: Any | None = None,
     agent_manager: AgentManager | None = None,
     agent_coordination_service: AgentCoordinationService | None = None,
     task_service: TaskManagementService | None = None,
@@ -161,6 +162,24 @@ def create_web_console_app(
         app.state.plugin_registry = plugin_registry
     if weight_assembler is not None:
         app.state.weight_assembler = weight_assembler
+    
+    # ✅ If plugin_service is provided, use it to get managed plugins and feature catalog
+    if plugin_service is not None:
+        try:
+            # Get managed plugins from service
+            if hasattr(plugin_service, 'get_all_plugins'):
+                all_plugins = plugin_service.get_all_plugins()
+                if all_plugins and not managed_plugins:
+                    managed_plugins = list(all_plugins.values())
+            
+            # Get feature catalog from service  
+            if hasattr(plugin_service, 'get_feature_catalog'):
+                catalog = plugin_service.get_feature_catalog()
+                if catalog and not plugin_feature_catalog:
+                    plugin_feature_catalog = catalog
+        except Exception as exc:
+            logger.warning(f"Failed to get data from plugin_service: {exc}")
+    
     if managed_plugins is not None:
         app.state.managed_plugins = managed_plugins
         app.state.managed_plugin_records = {
@@ -172,8 +191,12 @@ def create_web_console_app(
         }
     if plugin_feature_catalog is not None:
         app.state.plugin_feature_catalog = plugin_feature_catalog
-    if runtime is not None:
-        app.state.runtime = runtime
+    app.state.runtime = runtime
+    if transcript_store is not None:
+        app.state.transcript_store = transcript_store
+    elif runtime is not None and hasattr(runtime, "transcript_store"):
+        app.state.transcript_store = runtime.transcript_store
+        
     kuzu_adapter = None
     cluster_mode = os.environ.get("ZENTEX_CLUSTER_MODE", "false").lower() == "true"
     if not cluster_mode:
@@ -320,6 +343,10 @@ def create_web_console_app(
 
     @app.middleware("http")
     async def llm_disable_guard(request: Request, call_next):  # type: ignore[no-untyped-def]
+        # Health endpoint is always allowed
+        if request.url.path.startswith("/api/web/health"):
+            return await call_next(request)
+        
         if request.url.path.startswith("/api/web") and request.method.upper() in {
             "POST",
             "PUT",
@@ -362,3 +389,5 @@ def create_web_console_app(
 
     app.include_router(api_router)
     return app
+
+create_web_console_app = create_app

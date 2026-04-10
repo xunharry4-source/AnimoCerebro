@@ -23,6 +23,7 @@ class BrainRuntimeState:
     read_only_mode: bool
     degraded_mode: bool
     manual_confirmation_required: bool
+    identity_verified: bool
     last_runtime_snapshot_at: datetime
 
 

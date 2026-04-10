@@ -6,6 +6,12 @@ from typing import Any, Dict, List, Literal, Optional
 from pydantic import BaseModel, ConfigDict, Field
 
 from zentex.core.plugin_base import BasePluginSpec
+from pathlib import Path
+
+# Resolve repo root dynamically to avoid hardcoded paths
+REPO_ROOT = Path(__file__).parent.parent.parent.parent.parent
+DOCS_ROOT = REPO_ROOT / "docs"
+SRC_ROOT = REPO_ROOT / "src"
 
 
 class CognitivePluginStatusItem(BaseModel):
@@ -132,34 +138,34 @@ class PluginTestResponse(BaseModel):
 
 
 FEATURE_GUIDE_PATHS: Dict[str, str] = {
-    "risk_assessment": "/Users/harry/Documents/git/AnimoCerebro/docs/operability/plugin_features/risk_assessment.md",
-    "evidence_ranking": "/Users/harry/Documents/git/AnimoCerebro/docs/operability/plugin_features/evidence_ranking.md",
-    "decision_summary": "/Users/harry/Documents/git/AnimoCerebro/docs/operability/plugin_features/decision_summary.md",
-    "cognitive_conflict_detection": "/Users/harry/Documents/git/AnimoCerebro/docs/operability/plugin_features/cognitive_conflict_detection.md",
-    "memory_consolidation": "/Users/harry/Documents/git/AnimoCerebro/docs/operability/plugin_features/memory_consolidation.md",
-    "model_provider:gemini": "/Users/harry/Documents/git/AnimoCerebro/docs/operability/plugin_features/model_provider_gemini.md",
-    "model_provider:openai_compat": "/Users/harry/Documents/git/AnimoCerebro/docs/operability/plugin_features/model_provider_openai_compat.md",
-    "sensory_ingest:webhook": "/Users/harry/Documents/git/AnimoCerebro/docs/operability/plugin_features/sensory_ingest_webhook.md",
-    "sensory_sanitize:basic_prompt_injection_sanitizer": "/Users/harry/Documents/git/AnimoCerebro/docs/operability/plugin_features/sensory_sanitize_basic_prompt_injection_sanitizer.md",
-    "sensory_interpret:generic_environment": "/Users/harry/Documents/git/AnimoCerebro/docs/operability/plugin_features/sensory_interpret_generic_environment.md",
-    "execution:system": "/Users/harry/Documents/git/AnimoCerebro/docs/operability/plugin_features/execution_system.md",
-    "execution:browser": "/Users/harry/Documents/git/AnimoCerebro/docs/operability/plugin_features/execution_browser.md",
-    "simulation:general,system,cloud,browser,code,market": "/Users/harry/Documents/git/AnimoCerebro/docs/operability/plugin_features/simulation_general.md",
-    "simulation:market": "/Users/harry/Documents/git/AnimoCerebro/docs/operability/plugin_features/simulation_market.md",
-    "weights:subjective_preferences": "/Users/harry/Documents/git/AnimoCerebro/docs/operability/plugin_features/weights_subjective_preferences.md",
-    "identity:package_loader": "/Users/harry/Documents/git/AnimoCerebro/docs/operability/plugin_features/identity_package_loader.md",
+    "risk_assessment": str(DOCS_ROOT / "operability/plugin_features/risk_assessment.md"),
+    "evidence_ranking": str(DOCS_ROOT / "operability/plugin_features/evidence_ranking.md"),
+    "decision_summary": str(DOCS_ROOT / "operability/plugin_features/decision_summary.md"),
+    "cognitive_conflict_detection": str(DOCS_ROOT / "operability/plugin_features/cognitive_conflict_detection.md"),
+    "memory_consolidation": str(DOCS_ROOT / "operability/plugin_features/memory_consolidation.md"),
+    "model_provider:gemini": str(DOCS_ROOT / "operability/plugin_features/model_provider_gemini.md"),
+    "model_provider:openai_compat": str(DOCS_ROOT / "operability/plugin_features/model_provider_openai_compat.md"),
+    "sensory_ingest:webhook": str(DOCS_ROOT / "operability/plugin_features/sensory_ingest_webhook.md"),
+    "sensory_sanitize:basic_prompt_injection_sanitizer": str(DOCS_ROOT / "operability/plugin_features/sensory_sanitize_basic_prompt_injection_sanitizer.md"),
+    "sensory_interpret:generic_environment": str(DOCS_ROOT / "operability/plugin_features/sensory_interpret_generic_environment.md"),
+    "execution:system": str(DOCS_ROOT / "operability/plugin_features/execution_system.md"),
+    "execution:browser": str(DOCS_ROOT / "operability/plugin_features/execution_browser.md"),
+    "simulation:general,system,cloud,browser,code,market": str(DOCS_ROOT / "operability/plugin_features/simulation_general.md"),
+    "simulation:market": str(DOCS_ROOT / "operability/plugin_features/simulation_market.md"),
+    "weights:subjective_preferences": str(DOCS_ROOT / "operability/plugin_features/weights_subjective_preferences.md"),
+    "identity:package_loader": str(DOCS_ROOT / "operability/plugin_features/identity_package_loader.md"),
 }
 
 
 PLUGIN_FAMILY_GUIDE_PATHS: Dict[str, str] = {
-    "cognitive_tool": "/Users/harry/Documents/git/AnimoCerebro/src/plugins/cognitive/DEVELOPMENT_GUIDE.md",
-    "model_provider": "/Users/harry/Documents/git/AnimoCerebro/src/plugins/model_providers/DEVELOPMENT_GUIDE.md",
-    "signal_ingest": "/Users/harry/Documents/git/AnimoCerebro/src/plugins/sensory/DEVELOPMENT_GUIDE.md",
-    "signal_sanitize": "/Users/harry/Documents/git/AnimoCerebro/src/plugins/sensory/DEVELOPMENT_GUIDE.md",
-    "signal_interpret": "/Users/harry/Documents/git/AnimoCerebro/src/plugins/sensory/DEVELOPMENT_GUIDE.md",
-    "execution_domain": "/Users/harry/Documents/git/AnimoCerebro/src/plugins/execution/DEVELOPMENT_GUIDE.md",
-    "simulation_domain": "/Users/harry/Documents/git/AnimoCerebro/src/plugins/simulation/DEVELOPMENT_GUIDE.md",
-    "subjective_weight": "/Users/harry/Documents/git/AnimoCerebro/src/plugins/weights/DEVELOPMENT_GUIDE.md",
-    "identity_package": "/Users/harry/Documents/git/AnimoCerebro/docs/operability/plugin_features/identity_package_loader.md",
+    "cognitive_tool": str(SRC_ROOT / "plugins/cognitive/DEVELOPMENT_GUIDE.md"),
+    "model_provider": str(SRC_ROOT / "plugins/model_providers/DEVELOPMENT_GUIDE.md"),
+    "signal_ingest": str(SRC_ROOT / "plugins/sensory/DEVELOPMENT_GUIDE.md"),
+    "signal_sanitize": str(SRC_ROOT / "plugins/sensory/DEVELOPMENT_GUIDE.md"),
+    "signal_interpret": str(SRC_ROOT / "plugins/sensory/DEVELOPMENT_GUIDE.md"),
+    "execution_domain": str(SRC_ROOT / "plugins/execution/DEVELOPMENT_GUIDE.md"),
+    "simulation_domain": str(SRC_ROOT / "plugins/simulation/DEVELOPMENT_GUIDE.md"),
+    "subjective_weight": str(SRC_ROOT / "plugins/weights/DEVELOPMENT_GUIDE.md"),
+    "identity_package": str(DOCS_ROOT / "operability/plugin_features/identity_package_loader.md"),
 }
 

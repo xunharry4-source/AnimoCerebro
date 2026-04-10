@@ -18,6 +18,8 @@ from zentex.web_console.routers.plugins import router as plugins_router
 from zentex.web_console.routers.replay import router as replay_router
 from zentex.web_console.routers.tasks import router as tasks_router
 from zentex.web_console.routers.upgrades import router as upgrades_router
+from zentex.web_console.routers.governance import router as governance_router
+from zentex.web_console.routers.health import router as health_router
 
 
 api_router = APIRouter(prefix="/api/web", tags=["web-console"])
@@ -37,3 +39,5 @@ api_router.include_router(model_feature_tests_router)
 api_router.include_router(interventions_router)
 api_router.include_router(events_router)
 api_router.include_router(learning_router)
+api_router.include_router(governance_router)
+api_router.include_router(health_router)

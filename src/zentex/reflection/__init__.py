@@ -4,10 +4,22 @@ import logging
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
-from zentex.reflection.models import ReflectionRecord, ReflectionTemplate, ReflectionInsight, ReflectionPattern
+from zentex.reflection.models import (
+    ReflectionRecord, 
+    ReflectionTemplate, 
+    ReflectionInsight, 
+    ReflectionPattern,
+    CORE_FIXED_REFLECTION_ITEMS
+)
 from zentex.reflection.service import ReflectionService
 from zentex.reflection.interface import ReflectionInterface
 from zentex.reflection.persistence import ReflectionPersistence
+from zentex.reflection.llm_generator import LLMReflectionGenerator, get_llm_reflection_generator
+from zentex.reflection.quality_assessor import ReflectionQualityAssessor
+from zentex.reflection.data_sync import ReflectionDataSync
+from zentex.reflection.template_manager import ReflectionTemplateManager
+from zentex.reflection.metrics_calculator import ReflectionMetricsCalculator, ReflectionUpdatePolicy, MetaAuditGenerator
+from zentex.reflection.workflow_orchestrator import ReflectionWorkflowOrchestrator
 
 logger = logging.getLogger(__name__)
 

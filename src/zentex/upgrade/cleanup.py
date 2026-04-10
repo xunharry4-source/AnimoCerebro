@@ -4,6 +4,7 @@ import os
 import shutil
 import time
 import logging
+from datetime import UTC, datetime
 from threading import Thread
 from zentex.upgrade.management import UpgradeManagementStore, UpgradeLifecycleStatus
 
@@ -51,8 +52,16 @@ class EvolutionCleanupWorker:
         for record in records:
             if record.current_status in [UpgradeLifecycleStatus.FAILED, UpgradeLifecycleStatus.CANCELLED, UpgradeLifecycleStatus.COMPLETED]:
                 # Avoid cleaning up very recent jobs
-                age = (time.time() - record.updated_at.timestamp())
-                if age > 86400: # 1 day
+                now = datetime.now(UTC)
+                updated_at = record.updated_at
+                
+                # Ensure both are timezone-aware
+                if updated_at.tzinfo is None:
+                    updated_at = updated_at.replace(tzinfo=UTC)
+                
+                age_seconds = (now - updated_at).total_seconds()
+                
+                if age_seconds > 86400:  # 1 day
                     self._cleanup_record_artifacts(record)
 
     def _cleanup_record_artifacts(self, record):

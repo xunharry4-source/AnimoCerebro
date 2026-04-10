@@ -1,3 +1,4 @@
+import { useTranslation } from "react-i18next";
 import {
   Alert,
   Box,
@@ -36,6 +37,7 @@ type HistoryRow = {
 };
 
 export default function LearningDashboard() {
+  const { t } = useTranslation();
   const [plan, setPlan] = useState<{ directions: PlanDirection[]; redlines: { zh: string; en: string } } | null>(
     null,
   );
@@ -67,10 +69,10 @@ export default function LearningDashboard() {
         setPlan(p);
         await loadHistory();
       } catch (e) {
-        setError(e instanceof Error ? e.message : "加载失败");
+        setError(e instanceof Error ? e.message : t("common.loadFailed"));
       }
     })();
-  }, [loadPlan, loadHistory]);
+  }, [loadPlan, loadHistory, t]);
 
   const runCycle = async (dryRun: boolean) => {
     setLoading(true);
@@ -90,36 +92,33 @@ export default function LearningDashboard() {
       setLastRun(`status=${body.status} trace=${body.trace_id}`);
       await loadHistory();
     } catch (e) {
-      setError(e instanceof Error ? e.message : "运行失败");
+      setError(e instanceof Error ? e.message : t("common.runFailed"));
     } finally {
       setLoading(false);
     }
   };
 
   const columns: GridColDef[] = [
-    { field: "timestamp", headerName: "时间 / Time", width: 220 },
-    { field: "kind", headerName: "阶段 / Kind", width: 140 },
-    { field: "direction", headerName: "方向 / Direction", width: 180 },
+    { field: "timestamp", headerName: t("learning.time"), width: 220 },
+    { field: "kind", headerName: t("learning.kind"), width: 140 },
+    { field: "direction", headerName: t("learning.direction"), width: 180 },
     {
       field: "verified",
-      headerName: "已验证升格 / Verified",
+      headerName: t("learning.verified"),
       width: 160,
       renderCell: (p) =>
         p.value ? <Chip label="VERIFIED" color="success" size="small" data-testid="verified-chip" /> : null,
     },
-    { field: "architecture_ref", headerName: "架构锚点 / Ref", width: 100 },
+    { field: "architecture_ref", headerName: t("learning.archRef"), width: 100 },
     { field: "trace_id", headerName: "trace_id", flex: 1, minWidth: 200 },
-    { field: "summary", headerName: "摘要 / Summary", flex: 1.5, minWidth: 240 },
+    { field: "summary", headerName: t("learning.summary"), flex: 1.5, minWidth: 240 },
   ];
 
   return (
     <Stack spacing={2}>
-      <Typography variant="h5">受控学习看板 / Controlled learning</Typography>
+      <Typography variant="h5">{t("learning.title")}</Typography>
       <Typography variant="body2" color="text.secondary">
-        中文：学习事件仅追加写入 BrainTranscriptStore，全程 trace_id 溯源；非 dry-run 路径强制 ModelProvider，失败即中断。
-        <br />
-        English: Learning events are append-only with trace_id; non-dry-run cycles require ModelProvider (no regex
-        fakery).
+        {t("learning.subtitle")}
       </Typography>
 
       {error ? (
@@ -131,7 +130,7 @@ export default function LearningDashboard() {
       {plan ? (
         <Paper sx={{ p: 2 }}>
           <Typography variant="subtitle1" gutterBottom>
-            红线摘要 / Redlines
+            {t("learning.redlineSummary")}
           </Typography>
           <Typography variant="body2">{plan.redlines.zh}</Typography>
           <Typography variant="body2" color="text.secondary" sx={{ mt: 1 }}>
@@ -143,10 +142,10 @@ export default function LearningDashboard() {
       <Paper sx={{ p: 2 }}>
         <Stack direction={{ xs: "column", sm: "row" }} spacing={2} alignItems="center">
           <FormControl sx={{ minWidth: 280 }}>
-            <InputLabel id="dir-label">学习方向 / Direction</InputLabel>
+            <InputLabel id="dir-label">{t("learning.directionLabel")}</InputLabel>
             <Select
               labelId="dir-label"
-              label="学习方向 / Direction"
+              label={t("learning.directionLabel")}
               value={direction}
               onChange={(e) => setDirection(e.target.value)}
             >
@@ -158,10 +157,10 @@ export default function LearningDashboard() {
             </Select>
           </FormControl>
           <Button variant="contained" disabled={loading} onClick={() => void runCycle(false)}>
-            运行学习周期（需 LLM）/ Run cycle (LLM)
+            {t("learning.runCycleLlm")}
           </Button>
           <Button variant="outlined" disabled={loading} onClick={() => void runCycle(true)}>
-            Dry-run（仅记事件）/ Dry-run
+            {t("learning.dryRun")}
           </Button>
         </Stack>
         {lastRun ? (

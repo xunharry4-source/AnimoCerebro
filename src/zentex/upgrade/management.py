@@ -15,7 +15,7 @@ from enum import Enum
 import json
 from pathlib import Path
 from threading import RLock
-from typing import Callable
+from typing import Callable, Any
 
 from zentex.upgrade.base_models import UpgradeTargetKind
 
@@ -45,6 +45,7 @@ class UpgradeLifecycleView(str, Enum):
     ONGOING = "ongoing"
     COMPLETED = "completed"
     FAILED = "failed"
+    CANCELLED = "cancelled"
 
 
 WAITING_STATUSES = {
@@ -65,6 +66,8 @@ COMPLETED_STATUSES = {
 }
 FAILED_STATUSES = {
     UpgradeLifecycleStatus.FAILED,
+}
+CANCELLED_STATUSES = {
     UpgradeLifecycleStatus.CANCELLED,
 }
 
@@ -132,10 +135,13 @@ class UpgradeManagementRecord:
     started_at: datetime | None = None
     finished_at: datetime | None = None
     evidence_refs: list[str] = field(default_factory=list)
+    payload: dict[str, Any] = field(default_factory=dict)  # For monitoring metrics and custom data
 
     def lifecycle_view(self) -> UpgradeLifecycleView:
         if self.current_status in WAITING_STATUSES:
             return UpgradeLifecycleView.WAITING
+        if self.current_status in CANCELLED_STATUSES:
+            return UpgradeLifecycleView.CANCELLED
         if self.current_status in FAILED_STATUSES:
             return UpgradeLifecycleView.FAILED
         if self.current_status in COMPLETED_STATUSES:
@@ -218,6 +224,7 @@ class UpgradeManagementStore:
             "ongoing": sum(1 for item in all_records if item.lifecycle_view() is UpgradeLifecycleView.ONGOING),
             "completed": sum(1 for item in all_records if item.lifecycle_view() is UpgradeLifecycleView.COMPLETED),
             "failed": sum(1 for item in all_records if item.lifecycle_view() is UpgradeLifecycleView.FAILED),
+            "cancelled": sum(1 for item in all_records if item.lifecycle_view() is UpgradeLifecycleView.CANCELLED),
         }
 
     def cancel(

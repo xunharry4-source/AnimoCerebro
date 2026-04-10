@@ -28,6 +28,7 @@ import {
   TextField,
   Typography,
 } from "@mui/material";
+import { useTranslation } from "react-i18next";
 import {
   type Locale,
   dashboardCopy,
@@ -209,7 +210,8 @@ function getPluginStatusColor(
 }
 
 export default function RealtimeDashboard() {
-  const [locale, setLocale] = useState<Locale>("zh-CN");
+  const { t, i18n } = useTranslation();
+  const [locale, setLocale] = useState<Locale>(i18n.language as Locale || "zh-CN");
   const [overview, setOverview] = useState<OverviewPayload | null>(null);
   const [pluginRows, setPluginRows] = useState<CognitivePluginRow[]>([]);
   const [conflicts, setConflicts] = useState<CognitiveConflict[]>([]);
@@ -232,6 +234,7 @@ export default function RealtimeDashboard() {
   const wsRef = useRef<WebSocket | null>(null);
   const lastEntryIdRef = useRef<string | null>(null);
   const reconnectTimerRef = useRef<number | null>(null);
+  const reconnectAttemptsRef = useRef<number>(0);
   const text = dashboardCopy[locale];
   const inlineSeparator = locale === "zh-CN" ? "，" : ", ";
 
@@ -308,10 +311,33 @@ export default function RealtimeDashboard() {
   useEffect(() => {
     let isUnmounted = false;
 
+    const scheduleReconnect = () => {
+      if (isUnmounted) return;
+      // Don't schedule when page is hidden — handleVisibilityChange will reconnect on reveal
+      if (document.visibilityState === "hidden") return;
+      const attempts = reconnectAttemptsRef.current;
+      // Exponential backoff: 2s, 4s, 8s, 16s, capped at 30s
+      const delay = Math.min(2000 * Math.pow(2, attempts), 30000);
+      reconnectAttemptsRef.current = attempts + 1;
+      reconnectTimerRef.current = window.setTimeout(() => {
+        connectStream(true);
+      }, delay);
+    };
+
     const connectStream = (isReconnectAttempt: boolean) => {
-      if (isUnmounted) {
+      if (isUnmounted) return;
+
+      // Skip if an active or connecting socket already exists
+      const existing = wsRef.current;
+      if (
+        existing &&
+        (existing.readyState === WebSocket.OPEN || existing.readyState === WebSocket.CONNECTING)
+      ) {
         return;
       }
+
+      // Skip if the page is hidden — reconnect when it becomes visible
+      if (document.visibilityState === "hidden") return;
 
       setStreamConnectionState(isReconnectAttempt ? "reconnecting" : "connecting");
       const streamUrl = buildStreamUrl(lastEntryIdRef.current);
@@ -319,6 +345,7 @@ export default function RealtimeDashboard() {
       wsRef.current = socket;
 
       socket.onopen = () => {
+        reconnectAttemptsRef.current = 0;
         setStreamConnectionState("connected");
         setStreamError(null);
       };
@@ -344,21 +371,39 @@ export default function RealtimeDashboard() {
 
       socket.onclose = () => {
         wsRef.current = null;
-        if (isUnmounted) {
-          return;
-        }
+        if (isUnmounted) return;
         setStreamConnectionState("reconnecting");
         setStreamError(text.streamReconnect);
-        reconnectTimerRef.current = window.setTimeout(() => {
-          connectStream(true);
-        }, 3000);
+        scheduleReconnect();
       };
     };
 
+    const handleVisibilityChange = () => {
+      if (document.visibilityState === "visible") {
+        // Page became visible — reconnect if not already connected
+        if (reconnectTimerRef.current !== null) {
+          window.clearTimeout(reconnectTimerRef.current);
+          reconnectTimerRef.current = null;
+        }
+        reconnectAttemptsRef.current = 0;
+        connectStream(true);
+      } else {
+        // Page hidden — close the connection to avoid idle load
+        if (reconnectTimerRef.current !== null) {
+          window.clearTimeout(reconnectTimerRef.current);
+          reconnectTimerRef.current = null;
+        }
+        wsRef.current?.close(1000, "page hidden");
+        wsRef.current = null;
+      }
+    };
+
+    document.addEventListener("visibilitychange", handleVisibilityChange);
     connectStream(false);
 
     return () => {
       isUnmounted = true;
+      document.removeEventListener("visibilitychange", handleVisibilityChange);
       if (reconnectTimerRef.current !== null) {
         window.clearTimeout(reconnectTimerRef.current);
       }
@@ -460,33 +505,37 @@ export default function RealtimeDashboard() {
         <Stack direction={{ xs: "column", md: "row" }} justifyContent="space-between" spacing={2}>
           <Box>
             <Typography variant="h4" component="h1" gutterBottom>
-              {text.title}
+              {t("dashboard.title")}
             </Typography>
             <Typography variant="body1" color="text.secondary">
-              {text.subtitle}
+              {t("dashboard.subtitle")}
             </Typography>
           </Box>
           <Stack direction="row" spacing={1} flexWrap="wrap" useFlexGap>
             <FormControl sx={{ minWidth: 140 }}>
-              <InputLabel id="dashboard-language-label">{text.language}</InputLabel>
+              <InputLabel id="dashboard-language-label">{t("common.language")}</InputLabel>
               <Select
                 labelId="dashboard-language-label"
                 value={locale}
-                label={text.language}
-                onChange={(event) => setLocale(event.target.value as Locale)}
+                label={t("common.language")}
+                onChange={(event) => {
+                  const newLang = event.target.value as Locale;
+                  setLocale(newLang);
+                  i18n.changeLanguage(newLang);
+                }}
               >
                 <MenuItem value="zh-CN">中文</MenuItem>
                 <MenuItem value="en-US">English</MenuItem>
               </Select>
             </FormControl>
             <Button variant="outlined" onClick={() => void refreshDashboard()} disabled={refreshing}>
-              {refreshing ? text.refreshing : text.refresh}
+              {refreshing ? t("common.refreshing") : t("common.refresh")}
             </Button>
             <Button color="warning" variant="contained" onClick={() => openInterventionDialog("pause")}>
-              {text.pause}
+              {t("dashboard.pause")}
             </Button>
             <Button color="success" variant="contained" onClick={() => openInterventionDialog("resume")}>
-              {text.resume}
+              {t("dashboard.resume")}
             </Button>
           </Stack>
         </Stack>
@@ -499,25 +548,25 @@ export default function RealtimeDashboard() {
 
         {overview?.weight_fallback_occurred ? (
           <Alert severity="warning" data-testid="weight-fallback-alert">
-            {text.weightFallbackWarning}
+            {t("dashboard.weightFallbackWarning")}
           </Alert>
         ) : null}
 
         {criticalConflicts.length > 0 ? (
           <Alert severity="error" data-testid="critical-conflict-alert">
-            {text.criticalConflictWarning}
+            {t("dashboard.criticalConflictWarning")}
           </Alert>
         ) : null}
 
         {severeMisunderstandingSignals.length > 0 ? (
           <Alert severity="warning" data-testid="interaction-mind-alert">
-            {text.interactionMindWarning}
+            {t("dashboard.interactionMindWarning")}
           </Alert>
         ) : null}
 
         {loadError ? (
           <Alert severity="error" data-testid="overview-load-error">
-            {text.backendDisconnected}
+            {t("dashboard.backendDisconnected")}
           </Alert>
         ) : null}
 
@@ -536,20 +585,20 @@ export default function RealtimeDashboard() {
                 : "info"
           }
         >
-          {text.streamStatus}
+          {t("dashboard.streamStatus")}
           {streamConnectionState === "connected"
-            ? text.streamConnected
+            ? t("dashboard.streamConnected")
             : streamConnectionState === "reconnecting"
-              ? text.streamReconnecting
+              ? t("dashboard.streamReconnecting")
               : streamConnectionState === "connecting"
-                ? text.streamConnecting
-                : text.streamDisconnected}
+                ? t("dashboard.streamConnecting")
+                : t("dashboard.streamDisconnected")}
         </Alert>
 
         {overview === null && refreshing ? (
           <Stack alignItems="center" justifyContent="center" sx={{ py: 8 }}>
             <Typography variant="body2" color="text.secondary" sx={{ mb: 2 }}>
-              {text.loading}
+              {t("dashboard.loading")}
             </Typography>
           </Stack>
         ) : null}
@@ -558,15 +607,15 @@ export default function RealtimeDashboard() {
           <Card sx={{ flex: 1 }}>
             <CardContent>
               <Typography variant="h6" gutterBottom>
-                {text.workingMemory}
+                {t("dashboard.workingMemory")}
               </Typography>
               <Typography variant="body2" color="text.secondary" gutterBottom>
-                {text.focusSummary}
+                {t("dashboard.focusSummary")}
               </Typography>
               <Typography variant="body1" data-testid="focus-summary">
                 {overview?.working_memory.current_focus_summary
                   ? formatLocalizedToken(overview.working_memory.current_focus_summary, locale)
-                  : text.focusFallback}
+                  : t("dashboard.focusFallback")}
               </Typography>
               <Stack direction="row" spacing={1} flexWrap="wrap" useFlexGap sx={{ mt: 2 }}>
                 {activeFocusTitles.length > 0 ? (
@@ -574,7 +623,7 @@ export default function RealtimeDashboard() {
                     <Chip key={title} label={formatLocalizedToken(title, locale)} color="primary" />
                   ))
                 ) : (
-                  <Chip label={text.noActiveTasks} variant="outlined" />
+                  <Chip label={t("dashboard.noActiveTasks")} variant="outlined" />
                 )}
               </Stack>
             </CardContent>
@@ -583,28 +632,28 @@ export default function RealtimeDashboard() {
           <Card sx={{ flex: 1 }}>
             <CardContent>
               <Typography variant="h6" gutterBottom>
-                {text.metacognition}
+                {t("dashboard.metacognition")}
               </Typography>
               <Stack direction="row" spacing={1} flexWrap="wrap" useFlexGap sx={{ mb: 2 }}>
                 <Chip
-                  label={`${text.loadLevel}: ${formatLocalizedToken(overview?.living_self_model.load_level, locale)}`}
+                  label={`${t("dashboard.loadLevel")}: ${formatLocalizedToken(overview?.living_self_model.load_level, locale)}`}
                   color={getLoadChipColor(overview?.living_self_model.load_level)}
                 />
                 <Chip
-                  label={`${text.reasoningPosture}: ${formatLocalizedToken(overview?.living_self_model.reasoning_posture, locale)}`}
+                  label={`${t("dashboard.reasoningPosture")}: ${formatLocalizedToken(overview?.living_self_model.reasoning_posture, locale)}`}
                   variant="outlined"
                 />
                 <Chip
-                  label={`${text.schedulerStatus}: ${formatLocalizedToken(overview?.metacognition.scheduler_status, locale)}`}
+                  label={`${t("dashboard.schedulerStatus")}: ${formatLocalizedToken(overview?.metacognition.scheduler_status, locale)}`}
                   color="info"
                   variant="outlined"
                 />
               </Stack>
               <Typography variant="body2" color="text.secondary">
-                {text.reasoningMode}: {formatLocalizedToken(overview?.session?.current_reasoning_mode, locale)}
+                {t("dashboard.reasoningMode")}: {formatLocalizedToken(overview?.session?.current_reasoning_mode, locale)}
               </Typography>
               <Typography variant="body2" color="text.secondary">
-                {text.runtime}: {overview?.runtime.runtime_id || "--"}
+                {t("dashboard.runtime")}: {overview?.runtime.runtime_id || "--"}
               </Typography>
             </CardContent>
           </Card>
@@ -613,36 +662,36 @@ export default function RealtimeDashboard() {
         <Card>
           <CardContent>
             <Typography variant="h6" gutterBottom>
-              {text.weightCard}
+              {t("dashboard.weightCard")}
             </Typography>
             <Stack direction="row" spacing={1} flexWrap="wrap" useFlexGap sx={{ mb: 2 }}>
               <Chip
-                label={`${text.activeWeightPlugin}: ${overview?.active_weight_plugin_id || "--"}`}
+                label={`${t("dashboard.activeWeightPlugin")}: ${overview?.active_weight_plugin_id || "--"}`}
                 color={overview?.weight_fallback_occurred ? "warning" : "primary"}
                 variant="outlined"
               />
             </Stack>
             <Stack spacing={1}>
               <Typography variant="body2" color="text.secondary">
-                {text.weightPurpose}: {weightProfile?.purpose || "--"}
+                {t("dashboard.weightPurpose")}: {weightProfile?.purpose || "--"}
               </Typography>
               <Typography variant="body2" color="text.secondary">
-                {text.riskTolerance}: {weightProfile?.risk_tolerance ?? "--"}
+                {t("dashboard.riskTolerance")}: {weightProfile?.risk_tolerance ?? "--"}
               </Typography>
               <Typography variant="body2" color="text.secondary">
-                {text.costSensitivity}: {weightProfile?.cost_sensitivity ?? "--"}
+                {t("dashboard.costSensitivity")}: {weightProfile?.cost_sensitivity ?? "--"}
               </Typography>
               <Typography variant="body2" color="text.secondary">
-                {text.creativityBias}: {weightProfile?.creativity_bias ?? "--"}
+                {t("dashboard.creativityBias")}: {weightProfile?.creativity_bias ?? "--"}
               </Typography>
               <Typography variant="body2" color="text.secondary">
-                {text.continuityBias}: {weightProfile?.continuity_bias ?? "--"}
+                {t("dashboard.continuityBias")}: {weightProfile?.continuity_bias ?? "--"}
               </Typography>
               <Typography variant="body2" color="text.secondary">
-                {text.rationaleTags}:{" "}
+                {t("dashboard.rationaleTags")}:{" "}
                 {weightProfile && weightProfile.rationale_tags.length > 0
                   ? weightProfile.rationale_tags.join(inlineSeparator)
-                  : text.noRationaleTags}
+                  : t("dashboard.noRationaleTags")}
               </Typography>
             </Stack>
           </CardContent>
@@ -651,22 +700,22 @@ export default function RealtimeDashboard() {
         <Card>
           <CardContent>
             <Typography variant="h6" gutterBottom>
-              {text.interactionMindCard}
+              {t("dashboard.interactionMindCard")}
             </Typography>
             {interactionMind === null ? (
               <Typography variant="body2" color="text.secondary">
-                {text.noInteractionMind}
+                {t("dashboard.noInteractionMind")}
               </Typography>
             ) : (
               <Stack spacing={1.5}>
                 <Typography variant="body2">
-                  {text.interactionRole}: {interactionMind.model.role_hint}
+                  {t("dashboard.interactionRole")}: {interactionMind.model.role_hint}
                 </Typography>
                 <Typography variant="body2">
-                  {text.interactionGoal}: {interactionMind.model.current_goal_hypothesis}
+                  {t("dashboard.interactionGoal")}: {interactionMind.model.current_goal_hypothesis}
                 </Typography>
                 <Stack direction="row" spacing={1} alignItems="center" flexWrap="wrap" useFlexGap>
-                  <Typography variant="body2">{text.communicationStyle}:</Typography>
+                  <Typography variant="body2">{t("dashboard.communicationStyle")}:</Typography>
                   <Chip
                     size="small"
                     color={interactionMind.clarification_mode ? "warning" : "info"}
@@ -674,10 +723,10 @@ export default function RealtimeDashboard() {
                   />
                 </Stack>
                 <Typography variant="body2">
-                  {text.knowledgeDepth}: {formatLocalizedToken(interactionMind.model.knowledge_depth, locale)}
+                  {t("dashboard.knowledgeDepth")}: {formatLocalizedToken(interactionMind.model.knowledge_depth, locale)}
                 </Typography>
                 <Typography variant="body2">
-                  {text.misunderstandingRisk}: {Math.round(interactionMind.communication_fit.risk_of_misunderstanding * 100)}%
+                  {t("dashboard.misunderstandingRisk")}: {Math.round(interactionMind.communication_fit.risk_of_misunderstanding * 100)}%
                 </Typography>
                 <Stack direction="row" spacing={1} flexWrap="wrap" useFlexGap>
                   {interactionMind.misunderstanding_signals.map((signal) => (
@@ -698,12 +747,12 @@ export default function RealtimeDashboard() {
         <Card>
           <CardContent>
             <Typography variant="h6" gutterBottom>
-              {text.reviewSection}
+              {t("dashboard.reviewSection")}
             </Typography>
             <Stack direction={{ xs: "column", md: "row" }} spacing={3}>
               <Box sx={{ flex: 1 }}>
                 <Typography variant="subtitle1" color="text.secondary">
-                  {text.reviewNow}
+                  {t("dashboard.reviewNow")}
                 </Typography>
                 <List dense>
                   {reviewNowItemTitles.length > 0 ? (
@@ -714,14 +763,14 @@ export default function RealtimeDashboard() {
                     ))
                   ) : (
                     <ListItem sx={{ px: 0 }}>
-                      <ListItemText primary={text.noReviewNow} />
+                      <ListItemText primary={t("dashboard.noReviewNow")} />
                     </ListItem>
                   )}
                 </List>
               </Box>
               <Box sx={{ flex: 1 }}>
                 <Typography variant="subtitle1" color="text.secondary">
-                  {text.overdue}
+                  {t("dashboard.overdue")}
                 </Typography>
                 <List dense>
                   {overdueItemTitles.length > 0 ? (
@@ -732,7 +781,7 @@ export default function RealtimeDashboard() {
                     ))
                   ) : (
                     <ListItem sx={{ px: 0 }}>
-                      <ListItemText primary={text.noOverdue} />
+                      <ListItemText primary={t("dashboard.noOverdue")} />
                     </ListItem>
                   )}
                 </List>
@@ -744,17 +793,17 @@ export default function RealtimeDashboard() {
         <Card>
           <CardContent>
             <Typography variant="h6" gutterBottom>
-              {text.conflictCard}
+              {t("dashboard.conflictCard")}
             </Typography>
             <TableContainer>
               <Table>
                 <TableHead>
                   <TableRow>
-                    <TableCell>{text.conflictType}</TableCell>
-                    <TableCell>{text.severity}</TableCell>
-                    <TableCell>{text.status}</TableCell>
-                    <TableCell>{text.conflictResolution}</TableCell>
-                    <TableCell>{text.sourcePlugin}</TableCell>
+                    <TableCell>{t("dashboard.conflictType")}</TableCell>
+                    <TableCell>{t("dashboard.severity")}</TableCell>
+                    <TableCell>{t("dashboard.status")}</TableCell>
+                    <TableCell>{t("dashboard.conflictResolution")}</TableCell>
+                    <TableCell>{t("dashboard.sourcePlugin")}</TableCell>
                   </TableRow>
                 </TableHead>
                 <TableBody>
@@ -779,7 +828,7 @@ export default function RealtimeDashboard() {
                     <TableRow>
                       <TableCell colSpan={5}>
                         <Typography variant="body2" color="text.secondary">
-                          {text.noConflicts}
+                          {t("dashboard.noConflicts")}
                         </Typography>
                       </TableCell>
                     </TableRow>
@@ -793,17 +842,17 @@ export default function RealtimeDashboard() {
         <Card>
           <CardContent>
             <Typography variant="h6" gutterBottom>
-              {text.pluginState}
+              {t("dashboard.pluginState")}
             </Typography>
             <TableContainer>
               <Table>
                 <TableHead>
                   <TableRow>
                     <TableCell>Tool ID</TableCell>
-                    <TableCell>{text.status}</TableCell>
-                    <TableCell>{text.health}</TableCell>
-                    <TableCell align="right">{text.usageCount}</TableCell>
-                    <TableCell align="right">{text.failureCount}</TableCell>
+                    <TableCell>{t("dashboard.status")}</TableCell>
+                    <TableCell>{t("dashboard.health")}</TableCell>
+                    <TableCell align="right">{t("dashboard.usageCount")}</TableCell>
+                    <TableCell align="right">{t("dashboard.failureCount")}</TableCell>
                   </TableRow>
                 </TableHead>
                 <TableBody>
@@ -827,7 +876,7 @@ export default function RealtimeDashboard() {
                     <TableRow>
                       <TableCell colSpan={5}>
                         <Typography variant="body2" color="text.secondary" sx={{ py: 2 }}>
-                          {text.noPlugins}
+                          {t("dashboard.noPlugins")}
                         </Typography>
                       </TableCell>
                     </TableRow>
@@ -846,17 +895,17 @@ export default function RealtimeDashboard() {
               spacing={2}
               sx={{ mb: 2 }}
             >
-              <Typography variant="h6">{text.eventStream}</Typography>
+              <Typography variant="h6">{t("dashboard.eventStream")}</Typography>
               <FormControl sx={{ minWidth: { xs: "100%", md: 240 } }}>
-                <InputLabel id="event-type-filter-label">{text.eventFilter}</InputLabel>
+                <InputLabel id="event-type-filter-label">{t("dashboard.eventFilter")}</InputLabel>
                 <Select
                   labelId="event-type-filter-label"
                   value={eventTypeFilter}
-                  label={text.eventFilter}
+                  label={t("dashboard.eventFilter")}
                   onChange={(event) => setEventTypeFilter(event.target.value)}
                 >
-                  <MenuItem value="default">{text.defaultEvents}</MenuItem>
-                  <MenuItem value="all">{text.allEvents}</MenuItem>
+                  <MenuItem value="default">{t("dashboard.defaultEvents")}</MenuItem>
+                  <MenuItem value="all">{t("dashboard.allEvents")}</MenuItem>
                   {availableEventTypes.map((eventType) => (
                     <MenuItem key={eventType} value={eventType}>
                       {formatLocalizedToken(eventType, locale)}
@@ -877,7 +926,7 @@ export default function RealtimeDashboard() {
                 ))
               ) : (
                 <ListItem>
-                  <ListItemText primary={text.noEvents} />
+                  <ListItemText primary={t("dashboard.noEvents")} />
                 </ListItem>
               )}
             </List>
@@ -886,7 +935,7 @@ export default function RealtimeDashboard() {
       </Stack>
 
       <Dialog open={dialogOpen} onClose={closeInterventionDialog} fullWidth maxWidth="sm">
-        <DialogTitle>{pendingAction === "pause" ? text.pauseDialog : text.resumeDialog}</DialogTitle>
+        <DialogTitle>{pendingAction === "pause" ? t("dashboard.pauseDialog") : t("dashboard.resumeDialog")}</DialogTitle>
         <DialogContent>
           <TextField
             autoFocus
@@ -894,15 +943,15 @@ export default function RealtimeDashboard() {
             multiline
             minRows={3}
             margin="dense"
-            label={text.interventionReason}
+            label={t("dashboard.interventionReason")}
             value={reason}
             onChange={(event) => setReason(event.target.value)}
           />
         </DialogContent>
         <DialogActions>
-          <Button onClick={closeInterventionDialog}>{text.cancel}</Button>
+          <Button onClick={closeInterventionDialog}>{t("common.cancel")}</Button>
           <Button onClick={submitIntervention} variant="contained">
-            {text.submit}
+            {t("common.submit")}
           </Button>
         </DialogActions>
       </Dialog>

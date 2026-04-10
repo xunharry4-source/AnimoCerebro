@@ -1,4 +1,5 @@
 import { useEffect, useState } from "react";
+import { useTranslation } from "react-i18next";
 import {
   Alert,
   AlertTitle,
@@ -26,42 +27,42 @@ import Q1EvidencePanel from "../../../components/Q1EvidencePanel";
 import LLMTracePanel from "../../../components/LLMTracePanel";
 import MountedPluginsZone from "../../../components/MountedPluginsZone";
 import Q1UpgradePanel from "../../../components/Q1UpgradePanel";
+import NineQuestionIntroCard from "../../../components/NineQuestionIntroCard";
 
 // Maps HTTP error context → human-readable guidance
-function resolveErrorGuidance(errMsg: string): { title: string; action: string } {
+function resolveErrorGuidance(errMsg: string, t: (key: string) => string): { title: string; action: string } {
   if (errMsg.includes("No active session") || errMsg.includes("没有活动 session")) {
     return {
-      title: "当前没有活动的 Session",
-      action: "请先运行一次完整的九问推演流程，完成后刷新此页即可查看结果。",
+      title: t("nineQuestions.q1.noActiveSession"),
+      action: t("nineQuestions.q1.actionRunDeduction"),
     };
   }
   if (errMsg.includes("尚无快照记录")) {
     return {
-      title: "Q1 尚未产生推断结果",
-      action:
-        "该问题的推演快照为空。请在 Zentex Brain Runtime 中触发一次全量九问推演，完成后再回到此页查看。",
+      title: t("nineQuestions.q1.noInferenceResult"),
+      action: t("nineQuestions.q1.actionTriggerFullDeduction"),
     };
   }
   if (errMsg.includes("状态机未挂载") || errMsg.includes("503")) {
     return {
-      title: "后端推演引擎未就绪",
-      action:
-        "NineQuestionState 未挂载到运行时。请检查 Zentex Brain Runtime 的启动状态，确认服务已正确初始化后再刷新。",
+      title: t("nineQuestions.q1.engineNotReady"),
+      action: t("nineQuestions.q1.checkRuntimeStatus"),
     };
   }
   if (errMsg.includes("NetworkError") || errMsg.includes("Failed to fetch")) {
     return {
-      title: "网络连接失败",
-      action: "无法连接到后台服务。请检查网络连接或确认 dev server 正在运行后重试。",
+      title: t("nineQuestions.q1.networkFailed"),
+      action: t("nineQuestions.q1.checkNetworkOrDevServer"),
     };
   }
   return {
-    title: "加载数据失败",
-    action: "请刷新页面重试。若问题持续出现，请检查后台服务日志以获取详细信息。",
+    title: t("nineQuestions.q1.loadFailed"),
+    action: t("nineQuestions.q1.retryHint"),
   };
 }
 
 export default function Q1Detail() {
+  const { t } = useTranslation();
   const qId = "q1";
   const [question, setQuestion] = useState<NineQuestionItem | null>(null);
   const [loading, setLoading] = useState(true);
@@ -91,7 +92,7 @@ export default function Q1Detail() {
       <Box sx={{ display: "flex", alignItems: "center", gap: 2, p: 3 }}>
         <CircularProgress size={24} />
         <Typography variant="body2" color="text.secondary">
-          正在从生产环境拉取 Q1 快照…
+          {t("nineQuestions.q1.loadingSnapshot")}
         </Typography>
       </Box>
     );
@@ -99,13 +100,13 @@ export default function Q1Detail() {
 
   // ——— 人话降级熔断区 ———
   if (error) {
-    const guidance = resolveErrorGuidance(error);
+    const guidance = resolveErrorGuidance(error, t);
     return (
       <Box sx={{ p: 3 }} data-testid="q1-error-boundary">
         <Alert severity="error" sx={{ mb: 2 }}>
           <AlertTitle>{guidance.title}</AlertTitle>
           <Typography variant="body2" sx={{ mt: 0.5 }}>
-            <strong>下一步：</strong> {guidance.action}
+            <strong>{t("common.nextStep")}: </strong> {guidance.action}
           </Typography>
         </Alert>
         <Button
@@ -114,7 +115,7 @@ export default function Q1Detail() {
           onClick={() => void loadDetail()}
           data-testid="q1-retry-button"
         >
-          重新加载
+          {t("nineQuestions.q1.retry")}
         </Button>
       </Box>
     );
@@ -123,7 +124,7 @@ export default function Q1Detail() {
   if (!question) {
     return (
       <Alert severity="warning">
-        Q1 尚无推断记录，请先运行完整的九问推演流程后再查看此页。
+        {t("nineQuestions.q1.noRecord")}
       </Alert>
     );
   }
@@ -138,7 +139,7 @@ export default function Q1Detail() {
       <Stack direction="row" justifyContent="space-between" alignItems="flex-start" sx={{ mb: 3 }}>
         <Box>
           <Typography variant="h4" gutterBottom>
-            {getQuestionDisplayLabel(qId)} 正式审计页
+            {getQuestionDisplayLabel(qId)} {t("nineQuestions.q1.productionAudit")}
           </Typography>
           <Typography variant="body2" color="text.secondary">
             Production Snapshot: Workspace &amp; Environment Audit（只读，数据来源 GET /nine-questions/q1）
@@ -151,16 +152,19 @@ export default function Q1Detail() {
           color="warning"
           data-testid="q1-sandbox-nav-button"
         >
-          进入独立沙箱测试
+          {t("nineQuestions.q1.enterSandbox")}
         </Button>
       </Stack>
+
+      {/* 问题介绍栏目 */}
+      <NineQuestionIntroCard questionId={qId} />
 
       <Card variant="outlined" sx={{ mb: 3 }}>
         <CardContent>
           {/* 状态芯片阵列 — 主领域 / 次领域 / 插件 */}
           <Stack direction="row" spacing={1} sx={{ mb: 2 }} useFlexGap flexWrap="wrap">
             <Chip
-              label={question.cache_status || "未知"}
+              label={question.cache_status || t("nineQuestions.evidencePanels.unknown")}
               color="primary"
               data-testid="q1-cache-status-chip"
             />
@@ -181,7 +185,7 @@ export default function Q1Detail() {
             {/* 推断主领域 Chip */}
             {(inference as WorkspaceDomainInferenceView)?.primary_domain && (
               <Chip
-                label={`主领域: ${(inference as WorkspaceDomainInferenceView).primary_domain}`}
+                label={`${t("nineQuestions.evidencePanels.primaryDomain")}: ${(inference as WorkspaceDomainInferenceView).primary_domain}`}
                 color="secondary"
                 data-testid="q1-primary-domain-chip"
               />
@@ -204,7 +208,7 @@ export default function Q1Detail() {
           <MountedPluginsZone plugins={question.mounted_plugins || []} />
 
           <Typography variant="subtitle1" gutterBottom sx={{ fontWeight: "bold", mt: 2 }}>
-            结构化分层证据 (Zentex G31A)
+            {t("nineQuestions.q1.structuredEvidence")}
           </Typography>
 
           {/* 主证据面板 - Q1EvidencePanel 内部的 Accordion 均默认折叠 */}
@@ -217,7 +221,7 @@ export default function Q1Detail() {
             />
           ) : (
             <Alert severity="warning">
-              暂无结构化证据数据。当前 session 可能尚未完成 Q1 推演，请先运行九问流程。
+              {t("nineQuestions.q1.noStructuredEvidence")}
             </Alert>
           )}
         </CardContent>

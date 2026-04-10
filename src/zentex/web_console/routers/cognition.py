@@ -77,9 +77,27 @@ def get_simulation_bundle(
     goal_id: str,
     simulation_engine: Annotated[CounterfactualSimulationEngine, Depends(get_simulation_engine)],
 ) -> SimulationBundlePayload:
-    bundle = simulation_engine.get_bundle(goal_id)
-    bundle_payload = bundle.model_dump(mode="json") if hasattr(bundle, "model_dump") else {}
-    return SimulationBundlePayload(bundle=bundle_payload)
+    if simulation_engine is None:
+        raise HTTPException(
+            status_code=503,
+            detail="Simulation engine is not available.",
+        )
+    try:
+        bundle = simulation_engine.get_bundle(goal_id)
+        if bundle is None:
+            raise HTTPException(
+                status_code=404,
+                detail=f"Simulation bundle not found for goal_id: {goal_id}",
+            )
+        bundle_payload = bundle.model_dump(mode="json") if hasattr(bundle, "model_dump") else {}
+        return SimulationBundlePayload(bundle=bundle_payload)
+    except HTTPException:
+        raise
+    except Exception as exc:
+        raise HTTPException(
+            status_code=500,
+            detail=f"Failed to retrieve simulation bundle: {exc}",
+        ) from exc
 
 
 @router.get("/interaction-mind/{entity_id}", response_model=InteractionMindPayload)

@@ -30,6 +30,8 @@ import {
   TableRow,
   TextField,
   Typography,
+  Tabs,
+  Tab,
 } from "@mui/material";
 import {
   type Locale,
@@ -40,6 +42,7 @@ import {
   formatPluginStatus,
   pluginManagementCopy,
 } from "../../i18n";
+import { useTranslation } from "react-i18next";
 
 type CognitivePluginRow = {
   tool_id: string;
@@ -124,7 +127,8 @@ function getBindingStatusColor(
 }
 
 export default function PluginManagement() {
-  const [locale, setLocale] = useState<Locale>("zh-CN");
+  const { t, i18n } = useTranslation();
+  const [locale, setLocale] = useState<Locale>(i18n.language as Locale || "zh-CN");
   const [groups, setGroups] = useState<PluginFeatureGroup[]>([]);
   const [loading, setLoading] = useState(false);
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
@@ -137,6 +141,7 @@ export default function PluginManagement() {
   const [selectedFeatureCode, setSelectedFeatureCode] = useState<string | null>(null);
   const [autoRefreshEnabled, setAutoRefreshEnabled] = useState(true);
   const [refreshIntervalMs, setRefreshIntervalMs] = useState<10000 | 30000 | 60000>(10000);
+  const [activeTab, setActiveTab] = useState<"cognitive" | "functional">("cognitive");
 
   const loadPlugins = async () => {
     setLoading(true);
@@ -245,13 +250,25 @@ export default function PluginManagement() {
     [rows, searchQuery, statusFilter],
   );
 
+  const cognitiveGroups = useMemo(
+    () => groups.filter((group) => group.plugin_kind === "cognitive_tool"),
+    [groups],
+  );
+
+  const functionalGroups = useMemo(
+    () => groups.filter((group) => group.plugin_kind !== "cognitive_tool"),
+    [groups],
+  );
+
+  const currentGroups = activeTab === "cognitive" ? cognitiveGroups : functionalGroups;
+
   const alertRows = useMemo(
     () => rows.filter((row) => row.status === "degraded" || row.status === "revoked"),
     [rows],
   );
   const filteredGroups = useMemo(
     () =>
-      groups
+      currentGroups
         .map((group) => ({
           ...group,
           plugins:
@@ -266,7 +283,7 @@ export default function PluginManagement() {
             group.plugins.length > 0 ||
             (searchQuery.trim() === "" && statusFilter === "all"),
         ),
-    [filteredRows, groups],
+    [currentGroups, filteredRows],
   );
   const visibleGroup = useMemo(
     () =>
@@ -305,49 +322,53 @@ export default function PluginManagement() {
       >
         <Box>
           <Typography variant="h4" component="h1" gutterBottom>
-            {text.title}
+            {t("plugins.title")}
           </Typography>
           <Typography variant="body1" color="text.secondary">
-            {text.subtitle}
+            {t("plugins.subtitle")}
           </Typography>
         </Box>
         <Stack direction="row" spacing={2}>
           <FormControl sx={{ minWidth: 140 }}>
-            <InputLabel id="plugin-language-label">{text.language}</InputLabel>
+            <InputLabel id="plugin-language-label">{t("common.language")}</InputLabel>
             <Select
               labelId="plugin-language-label"
               value={locale}
-              label={text.language}
-              onChange={(event) => setLocale(event.target.value as Locale)}
+              label={t("common.language")}
+              onChange={(event) => {
+                const newLang = event.target.value as Locale;
+                setLocale(newLang);
+                i18n.changeLanguage(newLang);
+              }}
             >
               <MenuItem value="zh-CN">中文</MenuItem>
               <MenuItem value="en-US">English</MenuItem>
             </Select>
           </FormControl>
           <Button variant="contained" onClick={() => void loadPlugins()} disabled={loading}>
-            {loading ? text.refreshing : text.refresh}
+            {loading ? t("common.refreshing") : t("common.refresh")}
           </Button>
         </Stack>
       </Stack>
 
       <Stack direction={{ xs: "column", md: "row" }} spacing={2}>
         <TextField
-          label={text.search}
+          label={t("plugins.search")}
           value={searchQuery}
           onChange={(event) => setSearchQuery(event.target.value)}
           fullWidth
         />
         <FormControl sx={{ minWidth: { xs: "100%", md: 220 } }}>
-          <InputLabel id="plugin-status-filter-label">{text.statusFilter}</InputLabel>
+          <InputLabel id="plugin-status-filter-label">{t("plugins.statusFilter")}</InputLabel>
           <Select
             labelId="plugin-status-filter-label"
             value={statusFilter}
-            label={text.statusFilter}
+            label={t("plugins.statusFilter")}
             onChange={(event) =>
               setStatusFilter(event.target.value as "all" | CognitivePluginRow["status"])
             }
           >
-            <MenuItem value="all">{text.allStatuses}</MenuItem>
+            <MenuItem value="all">{t("plugins.allStatuses")}</MenuItem>
             <MenuItem value="candidate">{formatPluginStatus("candidate", locale)}</MenuItem>
             <MenuItem value="sandbox_verified">{formatPluginStatus("sandbox_verified", locale)}</MenuItem>
             <MenuItem value="active">{formatPluginStatus("active", locale)}</MenuItem>
@@ -356,11 +377,11 @@ export default function PluginManagement() {
           </Select>
         </FormControl>
         <FormControl sx={{ minWidth: { xs: "100%", md: 180 } }}>
-          <InputLabel id="plugin-refresh-interval-label">{text.interval}</InputLabel>
+          <InputLabel id="plugin-refresh-interval-label">{t("plugins.interval")}</InputLabel>
           <Select
             labelId="plugin-refresh-interval-label"
             value={refreshIntervalMs}
-            label={text.interval}
+            label={t("plugins.interval")}
             onChange={(event) =>
               setRefreshIntervalMs(event.target.value as 10000 | 30000 | 60000)
             }
@@ -377,16 +398,30 @@ export default function PluginManagement() {
               onChange={(event) => setAutoRefreshEnabled(event.target.checked)}
             />
           }
-          label={text.autoRefresh}
+          label={t("plugins.autoRefresh")}
         />
       </Stack>
+
+      <Box sx={{ borderBottom: 1, borderColor: "divider" }}>
+        <Tabs
+          value={activeTab}
+          onChange={(_event: React.SyntheticEvent, newValue: "cognitive" | "functional") => {
+            setActiveTab(newValue);
+            setSelectedFeatureCode(null);
+          }}
+          aria-label="plugin type tabs"
+        >
+          <Tab label={t("plugins.cognitivePlugins")} value="cognitive" />
+          <Tab label={t("plugins.functionalPlugins")} value="functional" />
+        </Tabs>
+      </Box>
 
       {errorMessage ? <Alert severity="error">{errorMessage}</Alert> : null}
       {actionMessage ? <Alert severity="info">{actionMessage}</Alert> : null}
 
       {alertRows.length > 0 ? (
         <Alert severity="warning">
-          {text.alertPrefix}
+          {t("plugins.alertPrefix")}
           {alertRows.map((row) => `${row.tool_id} (${formatPluginStatus(row.status, locale)})`).join(inlineSeparator)}
         </Alert>
       ) : null}
@@ -403,12 +438,12 @@ export default function PluginManagement() {
             <Table>
               <TableHead>
                 <TableRow>
-                  <TableCell>{text.featureFamily}</TableCell>
-                  <TableCell>{text.featureBindingStatus}</TableCell>
-                  <TableCell>{text.activePlugins}</TableCell>
-                  <TableCell>{text.featureGuides}</TableCell>
-                  <TableCell align="right">{text.version}</TableCell>
-                  <TableCell align="right">{text.actions}</TableCell>
+                  <TableCell>{t("plugins.featureFamily")}</TableCell>
+                  <TableCell>{t("plugins.featureBindingStatus")}</TableCell>
+                  <TableCell>{t("plugins.activePlugins")}</TableCell>
+                  <TableCell>{t("plugins.featureGuides")}</TableCell>
+                  <TableCell align="right">{t("plugins.version")}</TableCell>
+                  <TableCell align="right">{t("plugins.actions")}</TableCell>
                 </TableRow>
               </TableHead>
               <TableBody>
@@ -438,8 +473,8 @@ export default function PluginManagement() {
                           variant="outlined"
                           label={
                             group.supports_multiple_plugins
-                              ? text.multiPluginMode
-                              : text.singlePluginMode
+                              ? t("plugins.multiPluginMode")
+                              : t("plugins.singlePluginMode")
                           }
                         />
                       </Stack>
@@ -460,7 +495,7 @@ export default function PluginManagement() {
                             rel="noreferrer"
                             onClick={(event) => event.stopPropagation()}
                           >
-                            {text.featureGuide}
+                            {t("plugins.featureGuide")}
                           </Button>
                         ) : null}
                         {group.family_guide_path ? (
@@ -472,439 +507,261 @@ export default function PluginManagement() {
                             rel="noreferrer"
                             onClick={(event) => event.stopPropagation()}
                           >
-                            {text.familyGuide}
+                            {t("plugins.familyGuide")}
                           </Button>
                         ) : null}
-                        {!group.feature_guide_path && !group.family_guide_path ? "--" : null}
                       </Stack>
                     </TableCell>
                     <TableCell align="right">
-                      {group.plugins.length}
+                      <Chip
+                        size="small"
+                        label={group.plugins[0]?.version ?? "--"}
+                        variant="outlined"
+                      />
                     </TableCell>
                     <TableCell align="right">
                       <Button
                         size="small"
                         variant="outlined"
-                        onClick={() => setSelectedFeatureCode(group.feature_code)}
+                        onClick={(event) => {
+                          event.stopPropagation();
+                          setSelectedFeatureCode(group.feature_code);
+                        }}
                       >
-                        {text.viewVersions}
+                        {t("plugins.viewVersions")}
                       </Button>
                     </TableCell>
                   </TableRow>
                 ))}
+                {filteredGroups.length === 0 ? (
+                  <TableRow>
+                    <TableCell colSpan={6}>
+                      <Typography variant="body2" color="text.secondary" sx={{ py: 4 }}>
+                        {text.empty}
+                      </Typography>
+                    </TableCell>
+                  </TableRow>
+                ) : null}
               </TableBody>
             </Table>
           </TableContainer>
         </Paper>
       ) : visibleGroup ? (
-        <Paper variant="outlined">
-          <Stack
-            direction={{ xs: "column", md: "row" }}
-            justifyContent="space-between"
-            spacing={2}
-            sx={{ px: 2, py: 2 }}
+        <Stack spacing={3}>
+          <Button
+            startIcon={<span>&larr;</span>}
+            onClick={() => setSelectedFeatureCode(null)}
           >
-            <Box>
-                <Button
-                  size="small"
-                  variant="text"
-                  onClick={() => setSelectedFeatureCode(null)}
-                  sx={{ mb: 1, px: 0 }}
-                >
-                {text.backToFeatures}
-                </Button>
-              <Typography variant="subtitle1">{visibleGroup.display_name}</Typography>
-              <Typography variant="body2" color="text.secondary">
-                {visibleGroup.feature_code}
-              </Typography>
-            </Box>
-            <Stack direction={{ xs: "column", md: "row" }} spacing={1} alignItems={{ md: "center" }}>
-              <Chip
-                color={getBindingStatusColor(visibleGroup.binding_status)}
-                label={formatPluginBindingStatus(visibleGroup.binding_status, locale)}
-              />
-              <Chip
-                size="small"
-                variant="outlined"
-                label={
-                  visibleGroup.supports_multiple_plugins
-                    ? text.multiPluginMode
-                    : text.singlePluginMode
-                }
-              />
-              <Typography variant="body2" color="text.secondary">
-                {text.activePlugins}: {visibleGroup.active_plugin_ids.length > 0 ? visibleGroup.active_plugin_ids.join(inlineSeparator) : "--"}
-              </Typography>
-              {visibleGroup.feature_guide_path ? (
-                <Button
-                  size="small"
-                  variant="outlined"
-                  href={visibleGroup.feature_guide_path}
-                  target="_blank"
-                  rel="noreferrer"
-                >
-                  {text.featureGuide}
-                </Button>
-              ) : null}
-              {visibleGroup.family_guide_path ? (
-                <Button
-                  size="small"
-                  variant="outlined"
-                  href={visibleGroup.family_guide_path}
-                  target="_blank"
-                  rel="noreferrer"
-                >
-                  {text.familyGuide}
-                </Button>
-              ) : null}
-            </Stack>
-          </Stack>
-          {visibleGroup.binding_status === "unbound" ? (
-            <Alert severity="warning" sx={{ mx: 2, mb: 2 }}>
-              {text.noBoundPlugin}
-            </Alert>
-          ) : null}
-          <TableContainer>
-            <Table>
-              <TableHead>
-                <TableRow>
-                  <TableCell>{text.toolId}</TableCell>
-                  <TableCell>{text.version}</TableCell>
-                  <TableCell>{text.usedIn}</TableCell>
-                  <TableCell>{text.description}</TableCell>
-                  <TableCell>{text.status}</TableCell>
-                  <TableCell align="right">{text.usageCount}</TableCell>
-                  <TableCell align="right">{text.failureCount}</TableCell>
-                  <TableCell align="right">{text.actions}</TableCell>
-                </TableRow>
-              </TableHead>
-              <TableBody>
-                {visibleGroup.plugins.length > 0 ? visibleGroup.plugins.map((row) => (
-                  <TableRow
-                    key={row.tool_id}
-                    hover
-                    onClick={() => setSelectedPlugin(row)}
-                    sx={{
-                      cursor: "pointer",
-                      backgroundColor:
-                        row.failure_count >= 3 ? "rgba(255, 244, 229, 0.8)" : "inherit",
-                    }}
-                  >
-                    <TableCell>{row.tool_id}</TableCell>
-                    <TableCell>{row.version}</TableCell>
-                    <TableCell>
-                      {row.used_in.length > 0
-                        ? row.used_in.map((item) => formatPluginDescriptor(item, locale)).join(" / ")
-                        : "--"}
-                    </TableCell>
-                    <TableCell>{row.description}</TableCell>
-                    <TableCell>
-                      <Chip
-                        label={formatPluginStatus(row.status, locale)}
-                        color={getStatusColor(row.status)}
-                        size="small"
-                        variant="outlined"
-                      />
-                    </TableCell>
-                    <TableCell align="right">{row.usage_count}</TableCell>
-                    <TableCell align="right">
-                      <Chip
-                        label={row.failure_count}
-                        color={row.failure_count >= 3 ? "warning" : "default"}
-                        size="small"
-                        variant={row.failure_count >= 3 ? "filled" : "outlined"}
-                      />
-                    </TableCell>
-                    <TableCell align="right">
-                      <Stack direction="row" spacing={1} justifyContent="flex-end">
-                        <Button
-                          size="small"
-                          variant="outlined"
-                          disabled={!row.can_force_enable}
-                          title={row.can_force_enable ? undefined : text.officialOnlyHint}
-                          onClick={(event) => {
-                            event.stopPropagation();
-                            void requestForceEnable(
-                              row.tool_id,
-                              row.supports_multiple_plugins,
-                              visibleGroup.active_plugin_ids,
-                            );
-                          }}
-                        >
-                          {text.forceEnable}
-                        </Button>
-                        <Button
-                          size="small"
-                          color="warning"
-                          variant="outlined"
-                          disabled={!row.can_force_disable}
-                          title={row.can_force_disable ? undefined : text.forceDisableHint}
-                          onClick={(event) => {
-                            event.stopPropagation();
-                            void runPluginAction(row.tool_id, "force-disable");
-                          }}
-                        >
-                          {text.forceDisable}
-                        </Button>
-                        <Button
-                          size="small"
-                          color="error"
-                          variant="outlined"
-                          disabled={!row.can_delete}
-                          title={
-                            row.is_default
-                              ? text.protectedDeleteHint
-                              : row.status === "active"
-                                ? text.deleteEnabledHint
-                                : undefined
-                          }
-                          onClick={(event) => {
-                            event.stopPropagation();
-                            void runPluginAction(row.tool_id, "delete");
-                          }}
-                        >
-                          {text.deletePlugin}
-                        </Button>
-                      </Stack>
-                    </TableCell>
-                  </TableRow>
-                )) : (
+            {t("plugins.backToFeatures")}
+          </Button>
+
+          <Paper variant="outlined">
+            <TableContainer>
+              <Table>
+                <TableHead>
                   <TableRow>
-                    <TableCell colSpan={8}>
-                      <Typography variant="body2" color="text.secondary">
-                        {text.noVersions}
-                      </Typography>
-                    </TableCell>
+                    <TableCell>{t("plugins.toolId")}</TableCell>
+                    <TableCell>{t("plugins.version")}</TableCell>
+                    <TableCell>{t("plugins.usedIn")}</TableCell>
+                    <TableCell>{t("plugins.lifecycleStatus")}</TableCell>
+                    <TableCell align="right">{t("plugins.usageCount")}</TableCell>
+                    <TableCell align="right">{t("plugins.failureCount")}</TableCell>
+                    <TableCell align="right">{t("plugins.actions")}</TableCell>
                   </TableRow>
-                )}
-              </TableBody>
-            </Table>
-          </TableContainer>
-        </Paper>
-      ) : (
-        <Paper variant="outlined">
-          <Box sx={{ py: 4, textAlign: "center" }}>
+                </TableHead>
+                <TableBody>
+                  {visibleGroup.plugins.map((row) => (
+                    <TableRow
+                      key={row.tool_id}
+                      hover
+                      onClick={() => setSelectedPlugin(row)}
+                      sx={{ cursor: "pointer" }}
+                    >
+                      <TableCell>
+                        <Typography variant="subtitle2">{row.tool_id}</Typography>
+                        <Typography variant="caption" color="text.secondary">
+                          {row.plugin_kind}
+                        </Typography>
+                      </TableCell>
+                      <TableCell>{row.version}</TableCell>
+                      <TableCell>
+                        {row.used_in.length > 0
+                          ? row.used_in.map((usage) => formatPluginDescriptor(usage, locale)).join(inlineSeparator)
+                          : text.noUsedIn}
+                      </TableCell>
+                      <TableCell>
+                        <Chip
+                          size="small"
+                          label={formatPluginStatus(row.status, locale)}
+                          color={getStatusColor(row.status)}
+                          variant="outlined"
+                        />
+                      </TableCell>
+                      <TableCell align="right">{row.usage_count}</TableCell>
+                      <TableCell align="right">{row.failure_count}</TableCell>
+                      <TableCell align="right">
+                        <Stack direction="row" spacing={1} justifyContent="flex-end">
+                          {row.can_force_enable && !row.is_default ? (
+                            <Button
+                              size="small"
+                              variant="outlined"
+                              color="success"
+                              title={text.officialOnlyHint}
+                              onClick={(event) => {
+                                event.stopPropagation();
+                                void requestForceEnable(
+                                  row.tool_id,
+                                  row.supports_multiple_plugins,
+                                  visibleGroup.active_plugin_ids,
+                                );
+                              }}
+                            >
+                              {t("plugins.forceEnable")}
+                            </Button>
+                          ) : null}
+                          {row.can_force_disable ? (
+                            <Button
+                              size="small"
+                              variant="outlined"
+                              color="warning"
+                              title={text.forceDisableHint}
+                              onClick={(event) => {
+                                event.stopPropagation();
+                                void runPluginAction(row.tool_id, "force-disable");
+                              }}
+                            >
+                              {t("plugins.forceDisable")}
+                            </Button>
+                          ) : null}
+                          {row.can_delete && !row.is_default ? (
+                            <Button
+                              size="small"
+                              variant="outlined"
+                              color="error"
+                              title={row.status === "active" ? text.deleteEnabledHint : text.protectedDeleteHint}
+                              disabled={row.status === "active"}
+                              onClick={(event) => {
+                                event.stopPropagation();
+                                void runPluginAction(row.tool_id, "delete");
+                              }}
+                            >
+                              {t("plugins.deletePlugin")}
+                            </Button>
+                          ) : null}
+                        </Stack>
+                      </TableCell>
+                    </TableRow>
+                  ))}
+                </TableBody>
+              </Table>
+            </TableContainer>
+          </Paper>
+        </Stack>
+      ) : null}
+
+      {selectedPlugin ? (
+        <Drawer
+          anchor="right"
+          open={!!selectedPlugin}
+          onClose={() => setSelectedPlugin(null)}
+          sx={{ width: 400 }}
+          PaperProps={{ sx: { width: 400, p: 3 } }}
+        >
+          <Stack spacing={2}>
+            <Typography variant="h6">{selectedPlugin.tool_id}</Typography>
             <Typography variant="body2" color="text.secondary">
-              {text.empty}
+              {selectedPlugin.plugin_kind} · v{selectedPlugin.version}
             </Typography>
-          </Box>
-        </Paper>
-      )}
-
-      <Drawer
-        anchor="right"
-        open={selectedPlugin !== null}
-        onClose={() => setSelectedPlugin(null)}
-      >
-        <Box sx={{ width: { xs: 320, sm: 420 }, p: 3 }}>
-          {selectedPlugin ? (
-            <Stack spacing={3}>
-              <Box>
-                <Typography variant="h5" gutterBottom>
-                  {selectedPlugin.tool_id}
-                </Typography>
-                <Stack direction="row" spacing={1} flexWrap="wrap" useFlexGap>
-                  <Chip
-                    label={formatPluginStatus(selectedPlugin.status, locale)}
-                    color={getStatusColor(selectedPlugin.status)}
-                    size="small"
-                    variant="outlined"
-                  />
-                  <Chip label={`v${selectedPlugin.version}`} size="small" variant="outlined" />
-                  <Chip
-                    label={formatHealthStatus(selectedPlugin.health_status, locale)}
-                    size="small"
-                    variant="outlined"
-                  />
-                </Stack>
-              </Box>
-
-              <Divider />
-
-              <Box>
-                <Typography variant="subtitle1" gutterBottom>
-                  {text.purpose}
-                </Typography>
-                <Typography variant="body2" color="text.secondary">
-                  {selectedPlugin.purpose || text.noPurpose}
-                </Typography>
-              </Box>
-
-              <Divider />
-
-              <Box>
-                <Typography variant="subtitle1" gutterBottom>
-                  {text.usedIn}
-                </Typography>
-                <List dense disablePadding>
-                  {selectedPlugin.used_in.length > 0 ? (
-                    selectedPlugin.used_in.map((item) => (
-                      <ListItem key={item} disableGutters>
-                        <ListItemText
-                          primary={formatPluginDescriptor(item, locale)}
-                          secondary={item}
-                        />
-                      </ListItem>
-                    ))
-                  ) : (
-                    <ListItem disableGutters>
-                      <ListItemText primary={text.noUsedIn} />
-                    </ListItem>
-                  )}
-                </List>
-              </Box>
-
-              <Divider />
-
-              <Box>
-                <Typography variant="subtitle1" gutterBottom>
-                  {text.lifecycleTimes}
-                </Typography>
-                <List dense disablePadding>
-                  <ListItem disableGutters>
-                    <ListItemText primary={text.createdAt} secondary={formatLocalizedDateTime(selectedPlugin.created_at, locale)} />
-                  </ListItem>
-                  <ListItem disableGutters>
-                    <ListItemText primary={text.updatedAt} secondary={formatLocalizedDateTime(selectedPlugin.updated_at, locale)} />
-                  </ListItem>
-                  <ListItem disableGutters>
-                    <ListItemText primary={text.startedAt} secondary={formatLocalizedDateTime(selectedPlugin.started_at, locale)} />
-                  </ListItem>
-                  <ListItem disableGutters>
-                    <ListItemText primary={text.stoppedAt} secondary={formatLocalizedDateTime(selectedPlugin.stopped_at, locale)} />
-                  </ListItem>
-                  <ListItem disableGutters>
-                    <ListItemText primary={text.lastUsedAt} secondary={formatLocalizedDateTime(selectedPlugin.last_used_at, locale)} />
-                  </ListItem>
-                </List>
-              </Box>
-
-              <Divider />
-
-              <Box>
-                <Typography variant="subtitle1" gutterBottom>
-                  {text.rollbackConditions}
-                </Typography>
-                <List dense disablePadding>
-                  {selectedPlugin.rollback_conditions.length > 0 ? (
-                    selectedPlugin.rollback_conditions.map((condition) => (
-                      <ListItem key={condition} disableGutters>
-                        <ListItemText
-                          primary={formatPluginDescriptor(condition, locale)}
-                          secondary={condition}
-                        />
-                      </ListItem>
-                    ))
-                  ) : (
-                    <ListItem disableGutters>
-                      <ListItemText primary={text.noRollbackConditions} />
-                    </ListItem>
-                  )}
-                </List>
-              </Box>
-
-              <Divider />
-
-              <Box>
-                <Typography variant="subtitle1" gutterBottom>
-                  {text.triggerConditions}
-                </Typography>
-                <List dense disablePadding>
-                  {selectedPlugin.trigger_conditions.length > 0 ? (
-                    selectedPlugin.trigger_conditions.map((condition) => (
-                      <ListItem key={condition} disableGutters>
-                        <ListItemText
-                          primary={formatPluginDescriptor(condition, locale)}
-                          secondary={condition}
-                        />
-                      </ListItem>
-                    ))
-                  ) : (
-                    <ListItem disableGutters>
-                      <ListItemText primary={text.noTriggerConditions} />
-                    </ListItem>
-                  )}
-                </List>
-              </Box>
-
-              <Divider />
-
-              <Box>
-                <Typography variant="subtitle1" gutterBottom>
-                  {text.requiredContext}
-                </Typography>
-                <List dense disablePadding>
-                  {selectedPlugin.required_context.length > 0 ? (
-                    selectedPlugin.required_context.map((item) => (
-                      <ListItem key={item} disableGutters>
-                        <ListItemText
-                          primary={formatPluginDescriptor(item, locale)}
-                          secondary={item}
-                        />
-                      </ListItem>
-                    ))
-                  ) : (
-                    <ListItem disableGutters>
-                      <ListItemText primary={text.noRequiredContext} />
-                    </ListItem>
-                  )}
-                </List>
-              </Box>
-            </Stack>
-          ) : null}
-        </Box>
-      </Drawer>
+            <Divider />
+            <Typography variant="subtitle2">{t("plugins.description")}</Typography>
+            <Typography variant="body2">{selectedPlugin.description}</Typography>
+            <Typography variant="subtitle2">{t("plugins.purpose")}</Typography>
+            <Typography variant="body2">{selectedPlugin.purpose || text.noPurpose}</Typography>
+            <Typography variant="subtitle2">{t("plugins.lifecycleTimes")}</Typography>
+            <List dense>
+              <ListItem>
+                <ListItemText primary={t("plugins.createdAt")} secondary={formatLocalizedDateTime(selectedPlugin.created_at, locale)} />
+              </ListItem>
+              <ListItem>
+                <ListItemText primary={t("plugins.updatedAt")} secondary={formatLocalizedDateTime(selectedPlugin.updated_at, locale)} />
+              </ListItem>
+              <ListItem>
+                <ListItemText primary={t("plugins.startedAt")} secondary={formatLocalizedDateTime(selectedPlugin.started_at, locale)} />
+              </ListItem>
+              <ListItem>
+                <ListItemText primary={t("plugins.stoppedAt")} secondary={formatLocalizedDateTime(selectedPlugin.stopped_at, locale)} />
+              </ListItem>
+              <ListItem>
+                <ListItemText primary={t("plugins.lastUsedAt")} secondary={formatLocalizedDateTime(selectedPlugin.last_used_at, locale)} />
+              </ListItem>
+            </List>
+            <Typography variant="subtitle2">{t("plugins.rollbackConditions")}</Typography>
+            <Typography variant="body2">
+              {selectedPlugin.rollback_conditions.length > 0
+                ? selectedPlugin.rollback_conditions.join(inlineSeparator)
+                : text.noRollbackConditions}
+            </Typography>
+            <Typography variant="subtitle2">{t("plugins.triggerConditions")}</Typography>
+            <Typography variant="body2">
+              {selectedPlugin.trigger_conditions.length > 0
+                ? selectedPlugin.trigger_conditions.join(inlineSeparator)
+                : text.noTriggerConditions}
+            </Typography>
+            <Typography variant="subtitle2">{t("plugins.requiredContext")}</Typography>
+            <Typography variant="body2">
+              {selectedPlugin.required_context.length > 0
+                ? selectedPlugin.required_context.join(inlineSeparator)
+                : text.noRequiredContext}
+            </Typography>
+          </Stack>
+        </Drawer>
+      ) : null}
 
       <Dialog
-        open={pendingForceEnable !== null}
-        onClose={() => {
-          setPendingForceEnable(null);
-          setForceEnableAuditReason("");
-        }}
+        open={!!pendingForceEnable}
+        onClose={() => setPendingForceEnable(null)}
         fullWidth
         maxWidth="sm"
       >
-        <DialogTitle>{text.overrideDialogTitle}</DialogTitle>
+        <DialogTitle>{t("plugins.overrideDialogTitle")}</DialogTitle>
         <DialogContent>
-          <Stack spacing={2} sx={{ pt: 1 }}>
-            <Alert severity="warning">{text.overrideDialogBody}</Alert>
-            <Typography variant="body2" color="text.secondary">
-              {text.overrideDialogActiveLabel}: {pendingForceEnable?.activePluginIds.join(inlineSeparator)}
-            </Typography>
-            <TextField
-              label={text.auditReasonPrompt}
-              value={forceEnableAuditReason}
-              onChange={(event) => setForceEnableAuditReason(event.target.value)}
-              fullWidth
-              multiline
-              minRows={3}
-            />
-          </Stack>
+          <Typography variant="body1" sx={{ mb: 2 }}>
+            {t("plugins.overrideDialogBody")}
+          </Typography>
+          <Typography variant="subtitle2" color="text.secondary">
+            {t("plugins.overrideDialogActiveLabel")}
+          </Typography>
+          <List dense>
+            {pendingForceEnable?.activePluginIds.map((id) => (
+              <ListItem key={id}>
+                <ListItemText primary={id} />
+              </ListItem>
+            ))}
+          </List>
+          <TextField
+            autoFocus
+            margin="dense"
+            label={t("plugins.auditReasonPrompt")}
+            fullWidth
+            variant="outlined"
+            value={forceEnableAuditReason}
+            onChange={(event) => setForceEnableAuditReason(event.target.value)}
+          />
         </DialogContent>
         <DialogActions>
+          <Button onClick={() => setPendingForceEnable(null)}>{t("common.cancel")}</Button>
           <Button
             onClick={() => {
-              setPendingForceEnable(null);
-              setForceEnableAuditReason("");
-            }}
-          >
-            {text.cancel}
-          </Button>
-          <Button
-            variant="contained"
-            disabled={!forceEnableAuditReason.trim() || pendingForceEnable === null}
-            onClick={() => {
-              if (pendingForceEnable === null) {
-                return;
+              if (pendingForceEnable && forceEnableAuditReason.trim()) {
+                void runPluginAction(pendingForceEnable.pluginId, "force-enable", forceEnableAuditReason);
+                setPendingForceEnable(null);
+                setForceEnableAuditReason("");
               }
-              const pluginId = pendingForceEnable.pluginId;
-              const auditReason = forceEnableAuditReason.trim();
-              setPendingForceEnable(null);
-              setForceEnableAuditReason("");
-              void runPluginAction(pluginId, "force-enable", auditReason);
             }}
+            variant="contained"
+            disabled={!forceEnableAuditReason.trim()}
           >
-            {text.continueAction}
+            {t("plugins.continueAction")}
           </Button>
         </DialogActions>
       </Dialog>

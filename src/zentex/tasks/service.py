@@ -14,6 +14,19 @@ from zentex.runtime.transcript import BrainTranscriptEntryType
 from zentex.common.state import SharedStateStore
 from zentex.common.locking import get_lock_for_resource
 from zentex.common.coordination import LeaderElection
+from zentex.tasks.negotiation import NegotiationGenerator
+
+# Import verification components
+try:
+    from zentex.tasks.verification.engine import VerificationEngine
+    from zentex.tasks.verification.registry import VerifierRegistry
+    from zentex.tasks.verification.models import VerificationResult as VerificationResultModel
+    VERIFICATION_AVAILABLE = True
+except ImportError:
+    VERIFICATION_AVAILABLE = False
+    VerificationEngine = None
+    VerifierRegistry = None
+    VerificationResultModel = None
 
 logger = logging.getLogger(__name__)
 
@@ -48,6 +61,11 @@ class TaskManagementService:
         # Local cache for object references (only for this process)
         self._tasks: Dict[str, ZentexTask] = {}
         
+        # Legacy compatibility attributes for persistence and idempotency checks
+        self._idempotency_log: Dict[str, str] = {}
+        self._intervention_receipts: Dict[str, Dict[str, Any]] = {}
+        self._suspended_tasks: Dict[str, SuspendedTask] = {}
+        
         if decomposer is None:
             if not allow_rule_based_test_stub:
                 raise RuntimeError(
@@ -56,6 +74,20 @@ class TaskManagementService:
                 )
             decomposer = TaskDecomposerPlugin()
         self.decomposer = decomposer
+        
+        # Initialize Negotiation Engine
+        self.negotiation_generator = NegotiationGenerator(self)
+        
+        # Initialize Verification Engine (if available)
+        self._verification_engine = None
+        self._verifier_registry = None
+        if VERIFICATION_AVAILABLE:
+            try:
+                self._verifier_registry = VerifierRegistry()
+                self._verification_engine = VerificationEngine(self._verifier_registry)
+                logger.info("Verification engine initialized successfully")
+            except Exception as e:
+                logger.warning(f"Failed to initialize verification engine: {e}")
 
     def list_tasks(self, 
                  status: Optional[TaskStatus] = None,
@@ -339,6 +371,22 @@ class TaskManagementService:
         """List all suspended tasks"""
         all_suspensions = self._shared_suspensions.list_all(SuspendedTask)
         return list(all_suspensions.values())
+
+    def trigger_negotiation_scans(self) -> List[Any]:
+        """
+        Scan all current suspended tasks and generate negotiation requests.
+        """
+        suspended = self.list_suspended_tasks()
+        new_negs = self.negotiation_generator.scan_for_gaps(suspended)
+        
+        for neg in new_negs:
+             self._record_audit(
+                 neg.target_task_id, 
+                 "NEGOTIATION_GENERATED", 
+                 {"negotiation_id": neg.negotiation_id, "gap": neg.gap_type}
+             )
+             
+        return new_negs
 
     async def check_auto_resume_tasks(self) -> List[ZentexTask]:
         """Check and auto-resume tasks whose auto_resume_at time has arrived"""
@@ -751,3 +799,303 @@ class TaskManagementService:
                 "total_tasks": 0,
                 "error": str(e)
             }
+
+    # === Verification Methods ===
+    
+    async def complete_task_with_verification(
+        self, 
+        task_id: str, 
+        result: Dict[str, Any],
+        remarks: Optional[str] = None
+    ) -> Dict[str, Any]:
+        """
+        Complete a task with verification workflow.
+        
+        This method implements the full verification flow:
+        1. Check if verification is enabled for the task
+        2. Transition to WAITING_CONFIRMATION state
+        3. Execute verification engine
+        4. Based on results: accept/retry/escalate/reject
+        
+        Args:
+            task_id: Task ID
+            result: Worker's submission result (output, metadata, etc.)
+            remarks: Optional remarks
+            
+        Returns:
+            Dict containing completion status and verification result
+        """
+        task = self.get_task(task_id)
+        if not task:
+            return {
+                "success": False,
+                "error": f"Task {task_id} not found",
+                "error_code": "TASK_NOT_FOUND"
+            }
+        
+        # Check if verification is available and enabled
+        if not VERIFICATION_AVAILABLE or not self._verification_engine:
+            logger.warning(f"Verification engine not available, completing task {task_id} without verification")
+            updated_task = self.update_task_status(task_id, TaskStatus.DONE, remarks)
+            return {
+                "success": True,
+                "task": updated_task.model_dump(),
+                "verification_skipped": True,
+                "message": "Task completed without verification (engine not available)"
+            }
+        
+        # Check if verification is enabled for this task
+        if not task.contract.verification.enabled:
+            logger.debug(f"Verification disabled for task {task_id}, completing directly")
+            updated_task = self.update_task_status(task_id, TaskStatus.DONE, remarks)
+            return {
+                "success": True,
+                "task": updated_task.model_dump(),
+                "verification_skipped": True,
+                "message": "Task completed (verification disabled for this task)"
+            }
+        
+        try:
+            # Step 1: Transition to WAITING_CONFIRMATION
+            logger.info(f"Task {task_id} entering verification phase")
+            self.update_task_status(
+                task_id, 
+                TaskStatus.WAITING_CONFIRMATION, 
+                remarks="Waiting for verification"
+            )
+            
+            # Step 2: Execute verification
+            verification_result = await self._verification_engine.execute_verification(
+                task=task,
+                result=result
+            )
+            
+            # Step 3: Record verification result in transcript
+            self._record_audit(
+                task_id,
+                "TASK_VERIFICATION_COMPLETED",
+                {
+                    "overall_passed": verification_result.overall_passed,
+                    "strategy": verification_result.strategy,
+                    "confidence_score": verification_result.confidence_score,
+                    "summary": verification_result.summary,
+                    "recommendation": verification_result.recommendation,
+                    "verifier_count": len(verification_result.verifier_results),
+                    "execution_time_ms": verification_result.total_execution_time_ms
+                }
+            )
+            
+            # Step 4: Handle based on recommendation
+            if verification_result.overall_passed:
+                # Verification passed - complete the task
+                final_remarks = f"Verified: {verification_result.summary}"
+                if remarks:
+                    final_remarks += f" | {remarks}"
+                    
+                updated_task = self.update_task_status(
+                    task_id,
+                    TaskStatus.DONE,
+                    remarks=final_remarks
+                )
+                
+                logger.info(f"Task {task_id} verified and completed successfully")
+                return {
+                    "success": True,
+                    "task": updated_task.model_dump(),
+                    "verification_result": verification_result.model_dump(),
+                    "message": "Task completed and verified successfully"
+                }
+            
+            else:
+                # Verification failed - handle based on recommendation
+                return await self._handle_verification_failure(
+                    task_id, 
+                    verification_result,
+                    remarks
+                )
+                
+        except Exception as e:
+            logger.error(f"Verification failed for task {task_id}: {e}")
+            import traceback
+            traceback.print_exc()
+            
+            # On error, mark task as failed
+            try:
+                updated_task = self.update_task_status(
+                    task_id,
+                    TaskStatus.FAILED,
+                    remarks=f"Verification error: {str(e)}"
+                )
+                return {
+                    "success": False,
+                    "task": updated_task.model_dump(),
+                    "error": str(e),
+                    "error_code": "VERIFICATION_ERROR"
+                }
+            except Exception as inner_e:
+                logger.error(f"Failed to update task status after verification error: {inner_e}")
+                return {
+                    "success": False,
+                    "error": f"Verification error: {str(e)}, Status update error: {str(inner_e)}",
+                    "error_code": "VERIFICATION_AND_STATUS_ERROR"
+                }
+    
+    async def _handle_verification_failure(
+        self,
+        task_id: str,
+        verification_result: Any,
+        remarks: Optional[str] = None
+    ) -> Dict[str, Any]:
+        """
+        Handle verification failure based on recommendation.
+        
+        Args:
+            task_id: Task ID
+            verification_result: Verification result object
+            remarks: Optional remarks
+            
+        Returns:
+            Dict containing handling result
+        """
+        task = self.get_task(task_id)
+        recommendation = verification_result.recommendation
+        
+        logger.warning(
+            f"Verification failed for task {task_id}, "
+            f"recommendation: {recommendation}"
+        )
+        
+        if recommendation == "retry":
+            # Retry: go back to IN_PROGRESS
+            retry_remarks = f"Verification failed, auto-retrying: {verification_result.summary}"
+            if remarks:
+                retry_remarks += f" | {remarks}"
+                
+            updated_task = self.update_task_status(
+                task_id,
+                TaskStatus.IN_PROGRESS,
+                remarks=retry_remarks
+            )
+            
+            logger.info(f"Task {task_id} set to IN_PROGRESS for retry")
+            return {
+                "success": True,
+                "task": updated_task.model_dump(),
+                "verification_result": verification_result.model_dump(),
+                "action_taken": "retry",
+                "message": "Task set to IN_PROGRESS for automatic retry"
+            }
+            
+        elif recommendation == "escalate":
+            # Escalate: create manual review task or suspend
+            escalation_target = task.contract.verification.escalation_target
+            
+            if escalation_target:
+                # Create escalation notification
+                self._record_audit(
+                    task_id,
+                    "TASK_VERIFICATION_ESCALATED",
+                    {
+                        "escalation_target": escalation_target,
+                        "verification_summary": verification_result.summary,
+                        "failed_verifiers": [
+                            r.verifier_id 
+                            for r in verification_result.verifier_results 
+                            if not r.passed
+                        ]
+                    }
+                )
+                
+                # Suspend the task pending manual review
+                suspension_reason = f"Verification failed, escalated to {escalation_target}"
+                suspended_task = self.suspend_task(
+                    task_id,
+                    reason=suspension_reason,
+                    recovery_conditions=[f"Manual review by {escalation_target}"]
+                )
+                
+                logger.info(f"Task {task_id} escalated to {escalation_target}")
+                return {
+                    "success": True,
+                    "task": suspended_task.model_dump(),
+                    "verification_result": verification_result.model_dump(),
+                    "action_taken": "escalated",
+                    "escalation_target": escalation_target,
+                    "message": f"Task escalated to {escalation_target} for manual review"
+                }
+            else:
+                # No escalation target, just fail
+                fail_remarks = f"Verification failed: {verification_result.summary}"
+                if remarks:
+                    fail_remarks += f" | {remarks}"
+                    
+                updated_task = self.update_task_status(
+                    task_id,
+                    TaskStatus.FAILED,
+                    remarks=fail_remarks
+                )
+                
+                return {
+                    "success": False,
+                    "task": updated_task.model_dump(),
+                    "verification_result": verification_result.model_dump(),
+                    "action_taken": "failed",
+                    "message": "Task failed verification (no escalation target configured)"
+                }
+                
+        else:  # recommendation == "reject"
+            # Reject: mark as failed
+            fail_remarks = f"Verification rejected: {verification_result.summary}"
+            if remarks:
+                fail_remarks += f" | {remarks}"
+                
+            updated_task = self.update_task_status(
+                task_id,
+                TaskStatus.FAILED,
+                remarks=fail_remarks
+            )
+            
+            logger.info(f"Task {task_id} failed verification and rejected")
+            return {
+                "success": False,
+                "task": updated_task.model_dump(),
+                "verification_result": verification_result.model_dump(),
+                "action_taken": "rejected",
+                "message": "Task failed verification and rejected"
+            }
+    
+    def get_verification_engine_status(self) -> Dict[str, Any]:
+        """
+        Get verification engine status and configuration.
+        
+        Returns:
+            Dict containing verification engine status
+        """
+        if not VERIFICATION_AVAILABLE:
+            return {
+                "available": False,
+                "message": "Verification module not installed"
+            }
+        
+        if not self._verification_engine:
+            return {
+                "available": True,
+                "initialized": False,
+                "message": "Verification engine not initialized"
+            }
+        
+        # Get registered verifier types
+        verifier_types = {}
+        if self._verifier_registry:
+            verifier_types = {
+                k: v.__name__ 
+                for k, v in self._verifier_registry.list_verifiers().items()
+            }
+        
+        return {
+            "available": True,
+            "initialized": True,
+            "registered_verifiers": verifier_types,
+            "verifier_count": len(verifier_types),
+            "message": "Verification engine ready"
+        }

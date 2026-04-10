@@ -1,6 +1,7 @@
 import React from "react";
 import ExpandMoreIcon from "@mui/icons-material/ExpandMore";
 import AdjustIcon from "@mui/icons-material/Adjust";
+import { useTranslation } from "react-i18next";
 import {
   Accordion,
   AccordionDetails,
@@ -75,6 +76,7 @@ export const Q9EvidencePanel: React.FC<Q9EvidencePanelProps> = ({
   providerName,
   elapsedMs = 0,
 }) => {
+  const { t } = useTranslation();
   const snapshot = evidence?.cognitive_snapshot;
   const selfModel = evidence?.self_model;
   const budget = evidence?.reasoning_budget;
@@ -87,26 +89,26 @@ export const Q9EvidencePanel: React.FC<Q9EvidencePanelProps> = ({
         <Box sx={{ display: "flex", gap: 1, flexWrap: "wrap" }}>
           {providerName ? (
             <Chip
-              label={`Posture Engine: ${providerName}`}
+              label={`${t("nineQuestions.postureEngine")}: ${providerName}`}
               size="small"
               variant="outlined"
               color="primary"
             />
           ) : null}
-          {elapsedMs > 0 ? <Chip label={`Latency: ${elapsedMs}ms`} size="small" variant="outlined" /> : null}
+          {elapsedMs > 0 ? <Chip label={`${t("common.latency")}: ${elapsedMs}ms`} size="small" variant="outlined" /> : null}
         </Box>
       )}
 
       <Accordion defaultExpanded={false} data-testid="q9-snapshot-accordion">
         <AccordionSummary expandIcon={<ExpandMoreIcon />}>
           <Typography variant="h6" sx={{ fontWeight: "bold" }}>
-            【Q1-Q8 认知快照聚合区】
+            {t("nineQuestions.q1Q8SnapshotAggregation")}
           </Typography>
         </AccordionSummary>
         <AccordionDetails>
           <Stack direction="row" spacing={1} useFlexGap flexWrap="wrap" sx={{ mb: 2 }}>
-            <Chip label={`认知不确定性: ${snapshot?.uncertainty_count ?? 0}`} color="warning" variant="outlined" />
-            <Chip label={`累计红线数: ${snapshot?.absolute_red_line_count ?? 0}`} color="error" />
+            <Chip label={`${t("nineQuestions.cognitiveUncertainty")}: ${snapshot?.uncertainty_count ?? 0}`} color="warning" variant="outlined" />
+            <Chip label={`${t("nineQuestions.cumulativeRedLines")}: ${snapshot?.absolute_red_line_count ?? 0}`} color="error" />
           </Stack>
           <List dense sx={{ py: 0 }}>
             {snapshotEntries.map(([key, value]) => (
@@ -131,7 +133,7 @@ export const Q9EvidencePanel: React.FC<Q9EvidencePanelProps> = ({
             ))}
             {snapshotEntries.length === 0 ? (
               <ListItem disableGutters>
-                <ListItemText primary="暂无 Q1-Q8 快照数据" />
+                <ListItemText primary={t("nineQuestions.noQ1Q8SnapshotData")} />
               </ListItem>
             ) : null}
           </List>
@@ -143,11 +145,11 @@ export const Q9EvidencePanel: React.FC<Q9EvidencePanelProps> = ({
           <Card variant="outlined" sx={{ height: "100%" }}>
             <CardContent>
               <Typography variant="h6" gutterBottom sx={{ fontWeight: "bold" }}>
-                【自我模型与预算压力区】
+                {t("nineQuestions.selfModelBudgetPressure")}
               </Typography>
 
               <Typography variant="subtitle2" gutterBottom>
-                认知负荷与稳定性
+                {t("nineQuestions.cognitiveLoadStability")}
               </Typography>
               <Stack direction="row" spacing={1} useFlexGap flexWrap="wrap" sx={{ mb: 2 }}>
                 <Chip
@@ -156,7 +158,7 @@ export const Q9EvidencePanel: React.FC<Q9EvidencePanelProps> = ({
                   data-testid="q9-cognitive-load-chip"
                 />
                 {selfModel?.stability_level ? (
-                  <Chip label={`稳定性: ${selfModel.stability_level}`} variant="outlined" />
+                  <Chip label={`${t("nineQuestions.stabilityLevel")}: ${selfModel.stability_level}`} variant="outlined" />
                 ) : null}
                 {typeof selfModel?.confidence_drift === "number" ? (
                   <Chip label={`confidence_drift=${selfModel.confidence_drift}`} variant="outlined" />
@@ -164,7 +166,7 @@ export const Q9EvidencePanel: React.FC<Q9EvidencePanelProps> = ({
               </Stack>
 
               <Typography variant="subtitle2" gutterBottom>
-                近期弱点
+                {t("nineQuestions.recentWeaknesses")}
               </Typography>
               <Stack direction="row" spacing={1} useFlexGap flexWrap="wrap" data-testid="q9-weakness-zone">
                 {weaknesses.map((weakness, index) => (
@@ -177,7 +179,7 @@ export const Q9EvidencePanel: React.FC<Q9EvidencePanelProps> = ({
                 ))}
                 {weaknesses.length === 0 ? (
                   <Typography variant="caption" color="text.secondary">
-                    暂无近期弱点记录
+                    {t("nineQuestions.noRecentWeaknesses")}
                   </Typography>
                 ) : null}
               </Stack>
@@ -189,12 +191,12 @@ export const Q9EvidencePanel: React.FC<Q9EvidencePanelProps> = ({
           <Card variant="outlined" sx={{ height: "100%" }}>
             <CardContent>
               <Typography variant="h6" gutterBottom sx={{ fontWeight: "bold" }}>
-                【推理资源预算与消耗态势】
+                {t("nineQuestions.reasoningBudgetConsumption")}
               </Typography>
               <Stack spacing={2} sx={{ mt: 2 }}>
                 <Box>
                   <Typography variant="caption" display="block">
-                    算力剩余率 (Compute): {((budget?.compute_remaining_ratio ?? 0) * 100).toFixed(1)}%
+                    {t("nineQuestions.computeRemainingRate")}: {((budget?.compute_remaining_ratio ?? 0) * 100).toFixed(1)}%
                   </Typography>
                   <LinearProgress
                     variant="determinate"
@@ -204,7 +206,7 @@ export const Q9EvidencePanel: React.FC<Q9EvidencePanelProps> = ({
                 </Box>
                 <Box>
                   <Typography variant="caption" display="block">
-                    Token 剩余率 (Tokens): {((budget?.token_remaining_ratio ?? 0) * 100).toFixed(1)}%
+                    {t("nineQuestions.tokenRemainingRate")}: {((budget?.token_remaining_ratio ?? 0) * 100).toFixed(1)}%
                   </Typography>
                   <LinearProgress
                     variant="determinate"
@@ -214,7 +216,7 @@ export const Q9EvidencePanel: React.FC<Q9EvidencePanelProps> = ({
                 </Box>
                 <Box>
                   <Typography variant="caption" display="block">
-                    推演时间剩余 (Time): {((budget?.time_remaining_ratio ?? 0) * 100).toFixed(1)}%
+                    {t("nineQuestions.timeRemainingRate")}: {((budget?.time_remaining_ratio ?? 0) * 100).toFixed(1)}%
                   </Typography>
                   <LinearProgress
                     variant="determinate"
@@ -223,7 +225,7 @@ export const Q9EvidencePanel: React.FC<Q9EvidencePanelProps> = ({
                   />
                 </Box>
                 <Alert severity={loadChipColor(budget?.budget_pressure || "unknown") === "error" ? "error" : "info"} icon={false}>
-                  预算压力: {budget?.budget_pressure || "unknown"}
+                  {t("nineQuestions.budgetPressure")}: {budget?.budget_pressure || "unknown"}
                 </Alert>
               </Stack>
             </CardContent>
@@ -241,7 +243,7 @@ export const Q9EvidencePanel: React.FC<Q9EvidencePanelProps> = ({
           >
             <CardContent>
               <Typography variant="h6" gutterBottom sx={{ fontWeight: "bold" }}>
-                【终极行动姿态定调区】
+                {t("nineQuestions.finalActionPosture")}
               </Typography>
               {inference ? (
                 <Stack spacing={2}>
@@ -260,24 +262,24 @@ export const Q9EvidencePanel: React.FC<Q9EvidencePanelProps> = ({
                   </Stack>
 
                   <Alert severity="info" data-testid="q9-action-rhythm-alert">
-                    行动节奏: {inference.action_rhythm || "-"}
+                    {t("nineQuestions.actionRhythm")}: {inference.action_rhythm || "-"}
                   </Alert>
                   <Alert
                     severity={/human confirmation|human/i.test(inference.confirmation_strategy || "") ? "warning" : "info"}
                     data-testid="q9-confirmation-strategy-alert"
                   >
-                    确认策略: {inference.confirmation_strategy || "-"}
+                    {t("nineQuestions.confirmationStrategy")}: {inference.confirmation_strategy || "-"}
                   </Alert>
 
                   <List dense sx={{ py: 0 }}>
                     <ListItem disableGutters>
                       <AdjustIcon fontSize="small" color="success" style={{ marginRight: 8 }} />
-                      <ListItemText primary={inference.evolution_direction || "Stable"} secondary="演化焦点 (Evolution Direction)" />
+                      <ListItemText primary={inference.evolution_direction || "Stable"} secondary={t("nineQuestions.evolutionDirection")} />
                     </ListItem>
                   </List>
                 </Stack>
               ) : (
-                <Alert severity="info">等待姿态推演数据同步（可能正在执行或鉴权失败）。</Alert>
+                <Alert severity="info">{t("nineQuestions.waitingPostureSync")}</Alert>
               )}
             </CardContent>
           </Card>

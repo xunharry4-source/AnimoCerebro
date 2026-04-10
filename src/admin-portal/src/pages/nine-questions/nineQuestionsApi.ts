@@ -7,6 +7,90 @@ export interface TraceRelatedEvent {
   payload: any;
 }
 
+/**
+ * 九问介绍信息 - 每个问题的目标、期望数据和最终输出
+ */
+export interface NineQuestionIntro {
+  questionId: string;
+  title: string;
+  goal: string; // 目标是什么
+  expectedData: string; // 期望获得什么数据
+  finalOutput: string; // 最终输出什么
+}
+
+export const NINE_QUESTIONS_INTRODUCTIONS: Record<string, NineQuestionIntro> = {
+  q1: {
+    questionId: "q1",
+    title: "我在哪",
+    goal: "环境态势感知 + 工作区领域归类，识别当前所处的物理和逻辑环境",
+    expectedData: "物理主机状态、工作区结构分析、内容采样摘要、不确定性提示",
+    finalOutput: "工作区领域推断结果（主领域、次领域、置信度、推理摘要、不确定性列表、建议第一步）",
+  },
+  q2: {
+    questionId: "q2",
+    title: "我是谁",
+    goal: "角色推演 + 身份内核装配，基于 Q1 的环境态势和底层身份约束推断当前最适合的任务角色",
+    expectedData: "Q1 态势结果、身份内核（元动机/禁令/不可绕过约束）、主观风险偏好权重、人工干预回执",
+    finalOutput: "角色画像（身份角色/活跃角色/任务角色）+ 使命连续性边界（当前使命/优先职责/连续性边界）",
+  },
+  q3: {
+    questionId: "q3",
+    title: "我有什么",
+    goal: "统一资产盘点，全面梳理当前可用的认知工具、执行域、Agent、策略补丁和工作区权限",
+    expectedData: "认知工具注册表、执行域目录、已连接 Agent 列表、激活的策略补丁、可访问工作区区域",
+    finalOutput: "统一资产清单 + 资源评估（资源状态/缺失关键资产/瓶颈节点/推理摘要）",
+  },
+  q4: {
+    questionId: "q4",
+    title: "我能做什么",
+    goal: "能力边界评估，基于 Q3 的资产清单和当前权限，评估系统真正具备的行动能力",
+    expectedData: "Q3 资产清单、活跃执行域、权限边界、Q1-Q2 的前置态势",
+    finalOutput: "能力边界画像（能力上限/可行动空间/可执行策略），严格禁止幻觉声明不存在的能力",
+  },
+  q5: {
+    questionId: "q5",
+    title: "我被允许做什么",
+    goal: "授权边界判断 + 合规性检查，在 Q4 的能力范围内进一步筛选出被授权允许执行的操作",
+    expectedData: "Q4 能力边界、联系策略、租户范围、Agent 信任策略、组织边界规则",
+    finalOutput: "授权边界画像（允许操作空间/禁止操作空间及原因/联系和组织边界/需要升级的操作）",
+  },
+  q6: {
+    questionId: "q6",
+    title: "我即使能做也不该做什么",
+    goal: "红线和禁区检查，识别绝对不可触碰的安全边界和性能权衡禁令",
+    expectedData: "可行动空间、授权边界、不可绕过约束、历史策略补丁、安全红线规则",
+    finalOutput: "禁区评估（绝对红线/性能权衡禁令/禁止策略/污染风险）",
+  },
+  q7: {
+    questionId: "q7",
+    title: "我还可以做什么",
+    goal: "备选策略生成，当主路径受阻时提供降级方案、协作切换和探索性行动建议",
+    expectedData: "资源瓶颈、能力限制、权限边界、绝对红线、历史失败补丁",
+    finalOutput: "替代策略（回退计划/降级策略/协作切换方案/探索性行动）",
+  },
+  q8: {
+    questionId: "q8",
+    title: "我现在应该做什么",
+    goal: "任务优先级与目标生成，汇总 Q1-Q7 的约束与能力，生成当前最优主目标和任务队列",
+    expectedData: "Q1-Q7 聚合上下文、绝对红线数量、能力天花板计数、持久化任务状态",
+    finalOutput: "目标画像（当前主目标/阶段任务/优先级排序）+ 自主任务队列（下一步任务/阻塞任务/主动行动）",
+  },
+  q9: {
+    questionId: "q9",
+    title: "我应该如何行动",
+    goal: "行动姿态定调，根据 Q1-Q8 的状态确定行动风格、节奏和确认策略",
+    expectedData: "Q1-Q8 认知快照、自我模型（认知负荷/稳定性/自信度漂移/近期弱点）、推理预算余量",
+    finalOutput: "行动姿态（评估风格/风险容忍度/行动节奏/确认策略/进化方向）",
+  },
+};
+
+/**
+ * 获取九问介绍信息
+ */
+export function getNineQuestionIntro(questionId: string): NineQuestionIntro | undefined {
+  return NINE_QUESTIONS_INTRODUCTIONS[questionId];
+}
+
 export interface LLMTokenUsageView {
   input_tokens: number;
   output_tokens: number;
@@ -236,6 +320,27 @@ export interface Q3ToolsAndAgents {
   cognitive_tool_rows: Q3AssetRow[];
   execution_tool_rows: Q3AssetRow[];
   connected_agent_rows: Q3AgentRow[];
+  mcp_servers: Array<{
+    server_id: string;
+    transport_type: string;
+    status: string;
+    tool_count: number;
+    tools?: Array<{
+      tool_name: string;
+      description: string;
+      plugin_id: string;
+      feature_code: string;
+    }>;
+  }>;
+  cli_tools: Array<{
+    command_name: string;
+    description: string;
+    mapped_domain: string;
+    plugin_id: string;
+    feature_code: string;
+    read_only: boolean;
+    status: string;
+  }>;
 }
 
 export interface Q3AssetRow {
@@ -599,6 +704,49 @@ export async function fetchNineQuestionsReport(): Promise<{
         : null,
   };
 }
+
+export async function fetchNineQuestionsStatus(): Promise<{
+  report: ReportPayload;
+  notice: string | null;
+}> {
+  const resp = await fetch("/api/web/nine-questions/status");
+  const data = await readResponseBody(resp);
+
+  if (!resp.ok) {
+    const detail = extractApiErrorMessage(data, "");
+
+    if (resp.status === 404 && detail === "No active session") {
+      return {
+        report: {
+          session_id: "-",
+          status: "ready",
+          status_message: null,
+          last_turn_id: "0",
+          snapshot_version: 0,
+          revision: 0,
+          refreshed_at: null,
+          last_refresh_reason: null,
+          question_driver_refs: [],
+          questions: [],
+        },
+        notice: "当前没有活动 session。先跑一次九问流程，再回到这个测试页刷新。",
+      };
+    }
+
+    throw new Error(detail || `获取九问状态失败（HTTP ${resp.status}）`);
+  }
+
+  return {
+    report: data,
+    notice:
+      data?.status === "initializing"
+        ? null
+        : !Array.isArray(data?.questions) || data.questions.length === 0
+        ? "当前 session 里还没有九问结果。运行一次九问后再刷新查看。"
+        : null,
+  };
+}
+
 
 export async function runAllNineQuestions(forceRefresh = true): Promise<NineQuestionsRunResponse> {
   const resp = await fetch("/api/web/nine-questions/run-all", {

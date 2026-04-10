@@ -79,3 +79,23 @@ def test_mcp_tool(
         trace_id=trace_id,
         payload=result,
     )
+
+
+from zentex.web_console.contracts.mcp import McpServerDetailItem, McpTaskSummary
+
+
+@router.get("/mcp-servers/{server_id}", response_model=McpServerDetailItem)
+def get_mcp_server_detail(
+    server_id: str,
+    service: McpIntegrationService = Depends(get_mcp_service),
+) -> McpServerDetailItem:
+    return service.get_server_detail(server_id)
+
+
+@router.get("/mcp-servers/{server_id}/tasks", response_model=List[McpTaskSummary])
+def list_mcp_server_tasks(
+    server_id: str,
+    status: Optional[str] = None,
+    service: McpIntegrationService = Depends(get_mcp_service),
+) -> List[McpTaskSummary]:
+    return service.list_server_tasks(server_id, status=status)

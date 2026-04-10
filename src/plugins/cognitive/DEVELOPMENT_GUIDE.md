@@ -4,7 +4,7 @@
 
 ## 一、核心契约与继承底座
 
-- 所有新插件必须最终继承 [BasePluginSpec](/Users/harry/Documents/git/AnimoCerebro/src/zentex/core/plugin_base.py)，并直接实现 [CognitiveToolSpec](/Users/harry/Documents/git/AnimoCerebro/src/zentex/core/models.py)。
+- 所有新插件必须最终继承 [BasePluginSpec](../../zentex/core/plugin_base.py)，并直接实现 [CognitiveToolSpec](../../zentex/core/models.py)。
 - 插件物理代码必须放在 `src/plugins/cognitive/` 下。
 - 必须声明：
   - `trigger_conditions`

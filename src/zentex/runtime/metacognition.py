@@ -156,6 +156,7 @@ class MetaCognitionController:
         agenda: Any,
         tool_registry: Any,
         nine_q_state: Any = None,
+        host_state: Any = None,
     ) -> Tuple[ReasoningModeDecision, ToolInvocationPlan, EscalationDecision]:
         """
         Generate the three internal control decisions for the current turn.
@@ -181,11 +182,14 @@ class MetaCognitionController:
             working_memory_dict,
             living_self_model_dict,
         )
+        
+        # New resource-based scoring
+        resource_pressure = self._score_resource_pressure(host_state)
 
         reasoning_mode = self._build_reasoning_mode_decision(
-            risk_level=risk_level,
             evidence_level=evidence_level,
             budget_pressure=budget_pressure,
+            resource_pressure=resource_pressure,
             consecutive_failures=consecutive_failures,
         )
         tool_plan = self._build_tool_plan(
@@ -210,6 +214,7 @@ class MetaCognitionController:
         risk_level: str,
         evidence_level: str,
         budget_pressure: str,
+        resource_pressure: str,
         consecutive_failures: int,
     ) -> ReasoningModeDecision:
         """
@@ -249,6 +254,15 @@ class MetaCognitionController:
             selection_reason = (
                 "Budget pressure detected; downgrade reasoning depth to preserve "
                 "runtime stability."
+            )
+
+        # High host resource pressure (G8 integration)
+        if resource_pressure == "high":
+            thought_mode = "fast"
+            reasoning_depth = "shallow"
+            selection_reason = (
+                "Host resource pressure detected (G8); capping reasoning depth to "
+                "ensure system survival."
             )
 
         # Repeated failures should trigger revisit rather than more acceleration.
@@ -444,6 +458,20 @@ class MetaCognitionController:
                 return "high"
         if "budget_pressure" in degraded_flags:
             return "high"
+        return "normal"
+
+    def _score_resource_pressure(self, host_state: Any) -> str:
+        """Score host resource pressure (G8)."""
+        if host_state is None:
+            return "normal"
+        
+        cpu_usage = host_state.get("cpu_percent", 0)
+        memory_usage = host_state.get("memory_percent", 0)
+        
+        if cpu_usage > 90 or memory_usage > 90:
+            return "high"
+        if cpu_usage > 70 or memory_usage > 70:
+            return "medium"
         return "normal"
 
     def _count_consecutive_failures(

@@ -1,25 +1,27 @@
 import { Button, Card, CardContent, Stack, Typography } from "@mui/material";
+import { useTranslation } from "react-i18next";
 
 type PluginLifecycleTestPageProps = {
   onBack: () => void;
 };
 
 export default function PluginLifecycleTestPage({ onBack }: PluginLifecycleTestPageProps) {
+  const { t } = useTranslation();
   return (
     <Stack spacing={2}>
       <Typography variant="h4" component="h1">
-        插件生命周期测试
+        {t("test.pluginLifecycleTitle")}
       </Typography>
       <Card variant="outlined">
         <CardContent>
           <Stack spacing={2}>
-            <Typography variant="subtitle1">验证插件启停、降级、回滚链路是否符合预期。</Typography>
+            <Typography variant="subtitle1">{t("test.pluginLifecycleSubtitle")}</Typography>
             <Typography variant="body2" color="text.secondary">
-              在这里执行插件管理相关测试，例如强制启用/停用后的状态一致性检查。
+              {t("test.pluginLifecycleDescription")}
             </Typography>
             <Stack direction="row">
               <Button variant="outlined" onClick={onBack}>
-                返回测试列表
+                {t("test.backToTestList")}
               </Button>
             </Stack>
           </Stack>

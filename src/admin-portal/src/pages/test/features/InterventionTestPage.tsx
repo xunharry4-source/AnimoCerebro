@@ -1,25 +1,27 @@
 import { Button, Card, CardContent, Stack, Typography } from "@mui/material";
+import { useTranslation } from "react-i18next";
 
 type InterventionTestPageProps = {
   onBack: () => void;
 };
 
 export default function InterventionTestPage({ onBack }: InterventionTestPageProps) {
+  const { t } = useTranslation();
   return (
     <Stack spacing={2}>
       <Typography variant="h4" component="h1">
-        人工干预测试
+        {t("test.interventionTitle")}
       </Typography>
       <Card variant="outlined">
         <CardContent>
           <Stack spacing={2}>
-            <Typography variant="subtitle1">验证人工干预写回、幂等与回放展示是否正确。</Typography>
+            <Typography variant="subtitle1">{t("test.interventionSubtitle")}</Typography>
             <Typography variant="body2" color="text.secondary">
-              在这里执行干预流程测试，例如重复 idempotency_key 时的回放去重。
+              {t("test.interventionDescription")}
             </Typography>
             <Stack direction="row">
               <Button variant="outlined" onClick={onBack}>
-                返回测试列表
+                {t("test.backToTestList")}
               </Button>
             </Stack>
           </Stack>

@@ -4,7 +4,7 @@
 
 ## 一、核心契约与继承底座
 
-- 所有新插件必须最终继承 [BasePluginSpec](/Users/harry/Documents/git/AnimoCerebro/src/zentex/core/plugin_base.py)，并直接实现 [ModelProviderSpec](/Users/harry/Documents/git/AnimoCerebro/src/zentex/core/model_provider_spec.py)。
+- 所有新插件必须最终继承 [BasePluginSpec](../../zentex/core/plugin_base.py)，并直接实现 [ModelProviderSpec](../../zentex/core/model_provider_spec.py)。
 - 插件物理代码必须放在 `src/plugins/model_providers/` 下。
 - 必须实现的核心方法：
   - `generate_json(prompt, context, caller_context) -> dict[str, Any]`

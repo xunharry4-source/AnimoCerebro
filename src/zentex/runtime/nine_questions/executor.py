@@ -1,7 +1,8 @@
-from __future__ import annotations
-
+import logging
 from datetime import datetime, timezone
 from typing import Any, List
+
+logger = logging.getLogger(__name__)
 
 from zentex.common.plugin_registry import PluginNotBoundError
 from zentex.core.plugin_base import PluginLifecycleStatus
@@ -116,9 +117,17 @@ class NineQuestionExecutor:
         refreshed_at = _now()
 
         for qid in question_ids:
+            logger.info(f"[Nine Questions Executor] Starting execution of {qid}")
             feature_code = f"nine_questions.{qid}"
             tools = _resolve_active_tools_by_feature_code(self._registry, feature_code)
             question_trace_id = f"{trace_id}:{qid}"
+            
+            if not tools:
+                logger.warning(
+                    f"[Nine Questions Executor] No tools found for {qid} (feature_code: {feature_code}). "
+                    f"Skipping this question."
+                )
+                continue
 
             context_snapshot = {}
             last_context_snapshot = getattr(session, "last_context_snapshot", None)
@@ -222,4 +231,8 @@ class NineQuestionExecutor:
                 payload=state.to_payload(),
                 source="runtime.nine_questions",
                 trace_id=question_trace_id,
+            )
+            logger.info(
+                f"[Nine Questions Executor] Completed {qid}. "
+                f"State now has {len(state.question_snapshots)} snapshots: {sorted(state.question_snapshots.keys())}"
             )

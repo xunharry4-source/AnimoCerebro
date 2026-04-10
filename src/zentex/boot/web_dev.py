@@ -594,17 +594,26 @@ def _seed_runtime(
     Thread(target=_backfill_bg, name="memory-backfill-bg", daemon=True).start()
 
     session = runtime.create_session("web-console")
+    # Force transcript store to refresh from disk on startup to avoid stale cache
+    transcript_store.get_entries_snapshot()
     existing_entries = transcript_store.read_by_session_id("web-console")
+    
     if existing_entries:
+        logger.info(f"[Startup] Found {len(existing_entries)} transcript entries for web-console. Restoring session...")
         session.restore_from_transcript()
         runtime.nine_question_state = session.current_nine_question_state
-        session.current_nine_question_state = runtime.nine_question_state
         runtime.active_session = session
-        if session.current_nine_question_state.question_snapshots:
+        
+        snapshot_count = len(runtime.nine_question_state.question_snapshots)
+        logger.info(f"[Startup] Session restored. Recovered {snapshot_count}/9 cognitive snapshots.")
+        
+        if snapshot_count > 0:
             runtime.set_nine_question_bootstrap_status("ready")
         else:
             runtime.set_nine_question_bootstrap_status("initializing", trace_id="startup-cold-start")
         return runtime, session
+
+    logger.info("[Startup] No existing transcript found for web-console. Entering initializing state.")
     runtime.set_nine_question_bootstrap_status("initializing", trace_id="startup-cold-start")
     return runtime, session
 
@@ -786,13 +795,9 @@ def _seed_managed_plugins() -> List[object]:
 
     # Dev-server should follow the operator's actual runtime configuration.
     # Prefer direct OpenAI when OPENAI_API_KEY is present; otherwise keep
-    # openai_compat (local gateway) as the default.
-    provider_name = str(
-        os.getenv("ZENTEX_DEFAULT_PROVIDER")
-        or ("openai" if os.getenv("OPENAI_API_KEY") else "openai_compat")
-    ).strip()
-    if not provider_name:
-        provider_name = "openai_compat"
+    from plugins.provider_tools import get_default_provider_key
+
+    provider_name = get_default_provider_key()
     model_provider = build_default_provider_tools_model_provider(
         provider_name=provider_name,
         plugin_id=f"model-provider-{provider_name.replace('_', '-')}",
@@ -1544,7 +1549,9 @@ async def _seed_task_and_agent_runtime_state(
     ]
     for payload in seed_tasks:
         key = str(payload["idempotency_key"])
-        if key in task_service._idempotency_log:
+        # Use the shared idempotency store instead of direct attribute access
+        existing_id = task_service._shared_idempotency.get(key)
+        if existing_id:
             continue
         now = datetime.now(timezone.utc)
         task_id = str(uuid4())[:8]
@@ -1571,6 +1578,10 @@ async def _seed_task_and_agent_runtime_state(
             created_at=now,
             last_updated_at=now,
         )
+        # Use shared state stores
+        task_service._shared_tasks.set(task_id, task)
+        task_service._shared_idempotency.set(key, task_id)
+        # Also update local cache for backward compatibility
         task_service._tasks[task_id] = task
         task_service._idempotency_log[key] = task_id
 
@@ -1592,6 +1603,8 @@ def _build_startup_workspace_snapshot(
     execution_registry: ExecutionDomainRegistry | None,
     task_service: TaskManagementService | None,
     host_telemetry_plugin: object | None = None,
+    mcp_service: object | None = None,
+    cli_service: object | None = None,
 ) -> dict[str, object]:
     return build_runtime_workspace_snapshot(
         workspace_root=workspace_root,
@@ -1600,6 +1613,8 @@ def _build_startup_workspace_snapshot(
         task_service=task_service,
         environment_summary="web console startup auto-ran nine questions",
         host_telemetry_plugin=host_telemetry_plugin,
+        mcp_service=mcp_service,
+        cli_service=cli_service,
     )
 
 
@@ -1610,10 +1625,50 @@ def _auto_run_startup_nine_questions(
     cognitive_registry: CognitiveToolRegistry,
     execution_registry: ExecutionDomainRegistry | None,
     task_service: TaskManagementService | None,
+    mcp_adapter: object | None = None,
+    cli_adapter: object | None = None,
 ) -> None:
     state = getattr(session, "current_nine_question_state", None)
     if state is None:
         return
+
+    # Create MCP and CLI integration services from adapters (via service facade)
+    mcp_service = None
+    cli_service = None
+    try:
+        from zentex.mcp.service import McpIntegrationService
+        from zentex.cli.service import CliIntegrationService
+        
+        if mcp_adapter is not None:
+            mcp_service = McpIntegrationService(adapter=mcp_adapter)
+            # Log MCP server count for debugging
+            mcp_servers = mcp_service.list_servers()
+            logger.info(f"[Nine Questions Q3] MCP servers count: {len(mcp_servers)}")
+            if len(mcp_servers) > 0:
+                for srv in mcp_servers:
+                    logger.info(f"  - MCP Server: {srv.get('server_id')} ({srv.get('tool_count')} tools)")
+            else:
+                logger.warning("[Nine Questions Q3] No MCP servers registered. Q3 data may be incomplete.")
+        
+        if cli_adapter is not None:
+            cli_service = CliIntegrationService(adapter=cli_adapter)
+            # Log CLI tools count for debugging
+            cli_tools = cli_service.list_tools()
+            logger.info(f"[Nine Questions Q3] CLI tools count: {len(cli_tools)}")
+            if len(cli_tools) > 0:
+                for tool in cli_tools:
+                    logger.info(f"  - CLI Tool: {tool.get('command_name')} -> {tool.get('plugin_id')}")
+    except Exception as exc:
+        logger.warning(f"Failed to create MCP/CLI integration services: {exc}")
+
+    # Log execution registry status
+    if execution_registry is not None and hasattr(execution_registry, "list_registrations"):
+        exec_domains = list(execution_registry.list_registrations())
+        logger.info(f"[Nine Questions Q3] Execution domains count: {len(exec_domains)}")
+        for domain in exec_domains:
+            logger.info(f"  - Execution Domain: {domain.plugin_id}")
+    else:
+        logger.warning("[Nine Questions Q3] Execution registry is None or invalid")
 
     workspace_root = str(getattr(runtime, "default_workspace", ".") or ".")
     startup_context = _build_startup_workspace_snapshot(
@@ -1630,6 +1685,8 @@ def _auto_run_startup_nine_questions(
             ),
             None,
         ),
+        mcp_service=mcp_service,
+        cli_service=cli_service,
     )
     session.last_context_snapshot = dict(startup_context)
 
@@ -1840,19 +1897,54 @@ def build_dev_server_app():
             for record in managed_plugins
             if getattr(record, "plugin", None) is not None
         }
-        if not session.current_nine_question_state.question_snapshots:
+        # Log nine questions state for debugging
+        snapshot_count = len(session.current_nine_question_state.question_snapshots)
+        if snapshot_count == 0:
+            logger.info(
+                f"[Nine Questions] No existing snapshots found. Starting cold start onboarding..."
+            )
             _start_cold_start_onboarding_background(
                 runtime=runtime,
                 session=session,
             )
-        elif _should_autorun_real_startup_nine_questions():
-            _auto_run_startup_nine_questions(
-                runtime=runtime,
-                session=session,
-                cognitive_registry=cognitive_registry,
-                execution_registry=execution_registry,
-                task_service=task_service,
+        else:
+            snapshot_ids = sorted(session.current_nine_question_state.question_snapshots.keys())
+            logger.info(
+                f"[Nine Questions] Found {snapshot_count}/9 existing snapshots: {snapshot_ids}"
             )
+            if snapshot_count < 9:
+                missing = [f"q{i}" for i in range(1, 10) if f"q{i}" not in snapshot_ids]
+                logger.warning(
+                    f"[Nine Questions] INCOMPLETE STATE: Missing {len(missing)} questions: {missing}. "
+                    f"This indicates a previous cold start failure. "
+                    f"User should click '强制运行一次 9 问' to re-execute."
+                )
+        
+        if _should_autorun_real_startup_nine_questions():
+            # Defer nine questions execution to background after MCP sync completes
+            def _run_nine_q_bg():
+                try:
+                    # Wait for MCP async sync to complete
+                    import time
+                    logger.info("[Nine Questions] Waiting 5 seconds for MCP/CLI async initialization...")
+                    time.sleep(5)  # Wait 5 seconds for async operations
+                    
+                    logger.info("[Nine Questions] Starting deferred cold start...")
+                    _auto_run_startup_nine_questions(
+                        runtime=runtime,
+                        session=session,
+                        cognitive_registry=cognitive_registry,
+                        execution_registry=execution_registry,
+                        task_service=task_service,
+                        mcp_adapter=mcp_adapter,
+                        cli_adapter=cli_adapter,
+                    )
+                    logger.info("[Nine Questions] Deferred cold start completed successfully")
+                except Exception:
+                    logger.exception("Deferred nine questions execution failed")
+
+            Thread(target=_run_nine_q_bg, name="nine-q-deferred", daemon=True).start()
+            logger.info("[Nine Questions] Cold start deferred to background thread (will execute in 5s)")
         elif _should_seed_fake_startup_nine_questions():
             # Defer fake seeding to background
             def _seed_bg():
@@ -1872,6 +1964,7 @@ def build_dev_server_app():
             plugin_feature_catalog=plugin_feature_catalog,
             runtime=runtime,
             session=session,
+            transcript_store=transcript_store,
             agent_manager=agent_manager,
             agent_coordination_service=agent_coordination_service,
             task_service=task_service,

@@ -14,6 +14,7 @@ from zentex.web_console.contracts.upgrades import (
     UpgradeOverviewPayload,
     UpgradeRecordCollection,
     UpgradeRecordItem,
+    UpgradesByLifecycleViewPayload,
 )
 from zentex.web_console.dependencies import get_upgrade_audit_store
 from zentex.web_console.dependencies import get_upgrade_evidence_service
@@ -27,6 +28,7 @@ from zentex.web_console.services.upgrades import (
     build_upgrade_memory_record_item,
     build_upgrade_overview,
     build_upgrade_record_item,
+    build_upgrades_by_lifecycle_view,
 )
 
 
@@ -38,6 +40,29 @@ def get_upgrade_overview(
     store=Depends(get_upgrade_management_store),
 ) -> UpgradeOverviewPayload:
     return build_upgrade_overview(store)
+
+
+@router.get("/upgrades/by-lifecycle-view", response_model=UpgradesByLifecycleViewPayload)
+def get_upgrades_by_lifecycle_view(
+    target_kind: str | None = None,
+    plugin_action: str | None = None,
+    store=Depends(get_upgrade_management_store),
+) -> UpgradesByLifecycleViewPayload:
+    """Get upgrades grouped by lifecycle view for tabbed display."""
+    from zentex.upgrade.management import UpgradeTargetKind
+    
+    tk = None
+    if target_kind:
+        try:
+            tk = UpgradeTargetKind(target_kind)
+        except ValueError:
+            raise HTTPException(status_code=400, detail=f"Invalid target_kind: {target_kind}")
+    
+    return build_upgrades_by_lifecycle_view(
+        store,
+        target_kind=tk,
+        plugin_action=plugin_action,
+    )
 
 
 @router.get("/upgrades/llm", response_model=UpgradeRecordCollection)

@@ -4,8 +4,7 @@ import asyncio
 
 from fastapi import APIRouter, WebSocket, WebSocketDisconnect
 
-from zentex.runtime.runtime import BrainRuntime
-from zentex.runtime.session import BrainSession
+from typing import Any, Dict, List, Optional
 from zentex.web_console.contracts.runtime import TranscriptStreamMessage
 from zentex.web_console.dependencies import get_weight_assembler
 from zentex.web_console.services.overview import build_overview_payload
@@ -26,12 +25,12 @@ async def _wait_for_disconnect(websocket: WebSocket) -> None:
 async def stream_events(websocket: WebSocket) -> None:
     await websocket.accept()
     runtime = getattr(websocket.app.state, "runtime", None)
-    if not isinstance(runtime, BrainRuntime):
+    if runtime is None:
         await websocket.close(code=1011, reason="BrainRuntime is not attached")
         return
 
     session = getattr(websocket.app.state, "session", None)
-    if session is not None and not isinstance(session, BrainSession):
+    if session is not None and not hasattr(session, "advance_turn"): # Duck type check
         session = None
 
     last_entry_id = websocket.query_params.get("last_entry_id")
@@ -93,9 +92,9 @@ async def stream_events(websocket: WebSocket) -> None:
                 await websocket.send_json(message.model_dump(mode="json"))
             last_sent_index = newest_index
             last_seen_revision = transcript_store.get_revision()
-    except WebSocketDisconnect:
+    except (WebSocketDisconnect, RuntimeError):
         return
-    except RuntimeError:
+    except Exception:
         return
     finally:
         disconnect_task.cancel()

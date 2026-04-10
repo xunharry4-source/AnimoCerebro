@@ -7,7 +7,10 @@ This module serves as the primary entry point for the Zentex memory domain.
 Internally reorganized into 6 sub-domains (storage, query, consolidation, security, management, plugins).
 """
 
-# ── 1. Management & Coordination ──────────────────────────────────────────
+# ── 1. Service Facade (Primary Entry Point) ───────────────────────────────
+from zentex.memory.service import MemoryService, get_memory_service
+
+# ── 2. Management & Coordination ──────────────────────────────────────────
 from zentex.memory.management.classification import (
     EmotionalValence,
     MemoryTier,
@@ -48,7 +51,7 @@ from zentex.memory.management.portability import (
     MemoryPackageRecord,
 )
 
-# ── 2. Query & Retrieval ──────────────────────────────────────────────────
+# ── 3. Query & Retrieval ──────────────────────────────────────────────────
 from zentex.memory.query.hybrid_retrieval import (
     HybridRetrievalEngine,
     QueryClassifier,
@@ -58,7 +61,7 @@ from zentex.memory.query.hybrid_retrieval import (
 from zentex.memory.query.deep_recall import DeepRecallEngine
 from zentex.memory.query.temporal import TemporalEngine
 
-# ── 3. Consolidation & Lifecycle ──────────────────────────────────────────
+# ── 4. Consolidation & Lifecycle ──────────────────────────────────────────
 from zentex.memory.consolidation.consolidation import (
     ConsolidationEngine,
     ConsolidationCycle,
@@ -85,7 +88,7 @@ from zentex.memory.consolidation.bridge import (
     ConsolidationScheduler,
 )
 
-# ── 4. Security & Governance ──────────────────────────────────────────────
+# ── 5. Security & Governance ──────────────────────────────────────────────
 from zentex.memory.security.encryption import (
     EnterpriseEncryptionService,
 )
@@ -111,7 +114,7 @@ from zentex.memory.security.provenance import (
     ProvenanceTracker,
 )
 
-# ── 5. Storage & Persistence ──────────────────────────────────────────────
+# ── 6. Storage & Persistence ──────────────────────────────────────────────
 from zentex.memory.storage.storage_manager import (
     HierarchicalMemoryStorage,
     RotationPolicy,
@@ -134,6 +137,7 @@ from zentex.memory.storage.structured import (
 
 __all__ = [
     # Management
+    "MemoryService", "get_memory_service",
     "EnhancedMemoryRecord", "EnhancedMemoryService", "EpisodeGraphMemoryAdapter",
     "ManagedEnhancedMemoryRecord", "MemoryAuditEvent", "MemoryManagementState",
     "MemoryRecallHit", "MemoryTier", "EmotionalValence", "ConfidenceCalculator",

@@ -10,7 +10,8 @@ export type UpgradeLifecycle =
   | "waiting"
   | "ongoing"
   | "completed"
-  | "failed";
+  | "failed"
+  | "cancelled";
 
 export type UpgradeTargetKind = "llm" | "plugin";
 
@@ -20,6 +21,7 @@ export interface UpgradeCountSummary {
   ongoing: number;
   completed: number;
   failed: number;
+  cancelled: number;
 }
 
 export interface UpgradeRecordItem {
@@ -300,4 +302,50 @@ export async function cleanupFailedCandidate(
     throw new Error(toErrorMessage(data, `清理失败候选版本失败（HTTP ${resp.status}）`));
   }
   return data as UpgradeRecordItem;
+}
+
+/**
+ * Response payload for upgrades grouped by lifecycle view.
+ */
+export interface LifecycleGroupedRecords {
+  count: number;
+  items: UpgradeRecordItem[];
+}
+
+export interface UpgradesByLifecycleViewPayload {
+  ongoing: LifecycleGroupedRecords;
+  waiting: LifecycleGroupedRecords;
+  failed: LifecycleGroupedRecords;
+  cancelled: LifecycleGroupedRecords;
+  completed: LifecycleGroupedRecords;
+}
+
+/**
+ * Fetch upgrades grouped by lifecycle view for tabbed display.
+ */
+export async function fetchUpgradesByLifecycleView(
+  targetKind?: UpgradeTargetKind,
+  pluginAction?: "all" | "upgrade" | "create",
+): Promise<UpgradesByLifecycleViewPayload> {
+  const params = new URLSearchParams();
+  if (targetKind) {
+    params.set("target_kind", targetKind);
+  }
+  if (pluginAction && pluginAction !== "all") {
+    params.set("plugin_action", pluginAction);
+  }
+  
+  const queryString = params.toString();
+  const url = `/api/web/upgrades/by-lifecycle-view${queryString ? `?${queryString}` : ""}`;
+  
+  const resp = await fetch(url, {
+    headers: {
+      Accept: "application/json",
+    },
+  });
+  const data = await readResponseBody(resp);
+  if (!resp.ok) {
+    throw new Error(toErrorMessage(data, `获取升级分组数据失败（HTTP ${resp.status}）`));
+  }
+  return data as UpgradesByLifecycleViewPayload;
 }

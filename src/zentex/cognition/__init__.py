@@ -1,5 +1,10 @@
 """核心认知器官导出层。"""
 
+from zentex.cognition.service import (
+    CognitionService,
+    get_cognition_service,
+    init_cognition_service,
+)
 from zentex.cognition.simulation import (
     CounterfactualSimulationEngine,
     OutcomeComparison,
@@ -18,6 +23,9 @@ from zentex.cognition.social_mind import (
 )
 
 __all__ = [
+    "CognitionService",
+    "get_cognition_service",
+    "init_cognition_service",
     "CommunicationFitProfile",
     "CounterfactualSimulationEngine",
     "InteractionMindEngine",

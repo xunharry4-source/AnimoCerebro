@@ -4,6 +4,14 @@ from enum import Enum
 from typing import Any, Dict, List, Optional
 from pydantic import BaseModel, Field
 
+# Import verification models
+try:
+    from zentex.tasks.verification.models import VerificationConfig
+except ImportError:
+    # Fallback for circular import issues
+    class VerificationConfig(BaseModel):
+        enabled: bool = False
+
 class TaskStatus(str, Enum):
     TODO = "todo"
     IN_PROGRESS = "in_progress"
@@ -52,6 +60,9 @@ class TaskContract(BaseModel):
     coordination_mode: CoordinationMode = CoordinationMode.PARALLEL
     failure_strategy: str = "halt" # halt, skip, retry_all, ignore
     recovery_action: Optional[str] = None
+    
+    # Verification configuration (embedded)
+    verification: VerificationConfig = Field(default_factory=VerificationConfig)
 
 class ZentexTask(BaseModel):
     task_id: str

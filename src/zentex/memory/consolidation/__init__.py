@@ -5,6 +5,8 @@ from zentex.memory.consolidation.consolidation import (
     PatternStabilityScore,
     ConsolidationCycle,
     ConsolidationTaskHandle,
+    ConsolidationPluginOutput,
+    StaleWriteError,
 )
 
 __all__ = [
@@ -14,4 +16,6 @@ __all__ = [
     "PatternStabilityScore",
     "ConsolidationCycle",
     "ConsolidationTaskHandle",
+    "ConsolidationPluginOutput",
+    "StaleWriteError",
 ]

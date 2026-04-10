@@ -13,85 +13,16 @@ BrainTranscriptStore（记忆事件流）：纯底层的 JSONL/SQLite 物理存�
 记录大脑日志。
 """
 
-from dataclasses import dataclass
-from datetime import datetime, timezone
-from enum import Enum
 import json
+from datetime import datetime, timezone
 from pathlib import Path
-from threading import Condition, Lock
+from threading import Condition
 from typing import Any, Dict, Iterable, List, Optional, Tuple, Union
 from uuid import uuid4
 from collections.abc import Callable
 
 from zentex.common.locking import get_lock_for_resource
-
-
-JSONScalar = Union[str, int, float, bool, None]
-JSONValue = Union[JSONScalar, List["JSONValue"], Dict[str, "JSONValue"]]
-
-
-class BrainTranscriptEntryType(str, Enum):
-    SESSION_STARTED = "session_started"
-    TURN_STARTED = "turn_started"
-    CONTEXT_SNAPSHOT_WRITTEN = "context_snapshot_written"
-    WORKING_MEMORY_UPDATED = "working_memory_updated"
-    TEMPORAL_AGENDA_UPDATED = "temporal_agenda_updated"
-    LIVING_SELF_MODEL_UPDATED = "living_self_model_updated"
-    CONFLICT_SNAPSHOT_WRITTEN = "conflict_snapshot_written"
-    COUNTERFACTUAL_COMPLETED = "counterfactual_completed"
-    INTERACTION_MIND_UPDATED = "interaction_mind_updated"
-    METACOGNITION_DECIDED = "metacognition_decided"
-    COGNITIVE_TOOL_INVOKED = "cognitive_tool_invoked"
-    COGNITIVE_TOOL_COMPLETED = "cognitive_tool_completed"
-    MODEL_PROVIDER_INVOKED = "model_provider_invoked"
-    MODEL_PROVIDER_COMPLETED = "model_provider_completed"
-    MODEL_PROVIDER_FAILED = "model_provider_failed"
-    DECISION_SYNTHESIZED = "decision_synthesized"
-    REFLECTION_PERSISTED = "reflection_persisted"
-    CONSOLIDATION_COMPLETED = "consolidation_completed"
-    CONSOLIDATION_FAILED = "consolidation_failed"
-    HUMAN_INTERVENTION_APPLIED = "human_intervention_applied"
-    NINE_QUESTION_STATE_UPDATED = "nine_question_state_updated"
-    PLUGIN_AUDIT_EVENT = "plugin_audit_event"
-    LEARNING_ENGINE_EVENT = "learning_engine_event"
-    TURN_FINISHED = "turn_finished"
-
-
-@dataclass(frozen=True)
-class BrainTranscriptEntry:
-    entry_id: str
-    session_id: str
-    turn_id: str
-    entry_type: BrainTranscriptEntryType
-    timestamp: datetime
-    payload: JSONValue
-    source: str
-    trace_id: str
-
-    def to_record(self) -> Dict[str, Any]:
-        return {
-            "entry_id": self.entry_id,
-            "session_id": self.session_id,
-            "turn_id": self.turn_id,
-            "entry_type": self.entry_type.value,
-            "timestamp": self.timestamp.astimezone(timezone.utc).isoformat(),
-            "payload": self.payload,
-            "source": self.source,
-            "trace_id": self.trace_id,
-        }
-
-    @classmethod
-    def from_record(cls, record: Dict[str, Any]) -> "BrainTranscriptEntry":
-        return cls(
-            entry_id=str(record["entry_id"]),
-            session_id=str(record["session_id"]),
-            turn_id=str(record["turn_id"]),
-            entry_type=BrainTranscriptEntryType(record["entry_type"]),
-            timestamp=datetime.fromisoformat(str(record["timestamp"])),
-            payload=record["payload"],
-            source=str(record["source"]),
-            trace_id=str(record["trace_id"]),
-        )
+from .models import BrainTranscriptEntry, BrainTranscriptEntryType, JSONValue
 
 
 class BrainTranscriptStore:

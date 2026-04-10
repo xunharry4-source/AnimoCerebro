@@ -22,6 +22,7 @@ import {
 } from "../nineQuestionsApi";
 import Q8EvidencePanel from "../../../components/Q8EvidencePanel";
 import LLMTracePanel from "../../../components/LLMTracePanel";
+import NineQuestionIntroCard from "../../../components/NineQuestionIntroCard";
 
 function resolveErrorGuidance(errMsg: string): { title: string; action: string } {
   if (errMsg.includes("No active session") || errMsg.includes("没有活动 session")) {
@@ -119,6 +120,9 @@ export const Q8Detail: React.FC = () => {
           进入独立沙箱测试
         </Button>
       </Stack>
+
+      {/* 问题介绍栏目 */}
+      <NineQuestionIntroCard questionId={qId} />
 
       <Box sx={{ mb: 0 }}>
         <Stack direction="row" spacing={1} sx={{ mb: 2 }} useFlexGap flexWrap="wrap">

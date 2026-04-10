@@ -571,15 +571,29 @@ class _EnhancedMemoryJSONLStore:
                             self._hash_index[rec.content_hash] = len(self._records)
                         self._records.append(rec)
                 else:
-                    # Legacy JSONL
-                    for line in decompressed.split(b"\n"):
+                    # Legacy JSONL - handle mixed encoding gracefully
+                    lines = decompressed.split(b"\n")
+                    for line in lines:
                         line = line.strip()
                         if not line:
                             continue
-                        rec = EnhancedMemoryRecord.model_validate(json.loads(line.decode("utf-8")))
-                        if rec.content_hash and rec.content_hash not in self._hash_index:
-                            self._hash_index[rec.content_hash] = len(self._records)
-                        self._records.append(rec)
+                        try:
+                            # Try UTF-8 decoding first
+                            text = line.decode("utf-8")
+                            rec = EnhancedMemoryRecord.model_validate(json.loads(text))
+                            if rec.content_hash and rec.content_hash not in self._hash_index:
+                                self._hash_index[rec.content_hash] = len(self._records)
+                            self._records.append(rec)
+                        except (UnicodeDecodeError, json.JSONDecodeError) as e:
+                            # Skip malformed lines (e.g., binary data mixed in)
+                            # Use WARNING level for production visibility
+                            logger.warning(
+                                "Skipping malformed line in %s at position %d: %s",
+                                self._file_path,
+                                decompressed.find(line),
+                                str(e)[:100]
+                            )
+                            continue
             except Exception as exc:
                 logger.warning("Failed to load memory store %s: %s", self._file_path, exc)
 
@@ -919,6 +933,11 @@ class EnhancedMemoryService:
         """Internal helper to push a record into the inverted index."""
         if not self._index:
             return
+        
+        # 🛡️ Safety: Ensure text fields are valid strings (None protection)
+        safe_title = record.title if record.title is not None else ""
+        safe_summary = record.summary if record.summary is not None else ""
+        safe_content = record.content if record.content is not None else ""
             
         metadata = {
             "memory_layer": record.memory_layer,
@@ -932,14 +951,14 @@ class EnhancedMemoryService:
         }
         self._index.add_record(
             record.memory_id,
-            record.title,
-            record.summary,
-            record.content,
+            safe_title,
+            safe_summary,
+            safe_content,
             metadata
         )
         if self._vector_index:
             # Semantic bundle for vector search
-            vector_text = f"{record.title} {record.summary} {record.content}"
+            vector_text = f"{safe_title} {safe_summary} {safe_content}"
             self._vector_index.add_record(record.memory_id, vector_text)
 
     @property
@@ -999,7 +1018,7 @@ class EnhancedMemoryService:
         # Real G38 Integration (Priority 1)
         if self._nine_question_executor:
             # Prepare state for validation
-            from zentex.runtime.nine_questions.state import NineQuestionState
+            from zentex.runtime.models import NineQuestionState
             state = NineQuestionState(snapshot_version=1)
             
             # Execute validation loop (Sub-function 59.3 Gap)

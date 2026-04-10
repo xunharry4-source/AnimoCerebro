@@ -1,3 +1,4 @@
+import { useTranslation } from "react-i18next";
 import { useEffect, useState } from "react";
 import { Alert, Box, Button, Card, CardContent, CircularProgress, Divider, Grid, List, ListItem, ListItemText, Stack, TextField, Typography } from "@mui/material";
 import { useParams } from "react-router-dom";
@@ -63,6 +64,7 @@ function renderJsonBlock(value: unknown, minHeight = 120) {
 }
 
 export default function NineQuestionSandboxPage() {
+  const { t } = useTranslation();
   const { q_id: qId = "" } = useParams();
   const [report, setReport] = useState<ReportPayload | null>(null);
   const [draftJson, setDraftJson] = useState("{}");
@@ -84,7 +86,7 @@ export default function NineQuestionSandboxPage() {
       const question = data.report.questions.find((item) => item.question_id === qId);
       setDraftJson(JSON.stringify(question?.context_updates || {}, null, 2));
     } catch (err: any) {
-      setError(err?.message || "加载九问沙箱失败");
+      setError(err?.message || t("nineQuestions.fetchSandboxError"));
     } finally {
       setLoading(false);
     }
@@ -104,7 +106,7 @@ export default function NineQuestionSandboxPage() {
       const sandboxResult = await runNineQuestionSandboxTest(qId, mockContext);
       setResult(sandboxResult);
     } catch (err: any) {
-      setError(err?.message || "执行九问沙箱失败");
+      setError(err?.message || t("nineQuestions.runSandboxError"));
     } finally {
       setRunning(false);
     }
@@ -118,10 +120,10 @@ export default function NineQuestionSandboxPage() {
     <Box>
       <Box sx={{ mb: 3 }}>
         <Typography variant="h4" gutterBottom>
-          {getQuestionDisplayLabel(qId)} 沙箱测试
+          {getQuestionDisplayLabel(qId)} {t("nineQuestions.sandboxTitle")}
         </Typography>
         <Typography variant="body2" color="text.secondary">
-          左侧注入 Mock Context，右侧查看隔离沙箱提取到的本地预处理证据与最终推断。该页面只调用沙箱接口，不会覆盖主脑缓存或写入正式事件流。
+          {t("nineQuestions.sandboxSubtitle")}
         </Typography>
       </Box>
 
@@ -136,16 +138,16 @@ export default function NineQuestionSandboxPage() {
           <Card variant="outlined" sx={{ height: "100%" }}>
             <CardContent>
               <Stack direction="row" justifyContent="space-between" alignItems="center" sx={{ mb: 2 }}>
-                <Typography variant="h6">上下文注入区</Typography>
+                <Typography variant="h6">{t("nineQuestions.contextInjection")}</Typography>
                 <Button variant="text" onClick={handleFillLiveContext}>
-                  一键填充当前主脑上下文
+                  {t("nineQuestions.fillLiveContext")}
                 </Button>
               </Stack>
               <TextField
                 fullWidth
                 multiline
                 minRows={18}
-                label="Mock 上下文 JSON"
+                label={t("nineQuestions.mockContextJson")}
                 value={draftJson}
                 onChange={(event) => setDraftJson(event.target.value)}
               />
@@ -157,9 +159,9 @@ export default function NineQuestionSandboxPage() {
           <Card variant="outlined" sx={{ height: "100%" }}>
             <CardContent>
               <Stack direction="row" justifyContent="space-between" alignItems="center" sx={{ mb: 2 }}>
-                <Typography variant="h6">执行与结果区</Typography>
+                <Typography variant="h6">{t("nineQuestions.executionAndResult")}</Typography>
                 <Button variant="contained" onClick={() => void handleRun()} disabled={running}>
-                  执行测试
+                  {t("nineQuestions.executeTest")}
                 </Button>
               </Stack>
               {running ? <CircularProgress /> : null}
@@ -254,7 +256,7 @@ export default function NineQuestionSandboxPage() {
                   ) : null}
                 </>
               ) : (
-                renderJsonBlock("等待执行结果...", 320)
+                renderJsonBlock(t("nineQuestions.waitingForResult"), 320)
               )}
             </CardContent>
           </Card>

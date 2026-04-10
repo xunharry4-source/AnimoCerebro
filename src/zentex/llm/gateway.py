@@ -72,11 +72,16 @@ class LLMGateway:
     def __init__(
         self,
         *,
-        default_provider_key: str = "openai_compat",
+        default_provider_key: Optional[str] = None,
         tools: Dict[str, BaseProviderTool | OpenAICompatibleGatewayTool] | None = None,
     ) -> None:
         self._tools = tools or build_default_provider_tools()
-        self._default_provider_key = default_provider_key
+        
+        if default_provider_key:
+            self._default_provider_key = default_provider_key
+        else:
+            from plugins.provider_tools import get_default_provider_key
+            self._default_provider_key = get_default_provider_key()
 
         self._lock = Lock()
         self._request_count = 0

@@ -3,8 +3,7 @@ from __future__ import annotations
 from datetime import timezone
 from typing import Any, Dict, List, Optional
 
-from zentex.runtime.runtime import BrainRuntime
-from zentex.runtime.transcript import BrainTranscriptEntryType
+from zentex.runtime.models import BrainTranscriptEntryType
 from zentex.web_console.contracts.replay import (
     TranscriptReplayPayload,
     TurnReplayPayload,
@@ -14,7 +13,7 @@ from zentex.web_console.transcript_serialization import serialize_transcript_ent
 
 
 def build_replay_payload(
-    runtime: BrainRuntime,
+    runtime: Any,
     event_id: str,
     *,
     include_payload: bool = True,
@@ -97,7 +96,7 @@ def build_replay_payload(
 
 
 def build_turn_replay_payload(
-    runtime: BrainRuntime,
+    runtime: Any,
     *,
     turn_id: str,
     session_id: Optional[str] = None,

@@ -1,15 +1,14 @@
-from __future__ import annotations
-from typing import Optional
+from typing import Any, Optional
 
 
 from fastapi import APIRouter, HTTPException
 from typing_extensions import Annotated
 from fastapi import Depends
 
-from zentex.runtime.runtime import BrainRuntime
 from zentex.web_console.contracts.replay import TranscriptReplayPayload, TurnReplayPayload
 from zentex.web_console.dependencies import get_runtime
 from zentex.web_console.replay_builder import build_replay_payload, build_turn_replay_payload
+from zentex.runtime.runtime import BrainRuntime
 
 
 router = APIRouter()

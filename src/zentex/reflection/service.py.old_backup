@@ -1,0 +1,1024 @@
+from __future__ import annotations
+
+import logging
+from datetime import datetime, timezone
+from typing import Any, Dict, List, Optional
+from uuid import uuid4
+
+from zentex.reflection.models import (
+    ReflectionRecord, ReflectionTemplate, ReflectionItem, ReflectionInsight, 
+    ReflectionPattern, ReflectionMetrics, ReflectionType, 
+    ReflectionDepth, ReflectionQuality, ReflectionTrigger,
+    GovernanceStatus, create_reflection_id, create_insight_id, create_pattern_id
+)
+from zentex.reflection.errors import (
+    ReflectionError, ReflectionNotFoundError, InvalidReflectionError,
+    ReflectionGenerationError, ReflectionValidationError, ReflectionGovernanceError
+)
+from zentex.reflection.persistence import ReflectionPersistence
+from zentex.reflection.outcome import OutcomeBinding
+from zentex.reflection.llm_generator import LLMReflectionGenerator
+from zentex.reflection.quality_assessor import ReflectionQualityAssessor
+from zentex.reflection.data_sync import ReflectionDataSync
+from zentex.reflection.template_manager import ReflectionTemplateManager
+
+logger = logging.getLogger(__name__)
+
+class ReflectionService:
+    """
+    反思服务核心类
+    
+    负责反思的生成、管理、分析和治理。
+    """
+    
+    def __init__(
+        self, 
+        persistence: Optional[ReflectionPersistence] = None,
+        llm_temperature: float = 0.3,
+        llm_max_tokens: int = 2048
+    ) -> None:
+        """
+        初始化反思服务
+        
+        Zentex规范：反思是核心认知算子，必须使用LLM，不允许规则引擎fallback。
+        
+        Args:
+            persistence: 持久化层实例
+            llm_temperature: LLM采样温度（0-1，越低越确定）
+            llm_max_tokens: LLM最大输出token数
+            
+        Raises:
+            ReflectionGenerationError: LLM初始化失败时抛出（fail-closed）
+        """
+        self.persistence = persistence
+        self._reflection_cache: Dict[str, ReflectionRecord] = {}
+        
+        # Zentex规范：必须初始化LLM生成器，失败则抛出异常
+        try:
+            self._llm_generator = LLMReflectionGenerator(
+                temperature=llm_temperature,
+                max_tokens=llm_max_tokens
+            )
+            logger.info(f"ReflectionService initialized with mandatory LLM (temp={llm_temperature}, max_tokens={llm_max_tokens})")
+        except Exception as e:
+            # Fail-closed：LLM不可用时直接失败，不允许降级
+            logger.error(f"Failed to initialize mandatory LLM for reflection: {e}")
+            raise ReflectionGenerationError(
+                f"Reflection service requires LLM but initialization failed: {e}. "
+                f"Please check LLM configuration, API keys, and network connectivity."
+            )
+        
+        # 依赖注入业务逻辑模块
+        self._quality_assessor = ReflectionQualityAssessor()
+        self._data_sync = ReflectionDataSync()
+        self._template_mgr = ReflectionTemplateManager()
+        
+        self.outcome_binding = OutcomeBinding()
+        
+        logger.info("ReflectionService initialized successfully with mandatory LLM")
+    
+    def generate_reflection(
+        self,
+        subject: str,
+        reflection_type: ReflectionType,
+        context: Dict[str, Any],
+        trigger: ReflectionTrigger = ReflectionTrigger.AUTOMATIC,
+        trace_id: Optional[str] = None,
+        session_id: Optional[str] = None,
+        template_id: Optional[str] = None
+    ) -> ReflectionRecord:
+        """
+        生成反思记录
+        
+        Args:
+            subject: 反思主题
+            reflection_type: 反思类型
+            context: 反思上下文
+            trigger: 触发器
+            trace_id: 追踪ID
+            session_id: 会话ID
+            template_id: 模板ID
+            
+        Returns:
+            生成的反思记录
+        """
+        try:
+            # 获取模板（委托给template_manager）
+            template = None
+            if template_id:
+                template = self._template_mgr.get_template(template_id)
+            
+            # 生成反思内容（委托给llm_generator）
+            reflection_content = self._llm_generator.generate_reflection(
+                subject=subject,
+                reflection_type=reflection_type,
+                context=context
+            )
+            
+            # 评估深度和质量（委托给quality_assessor）
+            depth = self._quality_assessor.determine_depth(context)
+            quality = self._quality_assessor.assess_quality(reflection_content)
+            
+            # 创建反思记录
+            reflection = ReflectionRecord(
+                reflection_id=create_reflection_id(),
+                trace_id=trace_id,
+                session_id=session_id,
+                reflection_type=reflection_type,
+                depth=depth,
+                quality=quality,
+                trigger=trigger,
+                reflection_timestamp=datetime.now(timezone.utc),
+                subject=subject,
+                context=context,
+                **reflection_content
+            )
+            
+            # 数据同步（委托给data_sync）
+            self._data_sync.sync_legacy_to_list(reflection)
+            self._data_sync.ensure_core_fixed_items(reflection)
+            
+            # 添加元反思审计项目
+            meta_item = self._generate_meta_audit_item(reflection)
+            reflection.reflection_list.append(meta_item)
+            
+            # 反向同步以确保在旧版UI中可见
+            self._data_sync.sync_list_to_legacy(reflection)
+            
+            # 保存反思
+            if self.persistence:
+                self.persistence.save_reflection(reflection)
+            
+            # 更新缓存
+            self._reflection_cache[reflection.reflection_id] = reflection
+            
+            logger.info(f"Generated reflection: {reflection.reflection_id}")
+            return reflection
+            
+        except Exception as e:
+            logger.error(f"Failed to generate reflection: {e}")
+            raise ReflectionGenerationError(f"Reflection generation failed: {e}")
+
+    def register_expectation(self, target_state: str, criteria: List[str], confidence: float = 0.5) -> str:
+        """Helper to register an expectation through the service."""
+        exp = self.outcome_binding.register_expectation(target_state, criteria, confidence)
+        return exp.expectation_id
+
+    def process_outcome(self, expectation_id: str, actual_state: str, metrics: Dict[str, Any]) -> Any:
+        """
+        Process a real outcome, compare with expectation, and generate a reflection.
+        """
+        result = self.outcome_binding.collect_result(expectation_id, actual_state, metrics)
+        deviation = self.outcome_binding.compare(result)
+        
+        # Generate an OUTCOME_REFLECTION using the deviation analysis
+        reflection = self.generate_reflection(
+            subject=f"Outcome Analysis for {expectation_id}",
+            reflection_type=ReflectionType.OUTCOME_REFLECTION,
+            context={
+                "expectation_id": expectation_id,
+                "result_id": result.result_id,
+                "deviation": deviation.model_dump(),
+                "metrics": metrics
+            }
+        )
+        
+        # GrowthWriter injection point (pseudo-code/logic)
+        if deviation.deviation_score > 0.3:
+             logger.info(f"Significant deviation ({deviation.deviation_score}) detected. Growth feedback triggered.")
+             # TODO: Trigger identity pattern update
+             
+        return reflection
+    
+    def _generate_reflection_content(
+        self, 
+        subject: str, 
+        reflection_type: ReflectionType, 
+        context: Dict[str, Any],
+        template: Optional[ReflectionTemplate] = None
+    ) -> Dict[str, Any]:
+        """
+        生成反思内容
+        
+        Zentex规范：反思是核心认知算子，必须使用LLM。不允许规则引擎fallback。
+        
+        Args:
+            subject: 反思主题
+            reflection_type: 反思类型
+            context: 上下文数据
+            template: 可选的反思模板（当前未使用，保留用于未来扩展）
+            
+        Returns:
+            包含summary, insights, lessons等的字典
+            
+        Raises:
+            ReflectionGenerationError: LLM调用失败时抛出（fail-closed行为）
+        """
+        # Zentex规范：直接调用LLM，无fallback
+        logger.debug(f"Generating reflection using mandatory LLM for: {subject}")
+        
+        return self._llm_generator.generate_reflection(
+            subject=subject,
+            reflection_type=reflection_type,
+            context=context
+        )
+    
+    # =========================================================================
+    # 注意：以下规则引擎方法已被移除
+    # =========================================================================
+    # Zentex规范：Runtime Isolation (第13条)
+    # "测试桩、fake provider、规则 stub 只能存在于测试或显式隔离沙箱中，
+    #  不能接入生产运行链路或 active plugin bus。"
+    #
+    # LLM Mandatory (第8条)
+    # "涉及认知算子时，必须使用激活态 ModelProvider。
+    #  禁止用 RuleBased*、本地字典、if-else 规则链、静态样本或测试桩冒充模型输出。"
+    #
+    # 如果需要规则引擎用于测试，请在 tests/reflection/ 目录中创建独立的stub文件。
+    # =========================================================================
+    
+    def _generate_decision_reflection(self, subject: str, context: Dict[str, Any]) -> Dict[str, Any]:
+        """生成决策反思"""
+        decision = context.get("decision", {})
+        outcome = context.get("outcome", {})
+        alternatives = context.get("alternatives", [])
+        
+        summary = f"关于决策'{subject}'的反思分析"
+        
+        insights = [
+            f"决策基于{len(alternatives)}个备选方案",
+            f"最终选择考虑了{len(decision.get('factors', []))}个因素"
+        ]
+        
+        lessons = []
+        if outcome.get("success"):
+            lessons.append("决策流程有效，结果符合预期")
+        else:
+            lessons.append("需要改进决策评估机制")
+        
+        risks = []
+        if decision.get("risk_level", 0) > 0.7:
+            risks.append("高风险决策，需要更多验证")
+        
+        improvements = []
+        if len(alternatives) < 3:
+            improvements.append("考虑更多备选方案")
+        
+        return {
+            "summary": summary,
+            "insights": insights,
+            "lessons": lessons,
+            "risks": risks,
+            "improvements": improvements,
+            "confidence": 0.8,
+            "impact_score": 0.7,
+            "actionability": 0.6
+        }
+    
+    def _generate_action_reflection(self, subject: str, context: Dict[str, Any]) -> Dict[str, Any]:
+        """生成行动反思"""
+        action = context.get("action", {})
+        execution = context.get("execution", {})
+        result = context.get("result", {})
+        
+        summary = f"关于行动'{subject}'的执行反思"
+        
+        insights = [
+            f"行动执行耗时{execution.get('duration', 0)}分钟",
+            f"涉及{len(action.get('steps', []))}个步骤"
+        ]
+        
+        lessons = []
+        if result.get("success"):
+            lessons.append("行动执行计划合理")
+        else:
+            lessons.append("需要优化执行流程")
+        
+        risks = []
+        if execution.get("deviation", False):
+            risks.append("执行过程偏离原计划")
+        
+        improvements = []
+        if execution.get("issues", []):
+            improvements.append("解决执行中的问题")
+        
+        return {
+            "summary": summary,
+            "insights": insights,
+            "lessons": lessons,
+            "risks": risks,
+            "improvements": improvements,
+            "confidence": 0.7,
+            "impact_score": 0.6,
+            "actionability": 0.8
+        }
+    
+    def _generate_outcome_reflection(self, subject: str, context: Dict[str, Any]) -> Dict[str, Any]:
+        """生成结果反思"""
+        outcome = context.get("outcome", {})
+        expectations = context.get("expectations", {})
+        
+        summary = f"关于结果'{subject}'的评估反思"
+        
+        insights = [
+            f"结果达成率{outcome.get('achievement_rate', 0):.1%}",
+            f"质量评分{outcome.get('quality_score', 0):.1f}"
+        ]
+        
+        lessons = []
+        if outcome.get("achievement_rate", 0) > 0.8:
+            lessons.append("目标设定合理")
+        else:
+            lessons.append("需要调整目标或方法")
+        
+        risks = []
+        if outcome.get("side_effects", []):
+            risks.append("存在未预见的副作用")
+        
+        improvements = []
+        if outcome.get("achievement_rate", 0) < 1.0:
+            improvements.append("分析未达成目标的原因")
+        
+        return {
+            "summary": summary,
+            "insights": insights,
+            "lessons": lessons,
+            "risks": risks,
+            "improvements": improvements,
+            "confidence": 0.8,
+            "impact_score": 0.9,
+            "actionability": 0.7
+        }
+    
+    def _generate_process_reflection(self, subject: str, context: Dict[str, Any]) -> Dict[str, Any]:
+        """生成过程反思"""
+        process = context.get("process", {})
+        efficiency = context.get("efficiency", {})
+        
+        summary = f"关于过程'{subject}'的流程反思"
+        
+        insights = [
+            f"流程包含{len(process.get('steps', []))}个步骤",
+            f"整体效率评分{efficiency.get('score', 0):.1f}"
+        ]
+        
+        lessons = []
+        if efficiency.get("score", 0) > 0.7:
+            lessons.append("流程设计有效")
+        else:
+            lessons.append("需要优化流程效率")
+        
+        risks = []
+        if process.get("bottlenecks", []):
+            risks.append("存在流程瓶颈")
+        
+        improvements = []
+        if efficiency.get("score", 0) < 0.8:
+            improvements.append("消除流程瓶颈")
+        
+        return {
+            "summary": summary,
+            "insights": insights,
+            "lessons": lessons,
+            "risks": risks,
+            "improvements": improvements,
+            "confidence": 0.7,
+            "impact_score": 0.6,
+            "actionability": 0.8
+        }
+    
+    def _generate_strategy_reflection(self, subject: str, context: Dict[str, Any]) -> Dict[str, Any]:
+        """生成策略反思"""
+        strategy = context.get("strategy", {})
+        effectiveness = context.get("effectiveness", {})
+        
+        summary = f"关于策略'{subject}'的战略反思"
+        
+        insights = [
+            f"策略包含{len(strategy.get('components', []))}个组件",
+            f"有效性评分{effectiveness.get('score', 0):.1f}"
+        ]
+        
+        lessons = []
+        if effectiveness.get("score", 0) > 0.7:
+            lessons.append("策略方向正确")
+        else:
+            lessons.append("需要调整策略方向")
+        
+        risks = []
+        if strategy.get("assumptions", []):
+            risks.append("策略基于未验证的假设")
+        
+        improvements = []
+        if effectiveness.get("score", 0) < 0.8:
+            improvements.append("验证策略假设")
+        
+        return {
+            "summary": summary,
+            "insights": insights,
+            "lessons": lessons,
+            "risks": risks,
+            "improvements": improvements,
+            "confidence": 0.6,
+            "impact_score": 0.8,
+            "actionability": 0.7
+        }
+    
+    def _generate_error_reflection(self, subject: str, context: Dict[str, Any]) -> Dict[str, Any]:
+        """生成错误反思"""
+        error = context.get("error", {})
+        impact = context.get("impact", {})
+        
+        summary = f"关于错误'{subject}'的教训反思"
+        
+        insights = [
+            f"错误类型: {error.get('type', '未知')}",
+            f"影响程度: {impact.get('severity', '中等')}"
+        ]
+        
+        lessons = [
+            "识别错误根本原因",
+            "建立预防机制",
+            "改进错误检测流程"
+        ]
+        
+        risks = [
+            "可能重复发生类似错误",
+            "错误影响可能扩大"
+        ]
+        
+        improvements = [
+            "加强错误预防措施",
+            "完善错误处理流程",
+            "提高错误检测能力"
+        ]
+        
+        return {
+            "summary": summary,
+            "insights": insights,
+            "lessons": lessons,
+            "risks": risks,
+            "improvements": improvements,
+            "confidence": 0.9,
+            "impact_score": 0.8,
+            "actionability": 0.9
+        }
+    
+    def _generate_success_reflection(self, subject: str, context: Dict[str, Any]) -> Dict[str, Any]:
+        """生成成功反思"""
+        success = context.get("success", {})
+        factors = context.get("success_factors", [])
+        
+        summary = f"关于成功'{subject}'的经验反思"
+        
+        insights = [
+            f"成功因素: {', '.join(factors)}",
+            f"成功程度: {success.get('degree', '部分')}"
+        ]
+        
+        lessons = [
+            "总结成功经验",
+            "固化成功模式",
+            "复制成功方法"
+        ]
+        
+        risks = [
+            "可能过度依赖成功经验",
+            "环境变化可能影响成功模式"
+        ]
+        
+        improvements = [
+            "验证成功模式的普适性",
+            "建立成功经验库",
+            "制定成功模式推广计划"
+        ]
+        
+        return {
+            "summary": summary,
+            "insights": insights,
+            "lessons": lessons,
+            "risks": risks,
+            "improvements": improvements,
+            "confidence": 0.8,
+            "impact_score": 0.7,
+            "actionability": 0.6
+        }
+    
+    def _generate_generic_reflection(self, subject: str, context: Dict[str, Any]) -> Dict[str, Any]:
+        """生成通用反思"""
+        summary = f"关于'{subject}'的通用反思"
+        
+        insights = [
+            "需要更深入分析具体情况",
+            "考虑更多影响因素"
+        ]
+        
+        lessons = [
+            "收集更多相关信息",
+            "建立系统性分析方法"
+        ]
+        
+        risks = [
+            "分析可能不够全面",
+            "结论可能存在偏差"
+        ]
+        
+        improvements = [
+            "提高分析深度",
+            "扩大考虑范围"
+        ]
+        
+        return {
+            "summary": summary,
+            "insights": insights,
+            "lessons": lessons,
+            "risks": risks,
+            "improvements": improvements,
+            "confidence": 0.5,
+            "impact_score": 0.4,
+            "actionability": 0.5
+        }
+    
+    def _determine_reflection_depth(self, context: Dict[str, Any]) -> ReflectionDepth:
+        """确定反思深度"""
+        complexity = context.get("complexity", "medium")
+        impact = context.get("impact", "medium")
+        
+        if complexity == "high" or impact == "high":
+            return ReflectionDepth.SYSTEMIC
+        elif complexity == "medium" or impact == "medium":
+            return ReflectionDepth.STRATEGIC
+        else:
+            return ReflectionDepth.ANALYTICAL
+    
+    def _assess_reflection_quality(self, content: Dict[str, Any]) -> ReflectionQuality:
+        """评估反思质量"""
+        score = 0
+        
+        # 检查内容完整性
+        if content.get("summary"):
+            score += 1
+        if content.get("insights"):
+            score += 1
+        if content.get("lessons"):
+            score += 1
+        if content.get("improvements"):
+            score += 1
+        
+        # 检查内容质量
+        if len(content.get("insights", [])) >= 2:
+            score += 1
+        if len(content.get("lessons", [])) >= 2:
+            score += 1
+        
+        if score >= 5:
+            return ReflectionQuality.EXCELLENT
+        elif score >= 4:
+            return ReflectionQuality.GOOD
+        elif score >= 2:
+            return ReflectionQuality.FAIR
+        else:
+            return ReflectionQuality.POOR
+    
+    # 反思管理方法
+    def get_reflection(self, reflection_id: str) -> ReflectionRecord:
+        """获取反思记录"""
+        # 先从缓存查找
+        if reflection_id in self._reflection_cache:
+            return self._reflection_cache[reflection_id]
+        
+        # 从持久化层查找
+        if self.persistence:
+            reflection = self.persistence.get_reflection(reflection_id)
+            if reflection:
+                self._reflection_cache[reflection_id] = reflection
+                return reflection
+        
+        raise ReflectionNotFoundError(f"Reflection not found: {reflection_id}")
+    
+    def list_reflections(self, filters: Optional[Dict[str, Any]] = None) -> List[ReflectionRecord]:
+        """列出反思记录"""
+        if self.persistence:
+            reflections_data = self.persistence.query_reflections(filters or {})
+            return reflections_data  # 直接返回列表
+        else:
+            # 从缓存返回
+            reflections = list(self._reflection_cache.values())
+            
+            # 应用过滤
+            if filters:
+                reflections = [r for r in reflections if self._matches_filters(r, filters)]
+            
+            return reflections
+    
+    def update_reflection(self, reflection_id: str, updates: Dict[str, Any]) -> ReflectionRecord:
+        """更新反思记录"""
+        reflection = self.get_reflection(reflection_id)
+        
+        # 更新字段
+        locked_items = []
+        for field, value in updates.items():
+            if field == "reflection_list" and isinstance(value, list):
+                # Filter out modifications to immutable items
+                current_items = {item.item_id: item for item in reflection.reflection_list}
+                new_items = []
+                for item_data in value:
+                    if isinstance(item_data, dict):
+                        iid = item_data.get("item_id")
+                        if iid in current_items and current_items[iid].is_immutable:
+                            # Restore original for immutable items
+                            new_items.append(current_items[iid])
+                            locked_items.append(iid)
+                        else:
+                            new_items.append(ReflectionItem.model_validate(item_data))
+                    elif isinstance(item_data, ReflectionItem):
+                         if item_data.item_id in current_items and current_items[item_data.item_id].is_immutable:
+                             new_items.append(current_items[item_data.item_id])
+                             locked_items.append(item_data.item_id)
+                         else:
+                             new_items.append(item_data)
+                reflection.reflection_list = new_items
+            elif hasattr(reflection, field):
+                setattr(reflection, field, value)
+        
+        if locked_items:
+            logger.warning(f"Attempted to modify immutable items {locked_items} in reflection {reflection_id}. Changes ignored.")
+
+        reflection.updated_at = datetime.now(timezone.utc)
+        
+        # 保存更新
+        if self.persistence:
+            self.persistence.save_reflection(reflection)
+        
+        # 更新缓存
+        self._reflection_cache[reflection_id] = reflection
+        
+        logger.info(f"Updated reflection: {reflection_id}")
+        return reflection
+    
+    def delete_reflection(self, reflection_id: str) -> bool:
+        """删除反思记录"""
+        try:
+            if self.persistence:
+                success = self.persistence.delete_reflection(reflection_id)
+            else:
+                success = reflection_id in self._reflection_cache
+            
+            if success:
+                self._reflection_cache.pop(reflection_id, None)
+                logger.info(f"Deleted reflection: {reflection_id}")
+            
+            return success
+            
+        except Exception as e:
+            logger.error(f"Failed to delete reflection {reflection_id}: {e}")
+            return False
+    
+    # 模板管理
+    def create_template(self, name: str, description: str, template_data: Dict[str, Any]) -> ReflectionTemplate:
+        """创建反思模板"""
+        template = ReflectionTemplate(
+            template_id=f"template_{uuid4().hex[:8]}",
+            name=name,
+            description=description,
+            **template_data
+        )
+        
+        if self.persistence:
+            self.persistence.save_template(template)
+        
+        self._template_cache[template.template_id] = template
+        
+        logger.info(f"Created template: {template.template_id}")
+        return template
+    
+    def get_template(self, template_id: str) -> Optional[ReflectionTemplate]:
+        """获取模板"""
+        if template_id in self._template_cache:
+            return self._template_cache[template_id]
+        
+        if self.persistence:
+            template = self.persistence.get_template(template_id)
+            if template:
+                self._template_cache[template_id] = template
+                return template
+        
+        return None
+    
+    def list_templates(self) -> List[ReflectionTemplate]:
+        """列出所有模板"""
+        if self.persistence:
+            templates_data = self.persistence.load_templates()
+            return list(templates_data.values())
+        else:
+            return list(self._template_cache.values())
+    
+    # 治理方法
+    def verify_reflection(self, reflection_id: str, verified_by: str) -> ReflectionRecord:
+        """验证反思"""
+        reflection = self.get_reflection(reflection_id)
+        
+        reflection.governance_status = GovernanceStatus.VERIFIED
+        reflection.verified_at = datetime.now(timezone.utc)
+        reflection.verified_by = verified_by
+        
+        return self.update_reflection(reflection_id, {
+            "governance_status": GovernanceStatus.VERIFIED,
+            "verified_at": reflection.verified_at,
+            "verified_by": verified_by
+        })
+    
+    def mark_suspect(self, reflection_id: str, reason: str) -> ReflectionRecord:
+        """标记为可疑"""
+        reflection = self.get_reflection(reflection_id)
+        
+        reflection.governance_status = GovernanceStatus.SUSPECT
+        reflection.metadata["suspect_reason"] = reason
+        
+        return self.update_reflection(reflection_id, {
+            "governance_status": GovernanceStatus.SUSPECT,
+            "metadata": reflection.metadata
+        })
+    
+    def archive_reflection(self, reflection_id: str) -> ReflectionRecord:
+        """归档反思"""
+        reflection = self.get_reflection(reflection_id)
+        
+        reflection.governance_status = GovernanceStatus.ARCHIVED
+        
+        return self.update_reflection(reflection_id, {
+            "governance_status": GovernanceStatus.ARCHIVED
+        })
+    
+    # 统计方法
+    def get_metrics(self) -> ReflectionMetrics:
+        """获取反思指标"""
+        reflections = self.list_reflections()
+        
+        metrics = ReflectionMetrics()
+        metrics.total_reflections = len(reflections)
+        
+        # 按类型统计
+        type_counts = {}
+        depth_counts = {}
+        quality_counts = {}
+        governance_counts = {}
+        
+        total_confidence = 0
+        total_impact = 0
+        total_actionability = 0
+        
+        today = datetime.now(timezone.utc).date()
+        from datetime import timedelta
+        week_ago = today - timedelta(days=7)
+        month_ago = today.replace(day=1)
+        
+        for reflection in reflections:
+            # 类型统计
+            type_counts[reflection.reflection_type.value] = type_counts.get(reflection.reflection_type.value, 0) + 1
+            
+            # 深度统计
+            depth_counts[reflection.depth.value] = depth_counts.get(reflection.depth.value, 0) + 1
+            
+            # 质量统计
+            quality_counts[reflection.quality.value] = quality_counts.get(reflection.quality.value, 0) + 1
+            
+            # 治理状态统计
+            governance_counts[reflection.governance_status.value] = governance_counts.get(reflection.governance_status.value, 0) + 1
+            
+            # 累计指标
+            total_confidence += reflection.confidence
+            total_impact += reflection.impact_score
+            total_actionability += reflection.actionability
+            
+            # 时间统计
+            if reflection.created_at.date() == today:
+                metrics.reflections_today += 1
+            if reflection.created_at.date() >= week_ago:
+                metrics.reflections_this_week += 1
+            if reflection.created_at.date() >= month_ago:
+                metrics.reflections_this_month += 1
+            
+            # 治理统计
+            if reflection.governance_status == GovernanceStatus.VERIFIED:
+                metrics.verified_reflections += 1
+            elif reflection.governance_status == GovernanceStatus.SUSPECT:
+                metrics.suspect_reflections += 1
+            elif reflection.governance_status == GovernanceStatus.ARCHIVED:
+                metrics.archived_reflections += 1
+        
+        # 设置统计数据
+        metrics.reflections_by_type = type_counts
+        metrics.reflections_by_depth = depth_counts
+        metrics.reflections_by_quality = quality_counts
+        
+        # 计算平均值
+        if reflections:
+            metrics.average_confidence = total_confidence / len(reflections)
+            metrics.average_impact_score = total_impact / len(reflections)
+            metrics.average_actionability = total_actionability / len(reflections)
+        
+        # 保存指标
+        if self.persistence:
+            self.persistence.save_metrics(metrics)
+        
+        return metrics
+    
+    def _matches_filters(self, reflection: ReflectionRecord, filters: Dict[str, Any]) -> bool:
+        """检查反思是否匹配过滤条件"""
+        # 实现过滤逻辑（与persistence层相同）
+        for key, value in filters.items():
+            if hasattr(reflection, key):
+                if getattr(reflection, key) != value:
+                    return False
+        return True
+    
+    def _initialize_default_templates(self) -> None:
+        """初始化默认模板"""
+        default_templates = [
+            {
+                "name": "决策反思模板",
+                "description": "用于决策类反思的标准模板",
+                "template_data": {
+                    "reflection_type": ReflectionType.DECISION_REFLECTION,
+                    "required_fields": ["subject", "decision", "outcome"],
+                    "optional_fields": ["alternatives", "context"],
+                    "prompt_template": "请对决策'{subject}'进行深入反思，分析决策过程、结果和影响。",
+                    "evaluation_criteria": {
+                        "min_insights": 2,
+                        "min_lessons": 1,
+                        "min_improvements": 1
+                    }
+                }
+            },
+            {
+                "name": "错误反思模板",
+                "description": "用于错误分析的标准模板",
+                "template_data": {
+                    "reflection_type": ReflectionType.ERROR_REFLECTION,
+                    "required_fields": ["subject", "error", "impact"],
+                    "optional_fields": ["context", "prevention"],
+                    "prompt_template": "请对错误'{subject}'进行系统分析，识别根本原因和预防措施。",
+                    "evaluation_criteria": {
+                        "min_insights": 3,
+                        "min_lessons": 2,
+                        "min_improvements": 2
+                    }
+                }
+            },
+            {
+                "name": "成功反思模板",
+                "description": "用于成功经验总结的标准模板",
+                "template_data": {
+                    "reflection_type": ReflectionType.SUCCESS_REFLECTION,
+                    "required_fields": ["subject", "success", "factors"],
+                    "optional_fields": ["context", "replication"],
+                    "prompt_template": "请对成功'{subject}'进行总结分析，提取可复制的成功因素。",
+                    "evaluation_criteria": {
+                        "min_insights": 2,
+                        "min_lessons": 2,
+                        "min_improvements": 1
+                    }
+                }
+            }
+        ]
+        
+        for template_data in default_templates:
+            try:
+                self.create_template(**template_data)
+            except Exception as e:
+                logger.warning(f"Failed to create default template: {e}")
+
+    def _sync_legacy_to_list(self, reflection: ReflectionRecord) -> None:
+        """Sync legacy string lists to the structured reflection_list (仅在首次生成时调用)."""
+        # 如果已经有反思列表，跳过同步（避免重复添加）
+        if reflection.reflection_list:
+            return
+        
+        for text in reflection.insights:
+            reflection.reflection_list.append(ReflectionItem(
+                content=text, 
+                category="insight",
+                name="Insight"
+            ))
+        for text in reflection.lessons:
+            reflection.reflection_list.append(ReflectionItem(
+                content=text, 
+                category="lesson",
+                name="Lesson"
+            ))
+        for text in reflection.risks:
+            reflection.reflection_list.append(ReflectionItem(
+                content=text, 
+                category="risk",
+                name="Risk"
+            ))
+        for text in reflection.improvements:
+            reflection.reflection_list.append(ReflectionItem(
+                content=text, 
+                category="improvement",
+                name="Improvement"
+            ))
+    
+    def _ensure_core_fixed_items(self, reflection: ReflectionRecord) -> None:
+        """确保核心固定项目存在（仅在缺失时添加，不重复添加）。"""
+        from zentex.reflection.models import CORE_FIXED_REFLECTION_ITEMS
+        
+        existing_item_ids = {item.item_id for item in reflection.reflection_list}
+        
+        for core_item in CORE_FIXED_REFLECTION_ITEMS:
+            if core_item.item_id not in existing_item_ids:
+                # 添加核心项目的副本，保持独立性
+                reflection.reflection_list.append(core_item.copy())
+                logger.debug(f"Added core fixed item: {core_item.name}")
+
+    def _sync_list_to_legacy(self, reflection: ReflectionRecord) -> None:
+        """Sync structured reflection_list back to legacy string lists for UI visibility."""
+        # Clear legacy lists first to avoid duplicates (since we already synced legacy to list)
+        reflection.insights = []
+        reflection.lessons = []
+        reflection.risks = []
+        reflection.improvements = []
+        
+        for item in reflection.reflection_list:
+            if item.category == "insight":
+                reflection.insights.append(item.content)
+            elif item.category == "lesson":
+                reflection.lessons.append(item.content)
+            elif item.category == "risk":
+                reflection.risks.append(item.content)
+            elif item.category in ["improvement", "meta", "safety"]:
+                # Map meta and safety to improvements for visibility in generic UI summaries
+                label = f"[{item.category.upper()}] " if item.category in ["meta", "safety"] else ""
+                reflection.improvements.append(f"{label}{item.content}")
+
+    def _generate_meta_audit_item(self, reflection: ReflectionRecord) -> ReflectionItem:
+        """生成元反思项目：对当前反思内容质量进行自我审计。"""
+        # Logic to "reflect on the reflection"
+        # Since this is a service, we'd normally call LLM here. 
+        # For now, we seed it with logic based on quality score.
+        score = 1.0 - (0.2 if reflection.quality == ReflectionQuality.POOR else 0.0)
+        content = (
+            "Self-Audit: Reflection content is structurally consistent. "
+            "No significant drift detected from core identity."
+        ) if score > 0.8 else (
+            "Self-Audit WARNING: Possible shallow analysis detected. "
+            "Higher order context might be missing from this turn."
+        )
+        
+        return ReflectionItem(
+            name="Meta-Audit",
+            content=content,
+            category="meta",
+            is_immutable=False, # AI can acknowledge and refine the meta-reflection
+            can_be_removed=True,
+            integrity_score=score
+        )
+    
+    def should_update_reflection_list(self, reflection: ReflectionRecord) -> bool:
+        """
+        判断是否需要更新反思列表（低频触发策略）。
+        
+        只有在以下情况才允许修改反思列表：
+        1. 反思结果为空或无实质内容
+        2. 反思质量极低（POOR）
+        3. 反思置信度低于阈值
+        4. 没有生成任何洞察、教训或改进建议
+        
+        Args:
+            reflection: 反思记录
+            
+        Returns:
+            是否应该更新反思列表
+        """
+        # 条件1：反思摘要为空或过短
+        if not reflection.summary or len(reflection.summary.strip()) < 10:
+            logger.info(f"Reflection {reflection.reflection_id}: Empty summary, allowing list update")
+            return True
+        
+        # 条件2：反思质量为 POOR
+        if reflection.quality == ReflectionQuality.POOR:
+            logger.info(f"Reflection {reflection.reflection_id}: Poor quality, allowing list update")
+            return True
+        
+        # 条件3：置信度过低
+        if reflection.confidence < 0.4:
+            logger.info(f"Reflection {reflection.reflection_id}: Low confidence ({reflection.confidence}), allowing list update")
+            return True
+        
+        # 条件4：没有任何实质性内容
+        has_content = (
+            len(reflection.insights) > 0 or
+            len(reflection.lessons) > 0 or
+            len(reflection.risks) > 0 or
+            len(reflection.improvements) > 0 or
+            len(reflection.reflection_list) > 5  # 至少有核心项目+一些内容
+        )
+        
+        if not has_content:
+            logger.info(f"Reflection {reflection.reflection_id}: No substantive content, allowing list update")
+            return True
+        
+        # 默认情况：不允许多余的列表修改
+        logger.debug(f"Reflection {reflection.reflection_id}: Content is sufficient, skipping list update")
+        return False

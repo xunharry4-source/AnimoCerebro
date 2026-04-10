@@ -52,7 +52,10 @@ function getHealthColor(status: McpServerItem["status"]): "success" | "default" 
   }
 }
 
+import { useNavigate } from "react-router-dom";
+
 export default function McpServerDashboard() {
+  const navigate = useNavigate();
   const [rows, setRows] = useState<McpServerItem[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
@@ -156,8 +159,9 @@ export default function McpServerDashboard() {
   }
 
   return (
-    <Box>
-      <Stack direction="row" justifyContent="space-between" alignItems="center" sx={{ mb: 3 }}>
+    <Box sx={{ p: 3 }}>
+      <Stack spacing={3}>
+        <Stack direction="row" justifyContent="space-between" alignItems="center">
         <Box>
           <Typography variant="h4" gutterBottom>
             外部能力与 MCP 管理
@@ -187,7 +191,7 @@ export default function McpServerDashboard() {
         initialState={{
           pagination: { paginationModel: { page: 0, pageSize: 10 } },
         }}
-        onRowClick={(params) => setSelectedServer(params.row as McpServerItem)}
+        onRowClick={(params) => navigate(`/console/mcp-servers/${params.row.server_id}`)}
         sx={{ backgroundColor: "background.paper", "& .MuiDataGrid-row": { cursor: "pointer" } }}
       />
 
@@ -326,6 +330,7 @@ export default function McpServerDashboard() {
           </Button>
         </DialogActions>
       </Dialog>
+      </Stack>
     </Box>
   );
 }

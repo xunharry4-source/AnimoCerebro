@@ -1,4 +1,5 @@
 import ExpandMoreIcon from "@mui/icons-material/ExpandMore";
+import { useTranslation } from "react-i18next";
 import {
   Accordion,
   AccordionDetails,
@@ -67,11 +68,13 @@ export function Q1EvidencePanel({
   providerName: string | null;
   elapsedMs: number;
 }) {
+  const { t } = useTranslation();
+
   const structureRows = useMemo(
     () => [
       ...evidence.workspace_structure.directory_tree_rows.map((row) => ({
         id: row.row_id,
-        category: "目录层级",
+        category: t("nineQuestions.evidencePanels.directoryLevel"),
         label: row.label,
         detail: row.summary || row.path,
         depth: row.depth,
@@ -79,7 +82,7 @@ export function Q1EvidencePanel({
       })),
       ...evidence.workspace_structure.candidate_group_details.map((group) => ({
         id: group.group_id,
-        category: "候选分组",
+        category: t("nineQuestions.evidencePanels.candidateGroup"),
         label: group.label,
         detail: group.summary || (typeof group.file_count === "number" ? `file_count=${group.file_count}` : "-"),
         depth: 0,
@@ -87,22 +90,22 @@ export function Q1EvidencePanel({
       })),
       ...evidence.workspace_structure.obvious_risk_file_details.map((risk, index) => ({
         id: `risk-${index}-${risk.path}`,
-        category: "风险文件",
+        category: t("nineQuestions.evidencePanels.riskFile"),
         label: risk.path,
         detail: [risk.severity, risk.reason].filter(Boolean).join(" | ") || "-",
         depth: 0,
         severity: risk.severity || "risk",
       })),
     ],
-    [evidence],
+    [evidence, t],
   );
 
   const structureColumns = useMemo<GridColDef[]>(
     () => [
-      { field: "category", headerName: "分区", minWidth: 120, flex: 0.55 },
+      { field: "category", headerName: t("nineQuestions.evidencePanels.partition"), minWidth: 120, flex: 0.55 },
       {
         field: "label",
-        headerName: "对象",
+        headerName: t("nineQuestions.evidencePanels.object"),
         minWidth: 220,
         flex: 0.95,
         renderCell: (params: GridRenderCellParams<any, string>) => (
@@ -113,9 +116,9 @@ export function Q1EvidencePanel({
           </Box>
         ),
       },
-      { field: "detail", headerName: "摘要", minWidth: 260, flex: 1.4 },
+      { field: "detail", headerName: t("nineQuestions.evidencePanels.summary"), minWidth: 260, flex: 1.4 },
     ],
-    [],
+    [t],
   );
 
   const suffixChips = Object.entries(evidence.workspace_structure.suffix_distribution).map(([suffix, count]) => ({
@@ -150,23 +153,23 @@ export function Q1EvidencePanel({
         <Card variant="outlined" sx={{ height: "100%" }}>
           <CardContent>
             <Typography variant="h6" gutterBottom>
-              物理与环境态势区
+              {t("nineQuestions.evidencePanels.physicalEnv")}
             </Typography>
             <Stack direction="row" spacing={1} useFlexGap flexWrap="wrap" sx={{ mb: 2 }}>
               <Chip
-                label={`网络健康度: ${evidence.physical_and_environment.network_health || "unknown"}`}
+                label={`${t("nineQuestions.evidencePanels.networkHealth")}: ${evidence.physical_and_environment.network_health || "unknown"}`}
                 color={getHealthChipColor(evidence.physical_and_environment.network_health_status)}
               />
               <Chip
-                label={`内存压力: ${evidence.physical_and_environment.memory_pressure || "unknown"}`}
+                label={`${t("nineQuestions.evidencePanels.memoryPressure")}: ${evidence.physical_and_environment.memory_pressure || "unknown"}`}
                 color={getHealthChipColor(evidence.physical_and_environment.memory_pressure_status)}
               />
               <Chip label={`Provider: ${providerName || "-"}`} variant="outlined" />
-              <Chip label={`耗时: ${elapsedMs} ms`} variant="outlined" />
+              <Chip label={`${t("nineQuestions.evidencePanels.latency")}: ${elapsedMs} ms`} variant="outlined" />
             </Stack>
             <Divider sx={{ my: 2 }} />
             <Typography variant="subtitle2" gutterBottom>
-              环境摘要
+              {t("nineQuestions.evidencePanels.environmentSummary")}
             </Typography>
             <Stack direction="row" spacing={1} useFlexGap flexWrap="wrap" sx={{ mb: 2 }}>
               {renderChipArray(
@@ -175,7 +178,7 @@ export function Q1EvidencePanel({
                   label: item,
                   variant: "outlined",
                 })),
-                "无环境摘要",
+                t("nineQuestions.evidencePanels.noEnvironmentSummary"),
               )}
             </Stack>
             <Typography variant="subtitle2" gutterBottom>
@@ -188,7 +191,7 @@ export function Q1EvidencePanel({
                   label: `${key}: ${String(value)}`,
                   variant: "outlined",
                 })),
-                "无 EnvironmentEvent 字段",
+                t("nineQuestions.evidencePanels.noEnvironmentEvent"),
               )}
             </Stack>
             <Typography variant="subtitle2" gutterBottom>
@@ -201,7 +204,7 @@ export function Q1EvidencePanel({
                   label: `${key}: ${String(value)}`,
                   variant: "outlined",
                 })),
-                "无 PhysicalHostState 字段",
+                t("nineQuestions.evidencePanels.noPhysicalHostState"),
               )}
             </Stack>
           </CardContent>
@@ -212,22 +215,22 @@ export function Q1EvidencePanel({
         <Card variant="outlined" sx={{ height: "100%" }}>
           <CardContent>
             <Typography variant="h6" gutterBottom>
-              工作区本地统计与结构区
+              {t("nineQuestions.evidencePanels.workspaceStats")}
             </Typography>
             <Stack direction="row" spacing={1} useFlexGap flexWrap="wrap" sx={{ mb: 2 }}>
               <Chip
-                label={`文件总数: ${
+                label={`${t("nineQuestions.evidencePanels.fileTotalCount")}: ${
                   typeof evidence.workspace_structure.file_total_count === "number"
                     ? evidence.workspace_structure.file_total_count
                     : "-"
                 }`}
                 color="primary"
               />
-              {renderChipArray(topDirChips, "无顶层目录")}
-              {renderChipArray(groupChips, "无候选分组")}
+              {renderChipArray(topDirChips, t("nineQuestions.evidencePanels.noTopLevelDirs"))}
+              {renderChipArray(groupChips, t("nineQuestions.evidencePanels.noCandidateGroups"))}
             </Stack>
             <Typography variant="body2" color="text.secondary" sx={{ mb: 2 }}>
-              {evidence.workspace_structure.directory_hierarchy_summary || "当前没有目录层级摘要。"}
+              {evidence.workspace_structure.directory_hierarchy_summary || t("nineQuestions.evidencePanels.noDirectoryHierarchySummary")}
             </Typography>
             <Box sx={{ width: "100%", mb: 2 }}>
               <DataGrid
@@ -249,16 +252,16 @@ export function Q1EvidencePanel({
             </Box>
             <Divider sx={{ my: 2 }} />
             <Typography variant="subtitle2" gutterBottom>
-              文件后缀分布
+              {t("nineQuestions.evidencePanels.suffixDistribution")}
             </Typography>
             <Stack direction="row" spacing={1} useFlexGap flexWrap="wrap" sx={{ mb: 2 }}>
-              {renderChipArray(suffixChips, "无后缀统计")}
+              {renderChipArray(suffixChips, t("nineQuestions.evidencePanels.noSuffixStats"))}
             </Stack>
             <Typography variant="subtitle2" gutterBottom>
-              高频文件名关键词
+              {t("nineQuestions.evidencePanels.keywordFrequency")}
             </Typography>
             <Stack direction="row" spacing={1} useFlexGap flexWrap="wrap">
-              {renderChipArray(keywordChips, "无关键词统计")}
+              {renderChipArray(keywordChips, t("nineQuestions.evidencePanels.noKeywordStats"))}
             </Stack>
           </CardContent>
         </Card>
@@ -268,11 +271,11 @@ export function Q1EvidencePanel({
         <Card variant="outlined" sx={{ height: "100%" }}>
           <CardContent>
             <Typography variant="h6" gutterBottom>
-              内容采样与证据区
+              {t("nineQuestions.evidencePanels.contentSampling")}
             </Typography>
             <Stack direction="row" spacing={1} useFlexGap flexWrap="wrap" sx={{ mb: 2 }}>
-              <Chip label={`采样文件数: ${evidence.workspace_content_sampling.sample_count}`} color="info" />
-              <Chip label={`异常片段数: ${evidence.workspace_content_sampling.anomaly_count}`} color="warning" />
+              <Chip label={`${t("nineQuestions.evidencePanels.sampleCount")}: ${evidence.workspace_content_sampling.sample_count}`} color="info" />
+              <Chip label={`${t("nineQuestions.evidencePanels.anomalyCount")}: ${evidence.workspace_content_sampling.anomaly_count}`} color="warning" />
             </Stack>
             <Stack spacing={1.5}>
               {evidence.workspace_content_sampling.long_text_evidence.map((block) => (
@@ -306,7 +309,7 @@ export function Q1EvidencePanel({
                 </Accordion>
               ))}
               {evidence.workspace_content_sampling.long_text_evidence.length === 0 ? (
-                <Alert severity="info">当前没有可展开的长文本采样证据。</Alert>
+                <Alert severity="info">{t("nineQuestions.evidencePanels.noLongTextEvidence")}</Alert>
               ) : null}
             </Stack>
           </CardContent>
@@ -324,7 +327,7 @@ export function Q1EvidencePanel({
         >
           <CardContent>
             <Typography variant="h6" gutterBottom>
-              大模型终极推断区
+              {t("nineQuestions.evidencePanels.llmInference")}
             </Typography>
             {inference ? (
               <Grid container spacing={2}>
@@ -361,7 +364,7 @@ export function Q1EvidencePanel({
                             label: domain,
                             color: "info",
                           })),
-                          "无次领域",
+                          t("nineQuestions.evidencePanels.noSecondaryDomains"),
                         )}
                       </Stack>
                     </CardContent>
@@ -393,7 +396,7 @@ export function Q1EvidencePanel({
                             color: "warning",
                             variant: "outlined",
                           })),
-                          "无不确定性",
+                          t("nineQuestions.evidencePanels.noUncertainties"),
                         )}
                       </Stack>
                     </CardContent>
@@ -413,7 +416,7 @@ export function Q1EvidencePanel({
                 </Grid>
               </Grid>
             ) : (
-              <Alert severity="warning">本次返回未携带完整的 WorkspaceDomainInference 六字段。</Alert>
+              <Alert severity="warning">{t("nineQuestions.evidencePanels.incompleteInferenceFields")}</Alert>
             )}
           </CardContent>
         </Card>

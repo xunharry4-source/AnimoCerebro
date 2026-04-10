@@ -1,4 +1,5 @@
 import React from "react";
+import { useTranslation } from "react-i18next";
 import {
   Alert,
   Box,
@@ -59,6 +60,7 @@ export const Q5EvidencePanel: React.FC<Q5EvidencePanelProps> = ({
   providerName,
   elapsedMs = 0,
 }) => {
+  const { t } = useTranslation();
   const actionableSpace = evidence.actionable_space ?? [];
   const contactPolicy = evidence.contact_policy ?? [];
   const tenantBoundaries = evidence.tenant_boundaries ?? [];
@@ -73,14 +75,14 @@ export const Q5EvidencePanel: React.FC<Q5EvidencePanelProps> = ({
         <Box sx={{ display: "flex", gap: 1, mb: 1, flexWrap: "wrap" }}>
           {providerName ? (
             <Chip
-              label={`Permission Engine: ${providerName}`}
+              label={`${t("nineQuestions.permissionEngine")}: ${providerName}`}
               size="small"
               variant="outlined"
               color="primary"
             />
           ) : null}
           {elapsedMs > 0 ? (
-            <Chip label={`Latency: ${elapsedMs}ms`} size="small" variant="outlined" />
+            <Chip label={`${t("common.latency")}: ${elapsedMs}ms`} size="small" variant="outlined" />
           ) : null}
         </Box>
       )}
@@ -90,12 +92,12 @@ export const Q5EvidencePanel: React.FC<Q5EvidencePanelProps> = ({
           <Card variant="outlined">
             <CardContent>
               <Typography variant="h6" gutterBottom sx={{ fontWeight: "bold" }}>
-                【合规基线与前置动作空间区】
+                {t("nineQuestions.complianceBaseline")}
               </Typography>
               <Grid container spacing={2}>
                 <Grid size={{ xs: 12, md: 6 }}>
                   <Typography variant="subtitle2" gutterBottom>
-                    Q4 动作空间
+                    {t("nineQuestions.q4ActionSpace")}
                   </Typography>
                   <Stack direction="row" spacing={1} useFlexGap flexWrap="wrap" data-testid="q5-action-space-zone">
                     {actionableSpace.map((action) => (
@@ -103,14 +105,14 @@ export const Q5EvidencePanel: React.FC<Q5EvidencePanelProps> = ({
                     ))}
                     {actionableSpace.length === 0 ? (
                       <Typography variant="caption" color="text.secondary">
-                        当前无可审计动作空间
+                        {t("nineQuestions.noAuditableActionSpace")}
                       </Typography>
                     ) : null}
                   </Stack>
                 </Grid>
                 <Grid size={{ xs: 12, md: 6 }}>
                   <Typography variant="subtitle2" gutterBottom>
-                    联系策略与租户边界
+                    {t("nineQuestions.contactPolicyTenantBoundaries")}
                   </Typography>
                   <List dense sx={{ py: 0 }} data-testid="q5-policy-list">
                     {contactPolicy.map((item) => (
@@ -125,12 +127,12 @@ export const Q5EvidencePanel: React.FC<Q5EvidencePanelProps> = ({
                     ))}
                     {contactPolicy.length === 0 && tenantBoundaries.length === 0 ? (
                       <ListItem disableGutters>
-                        <ListItemText primary="未返回额外策略说明" />
+                        <ListItemText primary={t("nineQuestions.noExtraPolicies")} />
                       </ListItem>
                     ) : null}
                   </List>
                   <Typography variant="subtitle2" gutterBottom sx={{ mt: 1.5 }}>
-                    Agent 授信状态
+                    {t("nineQuestions.agentTrustStatus")}
                   </Typography>
                   <Stack direction="row" spacing={1} useFlexGap flexWrap="wrap" data-testid="q5-agent-trust-zone">
                     {trustEntries.map(([agentId, status]) => (
@@ -143,7 +145,7 @@ export const Q5EvidencePanel: React.FC<Q5EvidencePanelProps> = ({
                     ))}
                     {trustEntries.length === 0 ? (
                       <Typography variant="caption" color="text.secondary">
-                        当前无额外 Agent 授信记录
+                        {t("nineQuestions.noExtraAgentTrust")}
                       </Typography>
                     ) : null}
                   </Stack>
@@ -157,7 +159,7 @@ export const Q5EvidencePanel: React.FC<Q5EvidencePanelProps> = ({
           <Card variant="outlined" sx={{ borderColor: "warning.main", borderWidth: 2 }}>
             <CardContent>
               <Typography variant="h6" gutterBottom sx={{ fontWeight: "bold" }}>
-                【许可边界区】
+                {t("nineQuestions.permissionBoundaryZone")}
               </Typography>
               {inference ? (
                 <Stack direction="row" spacing={1} useFlexGap flexWrap="wrap" data-testid="q5-permission-boundary-zone">
@@ -183,7 +185,7 @@ export const Q5EvidencePanel: React.FC<Q5EvidencePanelProps> = ({
                   />
                 </Stack>
               ) : (
-                <Alert severity="info">等待合规边界推演结果。</Alert>
+                <Alert severity="info">{t("nineQuestions.waitingComplianceInference")}</Alert>
               )}
             </CardContent>
           </Card>
@@ -193,13 +195,13 @@ export const Q5EvidencePanel: React.FC<Q5EvidencePanelProps> = ({
           <Card variant="outlined" sx={{ borderColor: "error.main" }}>
             <CardContent>
               <Typography variant="h6" gutterBottom sx={{ fontWeight: "bold" }}>
-                【合规负面清单与风险池区】
+                {t("nineQuestions.complianceNegativeList")}
               </Typography>
               {inference ? (
                 <Stack spacing={2}>
                   <Alert severity="error" data-testid="q5-forbidden-alert">
                     <Typography variant="subtitle2" sx={{ fontWeight: "bold" }}>
-                      明确禁止动作
+                      {t("nineQuestions.explicitlyForbiddenActions")}
                     </Typography>
                     <List dense sx={{ py: 0.5 }}>
                       {forbiddenActions.map((item) => (
@@ -209,7 +211,7 @@ export const Q5EvidencePanel: React.FC<Q5EvidencePanelProps> = ({
                       ))}
                       {forbiddenActions.length === 0 ? (
                         <ListItem disableGutters sx={{ py: 0.25 }}>
-                          <ListItemText primary="当前无新增显式禁令" />
+                          <ListItemText primary={t("nineQuestions.noNewExplicitBans")} />
                         </ListItem>
                       ) : null}
                     </List>
@@ -217,7 +219,7 @@ export const Q5EvidencePanel: React.FC<Q5EvidencePanelProps> = ({
 
                   <Alert severity="warning" data-testid="q5-risk-alert">
                     <Typography variant="subtitle2" sx={{ fontWeight: "bold" }}>
-                      合规风险
+                      {t("nineQuestions.complianceRisks")}
                     </Typography>
                     <List dense sx={{ py: 0.5 }}>
                       {complianceRisks.map((item) => (
@@ -227,7 +229,7 @@ export const Q5EvidencePanel: React.FC<Q5EvidencePanelProps> = ({
                       ))}
                       {complianceRisks.length === 0 ? (
                         <ListItem disableGutters sx={{ py: 0.25 }}>
-                          <ListItemText primary="当前无新增合规风险" />
+                          <ListItemText primary={t("nineQuestions.noNewComplianceRisks")} />
                         </ListItem>
                       ) : null}
                     </List>
@@ -235,7 +237,7 @@ export const Q5EvidencePanel: React.FC<Q5EvidencePanelProps> = ({
 
                   <Box>
                     <Typography variant="subtitle2" gutterBottom>
-                      允许委托的白名单目标
+                      {t("nineQuestions.allowedDelegationTargets")}
                     </Typography>
                     <Stack direction="row" spacing={1} useFlexGap flexWrap="wrap" data-testid="q5-allowed-targets-zone">
                       {allowedTargets.map((item) => (
@@ -243,14 +245,14 @@ export const Q5EvidencePanel: React.FC<Q5EvidencePanelProps> = ({
                       ))}
                       {allowedTargets.length === 0 ? (
                         <Typography variant="caption" color="text.secondary">
-                          当前无白名单委托对象
+                          {t("nineQuestions.noWhitelistDelegates")}
                         </Typography>
                       ) : null}
                     </Stack>
                   </Box>
                 </Stack>
               ) : (
-                <Alert severity="info">等待负面清单与风险池数据。</Alert>
+                <Alert severity="info">{t("nineQuestions.waitingNegativeListData")}</Alert>
               )}
             </CardContent>
           </Card>

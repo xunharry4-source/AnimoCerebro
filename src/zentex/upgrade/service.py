@@ -9,6 +9,7 @@ decides whether to skip, upgrade, or create based on explicit intent payloads,
 then delegates to the specialized upgrade planners.
 """
 
+from typing import Any, Optional
 from zentex.memory import EnhancedMemoryService
 from zentex.upgrade.llm.service import DSPyLLMUpgradeService
 from zentex.upgrade.models import (
@@ -21,6 +22,8 @@ from zentex.upgrade.models import (
 )
 from zentex.upgrade.plugin.models import PluginEvolutionAction
 from zentex.upgrade.plugin.service import OpenHandsPluginUpgradeService
+from zentex.upgrade.execution import UpgradeExecutionService
+from zentex.upgrade.evidence import UpgradeEvidenceService
 
 
 class UpgradeFacade:
@@ -31,10 +34,17 @@ class UpgradeFacade:
         llm_service: DSPyLLMUpgradeService | None = None,
         plugin_service: OpenHandsPluginUpgradeService | None = None,
         enhanced_memory_service: EnhancedMemoryService | None = None,
+        execution_service: UpgradeExecutionService | None = None,
     ) -> None:
         self._llm_service = llm_service or DSPyLLMUpgradeService()
         self._plugin_service = plugin_service or OpenHandsPluginUpgradeService()
         self._enhanced_memory_service = enhanced_memory_service
+        self._execution_service = execution_service or UpgradeExecutionService(
+            facade=self,
+            evidence_service=UpgradeEvidenceService(
+                enhanced_memory_service=self._enhanced_memory_service
+            )
+        )
 
     def plan_llm_upgrade(self, request: LLMUpgradeIntentRequest) -> LLMUpgradeDecision:
         """Return a generic skip/upgrade decision for LLM optimization."""
@@ -100,6 +110,19 @@ class UpgradeFacade:
             upgrade_candidate=upgrade_candidate,
             memory_context=memory_context,
         )
+
+    def execute_llm_upgrade(self, request: LLMUpgradeIntentRequest) -> Any:
+        """Execute a planned LLM upgrade."""
+        return self._execution_service.execute_llm_upgrade(request)
+
+    def execute_plugin_evolution(self, request: PluginEvolutionIntentRequest) -> Any:
+        """Execute a planned plugin evolution (creation or upgrade)."""
+        return self._execution_service.execute_plugin_evolution(request)
+
+    @property
+    def execution_service(self) -> UpgradeExecutionService:
+        """Access the underlying execution service (Internal use mainly)."""
+        return self._execution_service
 
     def _resolve_plugin_action(
         self,

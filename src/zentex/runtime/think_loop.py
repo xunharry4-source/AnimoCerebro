@@ -11,6 +11,8 @@ ThinkLoop / 九阶段认知执行器
 from datetime import datetime, timezone
 import logging
 import os
+import time
+from pathlib import Path
 from typing import Any
 from uuid import uuid4
 
@@ -18,6 +20,7 @@ from zentex.common.plugin_registry import PluginNotBoundError
 from zentex.core.model_provider_spec import ModelProviderCallerContext, ModelProviderSpec
 from zentex.core.plugin_base import PluginLifecycleStatus
 from zentex.core.simulation_spec import SimulationIntent
+from zentex.llm.cache import LLMResponseCache
 from zentex.runtime.cognitive_tools import CognitiveToolOrchestrator
 from zentex.runtime.models import BrainTurnResult
 from zentex.runtime.nine_questions.executor import NineQuestionExecutor
@@ -43,8 +46,27 @@ class ThinkLoop:
     All stage-internal capability access must resolve active bound plugins.
     """
 
-    def __init__(self):
+    def __init__(self, enable_cache: bool = True):
         self._evolution_engine = NineQDrivenObjectiveEngine()
+        
+        # Initialize LLM response cache if enabled
+        self._cache_enabled = enable_cache
+        if enable_cache:
+            # Use environment variable for cache path, default to ~/.zentex/cache/
+            cache_dir = Path.home() / ".zentex" / "cache"
+            cache_file = cache_dir / "llm_cache.json"
+            
+            self._llm_cache = LLMResponseCache(
+                max_size=1000,
+                max_memory_mb=100,
+                default_ttl=300,  # 5 minutes
+                persist_path=cache_file,
+                enable_stats=True,
+            )
+            logger.info("LLM response cache enabled")
+        else:
+            self._llm_cache = None
+            logger.info("LLM response cache disabled")
 
     def _fetch_turn_history(self, session: BrainSession, limit: int = 3) -> list[dict[str, Any]]:
         """Fetch status of recent turns from transcript (Sub-function 3.4)."""
@@ -243,6 +265,10 @@ class ThinkLoop:
         )
         try:
             for queued_event in runtime.nine_question_router.drain():
+                logger.info(
+                    f"[Nine Questions Cold Start] Executing {len(queued_event.dirty_questions)} questions: "
+                    f"{queued_event.dirty_questions}"
+                )
                 executor.run_questions(
                     runtime=runtime,
                     session=session,
@@ -252,6 +278,10 @@ class ThinkLoop:
                     refresh_reason=queued_event.reason,
                     driver_refs=["cold_start:onboarding", queued_event.event_type],
                     turn_id=turn_id,
+                )
+                logger.info(
+                    f"[Nine Questions Cold Start] Completed. State now has "
+                    f"{len(state.question_snapshots)}/9 snapshots: {sorted(state.question_snapshots.keys())}"
                 )
         except Exception as exc:
             if hasattr(runtime, "set_nine_question_bootstrap_status"):
@@ -300,38 +330,22 @@ class ThinkLoop:
         turn_id: str,
         started_at: datetime,
     ) -> dict[str, Any]:
-        """阶段 1：摄取并解释环境信号，形成后续 framing 的输入。"""
+        """阶段 1：观察并归一化来自环境或宿主的原生信号。"""
         logger.debug("ThinkLoop phase 1 observe session=%s", session.session_id)
-        ingest_plugin = self._resolve_active_managed_plugin(
-            session,
-            feature_key="sensory.ingest",
-            plugin_kind="signal_ingest",
-        )
-        sanitize_plugin = self._resolve_active_managed_plugin(
-            session,
-            feature_key="sensory.sanitize",
-            plugin_kind="signal_sanitize",
-        )
-        interpret_plugin = self._resolve_active_managed_plugin(
-            session,
-            feature_key="sensory.interpret",
-            plugin_kind="signal_interpret",
-        )
 
-        raw_signal = ingest_plugin.ingest_signal()
-        sanitized_signal = sanitize_plugin.sanitize_signal(raw_signal)
-        environment_event = interpret_plugin.interpret_signal(sanitized_signal)
+        from zentex.environment import get_environment_service
+        env_service = get_environment_service()
+
+        raw_signal = env_service.ingest_sensory_signal(session)
+        sanitized_signal = env_service.sanitize_signal(raw_signal)
+        environment_event = env_service.interpret_signal(sanitized_signal)
+        host_state = env_service.sample_host_state()
+
         return {
-            "turn_id": turn_id,
-            "started_at": started_at,
-            "workspace": session.current_workspace,
-            "session_snapshot": session.get_snapshot(),
+            "raw_signal": raw_signal,
+            "sanitized_signal": sanitized_signal.model_dump(mode="json"),
             "environment_event": environment_event.model_dump(mode="json"),
-            "previous_snapshots": {
-                "working_memory": session.last_working_memory,
-                "metacognition": session.last_metacognition,
-                "conflict_snapshot": session.last_conflict_snapshot,
-            },
+            "host_state": host_state.model_dump(mode="json"),
         }
 
     def _phase_2_frame(
@@ -656,8 +670,12 @@ class ThinkLoop:
     ) -> dict[str, Any]:
         """阶段 5：调用思维沙盒完成反事实模拟。"""
         logger.debug("ThinkLoop phase 5 simulate session=%s", session.session_id)
-        plugin = self._resolve_simulation_plugin(session, target_domain="general")
-        result = plugin.simulate_action(
+        
+        from zentex.cognition import get_cognition_service
+        from zentex.core.simulation_spec import SimulationIntent
+        
+        cognition_service = get_cognition_service()
+        result = cognition_service.simulate_action(
             SimulationIntent(
                 intent_name="internal_reasoning_turn",
                 target_domain="general",
@@ -1055,6 +1073,49 @@ class ThinkLoop:
             "request_id": request_id,
         }
 
+        # Check cache before invoking model provider
+        if self._cache_enabled and self._llm_cache is not None:
+            cached_response = self._llm_cache.get(
+                prompt=prompt,
+                context=translated_context,
+                model=str(provider_model),
+            )
+            
+            if cached_response is not None:
+                logger.info(
+                    f"Cache HIT for {phase_name} (turn={turn_id})"
+                )
+                
+                # Write cache hit to transcript
+                if transcript_store is not None:
+                    transcript_store.write_entry(
+                        session_id=session.session_id,
+                        turn_id=turn_id,
+                        entry_type=BrainTranscriptEntryType.MODEL_PROVIDER_COMPLETED,
+                        timestamp=datetime.now(timezone.utc),
+                        source="think_loop.model_provider.cache",
+                        trace_id=phase_trace_id,
+                        payload={
+                            "request_id": request_id,
+                            "decision_id": decision_id,
+                            "phase_name": phase_name,
+                            "provider_plugin_id": getattr(provider, "plugin_id", "unknown"),
+                            "provider_name": getattr(provider, "provider_name", "unknown"),
+                            "model": provider_model,
+                            "caller_context": caller_context.model_dump(mode="json"),
+                            "result": self._json_safe(cached_response),
+                            "request_driver": self._json_safe(translated_request_driver),
+                            "trace_chain": trace_chain,
+                            "cache_hit": True,
+                        },
+                    )
+                
+                return cached_response
+            else:
+                logger.debug(
+                    f"Cache MISS for {phase_name} (turn={turn_id})"
+                )
+
         if transcript_store is not None:
             # 为什么这里把模型请求事件写成 phase_trace_id：前端需要从 phase 事件直接跳到
             # 模型调用，不允许再额外猜测 request_id 和阶段之间的关系。
@@ -1133,8 +1194,25 @@ class ThinkLoop:
                     "result": self._json_safe(response),
                     "request_driver": self._json_safe(translated_request_driver),
                     "trace_chain": trace_chain,
+                    "cache_hit": False,
                 },
             )
+        
+        # Cache the response for future use
+        if self._cache_enabled and self._llm_cache is not None:
+            try:
+                self._llm_cache.set(
+                    prompt=prompt,
+                    context=translated_context,
+                    model=str(provider_model),
+                    value=response,
+                )
+                logger.debug(
+                    f"Response cached for {phase_name} (turn={turn_id})"
+                )
+            except Exception as e:
+                logger.warning(f"Failed to cache response: {e}")
+        
         return response
 
     def _build_phase_trace_ids(self, turn_id: str) -> dict[str, str]:

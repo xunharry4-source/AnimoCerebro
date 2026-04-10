@@ -1,4 +1,6 @@
 import { useEffect, useState } from "react";
+import { useNavigate } from "react-router-dom";
+import { useTranslation } from "react-i18next";
 import {
   Alert,
   Box,
@@ -34,6 +36,8 @@ type CliToolItem = {
 };
 
 export default function CliAssetManager() {
+  const { t } = useTranslation();
+  const navigate = useNavigate();
   const [rows, setRows] = useState<CliToolItem[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
@@ -67,12 +71,12 @@ export default function CliAssetManager() {
     try {
       const response = await fetch("/api/web/cli-tools");
       if (!response.ok) {
-        throw new Error(`获取 CLI 工具失败 (HTTP ${response.status})`);
+        throw new Error(t("cli.fetchFailed", { status: response.status }));
       }
       const payload = (await response.json()) as CliToolItem[];
       setRows(payload);
     } catch (err: any) {
-      setError(err?.message || "获取 CLI 工具失败");
+      setError(err?.message || t("cli.fetchFailedGeneric"));
     } finally {
       setLoading(false);
     }
@@ -87,7 +91,7 @@ export default function CliAssetManager() {
       });
       if (!response.ok) {
         const detail = await response.json();
-        throw new Error(detail?.detail || "注册失败");
+        throw new Error(detail?.detail || t("cli.registerFailed"));
       }
       setOpenRegister(false);
       setFormData({
@@ -124,24 +128,42 @@ export default function CliAssetManager() {
       });
       const payload = await response.json();
       if (!response.ok) {
-        throw new Error(payload?.detail || "测试调用失败");
+        throw new Error(payload?.detail || t("cli.testCallFailed"));
       }
       setTestResult(JSON.stringify(payload, null, 2));
     } catch (err: any) {
-      setTestResult(err?.message || "测试调用失败");
+      setTestResult(err?.message || t("cli.testCallFailed"));
     }
   };
 
   const columns: GridColDef[] = [
-    { field: "command_name", headerName: "工具名称", flex: 1, minWidth: 150 },
+    {
+      field: "command_name",
+      headerName: t("cli.toolName"),
+      flex: 1,
+      minWidth: 150,
+      renderCell: (params) => (
+        <Box
+          sx={{
+            color: "primary.main",
+            cursor: "pointer",
+            textDecoration: "underline",
+            "&:hover": { color: "primary.dark" },
+          }}
+          onClick={() => navigate(`/console/cli-tools/${params.value}`)}
+        >
+          {params.value}
+        </Box>
+      ),
+    },
     {
       field: "mapped_domain",
-      headerName: "域权限",
+      headerName: t("cli.domainPermission"),
       flex: 1,
       minWidth: 150,
       renderCell: (params) => (
         <Chip
-          label={params.value === "cognitive" ? "认知辅助" : "物理执行"}
+          label={params.value === "cognitive" ? t("cli.domainCognitive") : t("cli.domainExecution")}
           color={params.value === "cognitive" ? "primary" : "error"}
           size="small"
         />
@@ -149,7 +171,7 @@ export default function CliAssetManager() {
     },
     {
       field: "status",
-      headerName: "运行状态",
+      headerName: t("common.status"),
       flex: 1,
       minWidth: 120,
       renderCell: (params) => (
@@ -161,15 +183,15 @@ export default function CliAssetManager() {
         />
       ),
     },
-    { field: "feature_code", headerName: "特征码", flex: 1.5, minWidth: 250 },
+    { field: "feature_code", headerName: t("cli.featureCode"), flex: 1.5, minWidth: 250 },
     {
       field: "actions",
-      headerName: "操作",
+      headerName: t("common.actions"),
       minWidth: 120,
       sortable: false,
       renderCell: (params) => (
         <Button size="small" onClick={() => setSelectedTool(params.row as CliToolItem)}>
-          测试调用
+          {t("cli.testCall")}
         </Button>
       ),
     },
@@ -178,18 +200,19 @@ export default function CliAssetManager() {
   if (loading) return <CircularProgress sx={{ m: 4 }} />;
 
   return (
-    <Box>
-      <Stack direction="row" justifyContent="space-between" alignItems="center" sx={{ mb: 3 }}>
+    <Box sx={{ p: 3 }}>
+      <Stack spacing={3}>
+        <Stack direction="row" justifyContent="space-between" alignItems="center">
         <Box>
           <Typography variant="h4" gutterBottom>
-            CLI 工具集资产管理
+            {t("cli.assetManagementTitle")}
           </Typography>
           <Typography variant="body2" color="text.secondary">
-            基于“认知与执行彻底分离”原则管理的外部命令行工具资产。
+            {t("cli.assetManagementSubtitle")}
           </Typography>
         </Box>
         <Button variant="contained" startIcon={<AddIcon />} onClick={() => setOpenRegister(true)}>
-          注册新工具
+          {t("cli.registerNewTool")}
         </Button>
       </Stack>
 
@@ -203,24 +226,24 @@ export default function CliAssetManager() {
       />
 
       <Dialog open={openRegister} onClose={() => setOpenRegister(false)} fullWidth maxWidth="sm">
-        <DialogTitle>注册新 CLI 工具</DialogTitle>
+        <DialogTitle>{t("cli.registerDialogTitle")}</DialogTitle>
         <DialogContent dividers>
           <Stack spacing={3} sx={{ mt: 1 }}>
             <TextField
-              label="工具名称 (tool_name)"
+              label={t("cli.formToolName")}
               fullWidth
               value={formData.tool_name}
               onChange={(e: React.ChangeEvent<HTMLInputElement>) => setFormData({ ...formData, tool_name: e.target.value })}
             />
             <TextField
-              label="执行命令 (command_executable)"
+              label={t("cli.formCommandExecutable")}
               fullWidth
-              placeholder="如 git, curl, /usr/bin/python3"
+              placeholder={t("cli.formCommandPlaceholder")}
               value={formData.command_executable}
               onChange={(e: React.ChangeEvent<HTMLInputElement>) => setFormData({ ...formData, command_executable: e.target.value })}
             />
             <TextField
-              label="功能说明 (description)"
+              label={t("cli.formDescription")}
               fullWidth
               multiline
               rows={2}
@@ -228,19 +251,19 @@ export default function CliAssetManager() {
               onChange={(e: React.ChangeEvent<HTMLInputElement>) => setFormData({ ...formData, description: e.target.value })}
             />
             <TextField
-              label="项目路径 (project_path)"
+              label={t("cli.formProjectPath")}
               fullWidth
               value={formData.project_path}
               onChange={(e: React.ChangeEvent<HTMLInputElement>) => setFormData({ ...formData, project_path: e.target.value })}
             />
             <TextField
-              label="项目名称 (project_name)"
+              label={t("cli.formProjectName")}
               fullWidth
               value={formData.project_name}
               onChange={(e: React.ChangeEvent<HTMLInputElement>) => setFormData({ ...formData, project_name: e.target.value })}
             />
             <TextField
-              label="项目说明 (project_description)"
+              label={t("cli.formProjectDescription")}
               fullWidth
               multiline
               rows={2}
@@ -250,7 +273,7 @@ export default function CliAssetManager() {
               }
             />
             <TextField
-              label="帮助文档地址 (help_doc_url)"
+              label={t("cli.formHelpDocUrl")}
               fullWidth
               value={formData.help_doc_url}
               onChange={(e: React.ChangeEvent<HTMLInputElement>) => setFormData({ ...formData, help_doc_url: e.target.value })}
@@ -262,25 +285,25 @@ export default function CliAssetManager() {
                   onChange={(e: React.ChangeEvent<HTMLInputElement>) => setFormData({ ...formData, read_only_flag: e.target.checked })}
                 />
               }
-              label="只读命令 (read_only_flag)"
+              label={t("cli.formReadOnlyFlag")}
             />
             <Alert severity="info" variant="outlined">
               {formData.read_only_flag 
-                ? "【认知辅助】仅限只读操作，系统将禁止任何状态修改。" 
-                : "【物理执行】具备副作用的操作，将受 SafetyGate 审查与 CloudAudit 审计。"}
+                ? t("cli.alertReadOnly") 
+                : t("cli.alertReadWrite")}
             </Alert>
           </Stack>
         </DialogContent>
         <DialogActions>
-          <Button onClick={() => setOpenRegister(false)}>取消</Button>
+          <Button onClick={() => setOpenRegister(false)}>{t("common.cancel")}</Button>
           <Button variant="contained" onClick={handleRegister} disabled={!formData.tool_name || !formData.command_executable}>
-            确认注册
+            {t("cli.confirmRegister")}
           </Button>
         </DialogActions>
       </Dialog>
 
       <Dialog open={Boolean(selectedTool)} onClose={() => setSelectedTool(null)} fullWidth maxWidth="md">
-        <DialogTitle>测试 CLI 工具调用</DialogTitle>
+        <DialogTitle>{t("cli.testCallDialogTitle")}</DialogTitle>
         <DialogContent dividers>
           {selectedTool ? (
             <Stack spacing={2} sx={{ mt: 1 }}>
@@ -290,13 +313,13 @@ export default function CliAssetManager() {
               </Typography>
               <Divider />
               <TextField
-                label="参数 (空格分隔)"
+                label={t("cli.testArguments")}
                 fullWidth
                 value={testData.arguments}
                 onChange={(e: React.ChangeEvent<HTMLInputElement>) => setTestData({ ...testData, arguments: e.target.value })}
               />
               <TextField
-                label="stdin 输入"
+                label={t("cli.testStdinInput")}
                 fullWidth
                 multiline
                 rows={3}
@@ -304,7 +327,7 @@ export default function CliAssetManager() {
                 onChange={(e: React.ChangeEvent<HTMLInputElement>) => setTestData({ ...testData, stdin_input: e.target.value })}
               />
               <TextField
-                label="工作目录"
+                label={t("cli.testWorkingDirectory")}
                 fullWidth
                 value={testData.working_directory}
                 onChange={(e: React.ChangeEvent<HTMLInputElement>) =>
@@ -320,12 +343,13 @@ export default function CliAssetManager() {
           ) : null}
         </DialogContent>
         <DialogActions>
-          <Button onClick={() => setSelectedTool(null)}>关闭</Button>
+          <Button onClick={() => setSelectedTool(null)}>{t("common.close")}</Button>
           <Button variant="contained" onClick={() => void handleTestCall()} disabled={!selectedTool}>
-            执行测试
+            {t("cli.executeTest")}
           </Button>
         </DialogActions>
       </Dialog>
+      </Stack>
     </Box>
   );
 }

@@ -50,6 +50,27 @@ class EnhancedMemoryRecordItem(BaseModel):
     last_verified_at: datetime | None = None
     updated_at: datetime
     created_at: datetime
+    
+    # Sub-function 59.5 - Reference Chain & Compression fields
+    compressed_by: str | None = None
+    compression_summary: str | None = None
+    is_tombstone: bool = False
+    g38_audit_id: str | None = None
+    
+    # Classification axes (G39 three-tier + affect signal)
+    memory_tier: str = "hot"
+    emotional_valence: str = "neutral"
+    affect_intensity: float = 0.0
+    content_hash: str = ""
+    
+    # Storage mode
+    memory_kind: str = "collection"
+    
+    # Confidence & uncertainty modeling
+    confidence_score: float = 0.5
+    source_credibility: str = "direct_observation"
+    verification_status: str = "unverified"
+    contradiction_count: int = 0
 
 
 class EnhancedMemoryRecallHitItem(BaseModel):

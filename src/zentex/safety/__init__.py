@@ -7,6 +7,7 @@ from zentex.safety.conflict_engine import (
     ReconciliationPlan,
     StaleWriteError,
 )
+from zentex.safety.service import SafetyService, get_safety_service
 
 __all__ = [
     "CognitiveConflictEngine",
@@ -14,4 +15,6 @@ __all__ = [
     "ConflictSharedState",
     "ReconciliationPlan",
     "StaleWriteError",
+    "SafetyService",
+    "get_safety_service",
 ]

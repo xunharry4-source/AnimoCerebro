@@ -1,19 +1,19 @@
-"""
-Zentex LLM Module - Large Language Model gateway and integration.
+"""LLM 通信与网关层。"""
 
-This module provides LLM connectivity, routing, and provider integration.
-
-本模块提供LLM连接、路由和提供商集成。
-"""
-
+from zentex.llm.cache import LLMResponseCache, CacheEntry
 from zentex.llm.gateway import (
     LLMGateway,
     LLMGatewayCall,
     LLMTokenUsage,
 )
+from zentex.llm.service import LLMService, get_llm_service
 
 __all__ = [
     "LLMGateway",
     "LLMGatewayCall",
     "LLMTokenUsage",
+    "LLMService",
+    "get_llm_service",
+    "LLMResponseCache",
+    "CacheEntry",
 ]

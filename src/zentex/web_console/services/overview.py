@@ -3,11 +3,8 @@ from __future__ import annotations
 from datetime import timezone
 from typing import Any, Dict, Optional
 
-from plugins.weights.subjective_weight_plugin import WeightPluginAssembler
 from zentex.core.models import BrainRuntimeState
-from zentex.runtime.runtime import BrainRuntime
-from zentex.runtime.session import BrainSession, BrainSessionSnapshot
-from zentex.runtime.transcript import BrainTranscriptEntryType
+from zentex.runtime.models import BrainTranscriptEntryType
 from zentex.web_console.contracts.runtime import RuntimeOverviewPayload
 from zentex.web_console.transcript_serialization import serialize_transcript_entry
 
@@ -29,7 +26,7 @@ def serialize_runtime_state(runtime_state: BrainRuntimeState) -> Dict[str, Any]:
     }
 
 
-def serialize_session_snapshot(snapshot: Optional[BrainSessionSnapshot]) -> Dict[str, Any] | None:
+def serialize_session_snapshot(snapshot: Optional[Any]) -> Dict[str, Any] | None:
     if snapshot is None:
         return None
     return {
@@ -47,9 +44,9 @@ def serialize_session_snapshot(snapshot: Optional[BrainSessionSnapshot]) -> Dict
 
 
 def build_overview_payload(
-    runtime: BrainRuntime,
-    session: Optional[BrainSession],
-    weight_assembler: Optional[WeightPluginAssembler] = None,
+    runtime: Any,
+    session: Optional[Any],
+    weight_assembler: Optional[Any] = None,
 ) -> RuntimeOverviewPayload:
     runtime_state = runtime.get_runtime_state()
     session_snapshot = session.get_snapshot() if session is not None else None

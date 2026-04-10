@@ -1,5 +1,6 @@
 import React from "react";
 import ExpandMoreIcon from "@mui/icons-material/ExpandMore";
+import { useTranslation } from "react-i18next";
 import {
   Accordion,
   AccordionDetails,
@@ -35,6 +36,7 @@ export const Q4EvidencePanel: React.FC<Q4EvidencePanelProps> = ({
   providerName,
   elapsedMs = 0,
 }) => {
+  const { t } = useTranslation();
   const q1 = evidence.q1_context || {};
   const q2 = evidence.q2_context || {};
   const q3 = evidence.q3_inventory || {};
@@ -47,9 +49,9 @@ export const Q4EvidencePanel: React.FC<Q4EvidencePanelProps> = ({
       {(providerName || elapsedMs > 0) && (
         <Box sx={{ display: "flex", gap: 1, mb: 1, flexWrap: "wrap" }}>
           {providerName ? (
-            <Chip label={`Capability Engine: ${providerName}`} size="small" variant="outlined" color="primary" />
+            <Chip label={`${t("nineQuestions.capabilityEngine")}: ${providerName}`} size="small" variant="outlined" color="primary" />
           ) : null}
-          {elapsedMs > 0 ? <Chip label={`Latency: ${elapsedMs}ms`} size="small" variant="outlined" /> : null}
+          {elapsedMs > 0 ? <Chip label={`${t("common.latency")}: ${elapsedMs}ms`} size="small" variant="outlined" /> : null}
         </Box>
       )}
 
@@ -58,79 +60,109 @@ export const Q4EvidencePanel: React.FC<Q4EvidencePanelProps> = ({
           <Card variant="outlined">
             <CardContent>
               <Typography variant="h6" gutterBottom sx={{ fontWeight: "bold" }}>
-                【前置资产与态势依据区】
+                {t("nineQuestions.preAssetSnapshot")}
               </Typography>
-              <Grid container spacing={2}>
+               <Grid container spacing={2}>
                 <Grid size={{ xs: 12, md: 4 }}>
-                  <Typography variant="subtitle2" gutterBottom>
-                    Q1 环境态势
+                  <Typography variant="subtitle2" gutterBottom color="primary.main" fontWeight="bold">
+                    {t("nineQuestions.q1EnvironmentSnapshot")}
                   </Typography>
-                  <Box
-                    component="pre"
-                    sx={{
-                      m: 0,
-                      p: 1.5,
-                      bgcolor: "action.hover",
-                      borderRadius: 1,
-                      overflowX: "auto",
-                      whiteSpace: "pre-wrap",
-                      fontSize: "0.8rem",
-                    }}
-                  >
-                    <code>{JSON.stringify(q1, null, 2)}</code>
+                  <Box sx={{ bgcolor: "action.hover", p: 1.5, borderRadius: 1, height: "100%" }}>
+                    <Typography variant="caption" color="text.secondary" display="block" gutterBottom>
+                      {t("nineQuestions.inferredDomain")}:
+                    </Typography>
+                    <Stack direction="row" spacing={0.5} useFlexGap flexWrap="wrap" sx={{ mb: 1 }}>
+                      {q1.scene_model?.primary_domain && (
+                        <Chip label={q1.scene_model.primary_domain} size="small" color="primary" />
+                      )}
+                      {(q1.scene_model?.secondary_domains || []).map((d: string) => (
+                        <Chip key={d} label={d} size="small" variant="outlined" />
+                      ))}
+                    </Stack>
+                    <Typography variant="caption" color="text.secondary" display="block" gutterBottom>
+                      {t("nineQuestions.uncertaintyBlindspots")}:
+                    </Typography>
+                    <List dense sx={{ py: 0 }}>
+                      {(q1.uncertainty_profile?.uncertainties || []).map((u: string, i: number) => (
+                        <ListItem key={i} disableGutters sx={{ py: 0 }}>
+                          <ListItemText 
+                            primary={u} 
+                            primaryTypographyProps={{ variant: "caption", sx: { fontSize: "0.75rem" } }} 
+                          />
+                        </ListItem>
+                      ))}
+                      {!(q1.uncertainty_profile?.uncertainties?.length) && (
+                        <Typography variant="caption" color="text.disabled">{t("nineQuestions.noKnownBlindspots")}</Typography>
+                      )}
+                    </List>
                   </Box>
                 </Grid>
+
                 <Grid size={{ xs: 12, md: 4 }}>
-                  <Typography variant="subtitle2" gutterBottom>
-                    Q2 角色与使命边界
+                  <Typography variant="subtitle2" gutterBottom color="secondary.main" fontWeight="bold">
+                    {t("nineQuestions.q2RoleMissionSnapshot")}
                   </Typography>
-                  <Box
-                    component="pre"
-                    sx={{
-                      m: 0,
-                      p: 1.5,
-                      bgcolor: "action.hover",
-                      borderRadius: 1,
-                      overflowX: "auto",
-                      whiteSpace: "pre-wrap",
-                      fontSize: "0.8rem",
-                    }}
-                  >
-                    <code>{JSON.stringify(q2, null, 2)}</code>
+                  <Box sx={{ bgcolor: "action.hover", p: 1.5, borderRadius: 1, height: "100%" }}>
+                    <Typography variant="caption" color="text.secondary" display="block" gutterBottom>
+                      {t("nineQuestions.currentRoleIdentity")}:
+                    </Typography>
+                    <Typography variant="body2" sx={{ fontWeight: 600, mb: 1 }}>
+                      {q2.role_profile?.active_role || q2.role_profile?.identity_role || t("common.undefined")}
+                    </Typography>
+                    <Typography variant="caption" color="text.secondary" display="block" gutterBottom>
+                      {t("nineQuestions.coreDuties")}:
+                    </Typography>
+                    <Stack direction="row" spacing={0.5} useFlexGap flexWrap="wrap">
+                      {(q2.mission_boundary?.priority_duties || []).map((d: string) => (
+                        <Chip key={d} label={d} size="small" variant="outlined" color="secondary" />
+                      ))}
+                    </Stack>
+                    {q2.mission_boundary?.current_mission && (
+                      <>
+                        <Typography variant="caption" color="text.secondary" display="block" sx={{ mt: 1, mb: 0.5 }}>
+                          {t("nineQuestions.currentMission")}:
+                        </Typography>
+                        <Typography variant="caption" sx={{ fontStyle: "italic" }}>
+                          {q2.mission_boundary.current_mission}
+                        </Typography>
+                      </>
+                    )}
                   </Box>
                 </Grid>
+
                 <Grid size={{ xs: 12, md: 4 }}>
-                  <Typography variant="subtitle2" gutterBottom>
-                    Q3 资产盘点与工具域
+                  <Typography variant="subtitle2" gutterBottom color="info.main" fontWeight="bold">
+                    {t("nineQuestions.q3InventorySnapshot")}
                   </Typography>
-                  <Stack direction="row" spacing={1} useFlexGap flexWrap="wrap" sx={{ mb: 1 }}>
-                    {(q3.available_cognitive_tools || []).map((tool: string) => (
-                      <Chip key={tool} label={tool} size="small" color="info" />
-                    ))}
-                    {(q3.available_execution_tools || []).map((tool: string) => (
-                      <Chip key={tool} label={tool} size="small" color="error" variant="outlined" />
-                    ))}
-                  </Stack>
-                  <Stack direction="row" spacing={1} useFlexGap flexWrap="wrap" sx={{ mb: 1 }}>
-                    {(q3.accessible_workspace_zones || []).map((zone: string) => (
-                      <Chip key={zone} label={zone} size="small" variant="outlined" />
-                    ))}
-                  </Stack>
-                  <Typography variant="caption" display="block" sx={{ mb: 0.5 }}>
-                    已连接 Agent
-                  </Typography>
-                  <List dense sx={{ py: 0 }}>
-                    {connectedAgents.map((agent, index) => (
-                      <ListItem key={`${agent.id || agent.agent_id || index}`} disableGutters sx={{ py: 0.25 }}>
-                        <ListItemText primary={agent.name || agent.agent_id || agent.id || "Unknown Agent"} secondary={agent.summary || agent.scope || null} />
-                      </ListItem>
-                    ))}
-                    {connectedAgents.length === 0 ? (
-                      <ListItem disableGutters sx={{ py: 0.25 }}>
-                        <ListItemText primary="无在线 Agent" />
-                      </ListItem>
-                    ) : null}
-                  </List>
+                  <Box sx={{ bgcolor: "action.hover", p: 1.5, borderRadius: 1, height: "100%" }}>
+                    <Typography variant="caption" color="text.secondary" display="block" gutterBottom>
+                      {t("nineQuestions.auditedToolDomains")}:
+                    </Typography>
+                    <Stack direction="row" spacing={0.5} useFlexGap flexWrap="wrap" sx={{ mb: 1 }}>
+                      {(q3.available_cognitive_tools || []).map((tool: string) => (
+                        <Chip key={tool} label={tool} size="small" color="info" />
+                      ))}
+                      {(q3.available_execution_tools || []).map((tool: string) => (
+                        <Chip key={tool} label={tool} size="small" color="error" variant="outlined" />
+                      ))}
+                    </Stack>
+                    <Typography variant="caption" color="text.secondary" display="block" gutterBottom>
+                      {t("nineQuestions.connectedAgents")}:
+                    </Typography>
+                    <List dense sx={{ py: 0 }}>
+                      {connectedAgents.map((agent, index) => (
+                        <ListItem key={`${agent.id || agent.agent_id || index}`} disableGutters sx={{ py: 0 }}>
+                          <ListItemText 
+                            primary={agent.name || agent.agent_id || agent.id || "Unknown"} 
+                            primaryTypographyProps={{ variant: "caption", sx: { fontWeight: 600 } }}
+                          />
+                        </ListItem>
+                      ))}
+                      {connectedAgents.length === 0 && (
+                        <Typography variant="caption" color="text.disabled">{t("nineQuestions.noOnlineAgents")}</Typography>
+                      )}
+                    </List>
+                  </Box>
                 </Grid>
               </Grid>
             </CardContent>
@@ -141,14 +173,14 @@ export const Q4EvidencePanel: React.FC<Q4EvidencePanelProps> = ({
           <Card variant="outlined" sx={{ borderWidth: 2, borderColor: "primary.main" }}>
             <CardContent>
               <Typography variant="h6" gutterBottom sx={{ fontWeight: "bold" }}>
-                【物理能力上限与动作空间区】
+                {t("nineQuestions.physicalCapabilityLimits")}
               </Typography>
 
               {inference ? (
                 <Stack spacing={2}>
                   <Box>
                     <Typography variant="subtitle2" gutterBottom>
-                      能力上限边界
+                      {t("nineQuestions.capabilityUpperLimits")}
                     </Typography>
                     <Stack direction="row" spacing={1} useFlexGap flexWrap="wrap">
                       {inference.capability_upper_limits.map((item) => (
@@ -159,7 +191,7 @@ export const Q4EvidencePanel: React.FC<Q4EvidencePanelProps> = ({
 
                   <Box>
                     <Typography variant="subtitle2" gutterBottom>
-                      验证的可行动作空间
+                      {t("nineQuestions.validatedActionSpace")}
                     </Typography>
                     <Stack direction="row" spacing={1} useFlexGap flexWrap="wrap" data-testid="q4-actionable-space">
                       {inference.actionable_space.length > 0 ? (
@@ -167,13 +199,13 @@ export const Q4EvidencePanel: React.FC<Q4EvidencePanelProps> = ({
                           <Chip key={item} label={item} color="primary" />
                         ))
                       ) : (
-                        <Chip label="【动作空间已被锁死，无可用物理动作】" color="error" />
+                        <Chip label={t("nineQuestions.actionSpaceLocked")} color="error" />
                       )}
                     </Stack>
                   </Box>
                 </Stack>
               ) : (
-                <Alert severity="info">等待能力空间推理结果。</Alert>
+                <Alert severity="info">{t("nineQuestions.waitingCapabilityInference")}</Alert>
               )}
             </CardContent>
           </Card>
@@ -183,14 +215,14 @@ export const Q4EvidencePanel: React.FC<Q4EvidencePanelProps> = ({
           <Card variant="outlined">
             <CardContent>
               <Typography variant="h6" gutterBottom sx={{ fontWeight: "bold" }}>
-                【可执行策略评估区】
+                {t("nineQuestions.executableStrategyAssessment")}
               </Typography>
               {inference && inference.executable_strategies.length > 0 ? (
                 <Stack spacing={1}>
                   {inference.executable_strategies.map((strategy, index) => (
                     <Accordion key={`${strategy}-${index}`} defaultExpanded={false} data-testid="executable-strategy-accordion">
                       <AccordionSummary expandIcon={<ExpandMoreIcon />}>
-                        <Typography variant="subtitle2">预案执行策略 {index + 1}</Typography>
+                        <Typography variant="subtitle2">{t("nineQuestions.contingencyStrategy")} {index + 1}</Typography>
                       </AccordionSummary>
                       <AccordionDetails>
                         <Typography variant="body2" sx={{ whiteSpace: "pre-wrap" }}>
@@ -201,7 +233,7 @@ export const Q4EvidencePanel: React.FC<Q4EvidencePanelProps> = ({
                   ))}
                 </Stack>
               ) : (
-                <Alert severity="info">推理结果中未包含有效的可执行组合策略。</Alert>
+                <Alert severity="info">{t("nineQuestions.noExecutableStrategies")}</Alert>
               )}
             </CardContent>
           </Card>

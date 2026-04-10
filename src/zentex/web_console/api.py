@@ -12,7 +12,8 @@ split across:
 - `zentex.web_console.contracts.*` (pydantic schemas)
 """
 
-from zentex.web_console.app import create_web_console_app
+from zentex.web_console.app import create_app as create_web_console_app
+from zentex.web_console.app import create_app  # Alias for compatibility
 from zentex.web_console.contracts.plugins import PluginFeatureCatalogItem
 from zentex.web_console.routers.nine_questions import get_latest_nine_questions_report
 from zentex.web_console.services.plugins import build_managed_plugin_record
@@ -20,6 +21,7 @@ from zentex.web_console.services.plugins import build_managed_plugin_record
 __all__ = [
     "PluginFeatureCatalogItem",
     "build_managed_plugin_record",
+    "create_app",
     "create_web_console_app",
     "get_latest_nine_questions_report",
 ]
