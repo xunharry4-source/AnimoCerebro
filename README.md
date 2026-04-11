@@ -2,6 +2,8 @@
 
 ![AnimoCerebro Logo](docs/logo.jpeg)
 
+> **⚠️ Project Status**: This project is currently in **active development and functional testing phase**. Core features are implemented but still undergoing testing and refinement. APIs and configurations may change. Use with caution in production environments.
+
 [Chinese README](README.zh.md)
 
 ## Overview
@@ -43,23 +45,23 @@ Do not treat it as:
 
 ## Current Protocol
 
-The current public protocol is no longer a single `Z-JSON` packet. It is now a layered protocol for registration, capability discovery, delegation, receipts, escalations, experience exchange, and host adaptation.
+The current public protocol is a layered protocol for registration, capability discovery, delegation, receipts, escalations, experience exchange, and host adaptation.
 
 Primary protocol docs:
 
-- [Protocol Overview](当前对接协议.md)
-- [Core Foundations](docs/architecture/CORE_FOUNDATIONS.md)
-- [Help Guide](帮助文档.md)
-- [Deployment And Integration](详细部署与集成说明.md)
+- [Protocol Design](docs/zmsp_protocol_design.md)
+- [Functional Modules](docs/operability/FUNCTION_MODULES.md)
+- [Startup Guide](docs/启动指南.md)
+- [Configuration Guide](docs/配置指南.md)
 
 ## Documentation Map
 
-- [Technical Whitepaper](WHITEPAPER.md) (Design Philosophy)
+- [Project Progress Report](docs/项目进度报告.md) (Architecture & Progress)
 - [Quick Start & Startup](docs/operability/STARTUP_AND_TEST.md) (One-Click methods)
 - [Runtime & Implementation](docs/operability/RUNTIME_AND_TESTS.md) (Detailed architecture)
 - [Functional Modules](docs/operability/FUNCTION_MODULES.md) (Feature breakdown)
-- [Core Foundations](docs/architecture/CORE_FOUNDATIONS.md) (Cognitive loop & layers)
-- [GitHub Public Scope](docs/operability/GITHUB_PUBLIC_SCOPE.md) (File inclusion rules)
+- [Latest Directory Map](docs/operability/LATEST_DIRECTORY_MAP.md) (Current project structure)
+- [Plugin Guides](docs/operability/PLUGIN_GUIDES.md) (Plugin development)
 - [Agent Integration](Agent/README.md) (Standard protocol for external agents)
 - [Agent Integration Guide](Agent/INTEGRATION_GUIDE.md) (How to connect your system)
 
@@ -71,15 +73,69 @@ AnimoCerebro is designed for minimal intrusion.
 - AnimoCerebro provides reasoning, memory, coordination, and audit.
 - The adapter layer registers the host, syncs capabilities, receives delegated work, and writes back results.
 
+## Technical Specifications
+
+### Module Independence Principle
+
+All modules in AnimoCerebro follow strict independence principles:
+
+1. **Module Autonomy**: Each module operates independently with clear boundaries
+2. **Plugin-Based Upgrades**: Module functionality can be extended and upgraded through plugins without modifying core code
+3. **Code Isolation**: Plugins must remain independent from each other - no cross-plugin dependencies allowed
+
+### Plugin Architecture
+
+AnimoCerebro implements a dual-plugin system:
+
+#### External Plugins (`plugins/`)
+
+**Purpose**: Connect external functionalities as components to extend brain capabilities
+
+**Key Characteristics**:
+- Serve as bridges between external systems and the brain
+- Enable the brain to acquire additional capabilities from outside sources
+- **STRICT RULE**: External plugins are **PROHIBITED** from importing or calling any code from `src/` directory
+- Must interact with the brain exclusively through defined APIs and protocols
+- Designed for third-party integrations and custom extensions
+
+**Example Use Cases**:
+- Custom data source connectors
+- Third-party service integrations
+- Specialized tool adapters
+
+#### Internal Plugins (`src/plugins/`)
+
+**Purpose**: Enable internal self-iteration and system upgrades
+
+**Key Characteristics**:
+- Part of the core system's self-evolution mechanism
+- Can access and interact with `src/zentex/` core modules
+- Support hot-reload and dynamic upgrading
+- Implement core cognitive functions (e.g., Q1-Q9 nine questions)
+- Managed by the internal plugin registry system
+
+**Example Use Cases**:
+- Nine Questions cognitive loop implementations
+- Model provider adapters (Gemini, OpenAI, Claude)
+- Cognitive tools, sensory processing, simulation engines
+- Internal system enhancements and optimizations
+
+### Plugin Development Rules
+
+1. **Independence**: Each plugin must be self-contained with no dependencies on other plugins
+2. **Clear Interfaces**: Plugins communicate through well-defined APIs only
+3. **Upgrade Safety**: Plugin upgrades must not break existing functionality
+4. **Isolation Boundary**: External plugins (`plugins/`) cannot import from `src/`; internal plugins (`src/plugins/`) can access core modules
+
 ## Current Capabilities
 
-- Brain loop
+- Nine-question brain loop (Q1-Q9 complete implementation)
 - Resident and daemon modes
-- Local cloud-audit service
-- Web console
-- Long-term memory via JSONL or SQLite
+- Web console with real-time dashboard
+- SQLite-based persistent storage
+- Plugin system with hot-reload support
 - Delegation, receipt, escalation, and experience exchange
-- Host adapter support for OpenClaw
+- Host adapter support for OpenClaw and custom integrations
 
 ## Truthfulness Boundary
 
@@ -94,8 +150,9 @@ The same standard applies to testing: any test that does not execute the real pr
 ### Environment Preparation
 
 Before installing, ensure your environment meets the following requirements:
-- **Python**: 3.11 or higher
-- **Node.js**: LTS version (for web console)
+- **Python**: 3.10 or higher
+- **Node.js**: 18+ LTS version (for web console)
+- **npm**: 9+ 
 - **API Keys**: You will need API keys from providers like Google (Gemini), OpenAI, or Anthropic (Claude) for full cognitive capabilities.
 
 ### One-Click Installation
@@ -114,9 +171,9 @@ If you prefer manual steps:
 
 ```bash
 # Backend
-python -m venv .venv
+python3 -m venv .venv
 source .venv/bin/activate
-pip install -e .[dev]
+pip install -r requirements.txt -r requirements-dev.txt
 
 # Frontend
 cd src/admin-portal && npm install
@@ -129,21 +186,37 @@ cd src/admin-portal && npm install
 Start both backend and frontend (Vite dev server + Uvicorn):
 
 ```bash
-make start
+make dev
 ```
 
 *Behind the scenes, this runs `./scripts/dev_all.sh`.*
+
+Access:
+- Frontend: http://127.0.0.1:5173
+- Backend: http://127.0.0.1:8000
+- API Docs: http://127.0.0.1:8000/docs
+
+### Restart Development Environment
+
+If ports are occupied or processes are stuck:
+
+```bash
+make restart-dev
+```
+
+This will clean up old processes and restart everything cleanly.
 
 ### Manual Start
 
 Start components separately:
 
 ```bash
-# Start everything using script (wrapped by make start)
+# Start everything using script (wrapped by make dev)
 ./scripts/dev_all.sh
 
 # Start backend only
-animocerebro
+export PYTHONPATH=src
+python -m uvicorn zentex.web_console.dev_server:app --reload --ws websockets-sansio --host 127.0.0.1 --port 8000
 
 # Start frontend (hot reload)
 cd src/admin-portal && npm run dev
@@ -164,111 +237,103 @@ gemini:
   api_base: https://generativelanguage.googleapis.com/v1beta
   api_key_env: GEMINI_API_KEY
   default_model: gemini-1.5-pro
+  timeout_seconds: 30
 ```
 
 ## LLM Providers
 
-`animocerebro_vision.yaml` now supports these `llm.provider` values:
+The system supports these LLM providers through `config/provider_tools.yml`:
 
-- `google`: Gemini, default env `GOOGLE_API_KEYS`
-- `openai` or `openapi`: OpenAI-compatible chat completions, default env `OPENAI_API_KEY`
-- `anthropic` or `claude`: Claude Messages API, default env `ANTHROPIC_API_KEY`
+- `openai_compat`: OpenAI-compatible endpoint (default: localhost:8317/v1)
+- `openai`: OpenAI API (api.openai.com/v1)
+- `chatgpt`: Alternative OpenAI endpoint
+- `gemini`: Google Gemini API (generativelanguage.googleapis.com)
+- `claude`: Anthropic Claude API (api.anthropic.com/v1)
 
-You can now configure keys in three normal ways:
-
-1. Directly in the config file
-2. Via a local `credentials_file`
-3. Via environment variable as a compatibility path
-
-Example:
-
-```yaml
-llm:
-  provider: gemini
-  model: gemini-3.1-flash-lite-preview
-  api_keys:
-    - your-key-here
-```
-
-Or:
-
-```yaml
-llm:
-  provider: gemini
-  model: gemini-3.1-flash-lite-preview
-  credentials_file: .animocerebro/llm_keys.json
-```
-
-Where `.animocerebro/llm_keys.json` may contain either:
-
-```json
-{"api_keys": ["your-key-here"]}
-```
-
-or:
-
-```json
-{"api_key": "your-key-here"}
-```
-
-Start with zero arguments:
+Configure API keys via environment variables:
 
 ```bash
-animocerebro
+export GEMINI_API_KEY=your-key-here
+export OPENAI_API_KEY=sk-your-key
+export ANTHROPIC_API_KEY=your-key-here
 ```
 
-Run one cycle:
+Or set in `config/provider_tools.yml` by modifying the `api_key_env` field.
+
+## Testing
+
+Run all tests:
 
 ```bash
-animocerebro run --state-dir .animocerebro/state --config animocerebro_vision.yaml --pretty
+make test
 ```
 
-Run resident mode:
+This executes:
+- **Python tests**: 90 test files, 291+ test cases
+- **Frontend tests**: React component tests
+
+Run specific test suites:
 
 ```bash
-animocerebro run --state-dir .animocerebro/state --config animocerebro_vision.yaml --resident --interval 60
+# Backend tests only
+make backend-test
+
+# Frontend tests only
+make frontend-test
+
+# WebSocket integration tests
+pytest tests/web_console/test_events_stream_integration.py -m integration
 ```
-
-Start the web console:
-
-```bash
-animocerebro web start --state-dir .animocerebro/state --config animocerebro_vision.yaml --host 127.0.0.1 --port 8899
-```
-
-## Integration Model
-
-AnimoCerebro is designed for minimal intrusion:
-- **Execution stays with the Host**: Your system keeps full control.
-- **Brain as an Advisor**: AnimoCerebro provides reasoning, delegation advice, and memory.
-- **Standard Protocol**: Connect via REST/WebSocket using the `Agent/` standard interface.
-
-See [Agent Integration Guide](Agent/INTEGRATION_GUIDE.md) for more details.
-
-## OpenClaw
-
-OpenClaw is a primary host adapter legacy. While `integrations/` is now consolidated into the standardized `Agent/` hub, the protocol remains compatible.
-
-See:
-- [OpenClaw Integration Guide](docs/integrations/OPENCLAW_INTEGRATION_GUIDE.md)
-- [OpenClaw Host Adapter Protocol](docs/integrations/OPENCLAW_HOST_ADAPTER_PROTOCOL.md)
-- [OpenClaw Host Adapter Architecture](docs/integrations/OPENCLAW_HOST_ADAPTER_ARCHITECTURE.md)
 
 ## Repository Structure
 
-- `src/zentex`: core backend and services (cognition, memory, safety, etc.)
-- `src/plugins`: functional plugin implementations (model providers, sensory, simulation, etc.)
-- `src/admin-portal`: web management frontend
-- `Agent/`: independent agents for testing and integration examples
-- `tests/`: automated end-to-end and unit tests
-- `scripts/`: primary startup, development, and maintenance scripts
-- `docs/`: comprehensive technical architecture and operability docs
-- `config/`: central system configuration files
+- **`src/zentex/`**: Core backend source code and services
+  - Cognition, memory, safety, runtime, tasks, upgrade modules
+  - Web console API implementation
+  - This is the main source code directory
+  
+- **`src/plugins/`**: Internal plugin system (upgradable)
+  - Q1-Q9 nine questions plugins (complete implementation)
+  - Model providers (Gemini, OpenAI, Anthropic adapters)
+  - Cognitive, sensory, simulation, execution plugins
+  - Plugins can be independently developed and upgraded
+  
+- **`src/admin-portal/`**: Web management frontend
+  - React + Vite + TypeScript
+  - Real-time dashboard, agent management, task tracking
+  - Plugin and MCP management interfaces
+  
+- **`scripts/`**: Startup and management scripts
+  - `dev_all.sh`: One-click start all services
+  - `restart_dev.sh`: Clean restart development environment
+  - `setup_env.sh`: Environment initialization
+  - `test_all.sh`: Run all tests
+  - Various migration and utility scripts
+  
+- **`Agent/`**: Independent agents for testing and integration examples
+  - Standard protocol implementations
+  - Integration guides for external systems
+  
+- **`tests/`**: Automated end-to-end and unit tests
+  - 90 test files covering all major modules
+  - WebSocket, runtime, plugin, agent tests
+  
+- **`docs/`**: Comprehensive technical documentation
+  - Operability guides, startup instructions
+  - Architecture details, plugin development guides
+  - Project progress reports
+  
+- **`config/`**: Central system configuration files
+  - Provider tools configuration
+  - System settings
 
 ## Next Reading
 
-- [Overview & Quick Start](docs/operability/STARTUP_AND_TEST.md)
-- [Functional Implementation](docs/operability/FUNCTION_MODULES.md)
-- [Core Foundations](docs/architecture/CORE_FOUNDATIONS.md)
+- [Startup Guide](docs/启动指南.md) - Detailed startup instructions
+- [Quick Start & Test](docs/operability/STARTUP_AND_TEST.md) - One-click commands
+- [Functional Implementation](docs/operability/FUNCTION_MODULES.md) - Feature overview
+- [Latest Directory Map](docs/operability/LATEST_DIRECTORY_MAP.md) - Current project structure
+- [Project Summary](docs/operability/项目总结_当前实现概览.md) - Implementation overview
 - More documentation can be found in the `docs/` directory.
 
 ## Contact
