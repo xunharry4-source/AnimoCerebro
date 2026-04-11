@@ -24,7 +24,7 @@ from zentex.core.plugin_family import SensoryPluginSpec
 QUESTION_REF = "我在哪"
 
 
-from plugins.nine_questions._shared import (
+from zentex.common.nine_questions_shared import (
     build_caller_context,
     build_model_context,
     json_safe_payload,

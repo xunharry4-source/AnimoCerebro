@@ -20,67 +20,67 @@
 
 ### 风险评估
 
-- [risk_assessment.md](docs/operability/plugin_features/risk_assessment.md)
+- [risk_assessment.md](/Users/harry/Documents/git/AnimoCerebro/docs/operability/plugin_features/risk_assessment.md)
 
 ### 证据排序
 
-- [evidence_ranking.md](docs/operability/plugin_features/evidence_ranking.md)
+- [evidence_ranking.md](/Users/harry/Documents/git/AnimoCerebro/docs/operability/plugin_features/evidence_ranking.md)
 
 ### 决策摘要
 
-- [decision_summary.md](docs/operability/plugin_features/decision_summary.md)
+- [decision_summary.md](/Users/harry/Documents/git/AnimoCerebro/docs/operability/plugin_features/decision_summary.md)
 
 ### 认知冲突监控
 
-- [cognitive_conflict_detection.md](docs/operability/plugin_features/cognitive_conflict_detection.md)
+- [cognitive_conflict_detection.md](/Users/harry/Documents/git/AnimoCerebro/docs/operability/plugin_features/cognitive_conflict_detection.md)
 
 ### Gemini 推理底座
 
-- [model_provider_gemini.md](docs/operability/plugin_features/model_provider_gemini.md)
+- [model_provider_gemini.md](/Users/harry/Documents/git/AnimoCerebro/docs/operability/plugin_features/model_provider_gemini.md)
 
 ### Webhook 信号摄取
 
-- [sensory_ingest_webhook.md](docs/operability/plugin_features/sensory_ingest_webhook.md)
+- [sensory_ingest_webhook.md](/Users/harry/Documents/git/AnimoCerebro/docs/operability/plugin_features/sensory_ingest_webhook.md)
 
 ### 提示注入净化
 
-- [sensory_sanitize_basic_prompt_injection_sanitizer.md](docs/operability/plugin_features/sensory_sanitize_basic_prompt_injection_sanitizer.md)
+- [sensory_sanitize_basic_prompt_injection_sanitizer.md](/Users/harry/Documents/git/AnimoCerebro/docs/operability/plugin_features/sensory_sanitize_basic_prompt_injection_sanitizer.md)
 
 ### 环境事件解释
 
-- [sensory_interpret_generic_environment.md](docs/operability/plugin_features/sensory_interpret_generic_environment.md)
+- [sensory_interpret_generic_environment.md](/Users/harry/Documents/git/AnimoCerebro/docs/operability/plugin_features/sensory_interpret_generic_environment.md)
 
 ### 系统执行域
 
-- [execution_system.md](docs/operability/plugin_features/execution_system.md)
+- [execution_system.md](/Users/harry/Documents/git/AnimoCerebro/docs/operability/plugin_features/execution_system.md)
 
 ### 浏览器执行域
 
-- [execution_browser.md](docs/operability/plugin_features/execution_browser.md)
+- [execution_browser.md](/Users/harry/Documents/git/AnimoCerebro/docs/operability/plugin_features/execution_browser.md)
 
 ### 通用思维沙盒
 
-- [simulation_general.md](docs/operability/plugin_features/simulation_general.md)
+- [simulation_general.md](/Users/harry/Documents/git/AnimoCerebro/docs/operability/plugin_features/simulation_general.md)
 
 ### 市场影响预测
 
-- [simulation_market.md](docs/operability/plugin_features/simulation_market.md)
+- [simulation_market.md](/Users/harry/Documents/git/AnimoCerebro/docs/operability/plugin_features/simulation_market.md)
 
 ### 主观权重偏好
 
-- [weights_subjective_preferences.md](docs/operability/plugin_features/weights_subjective_preferences.md)
+- [weights_subjective_preferences.md](/Users/harry/Documents/git/AnimoCerebro/docs/operability/plugin_features/weights_subjective_preferences.md)
 
 ### 身份与经验包
 
-- [identity_package_loader.md](docs/operability/plugin_features/identity_package_loader.md)
+- [identity_package_loader.md](/Users/harry/Documents/git/AnimoCerebro/docs/operability/plugin_features/identity_package_loader.md)
 
 ## 家族指南仍然保留，但只作为二级规范
 
 以下文档仍然有效，但应在明确功能之后再查阅：
 
-- [src/plugins/model_providers/DEVELOPMENT_GUIDE.md](src/plugins/model_providers/DEVELOPMENT_GUIDE.md)
-- [src/plugins/cognitive/DEVELOPMENT_GUIDE.md](src/plugins/cognitive/DEVELOPMENT_GUIDE.md)
-- [src/plugins/execution/DEVELOPMENT_GUIDE.md](src/plugins/execution/DEVELOPMENT_GUIDE.md)
-- [src/plugins/sensory/DEVELOPMENT_GUIDE.md](src/plugins/sensory/DEVELOPMENT_GUIDE.md)
-- [src/plugins/simulation/DEVELOPMENT_GUIDE.md](src/plugins/simulation/DEVELOPMENT_GUIDE.md)
-- [src/plugins/weights/DEVELOPMENT_GUIDE.md](src/plugins/weights/DEVELOPMENT_GUIDE.md)
+- [src/plugins/model_providers/DEVELOPMENT_GUIDE.md](/Users/harry/Documents/git/AnimoCerebro/src/plugins/model_providers/DEVELOPMENT_GUIDE.md)
+- [src/plugins/cognitive/DEVELOPMENT_GUIDE.md](/Users/harry/Documents/git/AnimoCerebro/src/plugins/cognitive/DEVELOPMENT_GUIDE.md)
+- [src/plugins/execution/DEVELOPMENT_GUIDE.md](/Users/harry/Documents/git/AnimoCerebro/src/plugins/execution/DEVELOPMENT_GUIDE.md)
+- [src/plugins/sensory/DEVELOPMENT_GUIDE.md](/Users/harry/Documents/git/AnimoCerebro/src/plugins/sensory/DEVELOPMENT_GUIDE.md)
+- [src/plugins/simulation/DEVELOPMENT_GUIDE.md](/Users/harry/Documents/git/AnimoCerebro/src/plugins/simulation/DEVELOPMENT_GUIDE.md)
+- [src/plugins/weights/DEVELOPMENT_GUIDE.md](/Users/harry/Documents/git/AnimoCerebro/src/plugins/weights/DEVELOPMENT_GUIDE.md)

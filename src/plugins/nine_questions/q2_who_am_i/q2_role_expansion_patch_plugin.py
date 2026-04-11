@@ -6,7 +6,7 @@ from pydantic import Field
 
 from zentex.core.plugin_base import BaseCapabilityPatchPlugin, PluginLifecycleStatus, PluginHealthStatus
 from zentex.core.model_provider_spec import ModelProviderSpec, ModelProviderCallerContext
-from plugins.nine_questions._shared import (
+from zentex.common.nine_questions_shared import (
     require_model_provider,
     require_transcript_store,
     build_caller_context,

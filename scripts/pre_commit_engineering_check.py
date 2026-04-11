@@ -60,6 +60,11 @@ class EngineeringStandardsChecker:
             api_issues = self._check_api_standards(content)
             violations.extend(api_issues)
         
+        # 7. 文件长度检查 (500行规则)
+        length_warning = self._check_file_length(content)
+        if length_warning:
+            warnings.append(length_warning)
+        
         return {
             "violations": violations,
             "warnings": warnings
@@ -164,6 +169,14 @@ class EngineeringStandardsChecker:
             issues.append("API 函数建议添加错误处理")
         
         return issues
+
+    def _check_file_length(self, content: str) -> str:
+        """检查文件长度是否超过 500 行"""
+        lines = content.splitlines()
+        line_count = len(lines)
+        if line_count > 500:
+            return f"文件长度超过 500 行 ({line_count} 行) - 建议考虑将文件拆分为更小的模块"
+        return ""
     
     def _is_in_test_context(self, lines: List[str], line_index: int) -> bool:
         """检查是否在测试上下文中"""

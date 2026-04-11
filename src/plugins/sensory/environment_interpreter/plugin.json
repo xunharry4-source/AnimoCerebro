@@ -1,0 +1,5 @@
+{
+  "plugin_id": "sensory_environment",
+  "name": "Environment Interpreter",
+  "description": "Interpret sanitized environmental signals into structured events."
+}

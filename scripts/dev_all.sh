@@ -59,7 +59,7 @@ echo "Using WebSocket implementation: ${WS_IMPLEMENTATION}"
   export PYTHONPATH=src
   # Add a small delay to ensure port is fully released
   sleep 1
-  "$PYTHON_BIN" -m uvicorn zentex.web_console.dev_server:app --reload --ws "$WS_IMPLEMENTATION" --host 127.0.0.1 --port "$BACKEND_PORT" --timeout-keep-alive 5
+  "$PYTHON_BIN" -m uvicorn zentex.boot.web_dev:app --reload --ws "$WS_IMPLEMENTATION" --host 127.0.0.1 --port "$BACKEND_PORT" --timeout-keep-alive 5
 ) &
 BACKEND_PID=$!
 

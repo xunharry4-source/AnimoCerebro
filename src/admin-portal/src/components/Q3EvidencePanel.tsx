@@ -36,6 +36,35 @@ function getStatusColor(status: string): "success" | "warning" | "error" | "defa
   return "default";
 }
 
+const Q3_ASSET_LABEL_MAP: Record<string, string> = {
+  execution_domain_tools: "执行域工具 (Execution Domain Tools)",
+  connected_agents: "可用协作智能体 (Connected Agents)",
+  cognitive_tools: "认知工具 (Cognitive Tools)",
+  mcp_servers: "MCP 服务 (MCP Servers)",
+  cli_tools: "CLI 工具 (CLI Tools)",
+};
+
+const Q3_BOTTLENECK_LABEL_MAP: Record<string, string> = {
+  execution_layer: "执行层 (Execution Layer)",
+  cognitive_layer: "认知层 (Cognitive Layer)",
+  agent_layer: "协作智能体层 (Agent Layer)",
+  mcp_layer: "MCP 接入层 (MCP Layer)",
+  cli_layer: "CLI 接入层 (CLI Layer)",
+};
+
+function humanizeInternalToken(token: string, mapping: Record<string, string>): string {
+  const normalized = String(token || "").trim();
+  if (!normalized) return "";
+  if (mapping[normalized]) return mapping[normalized];
+  const titleCase = normalized
+    .replace(/[_\-.]+/g, " ")
+    .split(" ")
+    .filter(Boolean)
+    .map((part) => part.charAt(0).toUpperCase() + part.slice(1))
+    .join(" ");
+  return `${titleCase} (${normalized})`;
+}
+
 function AssetTable({
   title,
   rows,
@@ -102,7 +131,6 @@ function McpServerTable({
               <TableRow>
                 <TableCell sx={{ fontWeight: 700 }}>{t("nineQuestions.serverId")}</TableCell>
                 <TableCell sx={{ fontWeight: 700 }}>{t("nineQuestions.transportType")}</TableCell>
-                <TableCell sx={{ fontWeight: 700 }}>{t("common.status")}</TableCell>
                 <TableCell sx={{ fontWeight: 700 }}>{t("nineQuestions.toolCount")}</TableCell>
                 <TableCell sx={{ fontWeight: 700 }}>{t("nineQuestions.toolList")}</TableCell>
               </TableRow>
@@ -112,13 +140,6 @@ function McpServerTable({
                 <TableRow key={server.server_id}>
                   <TableCell sx={{ whiteSpace: "nowrap", fontWeight: 600 }}>{server.server_id}</TableCell>
                   <TableCell>{server.transport_type}</TableCell>
-                  <TableCell>
-                    <Chip
-                      label={server.status}
-                      size="small"
-                      color={server.status === "online" ? "success" : server.status === "degraded" ? "warning" : "error"}
-                    />
-                  </TableCell>
                   <TableCell>{server.tool_count}</TableCell>
                   <TableCell>
                     {server.tools && server.tools.length > 0 ? (
@@ -176,7 +197,6 @@ function CliToolTable({
                 <TableCell sx={{ fontWeight: 700 }}>{t("nineQuestions.description")}</TableCell>
                 <TableCell sx={{ fontWeight: 700 }}>{t("nineQuestions.mappedDomain")}</TableCell>
                 <TableCell sx={{ fontWeight: 700 }}>{t("nineQuestions.readOnly")}</TableCell>
-                <TableCell sx={{ fontWeight: 700 }}>{t("common.status")}</TableCell>
               </TableRow>
             </TableHead>
             <TableBody>
@@ -194,13 +214,6 @@ function CliToolTable({
                       label={tool.read_only ? t("common.yes") : t("common.no")}
                       size="small"
                       color={tool.read_only ? "success" : "warning"}
-                    />
-                  </TableCell>
-                  <TableCell>
-                    <Chip
-                      label={tool.status}
-                      size="small"
-                      color={tool.status === "active" ? "success" : "default"}
                     />
                   </TableCell>
                 </TableRow>
@@ -265,7 +278,7 @@ export function Q3EvidencePanel({
                   id: String(agent.id || agent.name || "unknown-agent"),
                   name: String(agent.name || agent.id || "Unknown Agent"),
                   introduction: String(agent.summary || agent.description || t("nineQuestions.connectedAgentDesc")),
-                  function_description: String(agent.role || agent.scope || agent.status || t("nineQuestions.agentRoleDesc")),
+                  function_description: String(agent.role || agent.scope || t("nineQuestions.agentRoleDesc")),
                 }))
           }
         />
@@ -462,7 +475,9 @@ export function Q3EvidencePanel({
                     <Typography variant="subtitle2">{t("nineQuestions.missingCriticalAssets")}:</Typography>
                     <List dense>
                       {inference.sufficiency_assessment.missing_critical_assets.map((a, i) => (
-                        <ListItem key={i}><ListItemText primary={a} /></ListItem>
+                        <ListItem key={i}>
+                          <ListItemText primary={humanizeInternalToken(a, Q3_ASSET_LABEL_MAP)} />
+                        </ListItem>
                       ))}
                     </List>
                   </Alert>
@@ -471,7 +486,9 @@ export function Q3EvidencePanel({
                 {inference.sufficiency_assessment.bottleneck_node && (
                   <Alert severity="warning">
                     <Typography variant="subtitle2">{t("nineQuestions.bottleneckNode")}:</Typography>
-                    <Typography variant="body2">{inference.sufficiency_assessment.bottleneck_node}</Typography>
+                    <Typography variant="body2">
+                      {humanizeInternalToken(inference.sufficiency_assessment.bottleneck_node, Q3_BOTTLENECK_LABEL_MAP)}
+                    </Typography>
                   </Alert>
                 )}
 

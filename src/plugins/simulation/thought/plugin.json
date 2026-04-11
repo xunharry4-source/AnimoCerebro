@@ -1,0 +1,5 @@
+{
+  "plugin_id": "simulation_thought",
+  "name": "Thought Sandbox",
+  "description": "Run sandboxed cognitive simulations."
+}

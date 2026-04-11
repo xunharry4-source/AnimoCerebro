@@ -9,5 +9,5 @@
 - 默认/回退方向：回退到 `default_conservative_weight`
 - 管理红线：审计拒绝后必须立即回退
 - 家族级规范：
-  - [Weights DEVELOPMENT_GUIDE](src/plugins/weights/DEVELOPMENT_GUIDE.md)
+  - [Weights DEVELOPMENT_GUIDE](/Users/harry/Documents/git/AnimoCerebro/src/plugins/weights/DEVELOPMENT_GUIDE.md)
 

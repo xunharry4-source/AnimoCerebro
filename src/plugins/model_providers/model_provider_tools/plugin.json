@@ -1,0 +1,5 @@
+{
+  "plugin_id": "model_provider_tools",
+  "name": "Provider Tools Model Adapter",
+  "description": "Model provider adapter via provider tools gateway."
+}

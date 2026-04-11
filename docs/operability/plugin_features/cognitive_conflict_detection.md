@@ -9,5 +9,5 @@
 - 默认/回退方向：保留其他激活检测器；若全部失效，则回退到默认正式版检测器集合
 - 管理红线：所有检测器都只允许输出内部冲突报告，禁止直接驱动执行动作
 - 家族级规范：
-  - [Cognitive DEVELOPMENT_GUIDE](src/plugins/cognitive/DEVELOPMENT_GUIDE.md)
+  - [Cognitive DEVELOPMENT_GUIDE](/Users/harry/Documents/git/AnimoCerebro/src/plugins/cognitive/DEVELOPMENT_GUIDE.md)
 

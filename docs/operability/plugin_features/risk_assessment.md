@@ -9,5 +9,5 @@
 - 默认/回退方向：回退到同 `behavior_key` 下的上一个正式版本，或系统默认版本
 - 管理红线：启用新版本时必须自动挂起同功能已激活旧版本
 - 家族级规范：
-  - [Cognitive DEVELOPMENT_GUIDE](src/plugins/cognitive/DEVELOPMENT_GUIDE.md)
+  - [Cognitive DEVELOPMENT_GUIDE](/Users/harry/Documents/git/AnimoCerebro/src/plugins/cognitive/DEVELOPMENT_GUIDE.md)
 

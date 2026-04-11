@@ -1,0 +1,5 @@
+{
+  "plugin_id": "oracle_posture",
+  "name": "Posture Oracle",
+  "description": "Provide action posture tuning suggestions."
+}

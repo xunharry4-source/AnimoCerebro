@@ -86,7 +86,7 @@ kill_port "${PORT_FRONTEND}"
 
 # 兜底：只清理与本项目 Web Console 相关的 uvicorn（避免误杀其他 node/服务）
 echo ">>> 清理残留的 uvicorn 和 node 进程..."
-pkill -f "uvicorn zentex.web_console.dev_server:app" 2>/dev/null || true
+pkill -f "uvicorn zentex.boot.web_dev:app" 2>/dev/null || true
 pkill -f "npm run dev" 2>/dev/null || true
 sleep 2
 

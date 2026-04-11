@@ -1,21 +1,8 @@
-from .subjective_weight_plugin import (
-    RationalAuditRejectError,
-    SubjectiveWeightPlugin,
-    SubjectiveWeightSnapshot,
-    WeightPluginAssembler,
-    build_cost_guard_weight,
-    build_creative_exploration_weight,
-    build_default_conservative_weight,
-    build_risk_balanced_weight,
-)
+"""Weights plugin group - pure container directory.
 
-__all__ = [
-    "RationalAuditRejectError",
-    "SubjectiveWeightPlugin",
-    "SubjectiveWeightSnapshot",
-    "WeightPluginAssembler",
-    "build_cost_guard_weight",
-    "build_creative_exploration_weight",
-    "build_default_conservative_weight",
-    "build_risk_balanced_weight",
-]
+Do NOT add aggregation exports here. Each plugin unit is independent.
+Importers must use direct sub-module imports, e.g.:
+    from plugins.weights.assembler.weight_assembler_plugin import build_cost_guard_weight
+"""
+
+from __future__ import annotations

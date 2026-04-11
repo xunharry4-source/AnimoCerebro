@@ -43,6 +43,8 @@ import AgentAssetManager from "./pages/agents/AgentAssetManager";
 import AgentDetail from "./pages/agents/AgentDetail";
 import ZentexTaskManager from "./pages/tasks/ZentexTaskManager";
 import PluginManagement from "./pages/plugins/PluginManagement";
+import CognitivePluginDetailPage from "./pages/plugins/CognitivePluginDetailPage";
+import FunctionalPluginDetailPage from "./pages/plugins/FunctionalPluginDetailPage";
 import UpgradeManagement from "./pages/upgrades/UpgradeManagement";
 import UpgradeDetailPage from "./pages/upgrades/UpgradeDetailPage";
 import CliAssetManager from "./pages/cli/CliAssetManager";
@@ -250,6 +252,8 @@ export default function App() {
           <Route path="/console/memory" element={<MemoryReasoning />} />
           <Route path="/console/simulation" element={<SimulationExplorer />} />
           <Route path="/console/plugins" element={<PluginManagement />} />
+          <Route path="/console/plugins/cognitive/:pluginId" element={<CognitivePluginDetailPage />} />
+          <Route path="/console/plugins/functional/:pluginId" element={<FunctionalPluginDetailPage />} />
           <Route path="/console/upgrades" element={<UpgradeManagement />} />
           <Route path="/console/upgrades/:record_id" element={<UpgradeDetailPage />} />
           <Route path="/console/cli-tools" element={<CliAssetManager />} />

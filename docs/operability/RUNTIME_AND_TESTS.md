@@ -3,7 +3,7 @@
 本文档用于说明 Zentex 当前已经落地的运行时底座代码、测试文件分布、各模块职责边界，以及测试覆盖范围。
 
 按功能组织的插件开发规范索引见：
-- [PLUGIN_GUIDES.md](docs/operability/PLUGIN_GUIDES.md)
+- [PLUGIN_GUIDES.md](/Users/harry/Documents/git/AnimoCerebro/docs/operability/PLUGIN_GUIDES.md)
 
 ## 目标范围
 

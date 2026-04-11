@@ -1,0 +1,5 @@
+{
+  "plugin_id": "execution_local_system",
+  "name": "Local System Executor",
+  "description": "Execute local shell/system tasks in controlled runtime."
+}

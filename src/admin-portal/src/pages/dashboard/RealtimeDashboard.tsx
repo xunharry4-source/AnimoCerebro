@@ -315,11 +315,16 @@ export default function RealtimeDashboard() {
       if (isUnmounted) return;
       // Don't schedule when page is hidden — handleVisibilityChange will reconnect on reveal
       if (document.visibilityState === "hidden") return;
+      // Clear any existing pending timer to avoid duplicate reconnects
+      if (reconnectTimerRef.current !== null) {
+        window.clearTimeout(reconnectTimerRef.current);
+      }
       const attempts = reconnectAttemptsRef.current;
-      // Exponential backoff: 2s, 4s, 8s, 16s, capped at 30s
-      const delay = Math.min(2000 * Math.pow(2, attempts), 30000);
+      // Exponential backoff: 3s, 6s, 12s, 24s, capped at 60s
+      const delay = Math.min(3000 * Math.pow(2, attempts), 60000);
       reconnectAttemptsRef.current = attempts + 1;
       reconnectTimerRef.current = window.setTimeout(() => {
+        reconnectTimerRef.current = null;
         connectStream(true);
       }, delay);
     };
@@ -344,8 +349,11 @@ export default function RealtimeDashboard() {
       const socket = new WebSocket(streamUrl);
       wsRef.current = socket;
 
+      // Track when this socket opened to determine if connection was stable
+      let openedAt = 0;
+
       socket.onopen = () => {
-        reconnectAttemptsRef.current = 0;
+        openedAt = Date.now();
         setStreamConnectionState("connected");
         setStreamError(null);
       };
@@ -372,6 +380,10 @@ export default function RealtimeDashboard() {
       socket.onclose = () => {
         wsRef.current = null;
         if (isUnmounted) return;
+        // Only reset backoff if connection was stable for > 5s; otherwise keep counting
+        if (openedAt > 0 && Date.now() - openedAt > 5000) {
+          reconnectAttemptsRef.current = 0;
+        }
         setStreamConnectionState("reconnecting");
         setStreamError(text.streamReconnect);
         scheduleReconnect();
@@ -380,7 +392,7 @@ export default function RealtimeDashboard() {
 
     const handleVisibilityChange = () => {
       if (document.visibilityState === "visible") {
-        // Page became visible — reconnect if not already connected
+        // Page became visible — reconnect immediately, reset backoff
         if (reconnectTimerRef.current !== null) {
           window.clearTimeout(reconnectTimerRef.current);
           reconnectTimerRef.current = null;
@@ -406,6 +418,7 @@ export default function RealtimeDashboard() {
       document.removeEventListener("visibilitychange", handleVisibilityChange);
       if (reconnectTimerRef.current !== null) {
         window.clearTimeout(reconnectTimerRef.current);
+        reconnectTimerRef.current = null;
       }
       wsRef.current?.close();
       wsRef.current = null;

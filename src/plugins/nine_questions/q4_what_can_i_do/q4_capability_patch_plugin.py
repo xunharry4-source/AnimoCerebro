@@ -5,7 +5,7 @@ from typing import Any, Dict, List, Optional
 
 from zentex.core.plugin_base import BaseCapabilityPatchPlugin, PluginLifecycleStatus, PluginHealthStatus
 from zentex.core.plugin_family import ExecutionPluginSpec
-from plugins.nine_questions._shared import (
+from zentex.common.nine_questions_shared import (
     require_model_provider,
     require_transcript_store,
     build_caller_context,

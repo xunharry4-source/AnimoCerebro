@@ -3,7 +3,7 @@
 本文档用于说明 `src` 目录下新增功能模块的职责划分与 Zentex 的整体技术架构，便于后续开发、协作与部署时统一边界。
 
 按功能组织的插件开发规范索引见：
-- [PLUGIN_GUIDES.md](docs/operability/PLUGIN_GUIDES.md)
+- [PLUGIN_GUIDES.md](/Users/harry/Documents/git/AnimoCerebro/docs/operability/PLUGIN_GUIDES.md)
 
 ## 开发一键命令（最常用）
 
@@ -13,7 +13,7 @@
 - 一键重启：`make restart-dev`（等价 `./scripts/restart_dev.sh`，会先清理端口占用再拉起）
 
 更完整的启动、端口覆盖与测试说明见：
-- [STARTUP_AND_TEST.md](docs/operability/STARTUP_AND_TEST.md)
+- [STARTUP_AND_TEST.md](/Users/harry/Documents/git/AnimoCerebro/docs/operability/STARTUP_AND_TEST.md)
 
 ## 目录清单
 
@@ -243,6 +243,37 @@ runtime 模块。
 - `src/zentex/core/cognitive_tools_spec.py` 与 `src/zentex/runtime/cognitive_tools/__init__.py` 不是重复文件。
 - 前者是契约层，回答“什么是合法的认知工具”。
 - 后者是执行层，回答“运行时如何使用认知工具”。
+
+#### `src/zentex/environment`
+
+环境感知与用户偏好辨析模块。
+
+适用范围：
+- 物理宿主状态采样与环境态势解释
+- 外部信号清洗与多源比较
+- **G19: 用户偏好辨析与意图对齐**（v2.0 技术栈升级版）
+  - PydanticAI LLM 驱动的智能判定引擎
+  - pydantic-settings 统一配置管理
+  - SQLite + SQLAlchemy ORM 数据持久化
+  - 极端信号拦截与攻击样本标记
+
+当前关键文件：
+- `src/zentex/environment/service.py`
+  环境感知服务门面，提供统一 API。
+- `src/zentex/environment/g19_settings.py` (v2.0 新增)
+  G19 配置管理，支持环境变量和 .env 文件。
+- `src/zentex/environment/g19_judgment_engine.py` (v2.0 新增)
+  PydanticAI 混合判定引擎（LLM + 规则降级）。
+- `src/zentex/environment/preference_models.py`
+  偏好辨析数据模型定义。
+- `src/zentex/environment/preference_storage.py`
+  数据存储层（v2.0 升级为 SQLAlchemy）。
+
+补充说明文档：
+- `src/zentex/environment/G19_README.md`
+- `src/zentex/environment/G19_IMPLEMENTATION_SUMMARY.md`
+- `docs/G19_PREFERENCE_MODULE_SPEC.md`
+- `docs/G19_UPGRADE_IMPLEMENTATION_PLAN.md` (v2.0 实施计划)
 
 ### `src/admin-portal` 文件说明
 

@@ -53,9 +53,12 @@ function getHealthColor(status: McpServerItem["status"]): "success" | "default" 
 }
 
 import { useNavigate } from "react-router-dom";
+import { Locale, mcpServerCopy } from "../../i18n";
 
 export default function McpServerDashboard() {
   const navigate = useNavigate();
+  const locale: Locale = "zh-CN";
+  const copy = mcpServerCopy[locale];
   const [rows, setRows] = useState<McpServerItem[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
@@ -84,12 +87,12 @@ export default function McpServerDashboard() {
     try {
       const response = await fetch("/api/web/mcp-servers");
       if (!response.ok) {
-        throw new Error(`获取 MCP 服务器失败（HTTP ${response.status}）`);
+        throw new Error(`${copy.fetchServersFailed}（HTTP ${response.status}）`);
       }
       const payload = (await response.json()) as McpServerItem[];
       setRows(payload);
     } catch (err: any) {
-      setError(err?.message || "获取 MCP 服务器失败");
+      setError(err?.message || copy.fetchServersFailed);
     } finally {
       setLoading(false);
     }
@@ -109,13 +112,13 @@ export default function McpServerDashboard() {
       });
       const payload = await response.json();
       if (!response.ok) {
-        throw new Error(payload?.detail || "注册失败");
+        throw new Error(payload?.detail || copy.registerFailed);
       }
       setOpenRegister(false);
       setRegisterData({ server_id: "", transport_type: "stdio", command: "", args: "" });
       void loadServers();
     } catch (err: any) {
-      setError(err?.message || "注册失败");
+      setError(err?.message || copy.registerFailed);
     }
   };
 
@@ -133,21 +136,21 @@ export default function McpServerDashboard() {
       });
       const payload = await response.json();
       if (!response.ok) {
-        throw new Error(payload?.detail || "测试调用失败");
+        throw new Error(payload?.detail || copy.testCallFailed);
       }
       setTestResult(JSON.stringify(payload, null, 2));
     } catch (err: any) {
-      setTestResult(err?.message || "测试调用失败");
+      setTestResult(err?.message || copy.testCallFailed);
     }
   };
 
   const columns: GridColDef[] = [
-    { field: "server_id", headerName: "Server 名称", flex: 1.1, minWidth: 200 },
-    { field: "transport_type", headerName: "连接类型", flex: 0.7, minWidth: 120 },
-    { field: "tool_count", headerName: "挂载工具数", flex: 0.7, minWidth: 120 },
+    { field: "server_id", headerName: copy.serverName, flex: 1.1, minWidth: 200 },
+    { field: "transport_type", headerName: copy.connectionType, flex: 0.7, minWidth: 120 },
+    { field: "tool_count", headerName: copy.toolCount, flex: 0.7, minWidth: 120 },
     {
       field: "status",
-      headerName: "健康状态",
+      headerName: copy.healthStatus,
       flex: 0.9,
       minWidth: 160,
       renderCell: (params) => <Chip label={params.value} color={getHealthColor(params.value)} size="small" />,
@@ -164,14 +167,14 @@ export default function McpServerDashboard() {
         <Stack direction="row" justifyContent="space-between" alignItems="center">
         <Box>
           <Typography variant="h4" gutterBottom>
-            外部能力与 MCP 管理
+            {copy.title}
           </Typography>
           <Typography variant="body2" color="text.secondary">
-            这里展示当前已接入的 MCP Server、健康状态及其映射到 Zentex 的认知/执行工具。
+            {copy.subtitle}
           </Typography>
         </Box>
         <Button variant="contained" startIcon={<AddIcon />} onClick={() => setOpenRegister(true)}>
-          注册 Server
+          {copy.registerServer}
         </Button>
       </Stack>
 
@@ -213,12 +216,12 @@ export default function McpServerDashboard() {
             </Box>
             {selectedServer.error_message ? <Alert severity="warning">{selectedServer.error_message}</Alert> : null}
             <Divider />
-            <Typography variant="h6">工具清单</Typography>
+            <Typography variant="h6">{copy.toolList}</Typography>
             {selectedServer.tools.map((tool) => (
               <Box key={tool.plugin_id} sx={{ p: 2, border: "1px solid", borderColor: "divider", borderRadius: 2 }}>
                 <Stack direction="row" spacing={1} sx={{ mb: 1 }} useFlexGap flexWrap="wrap">
                   <Chip
-                    label={tool.mapped_domain === "cognitive" ? "认知辅助" : "物理执行"}
+                    label={tool.mapped_domain === "cognitive" ? copy.cognitiveAssist : copy.physicalExecution}
                     color={tool.mapped_domain === "cognitive" ? "primary" : "error"}
                     size="small"
                   />
@@ -244,23 +247,23 @@ export default function McpServerDashboard() {
                     setTestData((current) => ({ ...current, tool_name: tool.tool_name }));
                   }}
                 >
-                  选择用于测试
+                  {copy.selectForTest}
                 </Button>
               </Box>
             ))}
             <Divider />
-            <Typography variant="h6">测试调用</Typography>
+            <Typography variant="h6">{copy.testCall}</Typography>
             <TextField
-              label="工具名称"
+              label={copy.toolName}
               fullWidth
               value={testData.tool_name}
               onChange={(e: React.ChangeEvent<HTMLInputElement>) =>
                 setTestData({ ...testData, tool_name: e.target.value })
               }
-              helperText={selectedToolName ? `当前已选择: ${selectedToolName}` : "请从上方工具清单选择，或手动输入"}
+              helperText={selectedToolName ? `${copy.selectedToolHint}${selectedToolName}` : copy.toolName}
             />
             <TextField
-              label="参数 JSON"
+              label={copy.paramsJson}
               fullWidth
               multiline
               rows={4}
@@ -270,7 +273,7 @@ export default function McpServerDashboard() {
               }
             />
             <Button variant="contained" onClick={() => void handleTestCall()} disabled={!testData.tool_name}>
-              执行测试
+              {copy.executeTest}
             </Button>
             {testResult ? (
               <Alert severity="info">
@@ -282,11 +285,11 @@ export default function McpServerDashboard() {
       </Drawer>
 
       <Dialog open={openRegister} onClose={() => setOpenRegister(false)} fullWidth maxWidth="sm">
-        <DialogTitle>注册 MCP Server</DialogTitle>
+        <DialogTitle>{copy.registerDialogTitle}</DialogTitle>
         <DialogContent dividers>
           <Stack spacing={2} sx={{ mt: 1 }}>
             <TextField
-              label="Server ID"
+              label={copy.serverId}
               fullWidth
               value={registerData.server_id}
               onChange={(e: React.ChangeEvent<HTMLInputElement>) =>
@@ -294,7 +297,7 @@ export default function McpServerDashboard() {
               }
             />
             <TextField
-              label="Transport"
+              label={copy.transport}
               fullWidth
               value={registerData.transport_type}
               onChange={(e: React.ChangeEvent<HTMLInputElement>) =>
@@ -302,7 +305,7 @@ export default function McpServerDashboard() {
               }
             />
             <TextField
-              label="Command / URL"
+              label={copy.commandUrl}
               fullWidth
               value={registerData.command}
               onChange={(e: React.ChangeEvent<HTMLInputElement>) =>
@@ -310,7 +313,7 @@ export default function McpServerDashboard() {
               }
             />
             <TextField
-              label="Args (空格分隔)"
+              label={copy.argsSpaceSeparated}
               fullWidth
               value={registerData.args}
               onChange={(e: React.ChangeEvent<HTMLInputElement>) =>
@@ -320,13 +323,13 @@ export default function McpServerDashboard() {
           </Stack>
         </DialogContent>
         <DialogActions>
-          <Button onClick={() => setOpenRegister(false)}>取消</Button>
+          <Button onClick={() => setOpenRegister(false)}>{copy.cancel}</Button>
           <Button
             variant="contained"
             onClick={() => void handleRegister()}
             disabled={!registerData.server_id || !registerData.command}
           >
-            确认注册
+            {copy.confirmRegister}
           </Button>
         </DialogActions>
       </Dialog>

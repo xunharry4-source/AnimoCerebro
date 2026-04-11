@@ -9,5 +9,5 @@
 - 默认/回退方向：回退到系统默认摄取器；若无安全摄取器，则整条感官链阻断
 - 管理红线：摄取器不能假装自己完成了净化和解释
 - 家族级规范：
-  - [Sensory DEVELOPMENT_GUIDE](src/plugins/sensory/DEVELOPMENT_GUIDE.md)
+  - [Sensory DEVELOPMENT_GUIDE](/Users/harry/Documents/git/AnimoCerebro/src/plugins/sensory/DEVELOPMENT_GUIDE.md)
 

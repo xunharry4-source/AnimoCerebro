@@ -27,4 +27,4 @@
 - Worker 提交结果前必须校验 `brain_scope`、`lease_id` 和 `snapshot_version`
 
 家族级参考：
-- [src/plugins/cognitive/DEVELOPMENT_GUIDE.md](src/plugins/cognitive/DEVELOPMENT_GUIDE.md)
+- [src/plugins/cognitive/DEVELOPMENT_GUIDE.md](/Users/harry/Documents/git/AnimoCerebro/src/plugins/cognitive/DEVELOPMENT_GUIDE.md)

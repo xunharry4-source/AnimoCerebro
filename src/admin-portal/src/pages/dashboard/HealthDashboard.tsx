@@ -22,6 +22,7 @@ import {
   Divider,
 } from "@mui/material";
 import { useEffect, useState } from "react";
+import { Locale, healthDashboardCopy } from "../../i18n";
 
 export interface ModuleHealthStatus {
   module_id: string;
@@ -92,6 +93,8 @@ function formatNumber(num: number): string {
 }
 
 export default function HealthDashboard() {
+  const locale: Locale = "zh-CN";
+  const copy = healthDashboardCopy[locale];
   const [health, setHealth] = useState<SystemHealthPayload | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
@@ -103,7 +106,7 @@ export default function HealthDashboard() {
       setHealth(data);
       setError(null);
     } catch (err) {
-      setError(err instanceof Error ? err.message : "加载健康状态失败");
+      setError(err instanceof Error ? err.message : copy.fetchError);
       setHealth(null);
     } finally {
       setLoading(false);
@@ -123,7 +126,7 @@ export default function HealthDashboard() {
     return (
       <Stack spacing={2} alignItems="center" justifyContent="center" sx={{ minHeight: 400 }}>
         <CircularProgress />
-        <Typography variant="body2">加载系统健康状态...</Typography>
+        <Typography variant="body2">{copy.loading}</Typography>
       </Stack>
     );
   }
@@ -138,7 +141,7 @@ export default function HealthDashboard() {
 
   if (!health) {
     return (
-      <Alert severity="warning">暂无健康数据</Alert>
+      <Alert severity="warning">{copy.noData}</Alert>
     );
   }
 
@@ -147,10 +150,10 @@ export default function HealthDashboard() {
       {/* 页面标题 */}
       <Stack direction="row" justifyContent="space-between" alignItems="center">
         <Typography variant="h4" component="h1">
-          系统健康监控
+          {copy.title}
         </Typography>
         <Chip
-          label={`整体状态: ${health.overall_health}`}
+          label={`${copy.overallStatus}: ${health.overall_health}`}
           color={getHealthColor(health.overall_health)}
           variant="filled"
           sx={{ fontWeight: "bold" }}
@@ -161,7 +164,7 @@ export default function HealthDashboard() {
       <Card variant="outlined">
         <CardContent>
           <Typography variant="h6" gutterBottom>
-            Token 使用统计
+            {copy.tokenUsageStats}
           </Typography>
           <Divider sx={{ mb: 2 }} />
           <Grid container spacing={2}>
@@ -171,7 +174,7 @@ export default function HealthDashboard() {
                   {formatNumber(health.token_usage.total_request_count)}
                 </Typography>
                 <Typography variant="body2" color="text.secondary">
-                  总请求次数
+                  {copy.totalRequests}
                 </Typography>
               </Box>
             </Grid>
@@ -181,7 +184,7 @@ export default function HealthDashboard() {
                   {formatNumber(health.token_usage.total_input_tokens)}
                 </Typography>
                 <Typography variant="body2" color="text.secondary">
-                  输入 Tokens
+                  {copy.inputTokens}
                 </Typography>
               </Box>
             </Grid>
@@ -191,7 +194,7 @@ export default function HealthDashboard() {
                   {formatNumber(health.token_usage.total_output_tokens)}
                 </Typography>
                 <Typography variant="body2" color="text.secondary">
-                  输出 Tokens
+                  {copy.outputTokens}
                 </Typography>
               </Box>
             </Grid>
@@ -201,7 +204,7 @@ export default function HealthDashboard() {
                   {formatNumber(health.token_usage.total_tokens)}
                 </Typography>
                 <Typography variant="body2" color="text.secondary">
-                  总计 Tokens
+                  {copy.totalTokens}
                 </Typography>
               </Box>
             </Grid>
@@ -211,7 +214,7 @@ export default function HealthDashboard() {
           {health.token_usage.providers.length > 0 && (
             <Box sx={{ mt: 3 }}>
               <Typography variant="subtitle1" gutterBottom>
-                LLM Provider 详情
+                {copy.llmProviderDetails}
               </Typography>
               <Stack spacing={1}>
                 {health.token_usage.providers.map((provider, index) => (
@@ -233,28 +236,28 @@ export default function HealthDashboard() {
                       <Grid container spacing={1}>
                         <Grid item xs={3}>
                           <Typography variant="caption" color="text.secondary">
-                            请求: {formatNumber(provider.request_count)}
+                            {copy.requests}: {formatNumber(provider.request_count)}
                           </Typography>
                         </Grid>
                         <Grid item xs={3}>
                           <Typography variant="caption" color="text.secondary">
-                            输入: {formatNumber(provider.input_tokens)}
+                            {copy.input}: {formatNumber(provider.input_tokens)}
                           </Typography>
                         </Grid>
                         <Grid item xs={3}>
                           <Typography variant="caption" color="text.secondary">
-                            输出: {formatNumber(provider.output_tokens)}
+                            {copy.output}: {formatNumber(provider.output_tokens)}
                           </Typography>
                         </Grid>
                         <Grid item xs={3}>
                           <Typography variant="caption" color="text.secondary">
-                            总计: {formatNumber(provider.total_tokens)}
+                            {copy.total}: {formatNumber(provider.total_tokens)}
                           </Typography>
                         </Grid>
                       </Grid>
                       {provider.error_count > 0 && (
                         <Typography variant="caption" color="error">
-                          错误次数: {provider.error_count}
+                          {copy.errorCount}: {provider.error_count}
                         </Typography>
                       )}
                     </Stack>
@@ -270,7 +273,7 @@ export default function HealthDashboard() {
       <Card variant="outlined">
         <CardContent>
           <Typography variant="h6" gutterBottom>
-            功能模块健康状态
+            {copy.moduleHealth}
           </Typography>
           <Divider sx={{ mb: 2 }} />
           <Stack spacing={2}>
@@ -295,14 +298,14 @@ export default function HealthDashboard() {
                     )}
                     {module.last_check_at && (
                       <Typography variant="caption" color="text.secondary">
-                        最后检查: {new Date(module.last_check_at).toLocaleString("zh-CN")}
+                        {copy.lastCheck}: {new Date(module.last_check_at).toLocaleString(locale === "zh-CN" ? "zh-CN" : "en-US")}
                       </Typography>
                     )}
                     {/* 显示模块指标 */}
                     {Object.keys(module.metrics).length > 0 && (
                       <Box sx={{ mt: 1 }}>
                         <Typography variant="caption" color="text.secondary" display="block">
-                          指标:
+                          {copy.metrics}:
                         </Typography>
                         <Stack direction="row" spacing={2} flexWrap="wrap" useFlexGap>
                           {Object.entries(module.metrics).map(([key, value]) => (
@@ -327,7 +330,7 @@ export default function HealthDashboard() {
 
       {/* 时间戳 */}
       <Typography variant="caption" color="text.secondary" align="right">
-        更新时间: {new Date(health.timestamp).toLocaleString("zh-CN")}
+        {copy.updateTime}: {new Date(health.timestamp).toLocaleString(locale === "zh-CN" ? "zh-CN" : "en-US")}
       </Typography>
     </Stack>
   );

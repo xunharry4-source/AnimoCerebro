@@ -3,7 +3,7 @@ from __future__ import annotations
 from typing import Any, Dict
 
 from zentex.core.plugin_base import PluginHealthStatus, PluginLifecycleStatus
-from plugins.nine_questions.capability_patch_base import BaseCapabilityPatchPlugin
+from zentex.core.capability_patch_base import BaseCapabilityPatchPlugin
 
 
 class Q3InventoryAuditPatchPlugin(BaseCapabilityPatchPlugin):

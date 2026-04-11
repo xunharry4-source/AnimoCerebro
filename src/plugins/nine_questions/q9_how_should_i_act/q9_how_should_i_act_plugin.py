@@ -14,7 +14,7 @@ from zentex.core.plugin_base import (
 )
 from zentex.core.models import LogicalCognitiveToolSpec
 from zentex.runtime.cognitive_tools import CognitiveToolResult
-from plugins.nine_questions._shared import (
+from zentex.common.nine_questions_shared import (
     build_caller_context,
     build_model_context,
     json_safe_payload,

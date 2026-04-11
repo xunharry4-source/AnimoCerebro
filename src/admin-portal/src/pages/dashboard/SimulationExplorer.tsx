@@ -9,7 +9,7 @@ import {
   TextField,
   Typography,
 } from "@mui/material";
-import { Locale, formatLocalizedToken, formatUserFacingError } from "../../i18n";
+import { Locale, formatLocalizedToken, formatUserFacingError, simulationCopy } from "../../i18n";
 
 /** 单个预演分支在前端中的展示结构。 */
 type ScenarioBranch = {
@@ -37,6 +37,7 @@ type SimulationBundle = {
 
 export default function SimulationExplorer() {
   const locale: Locale = "zh-CN";
+  const copy = simulationCopy[locale];
   const [goalId, setGoalId] = useState("goal-runtime-stability");
   const [bundle, setBundle] = useState<SimulationBundle | null>(null);
   const [loading, setLoading] = useState(true);
@@ -76,13 +77,13 @@ export default function SimulationExplorer() {
     <Stack spacing={3}>
       <Stack direction="row" spacing={2} alignItems="center">
         <TextField
-          label="目标编号"
+          label={copy.goalIdLabel}
           value={goalId}
           onChange={(event) => setGoalId(event.target.value)}
           size="small"
         />
         <Button variant="contained" onClick={() => void loadBundle()}>
-          刷新预演
+          {copy.refresh}
         </Button>
       </Stack>
 
@@ -96,19 +97,19 @@ export default function SimulationExplorer() {
 
       {failureCascadeBranches.length > 0 ? (
         <Alert severity="error">
-          检测到灾难性失败分支，系统已阻断该预演路径。
+          {copy.disasterWarning}
         </Alert>
       ) : null}
 
       {bundle?.outcome_comparison ? (
         <Card>
           <CardContent>
-            <Typography variant="h6">分支对比结论</Typography>
+            <Typography variant="h6">{copy.branchComparison}</Typography>
             <Typography variant="body2" color="text.secondary">
               {bundle.outcome_comparison.summary}
             </Typography>
             <Typography variant="body2" sx={{ mt: 1 }}>
-              推荐分支：{recommendedBranchLabel}
+              {copy.recommendedBranch}：{recommendedBranchLabel}
             </Typography>
           </CardContent>
         </Card>
@@ -120,13 +121,13 @@ export default function SimulationExplorer() {
             <CardContent>
               <Typography variant="h6">{branch.branch_label}</Typography>
               <Typography variant="body2" color="text.secondary">
-                所属情境：{formatLocalizedToken(branch.target_domain, locale)}
+                {copy.targetDomain}：{formatLocalizedToken(branch.target_domain, locale)}
               </Typography>
               <Typography variant="body2" color="text.secondary">
-                风险分数：{branch.risk_score.toFixed(2)}
+                {copy.riskScore}：{branch.risk_score.toFixed(2)}
               </Typography>
               <Typography variant="body2" color="text.secondary">
-                预演来源：{branch.simulated_by.map((item) => formatLocalizedToken(item, locale)).join("、")}
+                {copy.simulationSource}：{branch.simulated_by.map((item) => formatLocalizedToken(item, locale)).join("、")}
               </Typography>
               <Stack spacing={1} sx={{ mt: 2 }}>
                 {branch.predicted_impacts.map((impact) => (
@@ -137,7 +138,7 @@ export default function SimulationExplorer() {
               </Stack>
               {branch.failure_cascade ? (
                 <Alert severity="error" sx={{ mt: 2 }}>
-                  灾难性失败级联
+                  {copy.disasterCascade}
                 </Alert>
               ) : null}
               {branch.veto_reason ? (

@@ -1,4 +1,6 @@
-from plugins.reflection.reflection_generator_plugin import build_reflection_generator_plugin
+"""Reflection plugin group - pure container directory.
 
-__all__ = ["build_reflection_generator_plugin"]
-
+Do NOT add aggregation exports here. Each plugin unit is independent.
+Importers must use direct sub-module imports:
+    from plugins.reflection.reflection_generator.reflection_generator_plugin import build_reflection_generator_plugin
+"""

@@ -1,0 +1,5 @@
+{
+  "plugin_id": "sensory_webhook",
+  "name": "Webhook Ingest",
+  "description": "Ingest webhook payloads for sensory input."
+}

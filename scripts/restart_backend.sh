@@ -83,7 +83,7 @@ kill_port "${PORT_BACKEND}"
 
 # Kill any existing backend processes
 echo ">>> 清理残留的后端进程..."
-pkill -f "uvicorn zentex.web_console.dev_server:app" 2>/dev/null || true
+pkill -f "uvicorn zentex.boot.web_dev:app" 2>/dev/null || true
 sleep 2
 
 # Secondary confirmation that port is released
@@ -116,4 +116,4 @@ echo "=========================================="
 
 # Start backend with full logging
 export PYTHONPATH=src
-"$PYTHON_BIN" -m uvicorn zentex.web_console.dev_server:app --reload --ws "$WS_IMPLEMENTATION" --host 127.0.0.1 --port "$PORT_BACKEND" --timeout-keep-alive 5
+"$PYTHON_BIN" -m uvicorn zentex.boot.web_dev:app --reload --ws "$WS_IMPLEMENTATION" --host 127.0.0.1 --port "$PORT_BACKEND" --timeout-keep-alive 5

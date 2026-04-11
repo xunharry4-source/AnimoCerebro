@@ -1,0 +1,5 @@
+{
+  "plugin_id": "weight_assembler",
+  "name": "Weight Assembler",
+  "description": "Assemble and aggregate decision weights."
+}

@@ -14,7 +14,7 @@ from zentex.runtime.transcript import BrainTranscriptEntryType, BrainTranscriptS
 QUESTION_REF = "我被允许做什么"
 
 
-from plugins.nine_questions._shared import (
+from zentex.common.nine_questions_shared import (
     build_caller_context,
     build_model_context,
     json_safe_payload,

@@ -16,7 +16,7 @@ from zentex.core.plugin_family import ObjectiveSpec
 logger = logging.getLogger(__name__)
 
 
-from plugins.nine_questions._shared import (
+from zentex.common.nine_questions_shared import (
     build_caller_context,
     build_model_context,
     json_safe_payload,

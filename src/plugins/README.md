@@ -1,6 +1,39 @@
 # Zentex Plugins
 
 This directory houses the concrete implementations of various Zentex plugins.
+- **One plugin = one independent directory**.
+- **Allowed plugin paths**:
+	- `src/plugins/<plugin>`
+	- `src/plugins/<group>/<plugin>`
+- **Disallowed plugin path**:
+	- `src/plugins/<plugin>/<plugin>` (nested plugin directory is not registered)
+- **Required files per plugin directory**:
+	- `startup.py`
+	- `plugin.json`
+	- `register.py`
+	- `README.md`
+- **Independence rule**: a plugin directory should not depend on files from another plugin directory.
+- **Loader entry**: `src/plugins/startup.py`
+- **Guide**: `src/plugins/PLUGIN_STARTUP_GUIDE.md`
+- **Current independent plugin units**:
+	- `src/plugins/sensory/environment_interpreter/`
+	- `src/plugins/sensory/prompt_injection_sanitizer/`
+	- `src/plugins/sensory/webhook_ingest/`
+	- `src/plugins/sensory/host_telemetry/`
+	- `src/plugins/memory/memory_extractor/`
+	- `src/plugins/oracle/alternative/`
+	- `src/plugins/oracle/objective/`
+	- `src/plugins/oracle/posture/`
+	- `src/plugins/oracle/redline/`
+	- `src/plugins/nine_questions/q1_where_am_i/`
+	- `src/plugins/nine_questions/q2_who_am_i/`
+	- `src/plugins/nine_questions/q3_what_do_i_have/`
+	- `src/plugins/nine_questions/q4_what_can_i_do/`
+	- `src/plugins/nine_questions/q5_what_am_i_allowed_to_do/`
+	- `src/plugins/nine_questions/q6_what_should_i_not_do/`
+	- `src/plugins/nine_questions/q7_what_else_can_i_do/`
+	- `src/plugins/nine_questions/q8_what_should_i_do_now/`
+	- `src/plugins/nine_questions/q9_how_should_i_act/`
 - **`cognitive/`**: Implementation of cognitive tools (e.g., conflict checking, ranking).
 - **`sensory/`**: Environmental signal ingestion and sanitization.
 - **`simulation/`**: Counterfactual and branch simulation tools.
@@ -12,6 +45,39 @@ This directory houses the concrete implementations of various Zentex plugins.
 # Zentex 插件目录
 
 该目录存放了 Zentex 各种插件的具体实现。
+- **一个插件 = 一个独立目录**。
+- **允许的插件路径**：
+	- `src/plugins/<插件>`
+	- `src/plugins/<目录>/<插件>`
+- **禁止的插件路径**：
+	- `src/plugins/<插件>/<插件>`（嵌套插件目录不会被注册）
+- **每个插件目录必须包含**：
+	- `startup.py`
+	- `plugin.json`
+	- `register.py`
+	- `README.md`
+- **独立性要求**：插件目录不依赖其他插件目录文件。
+- **加载入口**：`src/plugins/startup.py`
+- **规则说明**：`src/plugins/PLUGIN_STARTUP_GUIDE.md`
+- **当前已落地的独立插件单元**：
+	- `src/plugins/sensory/environment_interpreter/`
+	- `src/plugins/sensory/prompt_injection_sanitizer/`
+	- `src/plugins/sensory/webhook_ingest/`
+	- `src/plugins/sensory/host_telemetry/`
+	- `src/plugins/memory/memory_extractor/`
+	- `src/plugins/oracle/alternative/`
+	- `src/plugins/oracle/objective/`
+	- `src/plugins/oracle/posture/`
+	- `src/plugins/oracle/redline/`
+	- `src/plugins/nine_questions/q1_where_am_i/`
+	- `src/plugins/nine_questions/q2_who_am_i/`
+	- `src/plugins/nine_questions/q3_what_do_i_have/`
+	- `src/plugins/nine_questions/q4_what_can_i_do/`
+	- `src/plugins/nine_questions/q5_what_am_i_allowed_to_do/`
+	- `src/plugins/nine_questions/q6_what_should_i_not_do/`
+	- `src/plugins/nine_questions/q7_what_else_can_i_do/`
+	- `src/plugins/nine_questions/q8_what_should_i_do_now/`
+	- `src/plugins/nine_questions/q9_how_should_i_act/`
 - **`cognitive/`**: 认知工具的实现（如：冲突检查、排名等）。
 - **`sensory/`**: 环境信号的摄取与清洗。
 - **`simulation/`**: 反事实与分支模拟工具。
