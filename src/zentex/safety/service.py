@@ -91,6 +91,15 @@ def get_safety_service() -> SafetyService:
     return _default_service
 
 
+def get_service() -> SafetyService:
+    """Standard service factory function for launcher assembly.
+    
+    Alias for get_safety_service() to maintain compatibility
+    with the SystemAssembler's expectation of a get_service() function.
+    """
+    return get_safety_service()
+
+
 __all__ = [
     "SafetyService",
     "SafetyManager",

@@ -6,15 +6,13 @@ from datetime import datetime, timezone
 from typing import Any, Dict
 from uuid import uuid4
 
-from zentex.core.model_provider_spec import ModelProviderCallerContext, ModelProviderSpec
-from zentex.core.models import LogicalCognitiveToolSpec
-from zentex.core.plugin_base import PluginHealthStatus, PluginLifecycleStatus
-from zentex.runtime.cognitive_tools import CognitiveToolResult
-from zentex.runtime.transcript import BrainTranscriptEntryType, BrainTranscriptStore
+from pydantic import BaseModel, ConfigDict
+
+from plugins.shared.cognitive_result import CognitiveToolResult
+from zentex.common.plugin_ids import NINE_QUESTION_Q4
+from zentex.plugins.models import PluginLifecycleStatus
 
 from plugins.nine_questions.q4_what_can_i_do.models import Q4WhatCanIDoInference
-# Decoupled: Inputs come from execution domain plugins
-from zentex.core.plugin_family import ExecutionPluginSpec
 
 
 QUESTION_REF = "我能做什么"
@@ -33,11 +31,22 @@ from zentex.common.nine_questions_shared import (
     require_transcript_store,
     safe_provider_plugin_id,
 )
+from zentex.plugins.service import execute_enabled_cognitive_plugin_functionals
 
 logger = logging.getLogger(__name__)
 
 
-class Q4WhatCanIDoPlugin(LogicalCognitiveToolSpec):
+class Q4WhatCanIDoPlugin(BaseModel):
+    model_config = ConfigDict(extra="allow")
+
+    plugin_id: str = NINE_QUESTION_Q4
+    version: str = "1.0.0"
+    feature_code: str = "nine_questions.q4"
+    display_name: str = "Q4: What can I do?"
+    behavior_key: str = "nine_questions"
+    lifecycle_status: str = PluginLifecycleStatus.ACTIVE.value
+    health_status: str = "healthy"
+    operational_status: str = "enabled"
     """
     Q4: 我能做什么 (capability boundary profile)
 
@@ -53,6 +62,23 @@ class Q4WhatCanIDoPlugin(LogicalCognitiveToolSpec):
         snapshot = context.get("context_snapshot", {}) or {}
         q3_inventory = snapshot.get("q3_unified_asset_inventory", {}) or {}
         exec_domains = list(q3_inventory.get("available_execution_tools", []) or [])
+        plugin_service = context.get("plugin_service")
+        functional_capabilities: list[dict[str, Any]] = []
+        if plugin_service is not None:
+            functional_capabilities = execute_enabled_cognitive_plugin_functionals(
+                plugin_service,
+                self.plugin_id,
+                default_parameters={"context": dict(context)},
+                trace_id=str(context.get("trace_id") or "q4"),
+                originator_id=str(context.get("session_id") or "unknown-session"),
+                caller_plugin_id=self.plugin_id,
+            )
+            exec_domains.extend(
+                str(item.get("plugin_id") or "")
+                for item in functional_capabilities
+                if item.get("status") == "done"
+            )
+            exec_domains = list(dict.fromkeys(exec_domains))
 
         system_prompt = (
             "你现在是 Zentex 外部大脑的能力评估中枢。请严格基于传入的 Q3 真实资产清单、"
@@ -91,6 +117,7 @@ class Q4WhatCanIDoPlugin(LogicalCognitiveToolSpec):
             "q3_unified_asset_inventory": q3_inventory,
             "q3_resource_evaluation": snapshot.get("q3_resource_evaluation"),
             "active_execution_domains": exec_domains,
+            "functional_capabilities": functional_capabilities,
         }
 
         trace_id = str(context.get("trace_id") or f"q4-what-can-i-do:{uuid4().hex}")
@@ -203,6 +230,7 @@ class Q4WhatCanIDoPlugin(LogicalCognitiveToolSpec):
                 "nine_questions": {QUESTION_REF: summary},
                 "q4_capability_boundary_profile": profile.model_dump(mode="json"),
                 "q4_snapshot_version": snapshot.get("snapshot_version"),
+                "q4_functional_capabilities": functional_capabilities,
             },
             confidence=0.7,
         )
@@ -233,28 +261,14 @@ def _contains_write_like_action(action: str) -> bool:
 
 def build_q4_what_can_i_do_plugin(
     *,
-    plugin_id: str = "nine-question-q4-what-can-i-do",
+    plugin_id: str = NINE_QUESTION_Q4,
     version: str = "1.0.0",
-    status: PluginLifecycleStatus = PluginLifecycleStatus.ACTIVE,
+    lifecycle_status: str | PluginLifecycleStatus = PluginLifecycleStatus.ACTIVE,
 ) -> Q4WhatCanIDoPlugin:
     return Q4WhatCanIDoPlugin(
         plugin_id=plugin_id,
         version=version,
         feature_code="nine_questions.q4",
-        is_concurrency_safe=True,
-        status=status,
-        health_status=PluginHealthStatus.HEALTHY,
-        rollback_conditions=["q4_capability_boundary_regression"],
-        revocation_reasons=["reserved_for_runtime_audit"],
-        tool_type="nine_question",
-        purpose="LLM-backed nine-question Q4: 我能做什么 (capability boundary profile).",
-        input_schema={"type": "object"},
-        output_schema={"type": "object", "required": ["capability_boundary_profile"]},
-        required_context=["context_snapshot", "transcript_store"],
-        trigger_conditions=["inspection"],
+        lifecycle_status=getattr(lifecycle_status, "value", lifecycle_status),
         behavior_key="nine_questions",
-        supports_multiple_plugins=True,
-        is_default_version=True,
-        is_official_release=True,
-        do_not_use_when=["missing_model_provider", "unsafe_external_action"],
     )

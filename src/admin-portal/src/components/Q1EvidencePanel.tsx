@@ -351,6 +351,31 @@ export function Q1EvidencePanel({
                     </CardContent>
                   </Card>
                 </Grid>
+                <Grid size={{ xs: 12, sm: 6 }}>
+                  <Card variant="outlined">
+                    <CardContent>
+                      <Typography variant="subtitle2" gutterBottom>
+                        host_runtime_type
+                      </Typography>
+                      <Chip
+                        label={inference.host_runtime_type || "未知"}
+                        color={
+                          inference.host_runtime_type === "服务器"
+                            ? "error"
+                            : inference.host_runtime_type === "普通电脑"
+                              ? "success"
+                              : "default"
+                        }
+                        variant="outlined"
+                      />
+                      {inference.host_runtime_reason ? (
+                        <Typography variant="body2" color="text.secondary" sx={{ mt: 1 }}>
+                          {inference.host_runtime_reason}
+                        </Typography>
+                      ) : null}
+                    </CardContent>
+                  </Card>
+                </Grid>
                 <Grid size={{ xs: 12 }}>
                   <Card variant="outlined">
                     <CardContent>

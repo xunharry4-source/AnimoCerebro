@@ -1,29 +1,52 @@
+"""
+Overview Router Module (v5)
+Runtime overview query endpoints
+Facade-First route layer extracted from overview.py
+"""
+
 from __future__ import annotations
 
-from fastapi import APIRouter, Request
+from fastapi import APIRouter, Depends, Request
 from typing_extensions import Annotated
-from fastapi import Depends
 
-from typing import Any
 from zentex.web_console.contracts.runtime import LLMStatusPayload, RuntimeOverviewPayload
-from zentex.web_console.dependencies import get_active_session, get_runtime, get_weight_assembler
-from zentex.web_console.services.llm import compute_llm_status
-from zentex.web_console.services.overview import build_overview_payload
-from zentex.runtime.runtime import BrainRuntime
-
+from zentex.web_console.dependencies import get_kernel_service_facade
+from .overview_commons import (
+    query_runtime_overview,
+    query_llm_status,
+)
 
 router = APIRouter()
 
 
 @router.get("/overview", response_model=RuntimeOverviewPayload)
-def get_overview(
-    runtime: Annotated[BrainRuntime, Depends(get_runtime)],
+async def get_overview(
     request: Request,
+    facade: Annotated[object, Depends(get_kernel_service_facade)],
 ) -> RuntimeOverviewPayload:
-    session = get_active_session(request)
-    return build_overview_payload(runtime, session, get_weight_assembler(request.app))
+    """
+    Get current runtime overview
+    
+    Includes system state, agent status, inference metrics, etc.
+    
+    Returns:
+        RuntimeOverviewPayload with comprehensive system overview
+    """
+    return await query_runtime_overview(request, facade)
 
 
 @router.get("/llm/status", response_model=LLMStatusPayload)
-def get_llm_status(request: Request, probe_live: bool = False) -> LLMStatusPayload:
-    return compute_llm_status(request, probe_live=probe_live)
+async def get_llm_status(
+    request: Request,
+    probe_live: bool = False,
+) -> LLMStatusPayload:
+    """
+    Get LLM provider status
+    
+    Args:
+        probe_live: Whether to probe live status (may increase latency)
+        
+    Returns:
+        LLMStatusPayload with provider availability and metrics
+    """
+    return await query_llm_status(request, probe_live=probe_live)

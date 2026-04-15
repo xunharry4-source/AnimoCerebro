@@ -16,6 +16,8 @@ import inspect
 from typing import Any, Dict, List, Optional
 from datetime import datetime
 
+from zentex.plugins.plugin_ids import iter_plugin_id_aliases
+
 logger = logging.getLogger(__name__)
 
 
@@ -62,9 +64,17 @@ class InfoService:
             Documentation string or None if not found
         """
         try:
+            resolved_plugin_id = plugin_id
+            plugin_meta = None
+            for alias in iter_plugin_id_aliases(plugin_id):
+                plugin_meta = self._storage.get_plugin(alias)
+                if plugin_meta is not None:
+                    resolved_plugin_id = alias
+                    break
+
             # Try to get from plugin instance first
-            if plugin_id in self._plugin_instances:
-                plugin = self._plugin_instances[plugin_id]
+            if resolved_plugin_id in self._plugin_instances:
+                plugin = self._plugin_instances[resolved_plugin_id]
                 
                 # Get class docstring
                 class_doc = inspect.getdoc(plugin.__class__)
@@ -78,17 +88,29 @@ class InfoService:
                 # Combine documentation
                 parts = []
                 if class_doc:
-                    parts.append(f"## {plugin_id}\n\n{class_doc}")
+                    parts.append(f"## {resolved_plugin_id}\n\n{class_doc}")
                 if method_doc:
                     parts.append(f"### Execute Method\n\n{method_doc}")
                 
                 if parts:
                     return "\n\n".join(parts)
             
-            # Fallback to stored documentation
-            plugin_meta = self._storage.get_plugin(plugin_id)
+            # Fallback to stored documentation / metadata
             if plugin_meta and 'documentation' in plugin_meta:
                 return plugin_meta['documentation']
+            if plugin_meta:
+                spec_dict = plugin_meta.get("spec_json")
+                spec_payload = {}
+                if isinstance(spec_dict, str) and spec_dict:
+                    try:
+                        import json
+                        spec_payload = json.loads(spec_dict)
+                    except Exception:
+                        spec_payload = {}
+                display_name = str(spec_payload.get("display_name") or plugin_meta.get("plugin_id") or plugin_id)
+                description = str(spec_payload.get("description") or "").strip()
+                if display_name or description:
+                    return f"## {display_name}\n\n{description or 'No description provided.'}"
             
             logger.warning(f"No documentation found for {plugin_id}")
             return None
@@ -227,9 +249,9 @@ class InfoService:
             # Add metadata from storage
             plugin_meta = self._storage.get_plugin(plugin_id)
             if plugin_meta:
-                rules['status'] = plugin_meta.get('status')
+                rules['lifecycle_status'] = plugin_meta.get('lifecycle_status')
+                rules['operational_status'] = plugin_meta.get('operational_status')
                 rules['version'] = plugin_meta.get('version')
-                rules['is_active'] = plugin_meta.get('is_active', False)
                 rules['behavior_key'] = plugin_meta.get('behavior_key')
             
             return rules
@@ -370,8 +392,8 @@ class InfoService:
             if plugin_meta:
                 summary['metadata'] = {
                     'version': plugin_meta.get('version'),
-                    'status': plugin_meta.get('status'),
-                    'is_active': plugin_meta.get('is_active'),
+                    'lifecycle_status': plugin_meta.get('lifecycle_status'),
+                    'operational_status': plugin_meta.get('operational_status'),
                     'behavior_key': plugin_meta.get('behavior_key'),
                     'created_at': plugin_meta.get('created_at'),
                 }

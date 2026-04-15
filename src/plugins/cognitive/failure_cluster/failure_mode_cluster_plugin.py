@@ -1,33 +1,56 @@
 from __future__ import annotations
 
 from collections import Counter
-from typing import Any, Dict, List
+from typing import Any
 
-from zentex.core.models import CognitiveToolSpec
-from zentex.core.plugin_base import PluginHealthStatus, PluginLifecycleStatus
+from pydantic import BaseModel, ConfigDict
+
+from zentex.common.plugin_ids import COGNITIVE_FAILURE_CLUSTER
 from zentex.memory import (
     ConsolidationPluginOutput,
     ForgettableNoiseRule,
     MemoryPromotionCandidate,
     PatternStabilityScore,
 )
+from zentex.plugins.service import execute_enabled_cognitive_plugin_functionals
 
 
-class FailureModeClusterPlugin(CognitiveToolSpec):
-    """Cluster repeated failure reflections into reusable lesson/pattern candidates."""
+class FailureModeClusterPlugin(BaseModel):
+    model_config = ConfigDict(extra="allow")
+
+    plugin_id: str = COGNITIVE_FAILURE_CLUSTER
+    version: str = "1.0.0"
+    feature_code: str = "cognitive.failure_cluster"
+    display_name: str = "Failure Mode Cluster"
+    description: str = "Cluster repeated failure reflections into reusable patterns."
+    behavior_key: str = "memory_consolidation"
+    lifecycle_status: str = "active"
+    health_status: str = "healthy"
+    operational_status: str = "enabled"
 
     def analyze_memory(
         self,
         *,
-        context: Dict[str, Any],
-        noise_rules: List[ForgettableNoiseRule],
+        context: dict[str, Any],
+        noise_rules: list[ForgettableNoiseRule],
     ) -> ConsolidationPluginOutput:
         del noise_rules
         refs = list(context.get("input_memory_refs") or [])
         topic_counter: Counter[str] = Counter()
-        candidates: List[MemoryPromotionCandidate] = []
-        pattern_scores: List[PatternStabilityScore] = []
-        compressed_refs: List[str] = []
+        candidates: list[MemoryPromotionCandidate] = []
+        pattern_scores: list[PatternStabilityScore] = []
+        compressed_refs: list[str] = []
+        plugin_service = context.get("plugin_service")
+        functional_inputs: list[dict[str, Any]] = []
+        if plugin_service is not None:
+            functional_inputs = execute_enabled_cognitive_plugin_functionals(
+                plugin_service,
+                self.plugin_id,
+                default_parameters=dict(context),
+                trace_id=str(context.get("trace_id") or "failure-cluster"),
+                originator_id=str(context.get("session_id") or "failure-cluster"),
+                caller_plugin_id=self.plugin_id,
+            )
 
         for ref in refs:
             if not isinstance(ref, dict):
@@ -61,37 +84,21 @@ class FailureModeClusterPlugin(CognitiveToolSpec):
                 )
             )
 
+        for item in functional_inputs:
+            if item.get("status") != "done":
+                continue
+            result = item.get("result")
+            if not isinstance(result, dict):
+                continue
+            compressed_refs.extend(str(ref_id) for ref_id in result.get("compressed_refs", []) or [])
+
         return ConsolidationPluginOutput(
             plugin_id=self.plugin_id,
             promotion_candidates=candidates,
-            compressed_refs=compressed_refs,
+            compressed_refs=sorted(set(compressed_refs)),
             pattern_scores=pattern_scores,
         )
 
 
-def build_failure_mode_cluster_plugin(
-    *,
-    plugin_id: str = "failure-mode-cluster",
-    status: PluginLifecycleStatus = PluginLifecycleStatus.ACTIVE,
-) -> FailureModeClusterPlugin:
-    """Build the default failure clustering plugin for offline memory consolidation."""
-    return FailureModeClusterPlugin(
-        plugin_id=plugin_id,
-        version="1.0.0",
-        is_concurrency_safe=True,
-        status=status,
-        health_status=PluginHealthStatus.HEALTHY,
-        rollback_conditions=["consolidation_false_promotion_spike"],
-        revocation_reasons=["reserved_for_runtime_audit"],
-        tool_type="memory_failure_cluster",
-        purpose="Cluster repeated failure traces into reusable lessons and stable patterns.",
-        input_schema={"type": "object", "required": ["input_memory_refs"]},
-        output_schema={"type": "object", "required": ["promotion_candidates", "pattern_scores"]},
-        required_context=["input_memory_refs"],
-        trigger_conditions=["sleep_phase", "reflection_postprocess", "memory_governance_review"],
-        behavior_key="memory_consolidation",
-        supports_multiple_plugins=True,
-        is_default_version=True,
-        is_official_release=True,
-        do_not_use_when=["execution_requested", "unsafe_external_action"],
-    )
+def build_failure_mode_cluster_plugin() -> FailureModeClusterPlugin:
+    return FailureModeClusterPlugin()

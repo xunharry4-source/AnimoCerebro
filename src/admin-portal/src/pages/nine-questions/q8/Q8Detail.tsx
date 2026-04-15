@@ -23,6 +23,7 @@ import {
 import Q8EvidencePanel from "../../../components/Q8EvidencePanel";
 import LLMTracePanel from "../../../components/LLMTracePanel";
 import NineQuestionIntroCard from "../../../components/NineQuestionIntroCard";
+import Q8DataTabs from "../../../components/Q8DataTabs";
 
 function resolveErrorGuidance(errMsg: string): { title: string; action: string } {
   if (errMsg.includes("No active session") || errMsg.includes("没有活动 session")) {
@@ -54,6 +55,7 @@ export const Q8Detail: React.FC = () => {
   const [question, setQuestion] = useState<NineQuestionItem | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
+  const [workspaceTaskGoals, setWorkspaceTaskGoals] = useState<string[]>([]);
 
   const loadDetail = async () => {
     setLoading(true);
@@ -62,6 +64,29 @@ export const Q8Detail: React.FC = () => {
       // 物理接口绑定: GET /api/web/nine-questions/q8
       const item = await fetchNineQuestionDetail(qId);
       setQuestion(item);
+      
+      // Load workspace task goals from localStorage
+      const currentWorkspaceId = localStorage.getItem("currentWorkspaceId");
+      if (currentWorkspaceId) {
+        try {
+          const response = await fetch(
+            `http://127.0.0.1:8000/api/web/workspaces/${currentWorkspaceId}`
+          );
+          if (response.ok) {
+            const workspace = await response.json();
+            if (workspace.task_goals) {
+              try {
+                const goals = JSON.parse(workspace.task_goals);
+                setWorkspaceTaskGoals(Array.isArray(goals) ? goals : []);
+              } catch {
+                setWorkspaceTaskGoals([]);
+              }
+            }
+          }
+        } catch (err) {
+          console.warn("Failed to load workspace task goals:", err);
+        }
+      }
     } catch (err: any) {
       setError(err?.message || "加载 Q8 详情失败");
     } finally {
@@ -123,6 +148,27 @@ export const Q8Detail: React.FC = () => {
 
       {/* 问题介绍栏目 */}
       <NineQuestionIntroCard questionId={qId} />
+
+      {/* Q8 实际数据详情 Tab 面板 */}
+      <Q8DataTabs 
+        evidence={evidence as any} 
+        inference={inference as any} 
+      />
+      {/* Workspace Task Goals */}
+      {workspaceTaskGoals.length > 0 && (
+        <Alert severity="info" variant="outlined" sx={{ backgroundColor: "#e3f2fd" }}>
+          <Typography variant="h6" sx={{ mb: 1, fontWeight: "bold" }}>
+            🎯 当前工作区的任务目标
+          </Typography>
+          <Stack spacing={1}>
+            {workspaceTaskGoals.map((goal, index) => (
+              <Typography key={index} variant="body2" sx={{ display: "flex", alignItems: "center", gap: 1 }}>
+                <span sx={{ fontWeight: "bold" }}>{index + 1}.</span> {goal}
+              </Typography>
+            ))}
+          </Stack>
+        </Alert>
+      )}
 
       <Box sx={{ mb: 0 }}>
         <Stack direction="row" spacing={1} sx={{ mb: 2 }} useFlexGap flexWrap="wrap">

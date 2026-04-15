@@ -1,28 +1,48 @@
 from __future__ import annotations
 
 from datetime import datetime, timezone
-from typing import Any, Dict, List
+from typing import Any
 
-from zentex.core.models import CognitiveToolSpec
-from zentex.core.plugin_base import PluginHealthStatus, PluginLifecycleStatus
-from zentex.memory import (
-    ConsolidationPluginOutput,
-    ForgettableNoiseRule,
-)
+from pydantic import BaseModel, ConfigDict
+
+from zentex.common.plugin_ids import COGNITIVE_EXPIRED_ASSUMPTION
+from zentex.memory import ConsolidationPluginOutput, ForgettableNoiseRule
+from zentex.plugins.service import execute_enabled_cognitive_plugin_functionals
 
 
-class ExpiredAssumptionCleanerPlugin(CognitiveToolSpec):
-    """Find stale assumptions and low-value duplicate references that may be forgotten."""
+class ExpiredAssumptionCleanerPlugin(BaseModel):
+    model_config = ConfigDict(extra="allow")
+
+    plugin_id: str = COGNITIVE_EXPIRED_ASSUMPTION
+    version: str = "1.0.0"
+    feature_code: str = "cognitive.expired_assumption"
+    display_name: str = "Expired Assumption Cleaner"
+    description: str = "Mark stale assumptions and duplicate low-value memory as forgettable."
+    behavior_key: str = "memory_consolidation"
+    lifecycle_status: str = "active"
+    health_status: str = "healthy"
+    operational_status: str = "enabled"
 
     def analyze_memory(
         self,
         *,
-        context: Dict[str, Any],
-        noise_rules: List[ForgettableNoiseRule],
+        context: dict[str, Any],
+        noise_rules: list[ForgettableNoiseRule],
     ) -> ConsolidationPluginOutput:
         refs = list(context.get("input_memory_refs") or [])
         now = datetime.now(timezone.utc)
-        pruned_refs: List[str] = []
+        pruned_refs: list[str] = []
+        plugin_service = context.get("plugin_service")
+        functional_inputs: list[dict[str, Any]] = []
+        if plugin_service is not None:
+            functional_inputs = execute_enabled_cognitive_plugin_functionals(
+                plugin_service,
+                self.plugin_id,
+                default_parameters=dict(context),
+                trace_id=str(context.get("trace_id") or "expired-assumption"),
+                originator_id=str(context.get("session_id") or "expired-assumption"),
+                caller_plugin_id=self.plugin_id,
+            )
 
         for ref in refs:
             if not isinstance(ref, dict):
@@ -37,7 +57,6 @@ class ExpiredAssumptionCleanerPlugin(CognitiveToolSpec):
             is_duplicate = bool(ref.get("is_duplicate", False))
 
             for rule in noise_rules:
-                # 为什么这里按规则显式命中：清理噪音必须可审计，不能靠隐式"感觉像垃圾"。
                 if noise_kind != rule.noise_kind and not (
                     rule.noise_kind == "duplicate_case" and is_duplicate
                 ):
@@ -51,35 +70,20 @@ class ExpiredAssumptionCleanerPlugin(CognitiveToolSpec):
                 pruned_refs.append(ref_id)
                 break
 
+        for item in functional_inputs:
+            if item.get("status") != "done":
+                continue
+            result = item.get("result")
+            if isinstance(result, dict):
+                pruned_refs.extend(str(ref_id) for ref_id in result.get("pruned_refs", []) or [])
+            elif isinstance(result, list):
+                pruned_refs.extend(str(ref_id) for ref_id in result)
+
         return ConsolidationPluginOutput(
             plugin_id=self.plugin_id,
-            pruned_refs=pruned_refs,
+            pruned_refs=sorted(set(pruned_refs)),
         )
 
 
-def build_expired_assumption_cleaner_plugin(
-    *,
-    plugin_id: str = "expired-assumption-cleaner",
-    status: PluginLifecycleStatus = PluginLifecycleStatus.ACTIVE,
-) -> ExpiredAssumptionCleanerPlugin:
-    """Build the default assumption-cleaning plugin for offline memory consolidation."""
-    return ExpiredAssumptionCleanerPlugin(
-        plugin_id=plugin_id,
-        version="1.0.0",
-        is_concurrency_safe=True,
-        status=status,
-        health_status=PluginHealthStatus.HEALTHY,
-        rollback_conditions=["forgetting_regression_detected"],
-        revocation_reasons=["reserved_for_runtime_audit"],
-        tool_type="memory_noise_cleaner",
-        purpose="Mark stale assumptions and duplicate low-value memory as safely forgettable.",
-        input_schema={"type": "object", "required": ["input_memory_refs", "noise_rules"]},
-        output_schema={"type": "object", "required": ["pruned_refs"]},
-        required_context=["input_memory_refs", "noise_rules"],
-        trigger_conditions=["sleep_phase", "agenda_cleanup", "memory_governance_review"],
-        behavior_key="memory_consolidation",
-        supports_multiple_plugins=True,
-        is_default_version=True,
-        is_official_release=True,
-        do_not_use_when=["execution_requested", "unsafe_external_action"],
-    )
+def build_expired_assumption_cleaner_plugin() -> ExpiredAssumptionCleanerPlugin:
+    return ExpiredAssumptionCleanerPlugin()

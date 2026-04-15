@@ -1,75 +1,62 @@
 from __future__ import annotations
-
 from typing import Any, Dict, List, Optional
-
 from pydantic import BaseModel, ConfigDict, Field
+from zentex.agents.manager import AgentStatus, AgentTrustLevel
 
-from zentex.agents.service import AgentStatus, AgentTrustLevel
+# Re-exporting from core contracts
+from zentex.agents.contracts import (
+    AgentInboxItem,
+    AgentReceiptItem,
+    AgentStatusView as AgentConsoleRecord,  # Alias for backward compatibility
+    AgentAuditRecord
+)
 
+class AgentRegistrationRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid", str_strip_whitespace=True)
+
+    name: str = Field(min_length=1)  # Technical ID
+    agent_name: str = Field(min_length=1)  # Human readable name
+    version: str = Field(min_length=1)
+    function_description: str = Field(min_length=1)
+    endpoint: str = Field(min_length=1)
+    auth_token: str = Field(min_length=1)
+    role_tag: str = Field(min_length=1)
+    trust_level: AgentTrustLevel = AgentTrustLevel.PENDING
+    scope: List[str] = Field(default_factory=list)
 
 class AgentPolicyUpdateRequest(BaseModel):
-    model_config = ConfigDict(extra="forbid", frozen=True)
+    model_config = ConfigDict(extra="forbid")
 
     trust_level: AgentTrustLevel
     scope: List[str]
 
+class AgentHandshakeResponse(BaseModel):
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    agent_id: str
+    status: str
+    capabilities: List[Dict[str, Any]]
+    latency_ms: Optional[float] = None
+
+class AgentCreditScoreDimension(BaseModel):
+    model_config = ConfigDict(extra="forbid", frozen=True)
+    name: str
+    score: float
+    weight: float
+
+class AgentCreditScore(BaseModel):
+    model_config = ConfigDict(extra="forbid", frozen=True)
+    total_score: float
+    dimensions: List[AgentCreditScoreDimension]
+
+class AgentStatistics(BaseModel):
+    model_config = ConfigDict(extra="forbid", frozen=True)
+    total_tasks: int
+    completed_tasks: int
+    failed_tasks: int
+    in_progress_tasks: int
+    uptime_percentage: float
 
 class AgentDispatchTaskRequest(BaseModel):
-    model_config = ConfigDict(extra="forbid", frozen=True)
-
+    model_config = ConfigDict(extra="forbid")
     task_payload: Dict[str, Any]
-
-
-class AgentInboxItem(BaseModel):
-    model_config = ConfigDict(extra="forbid", frozen=True)
-
-    task_id: str
-    title: str
-    status: str
-    idempotency_key: str
-    originator_id: str
-    remarks: Optional[str] = None
-
-
-class AgentReceiptItem(BaseModel):
-    model_config = ConfigDict(extra="forbid", frozen=True)
-
-    task_id: str
-    title: str
-    status: str
-    idempotency_key: str
-    completed_at: Optional[str] = None
-    remarks: Optional[str] = None
-
-
-class AgentConsoleRecord(BaseModel):
-    model_config = ConfigDict(extra="forbid", frozen=True)
-
-    agent_id: str
-    name: str
-    agent_name: str
-    version: str
-    function_description: str
-    endpoint: str
-    role_tag: str
-    trust_level: AgentTrustLevel
-    status: AgentStatus
-    scope: List[str] = Field(default_factory=list)
-    capabilities: List[Dict[str, Any]] = Field(default_factory=list)
-    latency_ms: Optional[float] = None
-    success_rate: float
-    last_ping_at: Optional[str] = None
-    registered_at: str
-    inbox: List[AgentInboxItem] = Field(default_factory=list)
-    assigned_goal: Optional[str] = None
-    receipts: List[AgentReceiptItem] = Field(default_factory=list)
-
-
-class AgentAuditRecord(BaseModel):
-    model_config = ConfigDict(extra="forbid", frozen=True)
-
-    agent_id: str
-    event_type: str
-    timestamp: str
-    summary: str
-    details: Dict[str, Any]

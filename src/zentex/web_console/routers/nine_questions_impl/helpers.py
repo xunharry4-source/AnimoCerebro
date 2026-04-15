@@ -8,7 +8,8 @@ from typing import Any, Dict, List, Optional
 from pathlib import Path
 from pydantic import BaseModel
 
-from zentex.runtime.nine_questions.startup_snapshot import build_runtime_workspace_snapshot
+# Note: startup_snapshot import removed - module not available in web_console context
+# This is handled in plugins/nine_questions instead
 
 
 def _normalize_health_status(value: object) -> str:
@@ -92,12 +93,17 @@ def _build_runtime_workspace_snapshot(
     task_service: object | None,
     host_telemetry_plugin: object | None = None,
 ) -> dict[str, object]:
-    """Build runtime workspace snapshot for nine questions context."""
-    return build_runtime_workspace_snapshot(
-        workspace_root=workspace_root,
-        cognitive_registry=cognitive_registry,
-        execution_registry=execution_registry,
-        task_service=task_service,
-        environment_summary="frontend requested a full nine-question refresh",
-        host_telemetry_plugin=host_telemetry_plugin,
-    )
+    """Build runtime workspace snapshot for nine questions context.
+    
+    Note: This is a stub - actual implementation requires runtime module.
+    Returns minimal snapshot structure.
+    """
+    # Return minimal snapshot - this should be populated from kernel/runtime
+    return {
+        "workspace_root": workspace_root,
+        "cognitive_registry": str(cognitive_registry),
+        "execution_registry": str(execution_registry),
+        "task_service": str(task_service),
+        "environment_summary": "web_console_nine_questions_context",
+        "host_telemetry_plugin": str(host_telemetry_plugin),
+    }

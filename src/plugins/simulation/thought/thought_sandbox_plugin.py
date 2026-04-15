@@ -2,8 +2,8 @@ from __future__ import annotations
 
 from typing import Any, Dict, List
 
-from zentex.core.plugin_base import PluginHealthStatus, PluginLifecycleStatus
-from zentex.core.simulation_spec import (
+from zentex.plugins.contracts import PluginHealthStatus, PluginLifecycleStatus
+from zentex.plugins.simulation import (
     SimulationDomainPlugin,
     SimulationIntent,
     SimulationResult,
@@ -53,8 +53,11 @@ def build_default_thought_sandbox() -> ThoughtSandbox:
         plugin_id="simulation-thought-sandbox",
         version="1.0.0",
         is_concurrency_safe=True,
-        status=PluginLifecycleStatus.CANDIDATE,
+        lifecycle_status=PluginLifecycleStatus.CANDIDATE,
         health_status=PluginHealthStatus.HEALTHY,
         rollback_conditions=["sandbox_regression"],
         revocation_reasons=["reserved_for_runtime_audit"],
     )
+
+
+ThoughtSandbox.model_rebuild()

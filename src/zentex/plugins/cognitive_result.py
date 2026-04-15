@@ -1,0 +1,25 @@
+"""Public cognitive tool result model owned by zentex.plugins.
+
+This contract replaces scattered runtime-local result models during migration.
+"""
+
+from __future__ import annotations
+
+from typing import Any
+
+from pydantic import BaseModel, ConfigDict, Field
+
+
+class CognitiveToolResult(BaseModel):
+    model_config = ConfigDict(extra="allow")
+
+    tool_id: str
+    summary: str
+    evidence: list[Any] = Field(default_factory=list)
+    proposals: list[dict[str, Any]] = Field(default_factory=list)
+    ranked_options: list[dict[str, Any]] = Field(default_factory=list)
+    risks: list[Any] = Field(default_factory=list)
+    uncertainties: list[Any] = Field(default_factory=list)
+    context_updates: dict[str, Any] = Field(default_factory=dict)
+    confidence: float = 0.0
+

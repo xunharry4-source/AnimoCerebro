@@ -20,7 +20,19 @@ class BasePluginSpec(BaseModel):
     plugin_id: str = Field(min_length=1)
     version: str = Field(min_length=1)
     feature_code: str = Field(min_length=1)
-    status: PluginLifecycleStatus
+    lifecycle_status: PluginLifecycleStatus
+    operational_status: str = "enabled"
     category: str = "functional"
     behavior_key: Optional[str] = None
     plugin_layer: PluginLayer = PluginLayer.FUNCTIONAL
+
+
+class PluginFeatureCatalogItem(BaseModel):
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    feature_code: str
+    display_name: str
+    plugin_kind: str
+    feature_guide_path: Optional[str] = None
+    family_guide_path: Optional[str] = None
+    supports_multiple_plugins: bool = False

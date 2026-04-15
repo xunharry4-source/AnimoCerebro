@@ -8,12 +8,9 @@ from uuid import uuid4
 
 from pydantic import BaseModel, ConfigDict, Field
 
-from zentex.core.plugin_base import (
-    PluginHealthStatus,
-    PluginLifecycleStatus,
-)
-from zentex.core.models import LogicalCognitiveToolSpec
-from zentex.runtime.cognitive_tools import CognitiveToolResult
+from plugins.shared.cognitive_result import CognitiveToolResult
+from zentex.common.plugin_ids import NINE_QUESTION_Q9
+from zentex.plugins.models import PluginLifecycleStatus
 from zentex.common.nine_questions_shared import (
     build_caller_context,
     build_model_context,
@@ -27,8 +24,9 @@ from zentex.common.nine_questions_shared import (
     require_transcript_store,
     safe_provider_plugin_id,
 )
-# Decoupled: Inputs come from posture control plugins
-from zentex.core.plugin_family import PostureSpec
+from zentex.plugins.service import (
+    execute_enabled_cognitive_plugin_functionals,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -72,29 +70,36 @@ class EscalationProfile(BaseModel):
     revisit_conditions: List[str] = Field(default_factory=list)
     rollback_conditions: List[str] = Field(default_factory=list)
 
+# Pre-rebuild sub-profiles to resolve type hints for Pydantic v2
+EvaluationProfile.model_rebuild()
+EvolutionProfile.model_rebuild()
+EscalationProfile.model_rebuild()
 
 
-class HowShouldIActPlugin(LogicalCognitiveToolSpec):
+
+class HowShouldIActPlugin(BaseModel):
+    model_config = ConfigDict(extra="allow")
+
     """
     [LLM MANDATORY] Q9 Phase Plugin.
     Determines the Action Posture based on the final decision (Q8) and environmental factors (Q1).
     """
-    plugin_id: str = "nine_question_q9_posture"
+    plugin_id: str = NINE_QUESTION_Q9
     display_name: str = "Q9: How should I act? (Posture & Rhythm)"
     behavior_key: str = "q9_action_posture"
     version: str = "1.0.0"
     is_concurrency_safe: bool = True
-    status: PluginLifecycleStatus = PluginLifecycleStatus.ACTIVE
-    health_status: PluginHealthStatus = PluginHealthStatus.HEALTHY
+    lifecycle_status: str = PluginLifecycleStatus.ACTIVE.value
+    health_status: str = "healthy"
     rollback_conditions: List[str] = Field(default_factory=lambda: ["unhandled_llm_failure"])
     revocation_reasons: List[str] = Field(default_factory=list)
     tool_type: str = "nine_question"
     purpose: str = "Determine action posture, evaluation style, and confirmation strategy (Q9)."
     input_schema: Dict[str, Any] = {"type": "object"}
     output_schema: Dict[str, Any] = {"type": "object"}
-    required_context: List[str] = ["nine_question_state", "plugin_registry", "transcript_store", "model_provider"]
+    required_context: List[str] = ["nine_question_state", "plugin_service", "transcript_store", "llm_service"]
     trigger_conditions: List[str] = ["inspection", "always"]
-    do_not_use_when: List[str] = ["missing_model_provider"]
+    do_not_use_when: List[str] = ["missing_llm_service"]
     read_only: bool = True
     side_effect_free: bool = True
     is_default_version: bool = True
@@ -107,19 +112,29 @@ class HowShouldIActPlugin(LogicalCognitiveToolSpec):
         provider = require_model_provider(context)
         transcript_store = require_transcript_store(context)
         
-        # 1. G-series Posture Control Oracle Discovery
-        try:
-             registry = context.get("plugin_registry")
-             if not registry:
-                 raise RuntimeError("Plugin Registry missing from context.")
-             
-             # Locate active posture oracles
-             active_plugins = registry.get_active_plugins()
-             posture_oracles = [p.plugin_id for p in active_plugins if isinstance(p, PostureSpec)]
-             
-        except Exception as exc:
-             logger.error(f"Posture Discovery Failure: {exc}")
-             raise RuntimeError(f"Q9 Control Path Break: {exc}") from exc
+        plugin_service = context.get("plugin_service")
+        trace_id = str(context.get("trace_id") or f"q9-posture:{uuid4().hex}")
+        session_id = str(context.get("session_id") or "unknown-session")
+        turn_id = str(context.get("turn_id") or "unknown-turn")
+        request_id = str(uuid4())
+        decision_id = str(context.get("decision_id") or f"{turn_id}:{self.plugin_id}")
+
+        functional_postures: list[dict[str, Any]] = []
+        posture_oracles: list[str] = []
+        if plugin_service is not None:
+            functional_postures = execute_enabled_cognitive_plugin_functionals(
+                plugin_service,
+                self.plugin_id,
+                default_parameters={"decision_trace": dict(context)},
+                trace_id=trace_id,
+                originator_id=session_id,
+                caller_plugin_id=self.plugin_id,
+            )
+            posture_oracles = [
+                str(item.get("plugin_id") or "")
+                for item in functional_postures
+                if item.get("status") == "done"
+            ]
 
         nine_question_state = context.get("nine_question_state") or {}
         q1_q8 = {f"q{i}": nine_question_state.get(f"q{i}", {}) for i in range(1, 9)}
@@ -183,12 +198,6 @@ class HowShouldIActPlugin(LogicalCognitiveToolSpec):
 }}
 """
 
-        trace_id = str(context.get("trace_id") or f"q9-posture:{uuid4().hex}")
-        session_id = str(context.get("session_id") or "unknown-session")
-        turn_id = str(context.get("turn_id") or "unknown-turn")
-        request_id = str(uuid4())
-        decision_id = str(context.get("decision_id") or f"{turn_id}:{self.plugin_id}")
-
         # 3. Invoke LLM with strict traceability
         caller_context = build_caller_context(
             invocation_phase="nine_question_q9_posture",
@@ -204,7 +213,7 @@ class HowShouldIActPlugin(LogicalCognitiveToolSpec):
             session_id=session_id,
             turn_id=turn_id,
             trace_id=trace_id,
-            source="plugins.nine_questions.q9_need_reconfirm",
+            source="plugins.nine_questions.q9_how_should_i_act",
             payload={
                 "request_id": request_id,
                 "decision_id": decision_id,
@@ -221,7 +230,18 @@ class HowShouldIActPlugin(LogicalCognitiveToolSpec):
             started = perf_counter()
             result_raw = provider.generate_json(
                 prompt=f"{system_prompt}\n\n{user_prompt}",
-                context={"q1_q8": q1_q8, "posture_oracles": posture_oracles},
+                context={
+                    "q1_q8": q1_q8,
+                    "posture_oracles": posture_oracles,
+                    "functional_postures": [
+                        {
+                            "plugin_id": item.get("plugin_id"),
+                            "result": item.get("result"),
+                        }
+                        for item in functional_postures
+                        if item.get("status") == "done"
+                    ],
+                },
                 caller_context=caller_context
             )
             elapsed_ms = int((perf_counter() - started) * 1000)
@@ -235,7 +255,7 @@ class HowShouldIActPlugin(LogicalCognitiveToolSpec):
                 session_id=session_id,
                 turn_id=turn_id,
                 trace_id=trace_id,
-                source="plugins.nine_questions.q9_need_reconfirm",
+                source="plugins.nine_questions.q9_how_should_i_act",
                 payload={
                     "request_id": request_id,
                     "decision_id": decision_id,
@@ -261,7 +281,7 @@ class HowShouldIActPlugin(LogicalCognitiveToolSpec):
                 session_id=session_id,
                 turn_id=turn_id,
                 trace_id=trace_id,
-                source="plugins.nine_questions.q9_need_reconfirm",
+                source="plugins.nine_questions.q9_how_should_i_act",
                 payload={
                     "request_id": request_id,
                     "decision_id": decision_id,
@@ -296,11 +316,14 @@ class HowShouldIActPlugin(LogicalCognitiveToolSpec):
 
 def build_q9_how_should_i_act_plugin(
     *,
-    plugin_id: str = "nine_question_q9_posture",
-    status: PluginLifecycleStatus = PluginLifecycleStatus.ACTIVE,
+    plugin_id: str = NINE_QUESTION_Q9,
+    lifecycle_status: str | PluginLifecycleStatus = PluginLifecycleStatus.ACTIVE,
 ) -> HowShouldIActPlugin:
     return HowShouldIActPlugin(
         plugin_id=plugin_id,
         feature_code="nine_questions.q9",
-        status=status,
+        lifecycle_status=getattr(lifecycle_status, "value", lifecycle_status),
     )
+
+
+HowShouldIActPlugin.model_rebuild()

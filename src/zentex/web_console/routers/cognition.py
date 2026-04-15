@@ -1,14 +1,17 @@
 from __future__ import annotations
 
+import logging
+from typing import Any
 from fastapi import APIRouter
 from fastapi import HTTPException
 from typing_extensions import Annotated
 from fastapi import Depends
 
+logger = logging.getLogger(__name__)
+
 from zentex.cognition.simulation import CounterfactualSimulationEngine
 from zentex.cognition.social_mind import InteractionMindEngine
 from zentex.memory import ConsolidationEngine
-from zentex.runtime.temporal import CognitiveTemporalEngine
 from zentex.safety.service import CognitiveConflictEngine
 from zentex.web_console.contracts.runtime import (
     CognitiveAgendaPayload,
@@ -31,13 +34,44 @@ router = APIRouter()
 
 @router.get("/cognitive-agenda", response_model=CognitiveAgendaPayload)
 def get_cognitive_agenda(
-    temporal_engine: Annotated[CognitiveTemporalEngine, Depends(get_temporal_engine)],
+    temporal_engine: Annotated[Any, Depends(get_temporal_engine)],
 ) -> CognitiveAgendaPayload:
-    state = temporal_engine.evaluate()
-    return CognitiveAgendaPayload(
-        state=state.model_dump(mode="json"),
-        items=[item.model_dump(mode="json") for item in state.items],
-    )
+    try:
+        # Use snapshot() method which is the correct API for CognitiveTemporalEngine
+        snap = temporal_engine.snapshot()
+        return CognitiveAgendaPayload(
+            state={
+                "state_id": snap.get("session_id", "temporal"),
+                "review_now_item_ids": [],
+                "overdue_item_ids": [],
+                **snap,
+            },
+            items=[],
+        )
+    except TimeoutError:
+        # If evaluation times out, return empty agenda state instead of failing
+        import logging
+        logging.warning("CognitiveTemporalEngine.snapshot() timed out; returning empty agenda")
+        return CognitiveAgendaPayload(
+            state={
+                "state_id": "timeout_fallback",
+                "review_now_item_ids": [],
+                "overdue_item_ids": [],
+            },
+            items=[],
+        )
+    except Exception as exc:
+        # Log other errors but don't break the page load
+        import logging
+        logging.error(f"Error evaluating cognitive agenda: {exc}")
+        return CognitiveAgendaPayload(
+            state={
+                "state_id": "error_fallback",
+                "review_now_item_ids": [],
+                "overdue_item_ids": [],
+            },
+            items=[],
+        )
 
 
 @router.get("/cognitive-conflicts", response_model=CognitiveConflictPayload)
@@ -105,9 +139,18 @@ def get_interaction_mind(
     entity_id: str,
     interaction_mind_engine: Annotated[InteractionMindEngine, Depends(get_interaction_mind_engine)],
 ) -> InteractionMindPayload:
-    state = interaction_mind_engine.get_state(entity_id)
-    state_payload = state.model_dump(mode="json") if hasattr(state, "model_dump") else {}
-    return InteractionMindPayload(state=state_payload)
+    if interaction_mind_engine is None:
+        error_msg = "Interaction mind engine 未初始化。"
+        logger.error(f"[API] GET /interaction-mind/{entity_id} — interaction_mind_engine is None: {error_msg}")
+        raise HTTPException(status_code=503, detail={"error": "interaction_mind_unavailable", "message": error_msg})
+    
+    try:
+        state = interaction_mind_engine.get_state(entity_id)
+        state_payload = state.model_dump(mode="json") if hasattr(state, "model_dump") else {}
+        return InteractionMindPayload(state=state_payload)
+    except Exception as exc:
+        logger.error(f"[API] GET /interaction-mind/{entity_id} — Exception: {exc}", exc_info=True)
+        raise HTTPException(status_code=500, detail=f"Failed to get interaction mind: {exc}") from exc
 
 
 @router.get("/memory/consolidation-cycles", response_model=ConsolidationCyclesPayload)

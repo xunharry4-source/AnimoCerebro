@@ -1,6 +1,25 @@
-from __future__ import annotations
+"""
+📋 CLI Adapter Module - Command Line Interface Integration
 
-"""CLI adapter that registers external shell tools behind Zentex plugin boundaries."""
+职责：
+- 负责 CLI (Command Line Interface) 适配器的初始化和配置
+- 提供公开 API `create_cli_adapter_plugin()` 供 bootstrap 模块使用
+- 管理外部 shell 工具与 Zentex 插件边界的集成
+- 处理 subprocess 执行、进程管理和命令回显
+
+关键导出：
+- create_cli_adapter_plugin(transcript_store, cognitive_registry) -> CliAdapterPlugin
+  * 公开初始化函数，bootstrap 应通过此函数创建 CLI 适配器
+  * 包含完整的 CLI 环境配置和工具注册，避免 bootstrap 直接导入内部类
+
+设计原则（工程规范 4.3B）：
+- Module Independence: 每个模块通过公开 API 初始化自己
+- Clean Imports: 所有导入在模块顶部，无函数内导入
+- Boundary Protection: 保护 CLI 工具与系统其他部分的边界
+
+"""
+
+from __future__ import annotations
 
 import json
 from pathlib import Path
@@ -9,22 +28,35 @@ import subprocess
 from typing import Any, Dict, List, Optional, Protocol, Set
 from uuid import uuid4
 
-from pydantic import ConfigDict, PrivateAttr
+from pydantic import ConfigDict, PrivateAttr, BaseModel
+from enum import Enum
 
-from zentex.core.cli import CliInvocationResult, CliToolRegistrationConfig, CliToolRuntimeState
-from zentex.core.cli import _MUTATING_TOKENS
-from zentex.core.execution_registry import ExecutionDomainRegistry
-from zentex.core.execution_spec import (
+from zentex.cli.models import (
+    CliInvocationResult,
+    CliToolRegistrationConfig,
+    CliToolRuntimeState,
+)
+from zentex.plugins.cognitive_spec import CognitiveToolSpec
+from zentex.plugins.contracts import (
+    FunctionalPluginSpec,
+    PluginHealthStatus,
+    PluginLifecycleStatus,
+    BasePluginSpec,
+)
+from zentex.plugins.execution import (
     ActionExecutionReceipt,
     ActionIntent,
     ActionStatus,
     ExecutionDomainPlugin,
 )
-from zentex.core.models import CognitiveToolSpec
-from zentex.core.plugin_base import FunctionalPluginSpec, PluginHealthStatus, PluginLifecycleStatus
-from zentex.runtime.cognitive_tools import CognitiveToolResult
-from zentex.runtime.cognitive_tools.registry import CognitiveToolRegistry
-from zentex.runtime.transcript import BrainTranscriptEntryType, BrainTranscriptStore
+from zentex.plugins.cognitive_result import CognitiveToolResult
+from zentex.kernel import BrainTranscriptStore, BrainTranscriptEntryType
+
+_MUTATING_TOKENS: Set[str] = {
+    "rm", "del", "delete", "format", "mkfs", "dd", "chmod", "chown",
+    "write", "overwrite", "truncate", "kill", "stop", "reboot", "shutdown",
+    "sudo", "su", "apt", "brew", "npm", "pip", "git", "cp", "mv"
+}
 
 try:
     from plumbum import local as plumbum_local
@@ -35,6 +67,56 @@ try:
     import pexpect
 except Exception:  # pragma: no cover - optional dependency
     pexpect = None
+
+
+def create_cli_adapter_plugin(
+    transcript_store: "BrainTranscriptStore",
+    cognitive_registry: Any = None,
+) -> "CliAdapterPlugin":
+    """
+    ✅ 公开 API - cli 模块负责自己的 adapter 初始化
+    
+    bootstrap 只调用此函数，不应 import CliAdapterPlugin 或相关内部类。
+    所有 CLI 适配器配置在这里定义。
+    
+    Args:
+        transcript_store: 用于审计的 transcript 存储
+        cognitive_registry: 可选的认知工具注册表
+        
+    Returns:
+        CliAdapterPlugin 实例
+    """
+    # CLI 环境配置 - 所有 CLI 相关逻辑在这里
+    adapter = CliAdapterPlugin(
+        plugin_id="cli-adapter-dev",
+        version="1.0.0",
+        feature_code="external.cli",
+        is_concurrency_safe=True,
+        lifecycle_status=PluginLifecycleStatus.ACTIVE,
+        health_status=PluginHealthStatus.HEALTHY,
+        rollback_conditions=["cli_adapter_regression"],
+        revocation_reasons=["cli_adapter_disabled"],
+    )
+    
+    adapter.attach_runtime(
+        transport=SubprocessCliTransport(),
+        transcript_store=transcript_store,
+    )
+    
+    # 注册 demo 工具
+    adapter.register_tool(
+        CliToolRegistrationConfig(
+            tool_name="repo_echo_probe",
+            command_executable="/bin/echo",
+            description="Read-only shell probe for CLI integration smoke tests.",
+            read_only_flag=True,
+            project_path=".",
+            project_name="AnimoCerebro",
+            project_description="Zentex workspace shell probe",
+        )
+    )
+    
+    return adapter
 
 
 class CliTransportClient(Protocol):
@@ -221,8 +303,6 @@ class CliAdapterPlugin(FunctionalPluginSpec):
 
     _transport: CliTransportClient = PrivateAttr()
     _transcript_store: BrainTranscriptStore = PrivateAttr()
-    _cognitive_registry: CognitiveToolRegistry = PrivateAttr()
-    _execution_registry: ExecutionDomainRegistry = PrivateAttr()
     _registered_tools: Dict[str, CliToolRegistrationConfig] = PrivateAttr(default_factory=dict)
     _tool_states: Dict[str, CliToolRuntimeState] = PrivateAttr(default_factory=dict)
     _registered_plugin_ids: Set[str] = PrivateAttr(default_factory=set)
@@ -236,13 +316,11 @@ class CliAdapterPlugin(FunctionalPluginSpec):
         *,
         transport: CliTransportClient,
         transcript_store: BrainTranscriptStore,
-        cognitive_registry: CognitiveToolRegistry,
-        execution_registry: ExecutionDomainRegistry,
+        cognitive_registry: Any | None = None,
+        execution_registry: Any | None = None,
     ) -> None:
         self._transport = transport
         self._transcript_store = transcript_store
-        self._cognitive_registry = cognitive_registry
-        self._execution_registry = execution_registry
 
     def register_tool(self, config: CliToolRegistrationConfig) -> CliToolRuntimeState:
         normalized = CliToolRegistrationConfig.model_validate(config.model_dump(mode="json"))
@@ -258,13 +336,66 @@ class CliAdapterPlugin(FunctionalPluginSpec):
             )
         if not self._transport.health_probe(normalized):
             raise FileNotFoundError(f"health probe failed for CLI tool: {normalized.command_executable}")
-        state = self._register_tool_runtime(normalized)
+        state = self._build_tool_runtime_state(normalized)
         self._registered_tools[normalized.tool_name] = normalized
         self._tool_states[normalized.tool_name] = state
         return state
 
     def list_tool_states(self) -> List[CliToolRuntimeState]:
         return [self._tool_states[key] for key in sorted(self._tool_states.keys())]
+
+    def produce_sub_plugin_specs(self) -> List[tuple[BasePluginSpec, Any]]:
+        """
+        Produces Zentex plugin specifications for all managed CLI tools.
+        Used by SystemPluginService to mount tools into the global bus.
+        """
+        specs = []
+        for config in self._registered_tools.values():
+            cli_id = f"cli:{config.tool_name}"
+            feature_code = f"cli.{config.tool_name}"
+            mapped_domain = "cognitive" if config.read_only_flag else "execution"
+            
+            if mapped_domain == "cognitive":
+                spec = CliCognitiveToolPlugin(
+                    plugin_id=cli_id,
+                    version="1.0.0",
+                    feature_code=feature_code,
+                    is_concurrency_safe=True,
+                    lifecycle_status=PluginLifecycleStatus.ACTIVE,
+                    health_status=PluginHealthStatus.HEALTHY,
+                    rollback_conditions=["cli_tool_regression"],
+                    revocation_reasons=["cli_adapter_disabled"],
+                    tool_type="cli_cognitive_tool",
+                    purpose=config.description,
+                    input_schema={"type": "object"},
+                    output_schema={"type": "object"},
+                    required_context=["trace_id"],
+                    trigger_conditions=["inspection"],
+                    behavior_key=feature_code,
+                    supports_multiple_plugins=False,
+                    is_default_version=True,
+                    is_official_release=True,
+                    do_not_use_when=["cli_tool_degraded"],
+                    read_only=True,
+                    side_effect_free=True,
+                )
+                spec.attach_runtime(transport=self._transport, config=config, transcript_store=self._transcript_store)
+            else:
+                spec = CliExecutionDomainPlugin(
+                    plugin_id=cli_id,
+                    version="1.0.0",
+                    feature_code=feature_code,
+                    is_concurrency_safe=False,
+                    lifecycle_status=PluginLifecycleStatus.ACTIVE,
+                    health_status=PluginHealthStatus.HEALTHY,
+                    rollback_conditions=["cli_tool_regression"],
+                    revocation_reasons=["cli_adapter_disabled"],
+                    execution_domain=config.execution_domain,
+                    requires_cloud_audit=True,
+                )
+                spec.attach_runtime(transport=self._transport, config=config, transcript_store=self._transcript_store)
+            specs.append((spec, config))
+        return specs
 
     def get_tool_config(self, tool_name: str) -> CliToolRegistrationConfig:
         config = self._registered_tools.get(tool_name)
@@ -298,74 +429,15 @@ class CliAdapterPlugin(FunctionalPluginSpec):
         healthy = all(self._transport.health_probe(config) for config in self._registered_tools.values())
         return PluginHealthStatus.HEALTHY if healthy else PluginHealthStatus.DEGRADED
 
-    def _register_tool_runtime(self, config: CliToolRegistrationConfig) -> CliToolRuntimeState:
-        plugin_id = f"cli:{config.tool_name}"
+    def _build_tool_runtime_state(self, config: CliToolRegistrationConfig) -> CliToolRuntimeState:
+        cli_id = f"cli:{config.tool_name}"
         feature_code = f"cli.{config.tool_name}"
         mapped_domain = "cognitive" if config.read_only_flag else "execution"
-        if plugin_id not in self._registered_plugin_ids:
-            if mapped_domain == "cognitive":
-                plugin = CliCognitiveToolPlugin(
-                    plugin_id=plugin_id,
-                    version="1.0.0",
-                    feature_code=feature_code,
-                    is_concurrency_safe=True,
-                    status=PluginLifecycleStatus.ACTIVE,
-                    health_status=PluginHealthStatus.HEALTHY,
-                    rollback_conditions=["cli_tool_regression"],
-                    revocation_reasons=["cli_adapter_disabled"],
-                    tool_type="cli_cognitive_tool",
-                    purpose=config.description,
-                    input_schema={"type": "object"},
-                    output_schema={"type": "object"},
-                    required_context=["trace_id"],
-                    trigger_conditions=["inspection"],
-                    behavior_key=feature_code,
-                    supports_multiple_plugins=False,
-                    is_default_version=True,
-                    is_official_release=True,
-                    do_not_use_when=["cli_tool_degraded"],
-                    read_only=True,
-                    side_effect_free=True,
-                )
-                plugin.attach_runtime(
-                    transport=self._transport,
-                    config=config,
-                    transcript_store=self._transcript_store,
-                )
-                registration = self._cognitive_registry.register(plugin, description=config.description)
-                if registration is None:
-                    raise RuntimeError(f"Failed to register CLI cognitive tool: {plugin_id}")
-                self._cognitive_registry.promote_plugin(plugin_id, PluginLifecycleStatus.SANDBOX_VERIFIED, "cli register")
-                self._cognitive_registry.promote_plugin(plugin_id, PluginLifecycleStatus.ACTIVE, "cli register")
-            else:
-                plugin = CliExecutionDomainPlugin(
-                    plugin_id=plugin_id,
-                    version="1.0.0",
-                    feature_code=feature_code,
-                    is_concurrency_safe=False,
-                    status=PluginLifecycleStatus.ACTIVE,
-                    health_status=PluginHealthStatus.HEALTHY,
-                    rollback_conditions=["cli_tool_regression"],
-                    revocation_reasons=["cli_adapter_disabled"],
-                    execution_domain=config.execution_domain,
-                    requires_cloud_audit=True,
-                )
-                plugin.attach_runtime(
-                    transport=self._transport,
-                    config=config,
-                    transcript_store=self._transcript_store,
-                )
-                registration = self._execution_registry.register(plugin, description=config.description)
-                if registration is None:
-                    raise RuntimeError(f"Failed to register CLI execution tool: {plugin_id}")
-                self._execution_registry.promote_plugin(plugin_id, PluginLifecycleStatus.SANDBOX_VERIFIED, "cli register")
-                self._execution_registry.promote_plugin(plugin_id, PluginLifecycleStatus.ACTIVE, "cli register")
-            self._registered_plugin_ids.add(plugin_id)
         return CliToolRuntimeState(
             command_name=config.tool_name,
             description=config.description,
             mapped_domain=mapped_domain,
-            plugin_id=plugin_id,
+            cli_id=cli_id,
             feature_code=feature_code,
             execution_domain=None if mapped_domain == "cognitive" else config.execution_domain,
             read_only=config.read_only_flag,

@@ -1,101 +1,109 @@
-from __future__ import annotations
-from typing import List
-from uuid import uuid4
+"""
+MCP Router — /api/web/mcp-servers endpoints.
 
-from fastapi import APIRouter, Depends
+RESPONSIBILITY:
+  Exposes MCP (Model Context Protocol) server management: list, register,
+  test-call, detail, and task listing.
 
-from zentex.core.mcp import McpServerConfig, McpServerRuntimeState
+FAIL-CLOSED CONTRACT (Zentex Codex §1):
+  get_mcp_service() returns None when app.state.runtime is not attached.
+  _require_mcp_service() wraps it as a Depends guard and raises 503 explicitly
+  so callers always receive a structured error, never AttributeError.
+
+DOES NOT:
+  - Own MCP server lifecycle (that is McpIntegrationService's job).
+  - Manage app state or startup lifecycle.
+"""
+
+from typing import Any, List, Optional
+from fastapi import APIRouter, Depends, HTTPException
+
+from zentex.mcp.models import McpServerConfig
 from zentex.mcp.service import McpIntegrationService
 from zentex.web_console.contracts.mcp import (
+    McpServerDetailItem,
     McpServerRegistrationRequest,
     McpServerStatusItem,
-    McpServerToolItem,
+    McpTaskSummary,
     McpToolTestCallRequest,
     McpToolTestCallResult,
 )
 from zentex.web_console.dependencies import get_mcp_service
+from .mcp_handlers import (
+    handle_list_mcp_servers,
+    handle_register_mcp_server,
+    handle_test_mcp_tool,
+)
 
 
-router = APIRouter()
+router = APIRouter(tags=["mcp"])
+
+
+def _require_mcp_service(service: Any = Depends(get_mcp_service)) -> McpIntegrationService:
+    """Fail-closed Depends wrapper: raise 503 when MCP service is not available."""
+    if service is None:
+        raise HTTPException(
+            status_code=503,
+            detail={
+                "error": "mcp_service_unavailable",
+                "message": "McpIntegrationService 未初始化，MCP 功能不可用。",
+            },
+        )
+    return service
 
 
 @router.get("/mcp-servers", response_model=List[McpServerStatusItem])
-def list_mcp_servers(service: McpIntegrationService = Depends(get_mcp_service)) -> List[McpServerStatusItem]:
-    states: List[McpServerRuntimeState] = service.list_servers()
-    return [
-        McpServerStatusItem(
-            server_id=state.server_id,
-            transport_type=state.transport_type,
-            status=state.status,
-            tool_count=state.tool_count,
-            error_message=state.error_message,
-            tools=[
-                McpServerToolItem(
-                    tool_name=tool.tool_name,
-                    description=tool.description,
-                    mapped_domain=tool.mapped_domain,
-                    plugin_id=tool.plugin_id,
-                    feature_code=tool.feature_code,
-                    execution_domain=tool.execution_domain,
-                    read_only=tool.read_only,
-                    side_effect_free=tool.side_effect_free,
-                    mutates_state=tool.mutates_state,
-                    requires_cloud_audit=tool.requires_cloud_audit,
-                    status=tool.status,
-                )
-                for tool in state.tools
-            ],
-        )
-        for state in states
-    ]
+def list_mcp_servers(
+    service: McpIntegrationService = Depends(_require_mcp_service),
+) -> List[McpServerStatusItem]:
+    return handle_list_mcp_servers(service)
 
 
 @router.post("/mcp-servers/register", response_model=McpServerStatusItem)
 def register_mcp_server(
     payload: McpServerRegistrationRequest,
-    service: McpIntegrationService = Depends(get_mcp_service),
+    service: McpIntegrationService = Depends(_require_mcp_service),
 ) -> McpServerStatusItem:
-    service.register_server(McpServerConfig.model_validate(payload.model_dump(mode="json")))
-    registered = next(item for item in list_mcp_servers(service) if item.server_id == payload.server_id)
-    return registered
+    try:
+        return handle_register_mcp_server(payload, service)
+    except KeyError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
 
 
 @router.post("/mcp-servers/{server_id}/test-call", response_model=McpToolTestCallResult)
 def test_mcp_tool(
     server_id: str,
     payload: McpToolTestCallRequest,
-    service: McpIntegrationService = Depends(get_mcp_service),
+    service: McpIntegrationService = Depends(_require_mcp_service),
 ) -> McpToolTestCallResult:
-    trace_id = f"mcp-test:{uuid4().hex}"
-    result = service.test_call(
-        server_id,
-        tool_name=payload.tool_name,
-        arguments=payload.arguments,
-        trace_id=trace_id,
-    )
-    return McpToolTestCallResult(
-        server_id=server_id,
-        tool_name=payload.tool_name,
-        trace_id=trace_id,
-        payload=result,
-    )
-
-
-from zentex.web_console.contracts.mcp import McpServerDetailItem, McpTaskSummary
+    try:
+        return handle_test_mcp_tool(
+            server_id=server_id,
+            tool_name=payload.tool_name,
+            arguments=payload.arguments,
+            service=service,
+        )
+    except KeyError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
 
 
 @router.get("/mcp-servers/{server_id}", response_model=McpServerDetailItem)
 def get_mcp_server_detail(
     server_id: str,
-    service: McpIntegrationService = Depends(get_mcp_service),
+    service: McpIntegrationService = Depends(_require_mcp_service),
 ) -> McpServerDetailItem:
-    return service.get_server_detail(server_id)
+    try:
+        return service.get_server_detail(server_id)
+    except KeyError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
 
 
 @router.get("/mcp-servers/{server_id}/tasks", response_model=List[McpTaskSummary])
 def list_mcp_server_tasks(
     server_id: str,
     status: Optional[str] = None,
-    service: McpIntegrationService = Depends(get_mcp_service),
+    service: McpIntegrationService = Depends(_require_mcp_service),
 ) -> List[McpTaskSummary]:
     return service.list_server_tasks(server_id, status=status)

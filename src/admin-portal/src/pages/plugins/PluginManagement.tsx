@@ -26,15 +26,23 @@ import {
   TextField,
   Typography,
 } from "@mui/material";
-import { formatPluginStatus, pluginManagementCopy, type Locale } from "../../i18n";
+import {
+  formatPluginOperationalStatus,
+  formatPluginStatus,
+  pluginManagementCopy,
+  type Locale,
+  type PluginOperationalStatus,
+} from "../../i18n";
 import {
   fetchCognitivePlugins,
   fetchFunctionalPlugins,
+  forceDisablePlugin,
+  forceEnablePlugin,
   type PluginRow,
 } from "./pluginsApi";
 
 function getStatusColor(
-  status: PluginRow["status"],
+  status: PluginRow["lifecycle_status"],
 ): "default" | "success" | "warning" | "error" | "info" {
   switch (status) {
     case "active":
@@ -50,16 +58,39 @@ function getStatusColor(
   }
 }
 
+function getOperationalStatusColor(
+  status: PluginRow["operational_status"],
+): "default" | "success" | "warning" | "error" {
+  switch (status) {
+    case "enabled":
+      return "success";
+    case "abnormal":
+      return "warning";
+    case "unavailable":
+      return "error";
+    default:
+      return "default";
+  }
+}
+
 function PluginTable({
   rows,
   emptyText,
   locale,
   onOpenDetail,
+  onForceEnable,
+  onForceDisable,
+  actionLoadingToolId,
+  showLifecycleActions = true,
 }: {
   rows: PluginRow[];
   emptyText: string;
   locale: Locale;
   onOpenDetail: (plugin: PluginRow) => void;
+  onForceEnable: (plugin: PluginRow) => void;
+  onForceDisable: (plugin: PluginRow) => void;
+  actionLoadingToolId: string | null;
+  showLifecycleActions?: boolean;
 }) {
   const { t } = useTranslation();
   return (
@@ -71,6 +102,7 @@ function PluginTable({
               <TableCell>{t("plugins.toolId")}</TableCell>
               <TableCell>{t("plugins.version")}</TableCell>
               <TableCell>{t("plugins.lifecycleStatus")}</TableCell>
+              <TableCell>{t("plugins.status")}</TableCell>
               <TableCell>{t("plugins.description")}</TableCell>
               <TableCell align="right">{t("plugins.usageCount")}</TableCell>
               <TableCell align="right">{t("plugins.failureCount")}</TableCell>
@@ -90,8 +122,16 @@ function PluginTable({
                 <TableCell>
                   <Chip
                     size="small"
-                    color={getStatusColor(row.status)}
-                    label={formatPluginStatus(row.status, locale)}
+                    color={getStatusColor(row.lifecycle_status)}
+                    label={formatPluginStatus(row.lifecycle_status, locale)}
+                    variant="outlined"
+                  />
+                </TableCell>
+                <TableCell>
+                  <Chip
+                    size="small"
+                    color={getOperationalStatusColor(row.operational_status)}
+                    label={formatPluginOperationalStatus(row.operational_status, locale)}
                     variant="outlined"
                   />
                 </TableCell>
@@ -103,18 +143,47 @@ function PluginTable({
                 <TableCell align="right">{row.usage_count}</TableCell>
                 <TableCell align="right">{row.failure_count}</TableCell>
                 <TableCell align="right">
-                  <Button size="small" variant="outlined" onClick={(event) => {
-                    event.stopPropagation();
-                    onOpenDetail(row);
-                  }}>
-                    {locale === "zh-CN" ? "查看" : "View"}
-                  </Button>
+                  <Stack direction="row" spacing={1} justifyContent="flex-end">
+                    <Button size="small" variant="outlined" onClick={(event) => {
+                      event.stopPropagation();
+                      onOpenDetail(row);
+                    }}>
+                      {locale === "zh-CN" ? "查看" : "View"}
+                    </Button>
+                    {showLifecycleActions ? (
+                      <>
+                        <Button
+                          size="small"
+                          variant="contained"
+                          disabled={!row.can_force_enable || actionLoadingToolId === row.tool_id}
+                          onClick={(event) => {
+                            event.stopPropagation();
+                            onForceEnable(row);
+                          }}
+                        >
+                          {pluginManagementCopy[locale].forceEnable}
+                        </Button>
+                        <Button
+                          size="small"
+                          color="warning"
+                          variant="outlined"
+                          disabled={!row.can_force_disable || actionLoadingToolId === row.tool_id}
+                          onClick={(event) => {
+                            event.stopPropagation();
+                            onForceDisable(row);
+                          }}
+                        >
+                          {pluginManagementCopy[locale].forceDisable}
+                        </Button>
+                      </>
+                    ) : null}
+                  </Stack>
                 </TableCell>
               </TableRow>
             ))}
             {rows.length === 0 ? (
               <TableRow>
-                <TableCell colSpan={7}>
+                  <TableCell colSpan={8}>
                   <Typography variant="body2" color="text.secondary" sx={{ py: 4 }}>
                     {emptyText}
                   </Typography>
@@ -138,9 +207,8 @@ export default function PluginManagement() {
   const [loading, setLoading] = useState(true);
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
   const [searchQuery, setSearchQuery] = useState("");
-  const [statusFilter, setStatusFilter] = useState<"all" | PluginRow["status"]>("all");
-  const [autoRefreshEnabled, setAutoRefreshEnabled] = useState(true);
-  const [refreshIntervalMs, setRefreshIntervalMs] = useState<10000 | 30000 | 60000>(10000);
+  const [statusFilter, setStatusFilter] = useState<"all" | PluginOperationalStatus>("all");
+  const [actionLoadingToolId, setActionLoadingToolId] = useState<string | null>(null);
 
   const text = pluginManagementCopy[locale];
 
@@ -165,16 +233,6 @@ export default function PluginManagement() {
     void loadPlugins();
   }, []);
 
-  useEffect(() => {
-    if (!autoRefreshEnabled) {
-      return undefined;
-    }
-    const timerId = window.setInterval(() => {
-      void loadPlugins();
-    }, refreshIntervalMs);
-    return () => window.clearInterval(timerId);
-  }, [autoRefreshEnabled, refreshIntervalMs]);
-
   const currentRows = activeTab === "cognitive" ? cognitiveRows : functionalRows;
 
   const filteredRows = useMemo(
@@ -184,7 +242,7 @@ export default function PluginManagement() {
           searchQuery.trim() === "" ||
           row.tool_id.toLowerCase().includes(searchQuery.trim().toLowerCase()) ||
           row.feature_code.toLowerCase().includes(searchQuery.trim().toLowerCase());
-        const matchesStatus = statusFilter === "all" || row.status === statusFilter;
+        const matchesStatus = statusFilter === "all" || row.operational_status === statusFilter;
         return matchesSearch && matchesStatus;
       }),
     [currentRows, searchQuery, statusFilter],
@@ -192,6 +250,38 @@ export default function PluginManagement() {
 
   const openDetail = (plugin: PluginRow) => {
     navigate(`/console/plugins/${activeTab}/${encodeURIComponent(plugin.tool_id)}`);
+  };
+
+  const handleForceEnable = async (plugin: PluginRow) => {
+    const reason = window.prompt(pluginManagementCopy[locale].auditReasonPrompt);
+    if (!reason || !reason.trim()) {
+      return;
+    }
+    setActionLoadingToolId(plugin.tool_id);
+    try {
+      await forceEnablePlugin(plugin.tool_id, reason.trim());
+      await loadPlugins();
+    } catch (error) {
+      setErrorMessage(error instanceof Error ? error.message : pluginManagementCopy[locale].actionFailed);
+    } finally {
+      setActionLoadingToolId(null);
+    }
+  };
+
+  const handleForceDisable = async (plugin: PluginRow) => {
+    const reason = window.prompt(pluginManagementCopy[locale].auditReasonPrompt);
+    if (!reason || !reason.trim()) {
+      return;
+    }
+    setActionLoadingToolId(plugin.tool_id);
+    try {
+      await forceDisablePlugin(plugin.tool_id, reason.trim());
+      await loadPlugins();
+    } catch (error) {
+      setErrorMessage(error instanceof Error ? error.message : pluginManagementCopy[locale].actionFailed);
+    } finally {
+      setActionLoadingToolId(null);
+    }
   };
 
   return (
@@ -246,38 +336,15 @@ export default function PluginManagement() {
             labelId="plugin-status-filter-label"
             value={statusFilter}
             label={t("plugins.statusFilter")}
-            onChange={(event) => setStatusFilter(event.target.value as "all" | PluginRow["status"])}
+            onChange={(event) => setStatusFilter(event.target.value as "all" | PluginOperationalStatus)}
           >
             <MenuItem value="all">{t("plugins.allStatuses")}</MenuItem>
-            <MenuItem value="candidate">{formatPluginStatus("candidate", locale)}</MenuItem>
-            <MenuItem value="sandbox_verified">{formatPluginStatus("sandbox_verified", locale)}</MenuItem>
-            <MenuItem value="active">{formatPluginStatus("active", locale)}</MenuItem>
-            <MenuItem value="degraded">{formatPluginStatus("degraded", locale)}</MenuItem>
-            <MenuItem value="revoked">{formatPluginStatus("revoked", locale)}</MenuItem>
-          </Select>
-        </FormControl>
-        <FormControl sx={{ minWidth: { xs: "100%", md: 180 } }}>
-          <InputLabel id="plugin-refresh-interval-label">{t("plugins.interval")}</InputLabel>
-          <Select
-            labelId="plugin-refresh-interval-label"
-            value={refreshIntervalMs}
-            label={t("plugins.interval")}
-            onChange={(event) => setRefreshIntervalMs(event.target.value as 10000 | 30000 | 60000)}
-          >
-            <MenuItem value={10000}>10s</MenuItem>
-            <MenuItem value={30000}>30s</MenuItem>
-            <MenuItem value={60000}>60s</MenuItem>
-          </Select>
-        </FormControl>
-        <FormControlLabel
-          control={
-            <Switch
-              checked={autoRefreshEnabled}
-              onChange={(event) => setAutoRefreshEnabled(event.target.checked)}
-            />
-          }
-          label={t("plugins.autoRefresh")}
-        />
+                <MenuItem value="enabled">{formatPluginOperationalStatus("enabled", locale)}</MenuItem>
+                <MenuItem value="stopped">{formatPluginOperationalStatus("stopped", locale)}</MenuItem>
+                <MenuItem value="abnormal">{formatPluginOperationalStatus("abnormal", locale)}</MenuItem>
+                <MenuItem value="unavailable">{formatPluginOperationalStatus("unavailable", locale)}</MenuItem>
+              </Select>
+            </FormControl>
       </Stack>
 
       <Box sx={{ borderBottom: 1, borderColor: "divider" }}>
@@ -302,11 +369,15 @@ export default function PluginManagement() {
           </Stack>
         </Paper>
       ) : activeTab === "cognitive" ? (
-        <PluginTable
-          rows={filteredRows}
+            <PluginTable
+              rows={filteredRows}
           emptyText={text.empty}
           locale={locale}
           onOpenDetail={openDetail}
+          onForceEnable={handleForceEnable}
+          onForceDisable={handleForceDisable}
+          actionLoadingToolId={actionLoadingToolId}
+          showLifecycleActions={false}
         />
       ) : (
         <PluginTable
@@ -314,6 +385,9 @@ export default function PluginManagement() {
           emptyText={text.functionalEmpty}
           locale={locale}
           onOpenDetail={openDetail}
+          onForceEnable={handleForceEnable}
+          onForceDisable={handleForceDisable}
+          actionLoadingToolId={actionLoadingToolId}
         />
       )}
 

@@ -48,3 +48,7 @@ def get_web_console_service() -> WebConsoleService:
     if _default_service is None:
         _default_service = WebConsoleService()
     return _default_service
+
+
+# Standard entry point for SystemAssembler
+get_service = get_web_console_service

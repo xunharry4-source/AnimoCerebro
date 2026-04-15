@@ -9,8 +9,11 @@ from __future__ import annotations
 import logging
 import threading
 import asyncio
+import json
+from datetime import datetime, timezone
 from typing import Dict, Any, Optional
 
+from zentex.foundation.contracts import ServiceErrorCode, ServiceResponse
 from zentex.plugins.models import PluginLifecycleStatus
 from zentex.plugins.manager import PluginManager
 from zentex.common.protocol import TaskEnvelope, TaskFeedback
@@ -24,6 +27,35 @@ from .info import InfoService
 from .test import TestService
 
 logger = logging.getLogger(__name__)
+
+
+def _feedback_to_service_response(feedback: TaskFeedback, *, trace_id: str) -> ServiceResponse:
+    result = feedback.result
+    if isinstance(result, dict) and set(result.keys()) == {"value"}:
+        result = result["value"]
+
+    if feedback.status == "done":
+        return ServiceResponse.ok(
+            data=result,
+            trace_id=trace_id,
+            audit_ref=str(getattr(feedback, "task_id", "") or ""),
+        )
+
+    error = str(getattr(feedback, "error", "") or "")
+    code_map = {
+        "plugin_not_found": ServiceErrorCode.INVALID_ARGUMENT,
+        "plugin_not_active": ServiceErrorCode.DEPENDENCY_UNAVAILABLE,
+        "plugin_not_enabled": ServiceErrorCode.DEPENDENCY_UNAVAILABLE,
+        "plugin_not_instantiated": ServiceErrorCode.DEPENDENCY_UNAVAILABLE,
+        "execution_error": ServiceErrorCode.INTERNAL_UNRECOVERABLE,
+    }
+    return ServiceResponse.error(
+        code_map.get(error, ServiceErrorCode.INTERNAL_UNRECOVERABLE),
+        message=str(getattr(feedback, "remarks", "") or error or "Plugin execution failed"),
+        trace_id=trace_id,
+        audit_ref=str(getattr(feedback, "task_id", "") or ""),
+        data=result,
+    )
 
 
 class SystemPluginService(BasePluginService):
@@ -66,6 +98,7 @@ class SystemPluginService(BasePluginService):
             execution_stats=self._execution_stats,
             determine_category_fn=self._determine_category,
             promote_fn=self._promote_plugin_ref,
+            public_service=self,
         )
         
         self._management_service = ManagementService(
@@ -100,40 +133,103 @@ class SystemPluginService(BasePluginService):
             determine_category_fn=self._determine_category,
         )
     
-    def _promote_plugin_ref(self, plugin_id: str, target_status, reason: str) -> None:
+    def _promote_plugin_ref(self, plugin_id: str, target_lifecycle_status: str, reason: str) -> None:
         """Helper reference for auto-degradation."""
-        self._management_service.promote_plugin(plugin_id, target_status, reason)
+        self._management_service.promote_plugin(plugin_id, target_lifecycle_status, reason)
     
     # ==================== Query Service Methods ====================
     
     def query_by_category(
         self,
         category: str,
-        status: Optional[str] = None,
+        operational_status: Optional[str] = None,
     ) -> list:
         """Query plugins by category."""
-        return self._query_service.query_by_category(category, status)
+        return self._query_service.query_by_category(category, operational_status)
+
+    def query_plugins_by_lifecycle(
+        self,
+        *,
+        category: Optional[str] = None,
+        lifecycle_status: Optional[str] = None,
+        behavior_key: Optional[str] = None,
+        feature_code: Optional[str] = None,
+        limit: int = 200,
+    ) -> list:
+        """Query plugins by lifecycle phase without collapsing into runtime state."""
+        return self._query_service.query_plugins_by_lifecycle(
+            category=category,
+            lifecycle_status=lifecycle_status,
+            behavior_key=behavior_key,
+            feature_code=feature_code,
+            limit=limit,
+        )
+
+    def query_plugins_by_operational_status(
+        self,
+        *,
+        category: Optional[str] = None,
+        operational_status: Optional[str] = None,
+        behavior_key: Optional[str] = None,
+        feature_code: Optional[str] = None,
+        limit: int = 200,
+    ) -> list:
+        """Query plugins by runtime status (enabled/stopped/abnormal/unavailable)."""
+        return self._query_service.query_plugins_by_operational_status(
+            category=category,
+            operational_status=operational_status,
+            behavior_key=behavior_key,
+            feature_code=feature_code,
+            limit=limit,
+        )
     
-    def query_cognitive_functionals(
+    def query_cognitive_functionals_by_lifecycle(
         self,
         cognitive_plugin_id: str,
-        status: Optional[str] = None,
+        *,
+        lifecycle_status: Optional[str] = None,
+        role: Optional[str] = None,
+        limit: int = 200,
     ) -> list:
-        """Query functional plugins for a cognitive plugin."""
-        return self._query_service.query_cognitive_functionals(cognitive_plugin_id, status)
+        """Query one cognitive plugin's functional plugins by lifecycle."""
+        return self._query_service.query_cognitive_functionals_by_lifecycle(
+            cognitive_plugin_id,
+            lifecycle_status=lifecycle_status,
+            role=role,
+            limit=limit,
+        )
+
+    def query_cognitive_functionals_by_operational_status(
+        self,
+        cognitive_plugin_id: str,
+        *,
+        operational_status: Optional[str] = None,
+        role: Optional[str] = None,
+        limit: int = 200,
+    ) -> list:
+        """Query one cognitive plugin's functional plugins by runtime status."""
+        return self._query_service.query_cognitive_functionals_by_operational_status(
+            cognitive_plugin_id,
+            operational_status=operational_status,
+            role=role,
+            limit=limit,
+        )
 
     def query_functional_cognitives(
         self,
         functional_plugin_id: str,
-        status: Optional[str] = None,
+        lifecycle_status: Optional[str] = None,
     ) -> list:
         """Query cognitive plugins for a functional plugin."""
-        return self._query_service.query_functional_cognitives(functional_plugin_id, status)
+        return self._query_service.query_functional_cognitives(
+            functional_plugin_id,
+            lifecycle_status=lifecycle_status,
+        )
     
     def query_with_filters(
         self,
         category: Optional[str] = None,
-        status: Optional[str] = None,
+        lifecycle_status: Optional[str] = None,
         behavior_key: Optional[str] = None,
         version_gte: Optional[str] = None,
         limit: int = 200,
@@ -141,7 +237,7 @@ class SystemPluginService(BasePluginService):
         """Advanced query with multiple filters."""
         return self._query_service.query_with_filters(
             category=category,
-            status=status,
+            lifecycle_status=lifecycle_status,
             behavior_key=behavior_key,
             version_gte=version_gte,
             limit=limit,
@@ -154,22 +250,46 @@ class SystemPluginService(BasePluginService):
     def get_plugin_execution_stats(self, plugin_id: str) -> Dict[str, Any]:
         """Get execution stats for a plugin."""
         return self._query_service.get_plugin_execution_stats(plugin_id)
-    
-    def query_plugins(
+
+    def get_aggregated_snapshot(self, *, cognitive_registry: Any = None) -> list:
+        """Get aggregated snapshot from all sources (DB, Registry, Memory)."""
+        return self._query_service.get_aggregated_snapshot(cognitive_registry=cognitive_registry)
+
+    def get_sorted_plugin_list(self, *, cognitive_registry: Any = None) -> list:
+        """Get sorted plugin list."""
+        return self._query_service.get_sorted_plugin_list(cognitive_registry=cognitive_registry)
+
+    def get_plugins_grouped_by_feature(self, *, cognitive_registry: Any = None) -> list:
+        """Get plugins grouped by feature."""
+        return self._query_service.get_plugins_grouped_by_feature(cognitive_registry=cognitive_registry)
+
+    def get_cognitive_plugin_full_detail(
         self,
+        plugin_id: str,
         *,
-        category: Optional[str] = None,
-        status: str = PluginLifecycleStatus.ACTIVE.value,
-        behavior_key: Optional[str] = None,
-        limit: int = 200,
+        cognitive_registry: Any = None,
     ) -> Dict[str, Any]:
-        """Query plugins (backward compatible API)."""
-        return self._query_service.query_plugins(
-            category=category,
-            status=status,
-            behavior_key=behavior_key,
-            limit=limit,
+        """Get cognitive plugin full detail."""
+        return self._query_service.get_cognitive_plugin_full_detail(
+            plugin_id,
+            cognitive_registry=cognitive_registry
         )
+
+    def get_functional_plugin_full_detail(
+        self,
+        plugin_id: str,
+        *,
+        cognitive_registry: Any = None,
+    ) -> Dict[str, Any]:
+        """Get functional plugin full detail."""
+        return self._query_service.get_functional_plugin_full_detail(
+            plugin_id,
+            cognitive_registry=cognitive_registry
+        )
+
+    def get_force_enable_result(self, plugin_id: str) -> Dict[str, Any]:
+        """Get force enable result."""
+        return self._query_service.get_force_enable_result(plugin_id)
     
     # ==================== Execute Service Methods ====================
     
@@ -236,17 +356,118 @@ class SystemPluginService(BasePluginService):
         if "exception" in error:
             raise error["exception"]
         return result["feedback"]
+
+    def query_enabled_functional_plugins_for_cognitive(
+        self,
+        cognitive_plugin_id: str,
+        *,
+        role: Optional[str] = None,
+        limit: int = 200,
+        trace_id: str = "",
+    ) -> ServiceResponse:
+        """Return enabled functional bindings for one cognitive plugin."""
+        try:
+            rows = self.query_cognitive_functionals_by_operational_status(
+                cognitive_plugin_id,
+                operational_status="enabled",
+                role=role,
+                limit=limit,
+            )
+            return ServiceResponse.ok(data=rows, trace_id=trace_id)
+        except Exception as exc:
+            return ServiceResponse.error(
+                ServiceErrorCode.INTERNAL_UNRECOVERABLE,
+                message=f"Failed querying enabled functional plugins: {exc}",
+                trace_id=trace_id,
+            )
+
+    def execute_functional_plugin(
+        self,
+        *,
+        plugin_id: str,
+        context: Dict[str, Any],
+        caller_plugin_id: str,
+        trace_id: str = "",
+        originator_id: str = "",
+    ) -> ServiceResponse:
+        """Execute one functional plugin through the canonical service boundary."""
+        plugin = self._storage.get_plugin(plugin_id)
+        if not plugin:
+            return ServiceResponse.error(
+                ServiceErrorCode.INVALID_ARGUMENT,
+                message=f"Unknown functional plugin: {plugin_id}",
+                trace_id=trace_id,
+            )
+        if str(plugin.get("category") or "").strip().lower() == "cognitive":
+            return ServiceResponse.error(
+                ServiceErrorCode.INVALID_ARGUMENT,
+                message=f"Plugin {plugin_id} is cognitive, not functional",
+                trace_id=trace_id,
+            )
+
+        effective_trace_id = trace_id or str(context.get("trace_id") or "")
+        feedback = self.execute_plugin_once_sync(
+            plugin_id=plugin_id,
+            task_id=f"{effective_trace_id or 'functional'}:{plugin_id}",
+            parameters=dict(context),
+            trace_id=effective_trace_id or plugin_id,
+            originator_id=originator_id or caller_plugin_id,
+            caller_plugin_id=caller_plugin_id,
+        )
+        return _feedback_to_service_response(feedback, trace_id=effective_trace_id or plugin_id)
+
+    def execute_cognitive_plugin(
+        self,
+        *,
+        plugin_id: str,
+        context: Dict[str, Any],
+        session_id: str = "",
+        turn_id: str = "",
+        trace_id: str = "",
+        originator_id: str = "",
+    ) -> ServiceResponse:
+        """Execute one cognitive plugin through the canonical service boundary."""
+        plugin = self._storage.get_plugin(plugin_id)
+        if not plugin:
+            return ServiceResponse.error(
+                ServiceErrorCode.INVALID_ARGUMENT,
+                message=f"Unknown cognitive plugin: {plugin_id}",
+                trace_id=trace_id,
+            )
+        if str(plugin.get("category") or "").strip().lower() != "cognitive":
+            return ServiceResponse.error(
+                ServiceErrorCode.INVALID_ARGUMENT,
+                message=f"Plugin {plugin_id} is not a cognitive plugin",
+                trace_id=trace_id,
+            )
+
+        payload = dict(context)
+        if session_id:
+            payload.setdefault("session_id", session_id)
+        if turn_id:
+            payload.setdefault("turn_id", turn_id)
+
+        effective_trace_id = trace_id or str(payload.get("trace_id") or "")
+        feedback = self.execute_plugin_once_sync(
+            plugin_id=plugin_id,
+            task_id=f"{effective_trace_id or 'cognitive'}:{plugin_id}",
+            parameters=payload,
+            trace_id=effective_trace_id or plugin_id,
+            originator_id=originator_id or session_id or "kernel",
+            caller_plugin_id=None,
+        )
+        return _feedback_to_service_response(feedback, trace_id=effective_trace_id or plugin_id)
     
     # ==================== Management Service Methods ====================
     
     def promote_plugin(
         self,
         plugin_id: str,
-        target_status: PluginLifecycleStatus,
+        target_lifecycle_status: PluginLifecycleStatus,
         reason: str,
     ) -> None:
         """Promote plugin to new status."""
-        self._management_service.promote_plugin(plugin_id, target_status, reason)
+        self._management_service.promote_plugin(plugin_id, target_lifecycle_status, reason)
     
     def enable_plugin(self, plugin_id: str, reason: str = "Manual activation") -> None:
         """Enable a plugin."""
@@ -298,7 +519,32 @@ class SystemPluginService(BasePluginService):
             cognitive_plugin_id=cognitive_plugin_id,
             functional_plugin_id=functional_plugin_id,
         )
-    
+
+    def activate_all_functional(
+        self,
+        reason: str = "Bulk functional plugin activation",
+    ) -> dict:
+        """Activate all registered functional plugins that are not yet ACTIVE.
+
+        Returns a summary dict with keys: activated, already_active,
+        skipped_cognitive, failed.
+        """
+        return self._management_service.activate_all_functional(reason=reason)
+
+    def activate_all_cognitive(
+        self,
+        reason: str = "Bulk cognitive plugin activation",
+    ) -> dict:
+        """Activate all registered cognitive plugins while preserving blue-green semantics."""
+        return self._management_service.activate_all_cognitive(reason=reason)
+
+    def ensure_runtime_instance_loaded(self, plugin_id: str) -> bool:
+        """
+        On-demand instantiation for ACTIVE plugins.
+        Checks library/storage and instantiates if missing from memory.
+        """
+        return self._management_service._ensure_runtime_instance_loaded(plugin_id)
+
     def register_plugin(
         self,
         plugin_id: str,
@@ -315,6 +561,51 @@ class SystemPluginService(BasePluginService):
             version=version,
             behavior_key=behavior_key,
         )
+
+    def scan_orphaned_plugin_records(self) -> list[dict[str, Any]]:
+        """List registered plugins whose implementations are no longer discoverable."""
+        available_plugin_ids = set(self._get_factories().keys())
+        orphaned: list[dict[str, Any]] = []
+        for plugin in self._storage.list_plugins():
+            plugin_id = str(plugin.get("plugin_id") or "").strip()
+            if plugin_id and plugin_id not in available_plugin_ids:
+                orphaned.append(plugin)
+        return orphaned
+
+    def reconcile_orphaned_plugin_records(self, *, reason: str) -> dict[str, Any]:
+        """
+        Mark orphaned plugin records as stopped/degraded without deleting history.
+
+        This is an explicit governance action and never runs during bootstrap.
+        """
+        orphaned_plugin_ids: list[str] = []
+        now = datetime.now(timezone.utc).isoformat()
+        for plugin in self.scan_orphaned_plugin_records():
+            plugin_id = str(plugin["plugin_id"])
+            spec_dict = json.loads(plugin["spec_json"])
+            spec_dict["lifecycle_status"] = PluginLifecycleStatus.DEGRADED.value
+            spec_dict["operational_status"] = "stopped"
+            self._storage.upsert_plugin(
+                category=plugin["category"],
+                plugin_id=plugin_id,
+                spec_dict=spec_dict,
+                registration_dict={
+                    **plugin,
+                    "lifecycle_status": PluginLifecycleStatus.DEGRADED.value,
+                    "operational_status": "stopped",
+                    "updated_at": now,
+                    "stopped_at": now,
+                },
+            )
+            self._plugin_instances.pop(plugin_id, None)
+            self._plugin_specs[plugin_id] = spec_dict
+            orphaned_plugin_ids.append(plugin_id)
+
+        return {
+            "orphaned_plugin_ids": orphaned_plugin_ids,
+            "orphaned_count": len(orphaned_plugin_ids),
+            "reason": reason,
+        }
     
     # ==================== Public Task Handler ====================
     
@@ -441,24 +732,6 @@ class SystemPluginService(BasePluginService):
     
     # ==================== Web Console Integration Methods ====================
     
-    def get_all_plugins(self) -> Dict[str, Any]:
-        """
-        Get all registered plugins for web console display.
-        
-        This is the ONLY way external modules should access the plugin registry.
-        Never import zentex.plugins.builtin.* directly.
-        
-        Returns:
-            Dictionary mapping plugin_id to plugin info
-            
-        Example:
-            from zentex.plugins.service import SystemPluginService
-            service = SystemPluginService(db_path=".zentex/plugins.db")
-            service.bootstrap()
-            plugins = service.get_all_plugins()
-        """
-        return self._query_service.get_all_plugins()
-
     def list_plugin_instances(self) -> list[Any]:
         """
         Return all managed plugin instances through the public service boundary.
@@ -468,6 +741,9 @@ class SystemPluginService(BasePluginService):
         unique_instances: list[Any] = []
         seen_instance_ids: set[int] = set()
         for plugin in self._plugin_instances.values():
+            plugin_id = str(getattr(plugin, "plugin_id", "") or "").strip()
+            if not plugin_id:
+                continue
             marker = id(plugin)
             if marker in seen_instance_ids:
                 continue
@@ -488,9 +764,3 @@ class SystemPluginService(BasePluginService):
             catalog = service.get_feature_catalog()
         """
         return self._query_service.get_feature_catalog()
-
-
-# Backward compatibility alias
-class PluginGovernanceService(SystemPluginService):
-    """Backward compatible alias for SystemPluginService."""
-    pass

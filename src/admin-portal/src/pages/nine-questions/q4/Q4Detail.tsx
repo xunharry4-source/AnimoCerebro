@@ -14,7 +14,7 @@ import {
 } from "../nineQuestionsApi";
 import LLMTracePanel from "../../../components/LLMTracePanel";
 import NineQuestionIntroCard from "../../../components/NineQuestionIntroCard";
-import MountedPluginsZone from "../../../components/MountedPluginsZone";
+import Q4DataTabs from "../../../components/Q4DataTabs";
 import Q4EvidencePanel from "../../../components/Q4EvidencePanel";
 
 export default function Q4Detail() {
@@ -65,6 +65,11 @@ export default function Q4Detail() {
 
       <NineQuestionIntroCard questionId="q4" />
 
+      {/* Q4 实际数据详情 Tab 面板 */}
+      <Q4DataTabs 
+        evidence={evidence as any} 
+        inference={inference as any} 
+      />
       <MountedPluginsZone plugins={question.mounted_plugins || []} />
 
       <Card variant="outlined" sx={{ mb: 3, mt: 2 }}>

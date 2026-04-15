@@ -1,32 +1,31 @@
 from __future__ import annotations
 
 import logging
-from typing import Any, Dict, List, Optional
-from fastapi import APIRouter, Depends
-from typing_extensions import Annotated
-
-from zentex.web_console.dependencies import get_runtime, get_task_service
-from zentex.runtime.runtime import BrainRuntime
+from typing import Any, Dict
+from fastapi import APIRouter, Request
 
 router = APIRouter(prefix="/governance", tags=["governance"])
 logger = logging.getLogger(__name__)
 
 @router.get("/status")
 async def get_governance_status(
-    runtime: Annotated[BrainRuntime, Depends(get_runtime)],
-    task_service: Annotated[Any, Depends(get_task_service)],
+    request: Request,
 ) -> Dict[str, Any]:
     """
     Get the top-level governance and system integrity status.
     """
+    runtime = getattr(request.app.state, "runtime", None)
+    task_service = getattr(request.app.state, "task_service", None)
+
     # System Health
-    memory_status = runtime.runtime_memory_store.get_storage_stats() if hasattr(runtime.runtime_memory_store, "get_storage_stats") else {}
+    memory_store = getattr(runtime, "runtime_memory_store", None)
+    memory_status = memory_store.get_storage_stats() if hasattr(memory_store, "get_storage_stats") else {}
     
     # Task stats
-    task_stats = task_service.get_task_statistics()
+    task_stats = task_service.get_task_statistics() if hasattr(task_service, "get_task_statistics") else {}
     
     # Identity lock status
-    identity_verified = getattr(runtime.state, "identity_verified", False)
+    identity_verified = getattr(getattr(runtime, "state", None), "identity_verified", False)
     
     return {
         "system_integrity": {
@@ -47,7 +46,7 @@ async def get_governance_status(
 
 @router.get("/audits/summary")
 async def get_audit_summary(
-    runtime: Annotated[BrainRuntime, Depends(get_runtime)],
+    request: Request,
 ) -> Dict[str, Any]:
     """
     Get summary of recent audit events.

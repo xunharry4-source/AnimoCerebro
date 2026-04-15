@@ -5,7 +5,7 @@ from typing import List, Dict, Any
 from fastapi import APIRouter, Depends, HTTPException
 
 from zentex.cli.service import CliIntegrationService
-from zentex.core.cli import CliToolRegistrationConfig
+from zentex.cli.models import CliToolRegistrationConfig
 from zentex.web_console.contracts.cli import (
     CliToolItem,
     CliToolRegistrationRequest,
@@ -24,6 +24,8 @@ router = APIRouter()
 
 @router.get("/cli-tools", response_model=List[CliToolItem])
 def list_cli_tools(service: CliIntegrationService = Depends(get_cli_service)) -> List[CliToolItem]:
+    if service is None:
+        raise HTTPException(status_code=503, detail="CLI service is not available")
     return [CliToolItem.model_validate(item.model_dump(mode="json")) for item in service.list_tools()]
 
 
@@ -32,8 +34,15 @@ def register_cli_tool(
     payload: CliToolRegistrationRequest,
     service: CliIntegrationService = Depends(get_cli_service),
 ) -> CliToolItem:
-    state = service.register_tool(CliToolRegistrationConfig.model_validate(payload.model_dump(mode="json")))
-    return CliToolItem.model_validate(state.model_dump(mode="json"))
+    if service is None:
+        raise HTTPException(status_code=503, detail="CLI service is not available")
+    try:
+        state = service.register_tool(CliToolRegistrationConfig.model_validate(payload.model_dump(mode="json")))
+        return CliToolItem.model_validate(state.model_dump(mode="json"))
+    except FileNotFoundError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
 
 
 @router.post("/cli-tools/{tool_name}/test-call", response_model=CliToolTestCallResult)
@@ -42,14 +51,21 @@ def test_cli_tool(
     payload: CliToolTestCallRequest,
     service: CliIntegrationService = Depends(get_cli_service),
 ) -> CliToolTestCallResult:
-    result = service.test_call(
-        tool_name,
-        arguments=payload.arguments,
-        stdin_input=payload.stdin_input,
-        working_directory=payload.working_directory,
-        timeout_seconds=payload.timeout_seconds,
-    )
-    return CliToolTestCallResult.model_validate(result.model_dump(mode="json"))
+    if service is None:
+        raise HTTPException(status_code=503, detail="CLI service is not available")
+    try:
+        result = service.test_call(
+            tool_name,
+            arguments=payload.arguments,
+            stdin_input=payload.stdin_input,
+            working_directory=payload.working_directory,
+            timeout_seconds=payload.timeout_seconds,
+        )
+        return CliToolTestCallResult.model_validate(result.model_dump(mode="json"))
+    except KeyError as exc:
+        raise HTTPException(status_code=404, detail=f"CLI tool '{tool_name}' not registered") from exc
+    except Exception as exc:
+        raise HTTPException(status_code=400, detail=f"Test call failed: {exc}") from exc
 
 
 @router.get("/cli-tools/{tool_name}/detail", response_model=CliToolDetailResponse)
@@ -77,7 +93,7 @@ def get_cli_tool_detail(
         command_name=tool.command_name,
         description=tool.description,
         mapped_domain=tool.mapped_domain,
-        plugin_id=tool.plugin_id,
+        cli_id=tool.cli_id,
         feature_code=tool.feature_code,
         execution_domain=tool.execution_domain,
         read_only=tool.read_only,

@@ -25,6 +25,7 @@ import Q6EvidencePanel from "../../../components/Q6EvidencePanel";
 import MountedPluginsZone from "../../../components/MountedPluginsZone";
 import LLMTracePanel from "../../../components/LLMTracePanel";
 import NineQuestionIntroCard from "../../../components/NineQuestionIntroCard";
+import Q6DataTabs from "../../../components/Q6DataTabs";
 
 function resolveErrorGuidance(errMsg: string): { title: string; action: string } {
   if (errMsg.includes("No active session") || errMsg.includes("没有活动 session")) {
@@ -56,6 +57,7 @@ export const Q6Detail: React.FC = () => {
   const [question, setQuestion] = useState<NineQuestionItem | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
+  const [workspaceForbiddenActions, setWorkspaceForbiddenActions] = useState<string | null>(null);
 
   const loadDetail = async () => {
     setLoading(true);
@@ -64,6 +66,22 @@ export const Q6Detail: React.FC = () => {
       // 物理接口绑定: GET /api/web/nine-questions/q6
       const item = await fetchNineQuestionDetail(qId);
       setQuestion(item);
+      
+      // Load workspace forbidden actions from localStorage
+      const currentWorkspaceId = localStorage.getItem("currentWorkspaceId");
+      if (currentWorkspaceId) {
+        try {
+          const response = await fetch(
+            `http://127.0.0.1:8000/api/web/workspaces/${currentWorkspaceId}`
+          );
+          if (response.ok) {
+            const workspace = await response.json();
+            setWorkspaceForbiddenActions(workspace.forbidden_actions || null);
+          }
+        } catch (err) {
+          console.warn("Failed to load workspace forbidden actions:", err);
+        }
+      }
     } catch (err: any) {
       setError(err?.message || "加载 Q6 详情失败");
     } finally {
@@ -127,6 +145,23 @@ export const Q6Detail: React.FC = () => {
 
       {/* 问题介绍栏目 */}
       <NineQuestionIntroCard questionId="q6" />
+
+      {/* Q6 实际数据详情 Tab 面板 */}
+      <Q6DataTabs 
+        evidence={evidence as any} 
+        inference={inference as any} 
+      />
+      {/* Workspace Forbidden Actions */}
+      {workspaceForbiddenActions && (
+        <Alert severity="warning" variant="outlined" sx={{ backgroundColor: "#fff3e0" }}>
+          <Typography variant="h6" sx={{ mb: 1, fontWeight: "bold" }}>
+            📋 当前工作区的限制项
+          </Typography>
+          <Typography variant="body2" sx={{ whiteSpace: "pre-wrap", lineHeight: 1.6 }}>
+            {workspaceForbiddenActions}
+          </Typography>
+        </Alert>
+      )}
 
       <Card variant="outlined">
         <CardContent>

@@ -1,29 +1,36 @@
 from __future__ import annotations
 
+import warnings
+# Suppress pkg_resources deprecation warning from jieba
+warnings.filterwarnings("ignore", category=UserWarning, module="jieba")
+
 from pathlib import Path
 import logging
 import os
 import tempfile
+import asyncio
+import traceback
 
 from typing import Any
-from fastapi import FastAPI, Request
+from fastapi import FastAPI, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 
 from zentex.plugins.service import WeightPluginAssembler
 from zentex.agents.service import AgentCoordinationService
 from zentex.common.plugin_registry import AbstractPluginRegistry
-from zentex.core.model_provider_spec import (
+from zentex.foundation.specs.model_provider import (
     ModelProviderAuthError,
     ModelProviderConfigError,
     ModelProviderError,
+    ModelProviderSpec,
     ModelProviderParseError,
     ModelProviderRateLimitError,
     ModelProviderTimeoutError,
 )
-from zentex.core.plugin_base import BasePluginSpec, PluginHealthStatus, PluginLifecycleStatus
-from zentex.runtime.cognitive_tools.registry import CognitiveToolRegistry
-from zentex.tasks.service import TaskManagementService
+from zentex.plugins.contracts import BasePluginSpec, PluginHealthStatus, PluginLifecycleStatus
+from zentex.plugins.service import CognitiveToolRegistry
+from zentex.tasks.service import TaskManagementService, TaskAutoLoopScheduler
 from zentex.memory import EnhancedMemoryService, EpisodeGraphMemoryAdapter
 from zentex.memory import KuzuGraphMemoryClient
 from zentex.upgrade.service import (
@@ -35,13 +42,28 @@ from zentex.upgrade.service import (
     UpgradeMemoryStore,
     PluginEvolutionRuntime,
 )
-from zentex.web_console.contracts.plugins import ManagedPluginRecord, PluginFeatureCatalogItem
+from zentex.reflection.nine_question_scheduler import NineQuestionReflectionScheduler
+from zentex.reflection.service_facade import get_reflection_service
+from zentex.web_console.contracts.plugins import ManagedPluginRecord
 from zentex.web_console.router import api_router
+from zentex.web_console.routers.environment import router as environment_router
+from zentex.web_console.routers.learning_async import router as learning_async_router
+from zentex.web_console.routers.reflection_async import router as reflection_async_router
+from zentex.web_console.routers.supervision import router as supervision_router
 from zentex.web_console.services.llm import compute_llm_status
-from zentex.web_console.services.plugins import build_managed_plugin_record
+from zentex.plugins.service.utils import build_managed_plugin_record
+from zentex.plugins.boot_exports import build_default_provider_tools_model_provider
 
 
 logger = logging.getLogger(__name__)
+
+
+LLM_GUARDED_PREFIXES = (
+    "/api/web/upgrades",
+    "/api/web/nine-questions",
+    "/api/web/reflections",
+    "/api/reflection",
+)
 
 
 def _build_llm_error_detail(
@@ -60,6 +82,8 @@ def _build_llm_error_detail(
     return {
         "error": "llm_unavailable",
         "error_code": error_code,
+        "root_cause_hint": hint
+        or "请检查模型 Provider 配置、API Key 环境变量与网关连通性。",
         "user_message": user_message,
         "provider_name": provider_name,
         "api_base": api_base,
@@ -70,6 +94,34 @@ def _build_llm_error_detail(
         "provider_error_type": provider_error_type,
         "developer_message": developer_message,
     }
+
+
+def _normalize_503_detail(detail: object, request: Request) -> dict[str, object]:
+    default_hint = (
+        "服务依赖未初始化或启动失败。请检查后端启动日志与 app_data/logs/startup_error.log。"
+    )
+
+    if isinstance(detail, dict):
+        normalized = dict(detail)
+        normalized.setdefault("error", "service_unavailable")
+        normalized.setdefault("error_code", "service_unavailable")
+        normalized.setdefault("root_cause_hint", normalized.get("hint") or default_hint)
+        normalized.setdefault("path", request.url.path)
+        return normalized
+
+    message = str(detail) if detail is not None else "Service unavailable"
+    return {
+        "error": "service_unavailable",
+        "error_code": "service_unavailable",
+        "root_cause_hint": default_hint,
+        "user_message": "当前服务暂时不可用，请稍后重试。",
+        "developer_message": message,
+        "path": request.url.path,
+    }
+
+
+def _format_traceback(exc: BaseException) -> str:
+    return "".join(traceback.format_exception(type(exc), exc, exc.__traceback__))
 
 
 def _map_llm_exception(exc: ModelProviderError) -> tuple[int, dict[str, object]]:
@@ -122,8 +174,8 @@ def create_app(
     plugin_registry: AbstractPluginRegistry[object] | None = None,
     weight_assembler: WeightPluginAssembler | None = None,
     plugin_service: Any | None = None,  # SystemPluginService instance
-    managed_plugins: list[BasePluginSpec] | None = None,
-    plugin_feature_catalog: list[PluginFeatureCatalogItem] | None = None,
+    managed_plugin_records: dict[str, ManagedPluginRecord],  # REQUIRED - must be injected from bootstrap
+    plugin_feature_catalog: list[PluginFeatureCatalogItem],  # REQUIRED - must be injected from bootstrap
     runtime: Any | None = None,
     session: Any | None = None,
     transcript_store: Any | None = None,
@@ -137,17 +189,112 @@ def create_app(
     upgrade_evidence_service: UpgradeEvidenceService | None = None,
     upgrade_execution_service: UpgradeExecutionService | None = None,
     enhanced_memory_service: EnhancedMemoryService | None = None,
-    cli_adapter: Any | None = None,
-    mcp_adapter: object | None = None,
+    cli_service: Any | None = None,
+    mcp_service: object | None = None,
     execution_registry: object | None = None,
+    simulation_engine: Any | None = None,
+    interaction_mind_engine: Any | None = None,
+    consolidation_engine: Any | None = None,
+    reflection_service: Any | None = None,
+    learning_service: Any | None = None,
 ) -> FastAPI:
     app = FastAPI(title="Zentex Web Console")
     default_runtime_root = Path(tempfile.gettempdir()) / "zentex-upgrade-runtime"
+
+    # ========== Phase 0: Initialize DI Container ==========
+    # Initialize WebConsoleContainer for new dependency injection layer
+    # This provides access to new Facade contracts (SessionManager, etc.)
+    from .di_container import WebConsoleContainer
+
+    try:
+        WebConsoleContainer.initialize(
+            session_db_path="./data/sessions.db",
+            transcript_db_path="./data/transcripts.db",
+        )
+        logger.info("✓ WebConsoleContainer initialized successfully")
+    except Exception as e:
+        logger.error(f"Failed to initialize WebConsoleContainer: {e}", exc_info=True)
+        # Do not fail app startup; container will be unavailable for new code
+        pass
 
     @app.exception_handler(ModelProviderError)
     async def model_provider_error_handler(request: Request, exc: ModelProviderError):  # type: ignore[no-untyped-def]
         status_code, detail = _map_llm_exception(exc)
         return JSONResponse(status_code=status_code, content={"detail": detail})
+
+    @app.exception_handler(HTTPException)
+    async def http_exception_handler(request: Request, exc: HTTPException):  # type: ignore[no-untyped-def]
+        tb = _format_traceback(exc)
+        if exc.status_code == 503:
+            detail = _normalize_503_detail(exc.detail, request)
+            detail.setdefault("exception_type", type(exc).__name__)
+            detail["full_traceback"] = tb
+            logger.error(
+                "HTTP 503 on %s %s: %s",
+                request.method,
+                request.url.path,
+                detail.get("developer_message") or detail.get("user_message") or detail.get("error"),
+            )
+            return JSONResponse(
+                status_code=503,
+                content={"detail": detail},
+                headers=exc.headers,
+            )
+
+        non503_detail: object
+        if isinstance(exc.detail, dict):
+            non503_detail = {
+                **exc.detail,
+                "exception_type": type(exc).__name__,
+                "full_traceback": tb,
+                "path": request.url.path,
+            }
+        else:
+            non503_detail = {
+                "error": "http_exception",
+                "error_code": "http_exception",
+                "message": str(exc.detail),
+                "exception_type": type(exc).__name__,
+                "full_traceback": tb,
+                "path": request.url.path,
+            }
+
+        logger.error(
+            "HTTP %s on %s %s: %s",
+            exc.status_code,
+            request.method,
+            request.url.path,
+            str(exc.detail),
+            exc_info=True,
+        )
+        return JSONResponse(
+            status_code=exc.status_code,
+            content={"detail": non503_detail},
+            headers=exc.headers,
+        )
+
+    @app.exception_handler(Exception)
+    async def unhandled_exception_handler(request: Request, exc: Exception):  # type: ignore[no-untyped-def]
+        tb = _format_traceback(exc)
+        logger.exception(
+            "Unhandled exception on %s %s: %s",
+            request.method,
+            request.url.path,
+            exc,
+        )
+        return JSONResponse(
+            status_code=500,
+            content={
+                "detail": {
+                    "error": "internal_server_error",
+                    "error_code": "internal_server_error",
+                    "message": str(exc),
+                    "exception_type": type(exc).__name__,
+                    "full_traceback": tb,
+                    "path": request.url.path,
+                }
+            },
+        )
 
     app.add_middleware(
         CORSMiddleware,
@@ -169,61 +316,44 @@ def create_app(
         app.state.weight_assembler = weight_assembler
     if plugin_service is not None:
         app.state.plugin_service = plugin_service
-    
-    # ✅ If plugin_service is provided, use it to get managed plugins and feature catalog
-    if plugin_service is not None:
+
+    # managed_plugin_records and plugin_feature_catalog MUST be provided by caller (fail-closed per Phase 6)
+    # No auto-normalization or fallback allowed
+    resolved_managed_plugin_records = dict(managed_plugin_records)
+    has_active_model_provider = any(
+        isinstance(getattr(record, "plugin", None), ModelProviderSpec)
+        and getattr(getattr(record, "plugin", None), "lifecycle_status", None) == PluginLifecycleStatus.ACTIVE
+        for record in resolved_managed_plugin_records.values()
+    )
+    if not has_active_model_provider:
         try:
-            # Get managed plugins from service
-            if hasattr(plugin_service, 'get_all_plugins'):
-                all_plugins = plugin_service.get_all_plugins()
-                if all_plugins and not managed_plugins:
-                    normalized_plugins: list[BasePluginSpec] = []
-                    for record in all_plugins.values():
-                        if isinstance(record, (ManagedPluginRecord, BasePluginSpec)):
-                            normalized_plugins.append(record)
-                            continue
-                        if isinstance(record, dict):
-                            spec = record.get("spec")
-                            if isinstance(spec, (ManagedPluginRecord, BasePluginSpec)):
-                                normalized_plugins.append(spec)
-                    if normalized_plugins:
-                        managed_plugins = normalized_plugins
-            
-            # Get feature catalog from service  
-            if hasattr(plugin_service, 'get_feature_catalog'):
-                catalog = plugin_service.get_feature_catalog()
-                if catalog and not plugin_feature_catalog:
-                    plugin_feature_catalog = catalog
+            default_model_provider = build_default_provider_tools_model_provider()
+            resolved_managed_plugin_records[default_model_provider.plugin_id] = build_managed_plugin_record(
+                default_model_provider,
+                description="Default provider-tools backed model provider",
+            )
+            app.state.active_model_provider = default_model_provider
         except Exception as exc:
-            logger.warning(f"Failed to get data from plugin_service: {exc}")
-    
-    if managed_plugins is not None:
-        normalized_records: dict[str, ManagedPluginRecord] = {}
-        for item in managed_plugins:
-            if isinstance(item, ManagedPluginRecord):
-                normalized_records[item.plugin.plugin_id] = item
-                continue
-            if isinstance(item, BasePluginSpec):
-                record = build_managed_plugin_record(item)
-                normalized_records[record.plugin.plugin_id] = record
-        app.state.managed_plugins = list(normalized_records.values())
-        app.state.managed_plugin_records = normalized_records
-    if plugin_feature_catalog is not None:
-        app.state.plugin_feature_catalog = plugin_feature_catalog
-    app.state.runtime = runtime
+            logger.warning("Failed to attach default model provider fallback: %s", exc)
+    else:
+        for record in resolved_managed_plugin_records.values():
+            plugin = getattr(record, "plugin", None)
+            if (
+                isinstance(plugin, ModelProviderSpec)
+                and getattr(plugin, "lifecycle_status", None) == PluginLifecycleStatus.ACTIVE
+            ):
+                app.state.active_model_provider = plugin
+                break
+
+    app.state.managed_plugin_records = resolved_managed_plugin_records
+    app.state.managed_plugins = list(resolved_managed_plugin_records.values())
+    app.state.plugin_feature_catalog = plugin_feature_catalog
+    app.state.runtime = None  # Deprecated: Legacy BrainRuntime no longer supported
     if transcript_store is not None:
         app.state.transcript_store = transcript_store
-    elif runtime is not None and hasattr(runtime, "transcript_store"):
-        app.state.transcript_store = runtime.transcript_store
         
-    kuzu_adapter = None
-    cluster_mode = os.environ.get("ZENTEX_CLUSTER_MODE", "false").lower() == "true"
-    if not cluster_mode:
-        try:
-            kuzu_client = KuzuGraphMemoryClient(db_path=".zentex/kuzu_db")
-            kuzu_adapter = EpisodeGraphMemoryAdapter(graph_client=kuzu_client)
-        except Exception:
-            pass
+    # KuzuDB initialization moved to startup event for better performance
+    app.state.kuzu_adapter = None 
 
 
     resolved_enhanced_memory_service = (
@@ -238,8 +368,8 @@ def create_app(
                 episodic_store_path=default_runtime_root / "enhanced_episodic.jsonl",
                 management_store_path=default_runtime_root / "enhanced_management.json",
                 audit_store_path=default_runtime_root / "enhanced_memory_audit.jsonl",
-                episodic_sink=kuzu_adapter,
-                episodic_recall_client=kuzu_adapter,
+                episodic_sink=None, # Will be attached during startup
+                episodic_recall_client=None,
             )
         )
     )
@@ -303,12 +433,12 @@ def create_app(
         app.state.upgrade_audit_store = (
             upgrade_audit_store
             if isinstance(upgrade_audit_store, UpgradeAuditStore)
-            else UpgradeAuditStore(default_runtime_root / "upgrade_audit.jsonl")
+            else UpgradeAuditStore(default_runtime_root / "upgrade_audit.sqlite3")
         )
         app.state.upgrade_memory_store = (
             upgrade_memory_store
             if isinstance(upgrade_memory_store, UpgradeMemoryStore)
-            else UpgradeMemoryStore(default_runtime_root / "upgrade_memory.jsonl")
+            else UpgradeMemoryStore(default_runtime_root / "upgrade_memory.sqlite3")
         )
         app.state.upgrade_evidence_service = (
             upgrade_evidence_service
@@ -328,40 +458,167 @@ def create_app(
             evidence_service=app.state.upgrade_evidence_service,
         )
     if runtime is not None:
-        resolved_enhanced_memory_service.backfill_transcript_entries(
-            runtime.transcript_store.get_entries_snapshot()
-        )
+        # Backfill is deferred to a background thread to avoid blocking app
+        # startup.  A concurrent background backfill is already started by
+        # _bootstrap_runtime.py; _seen_projection_keys prevents duplicate
+        # ingestion so running both is safe.
+        _backfill_service = resolved_enhanced_memory_service
+        _backfill_entries = runtime.transcript_store.get_entries_snapshot()
+        def _bg_transcript_backfill() -> None:
+            try:
+                _backfill_service.backfill_transcript_entries(_backfill_entries)
+            except Exception:
+                logger.exception("Startup transcript backfill (create_app) failed")
+        import threading as _threading
+        _threading.Thread(
+            target=_bg_transcript_backfill,
+            name="app-transcript-backfill",
+            daemon=True,
+        ).start()
     if isinstance(app.state.upgrade_memory_store, UpgradeMemoryStore):
-        resolved_enhanced_memory_service.backfill_upgrade_memory_records(
-            app.state.upgrade_memory_store.list_records()
-        )
-    if cli_adapter is not None:
-        app.state.cli_adapter = cli_adapter
-    if mcp_adapter is not None:
-        app.state.mcp_adapter = mcp_adapter
+        _upgrade_service = resolved_enhanced_memory_service
+        _upgrade_records = app.state.upgrade_memory_store.list_records()
+        def _bg_upgrade_backfill() -> None:
+            try:
+                _upgrade_service.backfill_upgrade_memory_records(_upgrade_records)
+            except Exception:
+                logger.exception("Startup upgrade backfill (create_app) failed")
+        import threading as _threading
+        _threading.Thread(
+            target=_bg_upgrade_backfill,
+            name="app-upgrade-backfill",
+            daemon=True,
+        ).start()
+    if cli_service is not None:
+        app.state.cli_service = cli_service
+    if mcp_service is not None:
+        app.state.mcp_service = mcp_service
     if execution_registry is not None:
         app.state.execution_registry = execution_registry
+    if simulation_engine is not None:
+        app.state.simulation_engine = simulation_engine
+    if interaction_mind_engine is not None:
+        app.state.interaction_mind_engine = interaction_mind_engine
+    if consolidation_engine is not None:
+        app.state.consolidation_engine = consolidation_engine
+    if reflection_service is not None:
+        app.state.reflection_service = reflection_service
+    if learning_service is not None:
+        app.state.learning_service = learning_service
+
+    if task_service is not None:
+        task_auto_loop_enabled = str(os.getenv("ZENTEX_TASK_AUTO_LOOP_ENABLED", "1")).strip().lower() in {
+            "1",
+            "true",
+            "yes",
+            "on",
+        }
+        task_auto_loop_scheduler = TaskAutoLoopScheduler(
+            task_service=task_service,
+            interval_seconds=int(os.getenv("ZENTEX_TASK_AUTO_LOOP_INTERVAL_SECONDS", "15")),
+            batch_size=int(os.getenv("ZENTEX_TASK_AUTO_LOOP_BATCH_SIZE", "50")),
+            enabled=task_auto_loop_enabled,
+        )
+        app.state.task_auto_loop_scheduler = task_auto_loop_scheduler
+
+        @app.on_event("startup")
+        async def _start_task_auto_loop_scheduler() -> None:
+            try:
+                task_auto_loop_scheduler.start()
+            except Exception as exc:
+                logger.warning(f"Failed to start task auto loop scheduler: {exc}")
+
+        @app.on_event("startup")
+        async def _initialize_heavy_services() -> None:
+            """Initialize KuzuDB and Memory Engine in the background."""
+            # 1. Initialize KuzuDB
+            cluster_mode = os.environ.get("ZENTEX_CLUSTER_MODE", "false").lower() == "true"
+            if not cluster_mode:
+                try:
+                    logger.info("Initializing KuzuDB graph client...")
+                    kuzu_db_path = default_runtime_root / "kuzu_db"
+                    kuzu_db_path.parent.mkdir(parents=True, exist_ok=True)
+                    kuzu_client = KuzuGraphMemoryClient(db_path=str(kuzu_db_path))
+                    kuzu_adapter = EpisodeGraphMemoryAdapter(graph_client=kuzu_client)
+                    app.state.kuzu_adapter = kuzu_adapter
+                    # Attach to memory service
+                    if hasattr(app.state.enhanced_memory_service, "_episodic_sink"):
+                        app.state.enhanced_memory_service._episodic_sink = kuzu_adapter
+                        app.state.enhanced_memory_service._episodic_recall_client = kuzu_adapter
+                    logger.info("✓ KuzuDB initialized and attached to Memory Service")
+                except Exception as _kuzu_exc:
+                    logger.warning("KuzuDB initialization failed: %s", _kuzu_exc)
+
+            # 2. Trigger Memory Engine background initialization
+            if hasattr(app.state.enhanced_memory_service, "initialize_background"):
+                # Run this as a separate task so it doesn't block other startup events
+                asyncio.create_task(app.state.enhanced_memory_service.initialize_background())
+
+        @app.on_event("shutdown")
+        async def _stop_task_auto_loop_scheduler() -> None:
+            try:
+                task_auto_loop_scheduler.stop()
+            except Exception as exc:
+                logger.warning(f"Failed to stop task auto loop scheduler: {exc}")
+
+    if runtime is not None:
+        scheduler = NineQuestionReflectionScheduler(
+            runtime=runtime,
+            reflection_service=get_reflection_service(),
+            upgrade_execution_service=getattr(app.state, "upgrade_execution_service", None),
+            interval_seconds=3600,
+        )
+        app.state.nine_question_reflection_scheduler = scheduler
+
+        @app.on_event("startup")
+        async def _start_nine_question_reflection_scheduler() -> None:
+            try:
+                scheduler.start()
+            except Exception as exc:
+                logger.warning(f"Failed to start nine-question reflection scheduler: {exc}")
+
+        @app.on_event("shutdown")
+        async def _stop_nine_question_reflection_scheduler() -> None:
+            try:
+                scheduler.stop()
+            except Exception as exc:
+                logger.warning(f"Failed to stop nine-question reflection scheduler: {exc}")
+
+    # Initialize workspace store
+    try:
+        from zentex.web_console.storage.workspace import WorkspaceStore
+        workspace_db_path = Path(".zentex/workspaces.db")
+        workspace_store = WorkspaceStore(workspace_db_path)
+        app.state.workspace_store = workspace_store
+    except Exception as e:
+        logger.warning(f"Failed to initialize workspace store: {e}")
+
+    # Paths that are LLM-guarded but have specific sub-paths excluded from the guard
+    # (operational actions that don't require LLM — cancel, cleanup, etc.)
+    LLM_GUARD_EXCEPTIONS = (
+        "/api/web/upgrades/llm/execute",
+        "/api/web/upgrades/plugins/execute",
+    )
 
     @app.middleware("http")
     async def llm_disable_guard(request: Request, call_next):  # type: ignore[no-untyped-def]
         # Health endpoint is always allowed
         if request.url.path.startswith("/api/web/health"):
             return await call_next(request)
-        
+
         if request.url.path.startswith("/api/web") and request.method.upper() in {
             "POST",
             "PUT",
             "PATCH",
             "DELETE",
         }:
-            if (
-                request.url.path.startswith("/api/web/plugins")
-                or request.url.path.startswith("/api/web/interventions")
-                or request.url.path.startswith("/api/web/memory")
-                or request.url.path.startswith("/api/web/upgrades")
-                or request.url.path.startswith("/api/web/cli-tools")
-                or request.url.path.startswith("/api/web/mcp-servers")
-            ):
+            path = request.url.path
+            # Only guard paths in LLM_GUARDED_PREFIXES but exclude specific operational sub-paths
+            is_guarded = any(path.startswith(prefix) for prefix in LLM_GUARDED_PREFIXES)
+            # For upgrades, only execute endpoints require LLM
+            if path.startswith("/api/web/upgrades") and not any(path.startswith(ex) for ex in LLM_GUARD_EXCEPTIONS):
+                is_guarded = False
+            if not is_guarded:
                 return await call_next(request)
             status = compute_llm_status(request)
             if not status.available:
@@ -388,7 +645,15 @@ def create_app(
                 )
         return await call_next(request)
 
-    app.include_router(api_router)
-    return app
+    # Health check endpoint
+    @app.get("/health")
+    async def health_check() -> dict:  # type: ignore[no-untyped-def]
+        """Simple health check endpoint for load balancers and monitoring."""
+        return {"status": "ok", "service": "Zentex Web Console"}
 
-create_web_console_app = create_app
+    app.include_router(api_router)
+    app.include_router(supervision_router)
+    app.include_router(environment_router)
+    app.include_router(learning_async_router)
+    app.include_router(reflection_async_router)
+    return app

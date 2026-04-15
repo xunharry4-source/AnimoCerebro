@@ -13,12 +13,13 @@ from threading import Lock
 from typing import Any, Dict, List, Optional
 from uuid import uuid4
 
-from zentex.core.model_provider_spec import (
+from zentex.foundation.specs.model_provider import (
     ModelProviderCallerContext,
     ModelProviderSpec,
 )
-from zentex.core.plugin_base import PluginLifecycleStatus
-from zentex.core.simulation_spec import SimulationDomainPlugin, SimulationIntent
+from zentex.llm.service import LLMService
+from zentex.plugins.contracts import PluginLifecycleStatus
+from zentex.plugins.simulation import SimulationDomainPlugin, SimulationIntent
 from pydantic import BaseModel, ConfigDict, Field
 
 
@@ -78,7 +79,9 @@ class CounterfactualSimulationEngine:
     def __init__(
         self,
         *,
-        model_provider: ModelProviderSpec,
+        llm_service: LLMService | None = None,
+        model_provider: ModelProviderSpec | None = None,
+        model_provider_key: str | None = None,
         simulation_plugins: List[SimulationDomainPlugin],
         max_workers: int = 4,
     ) -> None:
@@ -86,11 +89,14 @@ class CounterfactualSimulationEngine:
         初始化多分支模拟引擎。
 
         Args:
-            model_provider: 用于汇总最终分支对比结论的激活态大模型插件。
+            llm_service: 统一 LLM 服务入口。
+            model_provider: 兼容旧调用链的回退 provider。
             simulation_plugins: 可并发执行的领域模拟器插件集合。
             max_workers: 后台线程池大小。
         """
+        self._llm_service = llm_service
         self._model_provider = model_provider
+        self._model_provider_key = model_provider_key
         self._simulation_plugins = simulation_plugins
         self._executor = ThreadPoolExecutor(max_workers=max_workers, thread_name_prefix="simulation-engine")
         self._lock = Lock()
@@ -165,7 +171,7 @@ class CounterfactualSimulationEngine:
         active_plugins = [
             plugin
             for plugin in self._simulation_plugins
-            if plugin.status == PluginLifecycleStatus.ACTIVE
+            if plugin.lifecycle_status == PluginLifecycleStatus.ACTIVE
         ]
 
         for plugin in active_plugins:
@@ -280,19 +286,35 @@ class CounterfactualSimulationEngine:
                 for branch in branches
             ],
         }
-        payload = self._model_provider.generate_json(
-            prompt=(
-                "Compare the simulation branches and return JSON with keys "
-                "summary, risk_ranking, recommended_branch_id."
-            ),
-            context=translated_context,
-            caller_context=ModelProviderCallerContext(
-                source_module="World-model simulation engine",
-                invocation_phase="comparing branch outcomes",
-                question_driver_refs=["这样做会带来什么后果", "我现在应该做什么"],
-                decision_id=goal_id,
-            ),
+        caller_context = ModelProviderCallerContext(
+            source_module="World-model simulation engine",
+            invocation_phase="comparing branch outcomes",
+            question_driver_refs=["这样做会带来什么后果", "我现在应该做什么"],
+            decision_id=goal_id,
         )
+        prompt = (
+            "Compare the simulation branches and return JSON with keys "
+            "summary, risk_ranking, recommended_branch_id."
+        )
+        if self._llm_service is not None:
+            payload = self._llm_service.generate_json(
+                prompt=prompt,
+                context=translated_context,
+                caller_context=caller_context,
+                source_module=caller_context.source_module,
+                invocation_phase=caller_context.invocation_phase,
+                decision_id=caller_context.decision_id,
+                model_provider=self._model_provider_key,
+                metadata={"question_driver_refs": caller_context.question_driver_refs},
+            ).output
+        elif self._model_provider is not None:
+            payload = self._model_provider.generate_json(
+                prompt=prompt,
+                context=translated_context,
+                caller_context=caller_context,
+            )
+        else:
+            raise RuntimeError("LLM MANDATORY: missing llm_service and model_provider fallback")
         return OutcomeComparison.model_validate(payload)
 
     def _humanize_token(self, token: str) -> str:

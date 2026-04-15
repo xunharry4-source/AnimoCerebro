@@ -1,15 +1,15 @@
 from __future__ import annotations
 
 from datetime import datetime
-from typing import Any, Dict, List, Literal, Optional
+from pathlib import Path
+from typing import Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field
 
-from zentex.core.plugin_base import BasePluginSpec
-from pathlib import Path
+from zentex.plugins.contracts import BasePluginSpec, ManagedPluginRecord
 
-# Resolve repo root dynamically to avoid hardcoded paths
-REPO_ROOT = Path(__file__).parent.parent.parent.parent.parent
+
+REPO_ROOT = Path(__file__).resolve().parents[4]
 DOCS_ROOT = REPO_ROOT / "docs"
 SRC_ROOT = REPO_ROOT / "src"
 
@@ -22,66 +22,53 @@ class CognitivePluginStatusItem(BaseModel):
     supports_multiple_plugins: bool = False
     plugin_kind: str
     version: str
-    status: str
-    health_status: Optional[str]
+    lifecycle_status: str
+    operational_status: str
+    health_status: str | None
     purpose: str
     description: str
-    used_in: List[str]
+    used_in: list[str]
     is_default: bool = False
     is_official_release: bool = True
     can_force_enable: bool = False
     can_force_disable: bool = False
     can_delete: bool = False
-    usage_count: int
-    failure_count: int
-    rollback_conditions: List[str]
-    trigger_conditions: List[str]
-    required_context: List[str]
-    created_at: Optional[datetime] = None
-    updated_at: Optional[datetime] = None
-    started_at: Optional[datetime] = None
-    stopped_at: Optional[datetime] = None
-    last_used_at: Optional[datetime] = None
+    usage_count: int = 0
+    failure_count: int = 0
+    rollback_conditions: list[str] = Field(default_factory=list)
+    trigger_conditions: list[str] = Field(default_factory=list)
+    required_context: list[str] = Field(default_factory=list)
+    created_at: datetime | None = None
+    updated_at: datetime | None = None
+    started_at: datetime | None = None
+    stopped_at: datetime | None = None
+    last_used_at: datetime | None = None
+    is_instantiated: bool = False
 
 
 class ForceEnablePluginResponse(BaseModel):
     model_config = ConfigDict(extra="forbid", frozen=True)
 
     plugin: CognitivePluginStatusItem
-    auto_disabled_plugin_ids: List[str] = Field(default_factory=list)
+    auto_disabled_plugin_ids: list[str] = Field(default_factory=list)
     requires_override_warning: bool = False
     message: str
 
 
-class ManagedPluginRecord(BaseModel):
-    model_config = ConfigDict(frozen=True, arbitrary_types_allowed=True)
-
-    plugin: BasePluginSpec
-    internal_revision_id: int = Field(ge=1)
-    source_kind: Literal["builtin", "user", "test_stub"] = "builtin"
-    description: str = Field(min_length=1)
-    feature_code: str
-    supports_multiple_plugins: bool = False
-    is_default: bool = False
-    is_official_release: bool = True
-    created_at: datetime
-    updated_at: datetime
-    started_at: Optional[datetime] = None
-    stopped_at: Optional[datetime] = None
 
 
 class ManagedForceEnableResult(BaseModel):
     model_config = ConfigDict(frozen=True, arbitrary_types_allowed=True)
 
     plugin_id: str
-    auto_disabled_plugin_ids: List[str] = Field(default_factory=list)
+    auto_disabled_plugin_ids: list[str] = Field(default_factory=list)
 
 
 class ManagedPluginTestSandbox(BaseModel):
     model_config = ConfigDict(arbitrary_types_allowed=True)
 
-    records: Dict[str, ManagedPluginRecord]
-    audit_events: List[Dict[str, Any]] = Field(default_factory=list)
+    records: dict[str, ManagedPluginRecord]
+    audit_events: list[dict[str, Any]] = Field(default_factory=list)
 
     def resolve_plugin_for_test(self, plugin_id: str) -> ManagedPluginRecord:
         try:
@@ -96,23 +83,12 @@ class PluginFeatureGroupItem(BaseModel):
     feature_code: str
     display_name: str
     plugin_kind: str
-    feature_guide_path: Optional[str] = None
-    family_guide_path: Optional[str] = None
+    feature_guide_path: str | None = None
+    family_guide_path: str | None = None
     supports_multiple_plugins: bool
     binding_status: str
-    active_plugin_ids: List[str] = Field(default_factory=list)
-    plugins: List[CognitivePluginStatusItem] = Field(default_factory=list)
-
-
-class PluginFeatureCatalogItem(BaseModel):
-    model_config = ConfigDict(extra="forbid", frozen=True)
-
-    feature_code: str
-    display_name: str
-    plugin_kind: str
-    feature_guide_path: Optional[str] = None
-    family_guide_path: Optional[str] = None
-    supports_multiple_plugins: bool = False
+    active_plugin_ids: list[str] = Field(default_factory=list)
+    plugins: list[CognitivePluginStatusItem] = Field(default_factory=list)
 
 
 class PluginVersionHistoryItem(BaseModel):
@@ -120,11 +96,11 @@ class PluginVersionHistoryItem(BaseModel):
 
     plugin_id: str
     version: str
-    status: str
-    started_at: Optional[datetime] = None
-    completed_at: Optional[datetime] = None
-    error_message: Optional[str] = None
-    previous_version: Optional[str] = None
+    upgrade_status: str
+    started_at: datetime | None = None
+    completed_at: datetime | None = None
+    error_message: str | None = None
+    previous_version: str | None = None
 
 
 class PluginRelationshipItem(BaseModel):
@@ -133,25 +109,27 @@ class PluginRelationshipItem(BaseModel):
     plugin: CognitivePluginStatusItem
     role: str = "primary"
     priority: int = 1
-    fallback_id: Optional[str] = None
-    relationship_created_at: Optional[datetime] = None
-    relationship_updated_at: Optional[datetime] = None
+    fallback_id: str | None = None
+    relationship_created_at: datetime | None = None
+    relationship_updated_at: datetime | None = None
 
 
 class CognitivePluginDetailResponse(BaseModel):
     model_config = ConfigDict(extra="forbid", frozen=True)
 
     plugin: CognitivePluginStatusItem
-    functional_plugins: List[PluginRelationshipItem] = Field(default_factory=list)
-    history: List[PluginVersionHistoryItem] = Field(default_factory=list)
+    active_version_tool_id: str | None = None
+    related_versions: list[CognitivePluginStatusItem] = Field(default_factory=list)
+    functional_plugins: list[PluginRelationshipItem] = Field(default_factory=list)
+    history: list[PluginVersionHistoryItem] = Field(default_factory=list)
 
 
 class FunctionalPluginDetailResponse(BaseModel):
     model_config = ConfigDict(extra="forbid", frozen=True)
 
     plugin: CognitivePluginStatusItem
-    cognitive_plugins: List[PluginRelationshipItem] = Field(default_factory=list)
-    history: List[PluginVersionHistoryItem] = Field(default_factory=list)
+    cognitive_plugins: list[PluginRelationshipItem] = Field(default_factory=list)
+    history: list[PluginVersionHistoryItem] = Field(default_factory=list)
 
 
 class PluginActionRequest(BaseModel):
@@ -167,7 +145,7 @@ class PluginRelationActionRequest(BaseModel):
     audit_reason: str = Field(min_length=1)
     role: str = "primary"
     priority: int = 1
-    fallback_id: Optional[str] = None
+    fallback_id: str | None = None
 
 
 class PluginTestRequest(BaseModel):
@@ -182,38 +160,20 @@ class PluginTestResponse(BaseModel):
 
     plugin_id: str
     ok: bool
-    details: Dict[str, Any] = Field(default_factory=dict)
+    details: dict[str, Any] = Field(default_factory=dict)
 
 
-FEATURE_GUIDE_PATHS: Dict[str, str] = {
-    "risk_assessment": str(DOCS_ROOT / "operability/plugin_features/risk_assessment.md"),
-    "evidence_ranking": str(DOCS_ROOT / "operability/plugin_features/evidence_ranking.md"),
-    "decision_summary": str(DOCS_ROOT / "operability/plugin_features/decision_summary.md"),
-    "cognitive_conflict_detection": str(DOCS_ROOT / "operability/plugin_features/cognitive_conflict_detection.md"),
-    "memory_consolidation": str(DOCS_ROOT / "operability/plugin_features/memory_consolidation.md"),
-    "model_provider:gemini": str(DOCS_ROOT / "operability/plugin_features/model_provider_gemini.md"),
-    "model_provider:openai_compat": str(DOCS_ROOT / "operability/plugin_features/model_provider_openai_compat.md"),
-    "sensory_ingest:webhook": str(DOCS_ROOT / "operability/plugin_features/sensory_ingest_webhook.md"),
-    "sensory_sanitize:basic_prompt_injection_sanitizer": str(DOCS_ROOT / "operability/plugin_features/sensory_sanitize_basic_prompt_injection_sanitizer.md"),
-    "sensory_interpret:generic_environment": str(DOCS_ROOT / "operability/plugin_features/sensory_interpret_generic_environment.md"),
-    "execution:system": str(DOCS_ROOT / "operability/plugin_features/execution_system.md"),
-    "execution:browser": str(DOCS_ROOT / "operability/plugin_features/execution_browser.md"),
-    "simulation:general,system,cloud,browser,code,market": str(DOCS_ROOT / "operability/plugin_features/simulation_general.md"),
-    "simulation:market": str(DOCS_ROOT / "operability/plugin_features/simulation_market.md"),
+FEATURE_GUIDE_PATHS: dict[str, str] = {
     "weights:subjective_preferences": str(DOCS_ROOT / "operability/plugin_features/weights_subjective_preferences.md"),
     "identity:package_loader": str(DOCS_ROOT / "operability/plugin_features/identity_package_loader.md"),
 }
 
 
-PLUGIN_FAMILY_GUIDE_PATHS: Dict[str, str] = {
+PLUGIN_FAMILY_GUIDE_PATHS: dict[str, str] = {
     "cognitive_tool": str(SRC_ROOT / "plugins/cognitive/DEVELOPMENT_GUIDE.md"),
     "model_provider": str(SRC_ROOT / "plugins/model_providers/DEVELOPMENT_GUIDE.md"),
-    "signal_ingest": str(SRC_ROOT / "plugins/sensory/DEVELOPMENT_GUIDE.md"),
-    "signal_sanitize": str(SRC_ROOT / "plugins/sensory/DEVELOPMENT_GUIDE.md"),
-    "signal_interpret": str(SRC_ROOT / "plugins/sensory/DEVELOPMENT_GUIDE.md"),
     "execution_domain": str(SRC_ROOT / "plugins/execution/DEVELOPMENT_GUIDE.md"),
     "simulation_domain": str(SRC_ROOT / "plugins/simulation/DEVELOPMENT_GUIDE.md"),
     "subjective_weight": str(SRC_ROOT / "plugins/weights/DEVELOPMENT_GUIDE.md"),
     "identity_package": str(DOCS_ROOT / "operability/plugin_features/identity_package_loader.md"),
 }
-

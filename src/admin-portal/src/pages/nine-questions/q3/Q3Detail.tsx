@@ -25,6 +25,7 @@ import {
 import Q3EvidencePanel from "../../../components/Q3EvidencePanel";
 import MountedPluginsZone from "../../../components/MountedPluginsZone";
 import NineQuestionIntroCard from "../../../components/NineQuestionIntroCard";
+import Q3DataTabs from "../../../components/Q3DataTabs";
 
 function resolveErrorGuidance(errMsg: string): { title: string; action: string } {
   if (errMsg.includes("No active session") || errMsg.includes("没有活动 session")) {
@@ -116,6 +117,11 @@ export default function Q3Detail() {
       {/* 问题介绍栏目 */}
       <NineQuestionIntroCard questionId="q3" />
 
+      {/* Q3 实际数据详情 Tab 面板 */}
+      <Q3DataTabs 
+        evidence={evidence as any} 
+        inference={inference as any} 
+      />
       <Card variant="outlined" sx={{ mb: 3 }}>
         <CardContent>
           <Stack direction="row" spacing={1} sx={{ mb: 2 }} useFlexGap flexWrap="wrap">

@@ -31,7 +31,7 @@ class CliToolRuntimeState(BaseModel):
     command_name: str
     description: str
     mapped_domain: Literal["cognitive", "execution"]
-    plugin_id: str
+    cli_id: str
     feature_code: str
     execution_domain: Optional[str] = None
     read_only: bool = True
@@ -55,3 +55,44 @@ class CliInvocationResult(BaseModel):
     stderr: str = ""
     command_line: List[str] = Field(default_factory=list)
     working_directory: Optional[str] = None
+
+class CliCreditScore(BaseModel):
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    total_score: float = Field(ge=0.0, le=100.0)
+    success_rate: float = Field(ge=0.0, le=1.0)
+    total_executions: int = 0
+    successful_executions: int = 0
+    failed_executions: int = 0
+    average_response_time_ms: Optional[float] = None
+    error_rate: float = Field(ge=0.0, le=1.0)
+    usage_frequency: str = "low"  # low, medium, high
+    credit_level: str  # excellent, good, fair, poor
+    last_updated: str
+
+class CliTaskSummary(BaseModel):
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    task_id: str
+    title: str
+    status: str
+    created_at: str
+    started_at: Optional[str] = None
+    completed_at: Optional[str] = None
+    progress: float = 0.0
+    priority: str = "medium"
+    remarks: Optional[str] = None
+
+class CliExecutionHistory(BaseModel):
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    trace_id: str
+    tool_name: str
+    status: str
+    exit_code: int
+    stdout: str = ""
+    stderr: str = ""
+    command_line: List[str] = Field(default_factory=list)
+    working_directory: Optional[str] = None
+    executed_at: str
+    duration_ms: Optional[int] = None

@@ -4,7 +4,8 @@ export type PluginRow = {
   supports_multiple_plugins: boolean;
   plugin_kind: string;
   version: string;
-  status: "candidate" | "active" | "degraded" | "revoked" | "sandbox_verified";
+  lifecycle_status: "candidate" | "active" | "degraded" | "revoked" | "sandbox_verified";
+  operational_status: "enabled" | "stopped" | "abnormal" | "unavailable";
   health_status: string | null;
   purpose: string;
   description: string;
@@ -29,7 +30,7 @@ export type PluginRow = {
 export type PluginHistoryItem = {
   plugin_id: string;
   version: string;
-  status: string;
+  upgrade_status: string;
   started_at: string | null;
   completed_at: string | null;
   error_message: string | null;
@@ -49,6 +50,8 @@ export type CognitivePluginDetailResponse = {
   plugin: PluginRow;
   functional_plugins: PluginRelationshipItem[];
   history: PluginHistoryItem[];
+  related_versions: PluginRow[];
+  active_version_tool_id: string | null;
 };
 
 export type FunctionalPluginDetailResponse = {

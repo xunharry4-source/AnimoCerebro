@@ -19,7 +19,7 @@ from zentex.plugins.service import (
     build_default_provider_tools,
     get_default_provider_key,
 )
-from zentex.core.model_provider_spec import (
+from zentex.foundation.specs.model_provider import (
     ModelProviderAuthError,
     ModelProviderCallerContext,
     ModelProviderConfigError,
@@ -89,9 +89,9 @@ class LLMGateway:
         self._output_tokens = 0
 
     def __deepcopy__(self, memo: Dict[int, object]) -> "LLMGateway":
-        # `ManagedPluginRecord.model_copy(deep=True)` is used to isolate web-console
-        # test sandboxes. Thread locks are not deepcopyable, so we recreate a new
-        # gateway while reusing the already-built tool objects.
+        # `ManagedPluginRecord.model_copy(deep=True)` is used in core runtime and 
+        # web-console test sandboxes. Thread locks are not deepcopyable, so we 
+        # recreate a new gateway while reusing the already-built tool objects.
         cloned = LLMGateway(
             default_provider_key=self._default_provider_key,
             tools=self._tools,
@@ -125,7 +125,10 @@ class LLMGateway:
         max_output_tokens: int = 1024,
         metadata: Dict[str, Any] | None = None,
     ) -> LLMGatewayCall:
-        selected_provider_key = (provider_key or self._default_provider_key).strip()
+        selected_provider_key, selected_model = self._resolve_provider_and_model(
+            provider_key=provider_key,
+            model=model,
+        )
         if not selected_provider_key:
             raise ModelProviderConfigError("provider_key must not be empty")
 
@@ -134,11 +137,6 @@ class LLMGateway:
             raise ModelProviderConfigError(
                 f"Unknown provider tool: {selected_provider_key}. Available={sorted(self._tools)}"
             )
-
-        default_model = getattr(getattr(tool, "config", None), "default_model", None)
-        selected_model = (model or default_model or "").strip()
-        if not selected_model:
-            raise ModelProviderConfigError("model must not be empty")
 
         # Keep the model prompt contract consistent across providers.
         rendered_context = json.dumps(context, ensure_ascii=False, separators=(",", ":"), sort_keys=True)
@@ -218,6 +216,57 @@ class LLMGateway:
         return ModelProviderRemoteError(
             f"Unexpected provider failure for {provider_key}: {exc.__class__.__name__}"
         )
+
+    def _resolve_provider_and_model(
+        self,
+        *,
+        provider_key: Optional[str],
+        model: Optional[str],
+    ) -> tuple[str, str]:
+        if provider_key is not None and not provider_key.strip():
+            return "", ""
+
+        requested_provider_key = (provider_key or "").strip()
+        requested_model = (model or "").strip()
+
+        if requested_provider_key:
+            selected_provider_key = requested_provider_key
+        else:
+            selected_provider_key = self._default_provider_key.strip()
+
+        if not selected_provider_key:
+            return "", ""
+
+        tool = self._tools.get(selected_provider_key)
+        if tool is None:
+            return selected_provider_key, requested_model
+
+        default_model = self._tool_default_model(tool)
+        selected_model = requested_model or default_model
+        selected_model = self._normalize_model_for_provider(
+            provider_key=selected_provider_key,
+            model=selected_model,
+            default_model=default_model,
+        )
+        if not selected_model:
+            raise ModelProviderConfigError("model must not be empty")
+        return selected_provider_key, selected_model
+
+    def _normalize_model_for_provider(
+        self,
+        *,
+        provider_key: str,
+        model: str,
+        default_model: str,
+    ) -> str:
+        normalized = model.strip()
+        if provider_key == "gemini" and normalized.endswith("(auto)"):
+            return default_model or normalized.removesuffix("(auto)").strip()
+        return normalized
+
+    @staticmethod
+    def _tool_default_model(tool: Any) -> str:
+        return str(getattr(getattr(tool, "config", None), "default_model", "") or "").strip()
 
 
 def _parse_json_object(text: str) -> Dict[str, Any]:

@@ -212,6 +212,7 @@ export default function MemoryReasoning() {
   const [searchLoading, setSearchLoading] = useState(false);
   const [actionLoading, setActionLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [apiErrors, setApiErrors] = useState<string[]>([]);
 
   const loadRecords = async (recordIdToReload?: string) => {
     const params = new URLSearchParams({
@@ -224,17 +225,57 @@ export default function MemoryReasoning() {
     if (trustFilter !== "all") {
       params.set("trust_level", trustFilter);
     }
-    const [agendaPayload, overviewPayload, recordsPayload] = await Promise.all([
-      readJson<AgendaResponse>("/api/web/cognitive-agenda"),
-      readJson<EnhancedMemoryOverview>("/api/web/memory/enhanced/overview"),
-      readJson<EnhancedMemoryRecordsPayload>(`/api/web/memory/enhanced/records?${params.toString()}`),
-    ]);
-    setAgenda(agendaPayload);
-    setOverview(overviewPayload);
-    setRecords(recordsPayload.items);
-    const reloadId = recordIdToReload ?? selectedRecord?.memory_id ?? recordsPayload.items[0]?.memory_id ?? null;
+    
+    // Load each API independently to allow partial failures
+    let agendaPayload: AgendaResponse | null = null;
+    let overviewPayload: EnhancedMemoryOverview | null = null;
+    let recordsPayload: EnhancedMemoryRecordsPayload | null = null;
+    const errors: string[] = [];
+    
+    try {
+      agendaPayload = await readJson<AgendaResponse>("/api/web/cognitive-agenda");
+    } catch (e) {
+      const errorMsg = e instanceof Error ? e.message : String(e);
+      errors.push(`cognitive-agenda: ${errorMsg}`);
+      console.warn("Failed to load cognitive agenda:", e);
+    }
+    
+    try {
+      overviewPayload = await readJson<EnhancedMemoryOverview>("/api/web/memory/overview");
+    } catch (e) {
+      const errorMsg = e instanceof Error ? e.message : String(e);
+      errors.push(`memory/overview: ${errorMsg}`);
+      console.warn("Failed to load memory overview:", e);
+    }
+    
+    try {
+      recordsPayload = await readJson<EnhancedMemoryRecordsPayload>(`/api/web/memory/records?${params.toString()}`);
+    } catch (e) {
+      const errorMsg = e instanceof Error ? e.message : String(e);
+      errors.push(`memory/records: ${errorMsg}`);
+      console.warn("Failed to load memory records:", e);
+    }
+    
+    // Track API errors for debugging
+    setApiErrors(errors);
+    
+    if (agendaPayload) {
+      setAgenda(agendaPayload);
+    }
+    if (overviewPayload) {
+      setOverview(overviewPayload);
+    }
+    if (recordsPayload) {
+      setRecords(recordsPayload.items);
+    }
+    
+    const reloadId = recordIdToReload ?? selectedRecord?.memory_id ?? recordsPayload?.items[0]?.memory_id ?? null;
     if (reloadId) {
-      await loadDetail(reloadId);
+      try {
+        await loadDetail(reloadId);
+      } catch (e) {
+        console.warn("Failed to load detail:", e);
+      }
     } else {
       setSelectedRecord(null);
       setSelectedAudit([]);
@@ -244,24 +285,36 @@ export default function MemoryReasoning() {
   const loadPage = async () => {
     setLoading(true);
     setError(null);
+    setApiErrors([]);
     try {
       await loadRecords();
-    } catch {
-      setError("无法连接到 Zentex 后端，请检查服务状态");
+      // Check if ALL API calls failed (not just empty data)
+      // Empty data is valid - it means the system is working but has no records yet
+      if (apiErrors.length >= 3) {
+        setError(`所有 API 调用都失败了。请确认 Zentex 服务已启动并检查网络连接。\n\n错误详情:\n${apiErrors.join('\n')}`);
+      }
+    } catch (e) {
+      console.error("Unexpected error loading page:", e);
+      setError("页面加载出现异常，请检查浏览器控制台日志");
     } finally {
       setLoading(false);
     }
   };
 
   const loadDetail = async (memoryId: string) => {
-    const [detailPayload, auditPayload] = await Promise.all([
-      readJson<EnhancedMemoryRecordItem>(`/api/web/memory/enhanced/${encodeURIComponent(memoryId)}`),
-      readJson<EnhancedMemoryAuditPayload>(`/api/web/memory/enhanced/${encodeURIComponent(memoryId)}/audit?limit=20`),
-    ]);
-    setSelectedRecord(detailPayload);
-    setSelectedAudit(auditPayload.items);
-    setManagementNote(detailPayload.management_note ?? "");
-    setCorrectionNote(detailPayload.correction_note ?? "");
+    try {
+      const [detailPayload, auditPayload] = await Promise.all([
+        readJson<EnhancedMemoryRecordItem>(`/api/web/memory/${encodeURIComponent(memoryId)}`),
+        readJson<EnhancedMemoryAuditPayload>(`/api/web/memory/${encodeURIComponent(memoryId)}/audit?limit=20`),
+      ]);
+      setSelectedRecord(detailPayload);
+      setSelectedAudit(auditPayload.items);
+      setManagementNote(detailPayload.management_note ?? "");
+      setCorrectionNote(detailPayload.correction_note ?? "");
+    } catch (e) {
+      console.warn("Failed to load memory details:", e);
+      // Don't block - details are optional
+    }
   };
 
   useEffect(() => {
@@ -277,7 +330,7 @@ export default function MemoryReasoning() {
     setError(null);
     try {
       const payload = await readJson<EnhancedMemorySearchPayload>(
-        `/api/web/memory/enhanced/search?query=${encodeURIComponent(query.trim())}&limit=10`,
+        `/api/web/memory/search?query=${encodeURIComponent(query.trim())}&limit=10`,
       );
       setSearchHits(payload.items);
     } catch {
@@ -296,7 +349,7 @@ export default function MemoryReasoning() {
     try {
       const resolvedReason = payload.reason.trim() || "Memory governance updated.";
       await postJson<EnhancedMemoryRecordItem>(
-        `/api/web/memory/enhanced/${encodeURIComponent(selectedRecord.memory_id)}/management`,
+        `/api/web/memory/${encodeURIComponent(selectedRecord.memory_id)}/management`,
         {
           ...payload,
           reason: resolvedReason,
@@ -326,6 +379,22 @@ export default function MemoryReasoning() {
           刷新
         </Button>
       </Stack>
+
+      {/* API Error Warnings */}
+      {apiErrors.length > 0 && apiErrors.length < 3 && (
+        <Alert severity="warning">
+          <Typography variant="subtitle2" gutterBottom>
+            部分 API 调用失败（数据可能不完整）：
+          </Typography>
+          <Stack spacing={0.5}>
+            {apiErrors.map((err, idx) => (
+              <Typography key={idx} variant="body2" component="div">
+                • {err}
+              </Typography>
+            ))}
+          </Stack>
+        </Alert>
+      )}
 
       {loading ? (
         <Stack alignItems="center" py={6}>

@@ -2,12 +2,19 @@ from __future__ import annotations
 
 import logging
 from datetime import datetime, timezone
-from typing import Any, Dict, List, Optional
+from typing import Any, List, Optional, Protocol
 
 from pydantic import BaseModel, Field
 
-from zentex.core.identity import IdentityKernel
-from zentex.runtime.nine_questions.state import NineQuestionState
+
+class IdentityKernel(Protocol):
+    identity_id: str
+    mission_baseline: str
+    meta_motivation: str
+
+
+class NineQuestionStateLike(Protocol):
+    def __getattr__(self, name: str) -> Any: ...
 
 logger = logging.getLogger(__name__)
 
@@ -45,7 +52,7 @@ class MotivationEngine:
     def generate_motivations(
         self, 
         identity: IdentityKernel, 
-        nine_q_state: NineQuestionState
+        nine_q_state: NineQuestionStateLike
     ) -> List[Motivation]:
         """
         Derives situational motivations from the identity kernel and nine questions.

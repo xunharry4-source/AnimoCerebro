@@ -3,8 +3,9 @@ from __future__ import annotations
 import hashlib
 import re
 
-from zentex.core.plugin_base import PluginHealthStatus, PluginLifecycleStatus
-from zentex.core.sensory_spec import SanitizedSignal, SignalSanitizePlugin
+from pydantic import BaseModel, ConfigDict, Field
+
+from zentex.plugins.models import PluginLifecycleStatus
 
 
 INJECTION_PATTERNS = (
@@ -15,49 +16,47 @@ INJECTION_PATTERNS = (
 )
 
 
-class BasicPromptInjectionSanitizer(SignalSanitizePlugin):
-    sanitizer_name: str = "basic_prompt_injection_sanitizer"
+class SanitizedSignal(BaseModel):
+    model_config = ConfigDict(extra="ignore")
+
+    raw_fingerprint: str
+    sanitized_text: str
+    injection_risk: bool
+    redaction_evidence: list[str] = Field(default_factory=list)
+
+
+class BasicPromptInjectionSanitizer(BaseModel):
+    model_config = ConfigDict(extra="allow")
+
+    plugin_id: str = "sensory_injection_sanitizer"
+    version: str = "1.0.0"
+    feature_code: str = "sensory.sanitize"
+    display_name: str = "Prompt Injection Sanitizer"
+    description: str = "Sanitize raw sensory text before downstream interpretation."
+    behavior_key: str = "sensory_injection_sanitizer"
+    lifecycle_status: str = PluginLifecycleStatus.CANDIDATE.value
+    health_status: str = "healthy"
+    operational_status: str = "enabled"
 
     def sanitize_signal(self, raw_signal: str) -> SanitizedSignal:
-        normalized = raw_signal.strip()
+        normalized = (raw_signal or "").strip()
         lowered = normalized.lower()
         evidence = [pattern for pattern in INJECTION_PATTERNS if pattern in lowered]
-        injection_risk = bool(evidence)
-
         sanitized_text = normalized
-        if injection_risk:
-            sanitized_text = normalized
-            for pattern in evidence:
-                sanitized_text = re.sub(
-                    re.escape(pattern),
-                    "[REDACTED_PROMPT_INJECTION]",
-                    sanitized_text,
-                    flags=re.IGNORECASE,
-                )
-            sanitized_text = sanitized_text[:160]
-
-        fingerprint = hashlib.sha256(raw_signal.encode("utf-8")).hexdigest()
+        for pattern in evidence:
+            sanitized_text = re.sub(
+                re.escape(pattern),
+                "[REDACTED_PROMPT_INJECTION]",
+                sanitized_text,
+                flags=re.IGNORECASE,
+            )
         return SanitizedSignal(
-            raw_fingerprint=fingerprint,
-            sanitized_text=sanitized_text or "[EMPTY_AFTER_SANITIZATION]",
-            injection_risk=injection_risk,
+            raw_fingerprint=hashlib.sha256((raw_signal or "").encode("utf-8")).hexdigest(),
+            sanitized_text=sanitized_text[:160] or "[EMPTY_AFTER_SANITIZATION]",
+            injection_risk=bool(evidence),
             redaction_evidence=evidence,
         )
 
 
-def build_default_prompt_injection_sanitizer_plugin(
-    *,
-    plugin_id: str = "sensory-sanitize-basic",
-    version: str = "1.0.0",
-    status: PluginLifecycleStatus = PluginLifecycleStatus.CANDIDATE,
-) -> BasicPromptInjectionSanitizer:
-    return BasicPromptInjectionSanitizer(
-        plugin_id=plugin_id,
-        version=version,
-        feature_code="sensory.sanitize",
-        is_concurrency_safe=True,
-        status=status,
-        health_status=PluginHealthStatus.HEALTHY,
-        rollback_conditions=["sanitize_false_negative_spike"],
-        revocation_reasons=["reserved_for_runtime_audit"],
-    )
+def build_default_prompt_injection_sanitizer_plugin() -> BasicPromptInjectionSanitizer:
+    return BasicPromptInjectionSanitizer()

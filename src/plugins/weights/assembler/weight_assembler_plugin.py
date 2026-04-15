@@ -5,8 +5,7 @@ from typing import Any, Dict, List, Optional, Protocol
 
 from pydantic import BaseModel, ConfigDict, Field, ValidationError, model_validator
 
-from zentex.core.plugin_base import PluginHealthStatus, PluginLifecycleStatus
-from zentex.core.plugin_family import SubjectiveWeightSpec
+from zentex.plugins.contracts import PluginHealthStatus, PluginLifecycleStatus, SubjectiveWeightSpec
 
 
 class RationalAuditRejectError(RuntimeError):
@@ -27,10 +26,10 @@ class SubjectiveWeightPlugin(SubjectiveWeightSpec):
     """
 
     purpose: str = Field(min_length=1)
-    risk_tolerance: float = Field(ge=0.0, le=1.0)
-    cost_sensitivity: float = Field(ge=0.0, le=1.0)
-    creativity_bias: float = Field(ge=0.0, le=1.0)
-    continuity_bias: float = Field(ge=0.0, le=1.0)
+    risk_tolerance: float = Field(default=0.0, ge=0.0, le=1.0)
+    cost_sensitivity: float = Field(default=0.0, ge=0.0, le=1.0)
+    creativity_bias: float = Field(default=0.0, ge=0.0, le=1.0)
+    continuity_bias: float = Field(default=0.0, ge=0.0, le=1.0)
     rationale_tags: List[str] = Field(default_factory=list)
 
     @classmethod
@@ -52,7 +51,7 @@ class SubjectiveWeightPlugin(SubjectiveWeightSpec):
         )
         if total <= 0:
             raise ValueError("Weight profile must allocate at least one positive factor.")
-        if self.status == PluginLifecycleStatus.ACTIVE and self.risk_tolerance > 0.85:
+        if self.lifecycle_status == PluginLifecycleStatus.ACTIVE and self.risk_tolerance > 0.85:
             raise ValueError("Active weight plugins cannot exceed risk_tolerance=0.85.")
         return self
 
@@ -157,7 +156,7 @@ def _build_weight_plugin(
         plugin_id=plugin_id,
         version="1.0.0",
         is_concurrency_safe=True,
-        status=PluginLifecycleStatus.ACTIVE,
+        lifecycle_status=PluginLifecycleStatus.ACTIVE,
         health_status=PluginHealthStatus.HEALTHY,
         rollback_conditions=["weight_drift_detected", "g25_audit_rejected"],
         revocation_reasons=["reserved_for_weight_audit"],
@@ -216,3 +215,21 @@ def build_creative_exploration_weight() -> SubjectiveWeightPlugin:
         continuity_bias=0.1,
         rationale_tags=["creative_mode", "bounded_exploration"],
     )
+
+
+SubjectiveWeightPlugin.model_rebuild()
+SubjectiveWeightSnapshot.model_rebuild()
+
+
+def build_assembler_plugin(**kwargs: Any) -> SubjectiveWeightPlugin:
+    """Explicit factory for the weight_assembler plugin id."""
+    kwargs.setdefault("plugin_id", "weight_assembler")
+    kwargs.setdefault("version", "1.0.0")
+    kwargs.setdefault("purpose", "Bias toward safety and cost control.")
+    kwargs.setdefault("risk_tolerance", 0.2)
+    kwargs.setdefault("cost_sensitivity", 0.35)
+    kwargs.setdefault("creativity_bias", 0.1)
+    kwargs.setdefault("continuity_bias", 0.35)
+    kwargs.setdefault("rationale_tags", ["safety_first", "default"])
+    
+    return SubjectiveWeightPlugin(**kwargs)

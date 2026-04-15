@@ -1,6 +1,21 @@
+"""Memory Routes v3 - Refactored with Facade-First Design
+
+⚠️  MODULARIZATION CONSTRAINT - MAX 150 LINES
+════════════════════════════════════════════════════════════════════
+This module MUST NOT exceed 150 lines. All business logic extracted to:
+  - memory_commons.py: Shared memory queries and sessions
+  - memory_handlers.py: Memory-specific operations
+
+This file contains ONLY route definitions that delegate to services.
+════════════════════════════════════════════════════════════════════
+"""
+
 from __future__ import annotations
 
-from fastapi import APIRouter, Depends, HTTPException, Query
+import logging
+from typing import Optional
+
+from fastapi import APIRouter, Depends, Query, Request
 
 from zentex.web_console.contracts.memory import (
     EnhancedMemoryAuditPayload,
@@ -10,43 +25,52 @@ from zentex.web_console.contracts.memory import (
     EnhancedMemoryRecordItem,
     UpdateEnhancedMemoryRequest,
 )
-from zentex.web_console.dependencies import get_enhanced_memory_service, get_consolidation_engine
-from zentex.web_console.services.memory import (
-    build_enhanced_memory_audit_payload,
-    build_enhanced_memory_overview,
-    build_enhanced_memory_records_payload,
-    build_enhanced_memory_record_item,
-    build_enhanced_memory_search_payload,
+
+# Import service layer
+from .memory_commons import (
+    get_memory_overview,
+    list_memory_records,
+    search_memory,
+    get_memory_record_detail,
+    get_memory_audit_log,
 )
+from .memory_handlers import (
+    update_memory_record_management,
+    trigger_consolidation_cycle,
+    clear_memory_verification_flag,
+)
+from .cognition_handlers import handle_get_consolidation_cycles
+from zentex.web_console.dependencies import get_consolidation_engine
+
+logger = logging.getLogger(__name__)
+
+router = APIRouter(prefix="/memory", tags=["memory"])
 
 
-router = APIRouter()
+@router.get("/overview", response_model=EnhancedMemoryOverviewPayload)
+async def get_overview(request: Request) -> EnhancedMemoryOverviewPayload:
+    """Get memory statistics overview."""
+    return await get_memory_overview(request)
 
 
-@router.get("/memory/enhanced/overview", response_model=EnhancedMemoryOverviewPayload)
-def get_enhanced_memory_overview(
-    service=Depends(get_enhanced_memory_service),
-) -> EnhancedMemoryOverviewPayload:
-    return build_enhanced_memory_overview(service)
-
-
-@router.get("/memory/enhanced/records", response_model=EnhancedMemoryRecordsPayload)
-def list_enhanced_memory_records(
+@router.get("/records", response_model=EnhancedMemoryRecordsPayload)
+async def list_records(
+    request: Request,
     layer: str = Query(default="all"),
     limit: int = Query(default=50, ge=1, le=200),
-    status: str | None = None,
-    visibility: str | None = None,
-    trust_level: str | None = None,
-    trace_id: str | None = None,
-    target_id: str | None = None,
-    tag: str | None = None,
-    service=Depends(get_enhanced_memory_service),
+    status: Optional[str] = None,
+    visibility: Optional[str] = None,
+    trust_level: Optional[str] = None,
+    trace_id: Optional[str] = None,
+    target_id: Optional[str] = None,
+    tag: Optional[str] = None,
 ) -> EnhancedMemoryRecordsPayload:
-    return build_enhanced_memory_records_payload(
-        service,
+    """List memory records with filtering."""
+    return await list_memory_records(
+        request,
         layer=layer,
         limit=limit,
-        status=status,
+        lifecycle_status=status,
         visibility=visibility,
         trust_level=trust_level,
         trace_id=trace_id,
@@ -55,16 +79,17 @@ def list_enhanced_memory_records(
     )
 
 
-@router.get("/memory/enhanced/search", response_model=EnhancedMemorySearchPayload)
-def search_enhanced_memory(
+@router.get("/search", response_model=EnhancedMemorySearchPayload)
+async def search_records(
+    request: Request,
     query: str = Query(min_length=1),
     limit: int = Query(default=10, ge=1, le=50),
-    trace_id: str | None = None,
-    target_id: str | None = None,
-    service=Depends(get_enhanced_memory_service),
+    trace_id: Optional[str] = None,
+    target_id: Optional[str] = None,
 ) -> EnhancedMemorySearchPayload:
-    return build_enhanced_memory_search_payload(
-        service,
+    """Search memory records semantically."""
+    return await search_memory(
+        request,
         query=query,
         limit=limit,
         trace_id=trace_id,
@@ -72,57 +97,50 @@ def search_enhanced_memory(
     )
 
 
-@router.get("/memory/enhanced/{memory_id}", response_model=EnhancedMemoryRecordItem)
-def get_enhanced_memory_record(
+@router.get("/consolidation-cycles")
+async def get_consolidation_cycle_history(
+    consolidation_engine=Depends(get_consolidation_engine),
+):
+    """Compatibility alias for consolidation cycle history under the memory namespace."""
+    return handle_get_consolidation_cycles(consolidation_engine)
+
+
+@router.get("/{memory_id}", response_model=EnhancedMemoryRecordItem)
+async def get_record_detail(
+    request: Request,
     memory_id: str,
-    service=Depends(get_enhanced_memory_service),
 ) -> EnhancedMemoryRecordItem:
-    record = service.get_managed_record(memory_id)
-    if record is None:
-        raise HTTPException(status_code=404, detail="Memory record not found.")
-    return build_enhanced_memory_record_item(record)
+    """Get memory record details."""
+    return await get_memory_record_detail(request, memory_id)
 
 
-@router.get("/memory/enhanced/{memory_id}/audit", response_model=EnhancedMemoryAuditPayload)
-def get_enhanced_memory_audit(
+@router.get(
+    "/{memory_id}/audit",
+    response_model=EnhancedMemoryAuditPayload,
+)
+async def get_record_audit(
+    request: Request,
     memory_id: str,
     limit: int = Query(default=50, ge=1, le=200),
-    service=Depends(get_enhanced_memory_service),
 ) -> EnhancedMemoryAuditPayload:
-    record = service.get_managed_record(memory_id)
-    if record is None:
-        raise HTTPException(status_code=404, detail="Memory record not found.")
-    return build_enhanced_memory_audit_payload(service, memory_id=memory_id, limit=limit)
+    """Get audit trail for memory record."""
+    return await get_memory_audit_log(request, memory_id, limit=limit)
 
 
-@router.post("/memory/enhanced/{memory_id}/management", response_model=EnhancedMemoryRecordItem)
-def update_enhanced_memory_management(
+@router.post(
+    "/{memory_id}/management",
+    response_model=EnhancedMemoryRecordItem,
+)
+async def update_record_management(
+    request: Request,
     memory_id: str,
-    request: UpdateEnhancedMemoryRequest,
-    service=Depends(get_enhanced_memory_service),
+    update_request: UpdateEnhancedMemoryRequest,
 ) -> EnhancedMemoryRecordItem:
-    try:
-        record = service.update_management_state(
-            memory_id,
-            status=request.status,
-            visibility=request.visibility,
-            trust_level=request.trust_level,
-            management_note=request.management_note,
-            correction_note=request.correction_note,
-            operator=request.operator,
-            reason=request.reason,
-            supersedes_memory_id=request.supersedes_memory_id,
-            superseded_by_memory_id=request.superseded_by_memory_id,
-            mark_verified=request.mark_verified,
-        )
-    except KeyError as exc:
-        raise HTTPException(status_code=404, detail="Memory record not found.") from exc
-    return build_enhanced_memory_record_item(record)
+    """Update memory record management state."""
+    return await update_memory_record_management(request, memory_id, update_request)
 
-@router.post("/memory/consolidation/trigger")
-def trigger_memory_consolidation(
-    consolidation_engine=Depends(get_consolidation_engine),
-) -> dict[str, str]:
-    """Manually trigger a memory consolidation cycle (Sub-function 59.4 Gap)."""
-    consolidation_engine.submit_cycle(operator="web_console_user")
-    return {"status": "triggered", "message": "Manual memory consolidation cycle initiated."}
+
+@router.post("/consolidation/trigger")
+async def trigger_consolidation(request: Request) -> dict[str, str]:
+    """Trigger manual memory consolidation cycle."""
+    return await trigger_consolidation_cycle(request)

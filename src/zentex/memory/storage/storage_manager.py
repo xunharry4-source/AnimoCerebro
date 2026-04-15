@@ -16,10 +16,10 @@ Directory structure:
     ├── partitions.json          # partition registry
     ├── semantic/
     │   ├── user_prefs/
-    │   │   ├── collection_001.jsonl
-    │   │   └── collection_002.jsonl
+    │   │   ├── collection_001.sqlite3
+    │   │   └── collection_002.sqlite3
     │   └── profiles/
-    │       └── profile_001.jsonl
+    │       └── profile_001.sqlite3
     ├── procedural/
     │   └── workflows/
     ├── episodic/
@@ -137,9 +137,9 @@ class HierarchicalMemoryStorage:
     def active_file(self, namespace: tuple[str, ...], prefix: str = "collection") -> Path:
         """Return the path of the current active shard file for a namespace."""
         d = self.partition_dir(namespace)
-        shards = sorted(d.glob(f"{prefix}_*.jsonl"))
+        shards = sorted(d.glob(f"{prefix}_*.sqlite3"))
         if not shards:
-            return d / f"{prefix}_001.jsonl"
+            return d / f"{prefix}_001.sqlite3"
         latest = shards[-1]
         # Rotate if needed.
         if self._needs_rotation(latest):
@@ -162,7 +162,7 @@ class HierarchicalMemoryStorage:
     @staticmethod
     def _next_shard(directory: Path, prefix: str, index: int) -> Path:
         ts = datetime.utcnow().strftime("%Y%m%d_%H%M%S")
-        return directory / f"{prefix}_{index:03d}_{ts}.jsonl"
+        return directory / f"{prefix}_{index:03d}_{ts}.sqlite3"
 
     # ── temporal episodic sharding ───────────────────────────────────────
 
@@ -171,9 +171,9 @@ class HierarchicalMemoryStorage:
         dt = dt or datetime.utcnow()
         month_dir = self.partition_dir(namespace) / dt.strftime("%Y-%m")
         month_dir.mkdir(parents=True, exist_ok=True)
-        shard = month_dir / "episodes_001.jsonl"
+        shard = month_dir / "episodes_001.sqlite3"
         if self._needs_rotation(shard):
-            shards = sorted(month_dir.glob("episodes_*.jsonl"))
+            shards = sorted(month_dir.glob("episodes_*.sqlite3"))
             shard = self._next_shard(month_dir, "episodes", len(shards) + 1)
         return shard
 
@@ -183,7 +183,7 @@ class HierarchicalMemoryStorage:
         self,
         namespace: tuple[str, ...],
         *,
-        pattern: str = "*.jsonl",
+        pattern: str = "*.sqlite3",
     ) -> Iterator[dict]:
         """Iterate every JSON record across all shards in a partition."""
         d = self.partition_dir(namespace)
@@ -197,7 +197,7 @@ class HierarchicalMemoryStorage:
                 logger.warning("Skipping corrupt shard %s: %s", shard, exc)
 
     def list_shards(self, namespace: tuple[str, ...]) -> list[Path]:
-        return sorted(self.partition_dir(namespace).rglob("*.jsonl"))
+        return sorted(self.partition_dir(namespace).rglob("*.sqlite3"))
 
     # ── cold-storage archival ────────────────────────────────────────────
 

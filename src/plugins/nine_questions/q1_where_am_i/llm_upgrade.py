@@ -15,7 +15,19 @@ from plugins.nine_questions.q1_where_am_i.upgrade_models import (
     Q1LLMUpgradePlanPayload,
     Q1LLMUpgradeProfile,
 )
-from zentex.upgrade.llm.models import LLMUpgradeRequest
+from pydantic import BaseModel, ConfigDict, Field
+
+
+class LLMUpgradeRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    program_id: str = Field(min_length=1)
+    target_component: str = Field(min_length=1)
+    baseline_version: str = Field(min_length=1)
+    target_metric: str = Field(min_length=1)
+    dataset_refs: list[str] = Field(default_factory=list)
+    objective_summary: str = Field(min_length=1)
+    validation_commands: list[str] = Field(default_factory=list)
 
 
 Q1_PROGRAM_ID = "nine_questions.q1.where_am_i"

@@ -8,10 +8,9 @@ from uuid import uuid4
 
 from fastapi import HTTPException, Request
 
-from zentex.core.model_provider_spec import ModelProviderCallerContext, ModelProviderSpec
-from zentex.core.plugin_base import PluginLifecycleStatus
+from zentex.foundation.specs.model_provider import ModelProviderCallerContext, ModelProviderSpec
+from zentex.plugins.contracts import PluginLifecycleStatus
 from typing import Any, Dict, List, Optional, Tuple
-from zentex.tasks.service import LLMTaskDecomposerPlugin
 from zentex.web_console.contracts.model_feature_tests import (
     ModelFeatureHistoryItem,
     ModelFeatureInvokeRequest,
@@ -20,8 +19,11 @@ from zentex.web_console.contracts.model_feature_tests import (
     ModelFeatureStatsResponse,
     ModelFeatureTestCatalogItem,
 )
-from zentex.web_console.dependencies import get_active_session, get_runtime, get_transcript_store
-from zentex.web_console.services.llm import enforce_llm_available
+from zentex.web_console.dependencies import get_active_session, get_runtime, get_transcript_store, get_task_service
+from zentex.web_console.services.llm import (
+    enforce_llm_available,
+    resolve_active_model_provider_from_records,
+)
 
 
 MODEL_FEATURE_TEST_LOG_PATH = Path(".zentex/runtime/model_feature_test_logs.jsonl")
@@ -98,26 +100,32 @@ def list_model_feature_tests() -> List[ModelFeatureTestCatalogItem]:
 def _resolve_active_model_provider(request: Request) -> ModelProviderSpec:
     records = getattr(request.app.state, "managed_plugin_records", None)
     if isinstance(records, dict):
-        for record in records.values():
-            plugin = getattr(record, "plugin", None)
-            if isinstance(plugin, ModelProviderSpec) and plugin.status == PluginLifecycleStatus.ACTIVE:
-                return plugin
+        provider = resolve_active_model_provider_from_records(records)
+        if provider is not None:
+            return provider
     raise HTTPException(status_code=503, detail="No active model provider plugin is bound.")
 
 
-def _ensure_session(request: Request, runtime: BrainRuntime) -> BrainSession:
+def _ensure_session(request: Request, runtime: Any) -> Any:
     session = get_active_session(request)
     if session is not None:
         return session
-    session = runtime.create_session("web-console-test")
-    request.app.state.session = session
-    return session
+    if runtime is not None:
+        session = runtime.create_session("web-console-test")
+        request.app.state.session = session
+        return session
+    # No session and no runtime to create one? This is a gap for the new architecture
+    # that usually has a singleton session or managed ones.
+    # For now, we return 503 if we can't get a session.
+    raise HTTPException(status_code=503, detail="Active session and legacy runtime both unavailable.")
 
 
 def invoke_model_feature_test(request: Request, payload: ModelFeatureInvokeRequest) -> ModelFeatureInvokeResponse:
     enforce_llm_available(request)
-    runtime = get_runtime(request)
+    runtime = getattr(request.app.state, "runtime", None)
     session = _ensure_session(request, runtime)
+    if session is not None and not hasattr(session, "advance_turn"):
+        session = None
     provider = _resolve_active_model_provider(request)
     transcript_store = get_transcript_store(request)
 
@@ -146,12 +154,12 @@ def invoke_model_feature_test(request: Request, payload: ModelFeatureInvokeReque
         elif payload.feature_id == "tasks.decompose_mission":
             mission_title = str(payload.context.get("mission_title") or "Manual Mission")
             mission_content = str(payload.context.get("mission_content") or payload.prompt)
-            decomposer = LLMTaskDecomposerPlugin(
-                model_provider=provider,
-                transcript_store=transcript_store,
-            )
-            subtasks = decomposer.decompose_mission(mission_title, mission_content)
-            result = {"subtasks": subtasks}
+            task_service = get_task_service(request)
+            if task_service and hasattr(task_service, 'decomposer') and task_service.decomposer:
+                subtasks = task_service.decomposer.decompose_mission(mission_title, mission_content)
+                result = {"subtasks": subtasks}
+            else:
+                raise HTTPException(status_code=503, detail="Task decomposer service not available")
         else:
             raise HTTPException(status_code=404, detail=f"Unknown model feature test: {payload.feature_id}")
         ok = True
@@ -184,15 +192,16 @@ def invoke_model_feature_test(request: Request, payload: ModelFeatureInvokeReque
             "result": result,
         }
         _append_log(record)
-        session.advance_turn(
-            {
-                "turn_id": f"model-feature-test-{test_run_id}",
-                "trace_id": trace_id,
-                "timestamp": finished_at,
-                "status": "completed" if ok else "failed",
-                "model_feature_test": record,
-            }
-        )
+        if session is not None:
+            session.advance_turn(
+                {
+                    "turn_id": f"model-feature-test-{test_run_id}",
+                    "trace_id": trace_id,
+                    "timestamp": finished_at,
+                    "status": "completed" if ok else "failed",
+                    "model_feature_test": record,
+                }
+            )
 
     return ModelFeatureInvokeResponse(ok=ok, test_run_id=test_run_id, result=result)
 

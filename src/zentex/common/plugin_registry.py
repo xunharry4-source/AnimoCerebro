@@ -1,386 +1,257 @@
+"""Migration-safe plugin registry compat layer.
+
+This module restores the historical `zentex.common.plugin_registry` public
+surface while routing new code toward the `zentex.plugins` contract layer.
+It is a transitional boundary and should remain fail-closed.
+"""
+
 from __future__ import annotations
 
-"""
-Abstract plugin registry for Zentex.
-
-This registry is not a passive dictionary. It is the first safety gate for all
-plugin families built on top of `BasePluginSpec`. It enforces:
-
-- deterministic lifecycle transitions
-- audit-reason requirements
-- failure isolation for rejected plugin payloads
-- safe filtering of active and healthy plugins only
-"""
-
-from abc import ABC
 from contextlib import contextmanager
-from contextvars import ContextVar, Token
-from dataclasses import dataclass
 from datetime import datetime, timezone
-from typing import Generic, TypeVar
+from typing import Any, Generic, Iterator, TypeVar
 
-from pydantic import ValidationError
+from pydantic import BaseModel, ConfigDict
 
-from zentex.core.plugin_base import (
+from zentex.plugins.contracts import (
     BasePluginSpec,
     FunctionalPluginSpec,
     LogicalCognitivePluginSpec,
-    PluginHealthStatus,
     PluginLifecycleStatus,
 )
 
 
-T = TypeVar("T", bound=BasePluginSpec)
+PluginSpecT = TypeVar("PluginSpecT", bound=BasePluginSpec)
 
 
-class StateTransitionError(ValueError):
-    """Raised when a plugin attempts an illegal lifecycle transition."""
+class PluginRegistryError(RuntimeError):
+    """Base error for compatibility registry operations."""
 
 
-class PluginNotBoundError(RuntimeError):
-    """Raised when runtime tries to resolve a plugin that is not actively bound."""
+class PluginNotBoundError(PluginRegistryError):
+    """Raised when no active plugin can be resolved for a request."""
 
 
-class PluginDependencyError(RuntimeError):
-    """Raised when a plugin violates the hard dependency-layer contract."""
+class StateTransitionError(PluginRegistryError):
+    """Raised when a lifecycle transition violates the migration rules."""
 
 
-class SecurityBlockError(RuntimeError):
-    """Raised when a plugin attempts a forbidden upward or privileged resolution."""
+class PluginDependencyError(PluginRegistryError):
+    """Raised when a functional plugin attempts forbidden dependency lookup."""
 
 
-@dataclass(frozen=True, slots=True)
-class PluginRegistryAuditRecord:
+class SecurityBlockError(PluginRegistryError):
+    """Raised when a functional plugin attempts to reach a logical plugin."""
+
+
+class PluginRegistryAuditRecord(BaseModel):
+    model_config = ConfigDict(frozen=True, arbitrary_types_allowed=True)
+
     plugin_id: str
     action: str
     audit_reason: str
     recorded_at: datetime
 
 
-class AbstractPluginRegistry(ABC, Generic[T]):
-    """
-    Generic safety registry for plugin lifecycle management.
+class PluginRegistration(BaseModel):
+    model_config = ConfigDict(frozen=True, arbitrary_types_allowed=True)
 
-    Core guarantees:
-    - all registered plugins are normalized to `candidate`
-    - candidate plugins cannot jump directly to `active`
-    - degrade/revoke paths require auditable reasons
-    - invalid plugin payloads are isolated as rejected events
-    """
+    plugin_id: str
+    spec: Any
+    description: str = ""
 
-    def __init__(self, plugin_type: type[T]) -> None:
-        self.plugin_type = plugin_type
-        self._plugins: dict[str, T] = {}
+    @property
+    def plugin(self) -> Any:
+        return self.spec
+
+
+class AbstractPluginRegistry(Generic[PluginSpecT]):
+    """Minimal compat registry used by legacy business code and tests."""
+
+    def __init__(self, spec_type: type[PluginSpecT]) -> None:
+        self._spec_type = spec_type
+        self._plugins: dict[str, PluginSpecT] = {}
+        self._registrations: dict[str, PluginRegistration] = {}
         self._audit_records: list[PluginRegistryAuditRecord] = []
-        self._caller_context: ContextVar[BasePluginSpec | None] = ContextVar(
-            f"plugin_registry_caller_{id(self)}",
-            default=None,
-        )
+        self._caller_stack: list[BasePluginSpec] = []
+        self._allow_inactive_resolution = False
 
-    @contextmanager
-    def plugin_call_scope(self, caller: BasePluginSpec):
-        token: Token[BasePluginSpec | None] = self._caller_context.set(caller)
-        try:
-            yield
-        finally:
-            self._caller_context.reset(token)
-
-    def register(self, plugin: T) -> T | None:
-        """
-        Register a plugin and force its initial state to `candidate`.
-
-        Failure isolation:
-        - invalid plugin payloads are caught and recorded as rejected events
-        - the registry itself must not crash on validation failure
-        """
-
-        try:
-            normalized = self.plugin_type.model_validate(
-                {
-                    **plugin.model_dump(),
-                    "status": PluginLifecycleStatus.CANDIDATE,
-                }
-            )
-        except ValidationError as exc:
-            plugin_id = self._extract_plugin_id(plugin)
-            self._audit_records.append(
-                PluginRegistryAuditRecord(
-                    plugin_id=plugin_id,
-                    action="rejected",
-                    audit_reason=str(exc),
-                    recorded_at=datetime.now(timezone.utc),
-                )
-            )
-            return None
-
-        self._plugins[normalized.plugin_id] = normalized
+    def _record_audit(self, plugin_id: str, action: str, audit_reason: str) -> None:
         self._audit_records.append(
             PluginRegistryAuditRecord(
-                plugin_id=normalized.plugin_id,
-                action="registered",
-                audit_reason="registered_as_candidate",
+                plugin_id=plugin_id,
+                action=action,
+                audit_reason=audit_reason,
                 recorded_at=datetime.now(timezone.utc),
             )
         )
+
+    def _normalize_spec(
+        self,
+        plugin: PluginSpecT,
+        *,
+        lifecycle_status: PluginLifecycleStatus | None = None,
+        revocation_reason: str | None = None,
+    ) -> PluginSpecT:
+        updates: dict[str, Any] = {}
+        if lifecycle_status is not None:
+            updates["lifecycle_status"] = lifecycle_status
+            updates["status"] = lifecycle_status
+        if revocation_reason:
+            existing_reasons = list(getattr(plugin, "revocation_reasons", []) or [])
+            if revocation_reason not in existing_reasons:
+                existing_reasons.append(revocation_reason)
+            updates["revocation_reasons"] = existing_reasons
+        return plugin.model_copy(update=updates) if updates else plugin
+
+    def _store_spec(self, plugin: PluginSpecT, *, description: str = "") -> PluginSpecT:
+        self._plugins[plugin.plugin_id] = plugin
+        self._registrations[plugin.plugin_id] = PluginRegistration(
+            plugin_id=plugin.plugin_id,
+            spec=plugin,
+            description=description,
+        )
+        return plugin
+
+    def _effective_lifecycle_status(self, plugin: Any) -> PluginLifecycleStatus | Any:
+        status = getattr(plugin, "lifecycle_status", None)
+        if status is None:
+            status = getattr(plugin, "status", None)
+        extra = getattr(plugin, "__pydantic_extra__", None)
+        if isinstance(extra, dict) and "status" in extra:
+            status = extra["status"]
+        return status
+
+    def register(self, plugin: PluginSpecT, *, description: str = "") -> PluginSpecT:
+        normalized = self._normalize_spec(plugin, lifecycle_status=PluginLifecycleStatus.CANDIDATE)
+        self._store_spec(normalized, description=description)
+        self._record_audit(normalized.plugin_id, "registered", "registered_as_candidate")
         return normalized
+
+    def get_registered_plugin(self, plugin_id: str) -> PluginSpecT | None:
+        return self._plugins.get(plugin_id)
+
+    def get_registration(self, plugin_id: str) -> PluginRegistration | None:
+        return self._registrations.get(plugin_id)
+
+    def list_registrations(self) -> list[PluginRegistration]:
+        return list(self._registrations.values())
+
+    def get_audit_records(self) -> list[PluginRegistryAuditRecord]:
+        return list(self._audit_records)
+
+    def _validate_transition(
+        self,
+        current: PluginLifecycleStatus,
+        target: PluginLifecycleStatus,
+    ) -> None:
+        if current == PluginLifecycleStatus.CANDIDATE and target == PluginLifecycleStatus.ACTIVE:
+            raise StateTransitionError("candidate -> active requires sandbox verification first")
 
     def promote_plugin(
         self,
         plugin_id: str,
         target_status: PluginLifecycleStatus,
         audit_reason: str,
-    ) -> T:
-        self._require_audit_reason(audit_reason)
-        plugin = self._get_plugin_or_raise(plugin_id)
+    ) -> PluginSpecT:
+        plugin = self._plugins[plugin_id]
+        self._validate_transition(plugin.lifecycle_status, target_status)
+        updated = self._normalize_spec(plugin, lifecycle_status=target_status)
+        self._store_spec(updated)
+        self._record_audit(plugin_id, "promoted", audit_reason)
+        return updated
 
-        if (
-            plugin.status == PluginLifecycleStatus.CANDIDATE
-            and target_status == PluginLifecycleStatus.ACTIVE
-        ):
-            raise StateTransitionError(
-                "Illegal plugin status transition: candidate -> active"
-            )
-
-        try:
-            promoted = plugin.transition_to(target_status)
-        except ValueError as exc:
-            raise StateTransitionError(str(exc)) from exc
-
-        self._plugins[plugin_id] = promoted
-        self._audit_records.append(
-            PluginRegistryAuditRecord(
-                plugin_id=plugin_id,
-                action=f"promoted_to_{target_status.value}",
-                audit_reason=audit_reason,
-                recorded_at=datetime.now(timezone.utc),
-            )
+    def revoke_plugin(self, plugin_id: str, reason: str) -> PluginSpecT:
+        if not str(reason).strip():
+            raise ValueError("audit_reason must not be empty")
+        plugin = self._plugins[plugin_id]
+        updated = self._normalize_spec(
+            plugin,
+            lifecycle_status=PluginLifecycleStatus.REVOKED,
+            revocation_reason=reason,
         )
-        return promoted
+        self._store_spec(updated)
+        self._record_audit(plugin_id, "revoked", reason)
+        return updated
 
-    def revoke_plugin(self, plugin_id: str, reason: str) -> T:
-        self._require_audit_reason(reason)
-        plugin = self._get_plugin_or_raise(plugin_id)
-
-        try:
-            revoked = plugin.transition_to(
-                PluginLifecycleStatus.REVOKED,
-                revocation_reasons=[reason],
-            )
-        except ValueError as exc:
-            raise StateTransitionError(str(exc)) from exc
-
-        self._plugins[plugin_id] = revoked
-        self._audit_records.append(
-            PluginRegistryAuditRecord(
-                plugin_id=plugin_id,
-                action="revoked",
-                audit_reason=reason,
-                recorded_at=datetime.now(timezone.utc),
-            )
-        )
-        return revoked
-
-    def get_single_active_plugin(self, feature_code: str) -> T:
-        """
-        Generalized Fail-Closed routing for core feature organs.
-
-        Strict requirements:
-        - plugin status must be 'active'
-        - exactly one plugin must be active for this feature_code
-        - failure to find exactly one results in PluginNotBoundError
-        """
-        self._guard_registry_resolution(
-            requested_feature_code=feature_code,
-            requested_plugin_type=None,
-        )
-        active = self.get_active_plugins(feature_code)
-        if not active:
-            raise PluginNotBoundError(
-                f"No active bound plugin is available for runtime use: {feature_code}"
-            )
-        if len(active) > 1:
-            raise PluginNotBoundError(
-                f"Multiple active plugins are bound to single-plugin feature: {feature_code}"
-            )
-        return active[0]
-
-    def get_active_plugins(self, feature_code: str | None = None) -> list[T]:
-        """
-        Generalized routing for capability enhancement patches.
-
-        Strict requirements:
-        - plugin status must be 'active'
-        - returns a filtered list from the registry
-        """
-        self._guard_registry_resolution(
-            requested_feature_code=feature_code,
-            requested_plugin_type=None,
-        )
-        requested_feature_code = (feature_code or "").strip() or None
-        active_plugins: list[T] = []
+    def get_active_plugins(self, feature_code: str | None = None) -> list[PluginSpecT]:
+        active_plugins: list[PluginSpecT] = []
         for plugin in self._plugins.values():
-            if plugin.status != PluginLifecycleStatus.ACTIVE:
+            if self._effective_lifecycle_status(plugin) != PluginLifecycleStatus.ACTIVE:
                 continue
-            if self._caller_requires_functional_only() and isinstance(
-                plugin,
-                LogicalCognitivePluginSpec,
-            ):
+            if getattr(plugin, "operational_status", "enabled") != "enabled":
                 continue
-            if requested_feature_code is not None and plugin.feature_code != requested_feature_code:
-                continue
-            if not self._is_plugin_healthy(plugin):
+            if feature_code is not None and getattr(plugin, "feature_code", None) != feature_code:
                 continue
             active_plugins.append(plugin)
         return active_plugins
 
-    def get_bound_plugin(self, plugin_type: type[T]) -> T:
-        """
-        Resolve exactly one active plugin instance by Python type.
+    def get_single_active_plugin(self, feature_code: str) -> PluginSpecT:
+        active_plugins = self.get_active_plugins(feature_code)
+        if not active_plugins:
+            raise PluginNotBoundError(f"No active bound plugin for {feature_code}")
+        if len(active_plugins) > 1:
+            raise PluginNotBoundError(f"Multiple active cognitive tools found for {feature_code}")
+        return active_plugins[0]
 
-        This is a generic helper for IoC wiring in runtime components that want a
-        strongly typed plugin contract (e.g. ModelProviderSpec). It remains
-        fail-closed:
-        - only ACTIVE plugins are visible
-        - unhealthy plugins are hidden
-        - empty or multiple matches raise PluginNotBoundError
-        """
-        self._guard_registry_resolution(
-            requested_feature_code=None,
-            requested_plugin_type=plugin_type,
-        )
-        candidates: list[T] = []
-        for plugin in self._plugins.values():
-            if plugin.status != PluginLifecycleStatus.ACTIVE:
-                continue
-            if not isinstance(plugin, plugin_type):
-                continue
-            if self._caller_requires_functional_only() and isinstance(
-                plugin,
-                LogicalCognitivePluginSpec,
-            ):
-                continue
-            if not self._is_plugin_healthy(plugin):
-                continue
-            candidates.append(plugin)
-
-        if not candidates:
-            raise PluginNotBoundError(
-                f"No active bound plugin is available for runtime use: {plugin_type.__name__}"
-            )
-        if len(candidates) > 1:
-            raise PluginNotBoundError(
-                f"Multiple active plugins are bound to single-plugin query: {plugin_type.__name__}"
-            )
-        return candidates[0]
-
-    def get_plugin(self, plugin_id: str) -> T:
-        plugin = self._get_plugin_or_raise(plugin_id)
-        self._guard_registry_resolution(
-            requested_feature_code=getattr(plugin, "feature_code", None),
-            requested_plugin_type=type(plugin),
-        )
-        if plugin.status != PluginLifecycleStatus.ACTIVE:
-            raise PluginNotBoundError(
-                f"Plugin is not bound for runtime use because it is not active: {plugin_id}"
-            )
-        return plugin
-
-    def get_registered_plugin(self, plugin_id: str) -> T:
-        return self._get_plugin_or_raise(plugin_id)
-
-    def get_audit_records(self) -> list[PluginRegistryAuditRecord]:
-        return list(self._audit_records)
-
-    def _get_plugin_or_raise(self, plugin_id: str) -> T:
+    @contextmanager
+    def plugin_call_scope(self, caller: BasePluginSpec) -> Iterator[None]:
+        self._caller_stack.append(caller)
         try:
-            return self._plugins[plugin_id]
-        except KeyError as exc:
-            raise KeyError(f"Unknown plugin: {plugin_id}") from exc
+            yield
+        finally:
+            self._caller_stack.pop()
 
-    def _require_audit_reason(self, audit_reason: str) -> None:
-        if not audit_reason or not audit_reason.strip():
-            raise ValueError("audit_reason must not be empty")
+    def _record_forbidden_lookup(self, action: str, audit_reason: str) -> None:
+        caller = self._caller_stack[-1]
+        self._record_audit(caller.plugin_id, action, audit_reason)
 
-    def _is_plugin_healthy(self, plugin: T) -> bool:
-        if plugin.health_status is not None:
-            return plugin.health_status == PluginHealthStatus.HEALTHY
-        return plugin.health_probe_endpoint is not None
-
-    def _extract_plugin_id(self, plugin: object) -> str:
-        value = getattr(plugin, "plugin_id", None)
-        if isinstance(value, str) and value.strip():
-            return value
-        return "unknown"
-
-    def _caller_requires_functional_only(self) -> bool:
-        caller = self._caller_context.get()
-        return isinstance(caller, LogicalCognitivePluginSpec)
-
-    def _guard_registry_resolution(
-        self,
-        *,
-        requested_feature_code: str | None,
-        requested_plugin_type: type[object] | None,
-    ) -> None:
-        caller = self._caller_context.get()
-        if caller is None:
-            return
-
-        target_is_logical = self._target_is_logical(
-            requested_feature_code=requested_feature_code,
-            requested_plugin_type=requested_plugin_type,
-        )
-
+    def get_bound_plugin(self, plugin_type: type[PluginSpecT]) -> PluginSpecT:
+        caller = self._caller_stack[-1] if self._caller_stack else None
         if isinstance(caller, FunctionalPluginSpec):
-            if target_is_logical:
-                action = "security_blocked"
-                message = (
-                    "Functional plugins must never resolve logical cognitive plugins "
-                    f"through the registry: caller={caller.plugin_id}"
+            if issubclass(plugin_type, LogicalCognitivePluginSpec):
+                self._record_forbidden_lookup(
+                    "security_blocked",
+                    "functional plugins must never resolve logical cognitive plugins",
                 )
-                error_cls: type[RuntimeError] = SecurityBlockError
-            else:
-                action = "dependency_blocked"
-                message = (
-                    "Functional plugins must never resolve other plugins through the "
-                    f"registry: caller={caller.plugin_id}"
+                raise SecurityBlockError(
+                    "functional plugins must never resolve logical cognitive plugins"
                 )
-                error_cls = PluginDependencyError
-            self._audit_records.append(
-                PluginRegistryAuditRecord(
-                    plugin_id=caller.plugin_id,
-                    action=action,
-                    audit_reason=message,
-                    recorded_at=datetime.now(timezone.utc),
-                )
+            self._record_forbidden_lookup(
+                "dependency_blocked",
+                "functional plugins must never resolve other plugins",
             )
-            raise error_cls(message)
+            raise PluginDependencyError("functional plugins must never resolve other plugins")
 
-        if isinstance(caller, LogicalCognitivePluginSpec) and target_is_logical:
-            message = (
-                "Logical cognitive plugins may only orchestrate functional plugins "
-                f"through the registry: caller={caller.plugin_id}"
-            )
-            self._audit_records.append(
-                PluginRegistryAuditRecord(
-                    plugin_id=caller.plugin_id,
-                    action="dependency_blocked",
-                    audit_reason=message,
-                    recorded_at=datetime.now(timezone.utc),
-                )
-            )
-            raise PluginDependencyError(message)
+        active_plugins = [
+            plugin for plugin in self._plugins.values()
+            if isinstance(plugin, plugin_type)
+            and self._effective_lifecycle_status(plugin) == PluginLifecycleStatus.ACTIVE
+            and getattr(plugin, "operational_status", "enabled") == "enabled"
+        ]
+        if not active_plugins:
+            raise PluginNotBoundError(f"No active bound plugin for {plugin_type.__name__}")
+        if len(active_plugins) > 1:
+            raise PluginNotBoundError(f"Multiple active plugins found for {plugin_type.__name__}")
+        return active_plugins[0]
 
-    def _target_is_logical(
-        self,
-        *,
-        requested_feature_code: str | None,
-        requested_plugin_type: type[object] | None,
-    ) -> bool:
-        if requested_plugin_type is not None and issubclass(
-            requested_plugin_type,
-            LogicalCognitivePluginSpec,
-        ):
-            return True
-        feature_code = (requested_feature_code or "").strip()
-        return feature_code.startswith("nine_questions.")
+    def create_test_sandbox(self) -> "AbstractPluginRegistry[PluginSpecT]":
+        sandbox = self.__class__(self._spec_type) if self.__class__ is AbstractPluginRegistry else self.__class__()  # type: ignore[call-arg]
+        sandbox._plugins = dict(self._plugins)
+        sandbox._registrations = dict(self._registrations)
+        sandbox._audit_records = list(self._audit_records)
+        sandbox._allow_inactive_resolution = True
+        return sandbox
+
+    def resolve_plugin_for_test(self, plugin_id: str) -> PluginRegistration:
+        if not self._allow_inactive_resolution:
+            raise PluginNotBoundError("Inactive plugin resolution is only available inside a sandbox")
+        registration = self._registrations.get(plugin_id)
+        if registration is None:
+            raise PluginNotBoundError(f"No plugin registered for {plugin_id}")
+        return registration
+
+
+class PluginRegistry(AbstractPluginRegistry[BasePluginSpec]):
+    def __init__(self) -> None:
+        super().__init__(BasePluginSpec)

@@ -10,6 +10,7 @@ be executed by a real optimization worker.
 """
 
 from importlib.util import find_spec
+from zentex.foundation.specs.model_provider import ModelProviderCallerContext
 
 from zentex.upgrade.llm.models import (
     LLMUpgradeCandidate,
@@ -75,7 +76,6 @@ class DSPyLLMUpgradeService:
     def generate_dspy_primitives(self, objective_summary: str, target_metric: str) -> dict[str, str]:
         """Real-time generation of DSPy Signature and Metric strings via LLM."""
         from zentex.llm.gateway import LLMGateway
-        from zentex.core.model_provider_spec import ModelProviderCallerContext
         
         gateway = LLMGateway()
         caller_context = ModelProviderCallerContext(
@@ -111,7 +111,6 @@ class DSPyLLMUpgradeService:
     def detect_optimization_needs(self, failure_logs: list[dict[str, Any]]) -> list[SelfUpgradeProposal]:
         """Analyze failure logs to identify LLM optimization opportunities via LLM reasoning."""
         from zentex.llm.gateway import LLMGateway
-        from zentex.core.model_provider_spec import ModelProviderCallerContext
         
         if not failure_logs:
             return []
@@ -145,7 +144,6 @@ class LLMEvolutionPlanner:
     def identify_optimal_targets(self, failure_history: list[dict[str, Any]]) -> list[dict[str, Any]]:
         """Identify which LLM capabilities need optimization based on history using LLM."""
         from zentex.llm.gateway import LLMGateway
-        from zentex.core.model_provider_spec import ModelProviderCallerContext
         
         if not failure_history:
             return []

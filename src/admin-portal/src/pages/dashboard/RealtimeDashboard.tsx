@@ -295,7 +295,7 @@ export default function RealtimeDashboard() {
       setEventStream(recentEvents.slice(0, 50));
       lastEntryIdRef.current = recentEvents[0]?.entry_id || null;
       const interactionEntityId = overviewPayload.session?.session_id || "web-console";
-      await Promise.all([loadPlugins(), loadConflicts(), loadInteractionMind(interactionEntityId)]);
+      await Promise.allSettled([loadPlugins(), loadConflicts(), loadInteractionMind(interactionEntityId)]);
       setLoadError(null);
     } catch {
       setLoadError(formatUserFacingError(locale));
@@ -445,9 +445,9 @@ export default function RealtimeDashboard() {
   const reviewNowItemTitles = overview?.temporal_agenda.review_now_item_titles || [];
   const weightProfile = overview?.weight_profile;
   const criticalConflicts = conflicts.filter((conflict) => conflict.severity === "critical");
-  const severeMisunderstandingSignals = interactionMind?.misunderstanding_signals.filter(
+  const severeMisunderstandingSignals = (interactionMind?.misunderstanding_signals || []).filter(
     (signal) => signal.severity === "high" || signal.severity === "critical",
-  ) || [];
+  );
   const availableEventTypes = Array.from(new Set(eventStream.map((event) => event.entry_type)));
   const filteredEventStream = eventStream.filter((event) => {
     if (eventTypeFilter === "default") {
@@ -702,7 +702,7 @@ export default function RealtimeDashboard() {
               </Typography>
               <Typography variant="body2" color="text.secondary">
                 {t("dashboard.rationaleTags")}:{" "}
-                {weightProfile && weightProfile.rationale_tags.length > 0
+                {weightProfile?.rationale_tags && weightProfile.rationale_tags.length > 0
                   ? weightProfile.rationale_tags.join(inlineSeparator)
                   : t("dashboard.noRationaleTags")}
               </Typography>

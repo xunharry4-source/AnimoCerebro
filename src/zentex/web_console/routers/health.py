@@ -12,11 +12,20 @@ from __future__ import annotations
 from fastapi import APIRouter, Request
 
 from zentex.web_console.contracts.health import SystemHealthPayload
-from zentex.web_console.dependencies import get_managed_plugin_records
-from zentex.web_console.services.health import build_system_health_payload
+from zentex.web_console.dependencies import (
+    get_managed_plugin_records,
+    get_kernel_service_facade,
+)
+from .health_handlers import handle_get_system_health
 
 
 router = APIRouter()
+
+
+@router.get("/health")
+def get_health_simple(request: Request) -> dict:
+    """Simple health check at /api/web/health for monitoring."""
+    return {"status": "ok", "service": "Zentex Web Console"}
 
 
 @router.get("/health/system", response_model=SystemHealthPayload)
@@ -24,25 +33,11 @@ def get_system_health(
     request: Request,
 ) -> SystemHealthPayload:
     """获取系统健康状态，包括Token统计、LLM请求统计和各功能模块健康"""
-    from zentex.web_console.dependencies import get_managed_plugin_records
     managed_records = get_managed_plugin_records(request)
+    kernel_facade = get_kernel_service_facade(request)
     
-    # 尝试从request.app获取runtime和session
-    runtime = getattr(request.app.state, 'runtime', None)
-    session = getattr(request.app.state, 'session', None)
-    
-    # 尝试从 runtime 获取 LLM gateway 统计
-    llm_gateway_stats = None
-    if runtime and hasattr(runtime, 'llm_gateway'):
-        try:
-            llm_gateway_stats = runtime.llm_gateway.stats_snapshot()
-        except Exception:
-            pass
-    
-    from zentex.web_console.services.health import build_system_health_payload
-    return build_system_health_payload(
+    return handle_get_system_health(
+        request=request,
         managed_records=managed_records,
-        llm_gateway_stats=llm_gateway_stats,
-        runtime=runtime,
-        session=session,
+        kernel_facade=kernel_facade,
     )

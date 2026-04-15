@@ -3,7 +3,7 @@ from __future__ import annotations
 from typing import Any, Dict, List, Optional
 import uuid
 
-from zentex.core.models import CognitiveToolSpec
+from zentex.foundation.specs.cognitive_tool_spec import CognitiveToolSpec
 from zentex.learning.g16_models import SandboxValidationResult
 
 

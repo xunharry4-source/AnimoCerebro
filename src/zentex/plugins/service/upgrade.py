@@ -262,7 +262,8 @@ class UpgradeService:
             
             # Update plugin in database with new version
             plugin['version'] = target_version
-            plugin['status'] = 'ACTIVE'  # Use string directly to avoid import
+            plugin['lifecycle_status'] = 'active'
+            plugin['operational_status'] = 'enabled'
             plugin['updated_at'] = datetime.now(timezone.utc)
             
             # Persist to database
@@ -350,7 +351,8 @@ class UpgradeService:
             
             # Update plugin in database with previous version
             plugin['version'] = previous_version
-            plugin['status'] = 'ACTIVE'  # Use string directly to avoid import
+            plugin['lifecycle_status'] = 'active'
+            plugin['operational_status'] = 'enabled'
             plugin['updated_at'] = datetime.now(timezone.utc)
             
             self._storage.update_plugin(plugin_id, plugin)
@@ -411,7 +413,7 @@ class UpgradeService:
             List of plugins with update info
         """
         results = []
-        all_plugins = self._storage.get_all_plugins()
+        all_plugins = self._storage.list_plugins()
         
         for plugin in all_plugins:
             plugin_id = plugin.get('plugin_id')

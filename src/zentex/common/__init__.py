@@ -8,6 +8,7 @@ This package provides shared utilities and infrastructure:
 - Coordination utilities (coordination)
 - Locking mechanisms (locking)
 - Protocol definitions (protocol)
+- Plugin ID constants (plugin_ids)
 """
 
 # Note: We use lazy imports to avoid circular dependencies and heavy imports at module load time
@@ -15,6 +16,7 @@ This package provides shared utilities and infrastructure:
 #   from zentex.common.db_connection import get_db_connection
 #   from zentex.common.dao_registry import get_dao_registry
 #   from zentex.common.database import BaseDAO, LRUCache
+#   from zentex.common.plugin_ids import NINE_QUESTION_Q1, COGNITIVE_BUDGET_CONFLICT
 
 __all__ = [
     # These are available but prefer direct imports for clarity
@@ -27,6 +29,30 @@ __all__ = [
     'BaseDAO',
     'LRUCache',
     'DatabaseConnection',
+    # Plugin ID constants
+    'NINE_QUESTION_Q1',
+    'NINE_QUESTION_Q2',
+    'NINE_QUESTION_Q3',
+    'NINE_QUESTION_Q4',
+    'NINE_QUESTION_Q5',
+    'NINE_QUESTION_Q6',
+    'NINE_QUESTION_Q7',
+    'NINE_QUESTION_Q8',
+    'NINE_QUESTION_Q9',
+    'COGNITIVE_BUDGET_CONFLICT',
+    'COGNITIVE_EXPIRED_ASSUMPTION',
+    'COGNITIVE_FAILURE_CLUSTER',
+    'COGNITIVE_SEMANTIC_CONFLICT',
+    'MEMORY_EXTRACTOR',
+    'ORACLE_ALTERNATIVE',
+    'ORACLE_OBJECTIVE',
+    'ORACLE_POSTURE',
+    'ORACLE_REDLINE',
+    'REFLECTION_GENERATOR',
+    'get_plugin_category',
+    'is_cognitive_plugin',
+    'is_nine_question_plugin',
+    'get_nine_question_number',
 ]
 
 
@@ -59,4 +85,19 @@ def __getattr__(name):
     elif name == 'DatabaseConnection':
         from zentex.common.database import DatabaseConnection as cls
         return cls
+    # Plugin ID constants - lazy load from plugin_ids module
+    elif name in (
+        'NINE_QUESTION_Q1', 'NINE_QUESTION_Q2', 'NINE_QUESTION_Q3',
+        'NINE_QUESTION_Q4', 'NINE_QUESTION_Q5', 'NINE_QUESTION_Q6',
+        'NINE_QUESTION_Q7', 'NINE_QUESTION_Q8', 'NINE_QUESTION_Q9',
+        'COGNITIVE_BUDGET_CONFLICT', 'COGNITIVE_EXPIRED_ASSUMPTION',
+        'COGNITIVE_FAILURE_CLUSTER', 'COGNITIVE_SEMANTIC_CONFLICT',
+        'MEMORY_EXTRACTOR',
+        'ORACLE_ALTERNATIVE', 'ORACLE_OBJECTIVE', 'ORACLE_POSTURE', 'ORACLE_REDLINE',
+        'REFLECTION_GENERATOR',
+        'get_plugin_category', 'is_cognitive_plugin',
+        'is_nine_question_plugin', 'get_nine_question_number',
+    ):
+        from zentex.common import plugin_ids
+        return getattr(plugin_ids, name)
     raise AttributeError(f"module {__name__!r} has no attribute {name!r}")

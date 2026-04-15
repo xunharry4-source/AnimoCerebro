@@ -7,6 +7,7 @@ from uuid import uuid4
 from zentex.upgrade.base_models import (
     CandidatePatch,
 )
+from zentex.foundation.specs.model_provider import ModelProviderCallerContext
 from zentex.upgrade.plugin.models import PluginUpgradeCandidate
 from zentex.upgrade.llm.models import LLMUpgradeCandidate
 
@@ -16,7 +17,6 @@ class OpenHandsEvolutionExecutor:
     def __init__(self, api_key: Optional[str] = None):
         self._api_key = api_key
         from zentex.llm.gateway import LLMGateway
-        from zentex.core.model_provider_spec import ModelProviderCallerContext
         self.llm_gateway = LLMGateway()
         self.caller_context = ModelProviderCallerContext(
             source_module="evolution_executor",

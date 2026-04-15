@@ -7,8 +7,15 @@ import importlib
 import os
 import sys
 from importlib import metadata
+from pathlib import Path
 
 from zentex.web_console.errors import InitializationError
+from zentex.web_console.verification import (
+    SmokeImportResult,
+    render_verification_report_markdown,
+    scan_legacy_runtime_imports,
+    smoke_import_module,
+)
 
 
 def validate_websocket_runtime() -> None:
@@ -47,10 +54,27 @@ def validate_web_console_startup() -> None:
     build_dev_server_app()
 
 
+def run_migration_verification(
+    *,
+    root: Path | None = None,
+    modules: list[str] | None = None,
+) -> tuple[list[object], list[SmokeImportResult], str]:
+    scan_root = root or Path("src/zentex/web_console")
+    smoke_modules = modules or ["zentex.web_console.router", "zentex.web_console.app"]
+    scan_findings = scan_legacy_runtime_imports(scan_root)
+    smoke_results = [smoke_import_module(module_name) for module_name in smoke_modules]
+    report = render_verification_report_markdown(
+        scan_findings=scan_findings,
+        smoke_results=smoke_results,
+    )
+    return scan_findings, smoke_results, report
+
+
 def main(argv: List[str] | None = None) -> int:
     parser = argparse.ArgumentParser(prog="zentex-web-console")
     subparsers = parser.add_subparsers(dest="command", required=True)
     subparsers.add_parser("check-startup", help="Validate web console startup dependencies and runtime assembly")
+    subparsers.add_parser("verify-migration", help="Scan for legacy runtime imports and smoke-import web_console modules")
 
     args = parser.parse_args(argv)
 
@@ -61,6 +85,11 @@ def main(argv: List[str] | None = None) -> int:
             print(str(exc), file=sys.stderr)
             return 1
         return 0
+    if args.command == "verify-migration":
+        scan_findings, smoke_results, report = run_migration_verification()
+        print(report)
+        has_smoke_failures = any(not result.ok for result in smoke_results)
+        return 1 if scan_findings or has_smoke_failures else 0
 
     parser.error(f"Unknown command: {args.command}")
     return 2

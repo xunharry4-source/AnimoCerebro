@@ -3,7 +3,7 @@ from __future__ import annotations
 from datetime import timezone
 from typing import Any, Dict, Optional
 
-from zentex.runtime.models import BrainTranscriptEntry
+from zentex.kernel import BrainTranscriptEntry
 from zentex.web_console.contracts.transcript import TranscriptEventPayload
 
 
@@ -109,4 +109,3 @@ def serialize_transcript_entry(
             entry.payload if include_payload else {"omitted": True, "reason": "include_payload=false"}
         ),
     )
-

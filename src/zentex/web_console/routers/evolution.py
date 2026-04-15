@@ -27,7 +27,14 @@ def approve_proposal(
     execution_service: Annotated[UpgradeExecutionService, Depends(get_upgrade_execution_service)],
 ) -> Dict[str, str]:
     """Manually approve a proposal for AI patching (Priority 1: Automated approval)."""
-    # In a real system, we'd lookup the proposal by ID
+    # Validate existence in capability gap detections
+    proposals = execution_service.detect_capability_gap()
+    if not any(p.proposal_id == proposal_id for p in proposals):
+        raise HTTPException(
+            status_code=404, 
+            detail=f"未找到建议 ID: {proposal_id}，可能该建议已过期或已转为任务"
+        )
+    
     return {"status": "approved", "proposal_id": proposal_id, "patching_triggered": "true"}
 
 
@@ -46,6 +53,15 @@ def promote_candidate(
     execution_service: Annotated[UpgradeExecutionService, Depends(get_upgrade_execution_service)],
 ) -> Dict[str, str]:
     """Promote a successful candidate patch to active production status."""
+    # Validate existence in management store
+    try:
+         execution_service.management_store.get(record_id)
+    except KeyError as exc:
+         raise HTTPException(
+             status_code=404, 
+             detail=f"未找到升级作业记录: {record_id}，无法执行晋升操作"
+         ) from exc
+         
     return {"status": "promoted", "record_id": record_id}
 
 
@@ -55,7 +71,10 @@ def trigger_rollback(
     execution_service: Annotated[UpgradeExecutionService, Depends(get_upgrade_execution_service)],
 ) -> Dict[str, str]:
     """Manually trigger a rollback for a problematic upgrade."""
-    success = execution_service.execute_rollback(record_id)
+    try:
+        success = execution_service.execute_rollback(record_id)
+    except KeyError as exc:
+        raise HTTPException(status_code=404, detail=f"Unknown upgrade job: {record_id}") from exc
     if not success:
         raise HTTPException(status_code=400, detail="Rollback failed or not applicable for this record.")
     return {"status": "rollback_initiated", "record_id": record_id}

@@ -44,117 +44,49 @@ class NineQuestionsRunResponse(BaseModel):
     refresh_reason: str
     snapshot_version: int = 0
     revision: int = 0
+    task_id: str | None = None
+    task_status: str | None = None
+    error_message: str | None = None
 
 
-class Q1StructureTreeRow(BaseModel):
+class NineQuestionsRunTaskStatusPayload(BaseModel):
     model_config = ConfigDict(extra="ignore", frozen=True)
 
-    row_id: str
-    path: str
-    label: str
-    depth: int = 0
-    kind: str = "directory"
-    file_count: int | None = None
-    summary: str | None = None
+    task_id: str
+    session_id: str
+    status: str
+    submitted_at: str
+    started_at: str | None = None
+    finished_at: str | None = None
+    error_message: str | None = None
+    trace_id: str | None = None
+    snapshot_version: int = 0
+    revision: int = 0
 
 
-class Q1CandidateGroupDetail(BaseModel):
-    model_config = ConfigDict(extra="ignore", frozen=True)
-
-    group_id: str
-    label: str
-    file_count: int | None = None
-    summary: str | None = None
-
-
-class Q1RiskFileDetail(BaseModel):
-    model_config = ConfigDict(extra="ignore", frozen=True)
-
-    path: str
-    severity: str | None = None
-    reason: str | None = None
-
-
-class Q1WorkspaceSampleSummary(BaseModel):
-    model_config = ConfigDict(extra="allow", frozen=True)
-
-    path: str | None = None
-    file: str | None = None
-    title: str | None = None
-    header: str | None = None
-    summary: str | None = None
-    snippet: str | None = None
-    excerpt: str | None = None
-    first_lines: str | None = None
+from zentex.common.nine_questions_contracts import (
+    Q1StructureTreeRow,
+    Q1CandidateGroupDetail,
+    Q1RiskFileDetail,
+    Q1WorkspaceSampleSummary,
+    Q1LongTextEvidence,
+    Q1PhysicalAndEnvironmentEvidence,
+    Q1WorkspaceStructureEvidence,
+    Q1WorkspaceContentSamplingEvidence,
+    Q1PreprocessedEvidence,
+    WorkspaceDomainInferenceView,
+    MountedPluginInfo,
+    # NineQuestionReportItem  # Keep local as it's complex and UI-heavy
+)
 
 
-class Q1LongTextEvidence(BaseModel):
-    model_config = ConfigDict(extra="ignore", frozen=True)
-
-    evidence_id: str
-    label: str
-    kind: str
-    source: str
-    path: str | None = None
-    text: str
+# Q1LongTextEvidence imported from core
 
 
-class Q1PhysicalAndEnvironmentEvidence(BaseModel):
-    model_config = ConfigDict(extra="ignore", frozen=True)
-
-    environment_event: dict[str, Any] = Field(default_factory=dict)
-    physical_host_state: dict[str, Any] = Field(default_factory=dict)
-    memory_pressure: str | None = None
-    network_health: str | None = None
-    memory_pressure_status: str = "unknown"
-    network_health_status: str = "unknown"
-    environment_summary: list[str] = Field(default_factory=list)
+# Q1PhysicalAndEnvironmentEvidence, Q1WorkspaceStructureEvidence, Q1WorkspaceContentSamplingEvidence, Q1PreprocessedEvidence imported from core
 
 
-class Q1WorkspaceStructureEvidence(BaseModel):
-    model_config = ConfigDict(extra="ignore", frozen=True)
-
-    directory_hierarchy_summary: str | None = None
-    top_level_dirs: list[str] = Field(default_factory=list)
-    file_total_count: int | None = None
-    suffix_distribution: dict[str, int] = Field(default_factory=dict)
-    high_frequency_filename_keywords: dict[str, int] = Field(default_factory=dict)
-    candidate_groups: list[str] = Field(default_factory=list)
-    obvious_risk_files: list[str] = Field(default_factory=list)
-    directory_tree_rows: list[Q1StructureTreeRow] = Field(default_factory=list)
-    candidate_group_details: list[Q1CandidateGroupDetail] = Field(default_factory=list)
-    obvious_risk_file_details: list[Q1RiskFileDetail] = Field(default_factory=list)
-    analyzer_snapshot: dict[str, Any] = Field(default_factory=dict)
-
-
-class Q1WorkspaceContentSamplingEvidence(BaseModel):
-    model_config = ConfigDict(extra="ignore", frozen=True)
-
-    sampled_file_summaries: list[Q1WorkspaceSampleSummary] = Field(default_factory=list)
-    log_anomaly_snippets: list[str] = Field(default_factory=list)
-    long_text_evidence: list[Q1LongTextEvidence] = Field(default_factory=list)
-    sample_count: int = 0
-    anomaly_count: int = 0
-    sampler_snapshot: dict[str, Any] = Field(default_factory=dict)
-
-
-class Q1PreprocessedEvidence(BaseModel):
-    model_config = ConfigDict(extra="ignore", frozen=True)
-
-    physical_and_environment: Q1PhysicalAndEnvironmentEvidence
-    workspace_structure: Q1WorkspaceStructureEvidence
-    workspace_content_sampling: Q1WorkspaceContentSamplingEvidence
-
-
-class WorkspaceDomainInferenceView(BaseModel):
-    model_config = ConfigDict(extra="ignore", frozen=True)
-
-    primary_domain: str
-    secondary_domains: list[str] = Field(default_factory=list)
-    confidence: float
-    reasoning_summary: str
-    uncertainties: list[str] = Field(default_factory=list)
-    suggested_first_step: str
+# WorkspaceDomainInferenceView imported from core
 
 
 class Q1LLMUpgradeProfileView(BaseModel):
@@ -458,16 +390,7 @@ class Q9ActionPostureInferenceView(BaseModel):
     evolution_direction: str
 
 
-class MountedPluginInfo(BaseModel):
-    model_config = ConfigDict(extra="ignore", frozen=True)
-
-    plugin_id: str
-    display_name: str
-    source_kind: str  # "base", "patch"
-    version: str
-    description: str
-    function_description: str
-    status: str  # "active", "candidate", "degraded", "revoked"
+# MountedPluginInfo imported from core
 
 
 class NineQuestionReportItem(BaseModel):

@@ -92,9 +92,18 @@ export const pluginStatusLabels: Record<
 > = {
   candidate: { "zh-CN": "候选", "en-US": "Candidate" },
   sandbox_verified: { "zh-CN": "沙盒验证通过", "en-US": "Sandbox Verified" },
-  active: { "zh-CN": "运行中", "en-US": "Active" },
-  degraded: { "zh-CN": "已降级", "en-US": "Degraded" },
-  revoked: { "zh-CN": "已撤销", "en-US": "Revoked" },
+  active: { "zh-CN": "激活", "en-US": "Active" },
+  degraded: { "zh-CN": "降级", "en-US": "Degraded" },
+  revoked: { "zh-CN": "撤销", "en-US": "Revoked" },
+};
+
+export type PluginOperationalStatus = "enabled" | "stopped" | "abnormal" | "unavailable";
+
+export const pluginOperationalStatusLabels: Record<PluginOperationalStatus, Record<Locale, string>> = {
+  enabled: { "zh-CN": "启用", "en-US": "Enabled" },
+  stopped: { "zh-CN": "停用", "en-US": "Stopped" },
+  abnormal: { "zh-CN": "异常", "en-US": "Abnormal" },
+  unavailable: { "zh-CN": "不可用", "en-US": "Unavailable" },
 };
 
 export const pluginBindingStatusLabels: Record<
@@ -144,6 +153,14 @@ export const pluginManagementCopy = {
     pluginOverview: "插件概览",
     pluginRelations: "关联关系",
     versionHistory: "版本历史",
+    currentRunningVersion: "当前运行版本",
+    currentViewedVersion: "当前查看版本",
+    versionActivationRules: "认知插件采用蓝绿激活：只有新版本激活成功后，旧版本才会停止；激活失败时当前运行版本保持不变。",
+    activateThisVersion: "激活此版本",
+    activationFailureReason: "失败原因",
+    candidateVersion: "候选版本",
+    activeVersion: "运行中版本",
+    offlineWarning: "当前认知插件没有运行中版本，此功能已停止提供服务，请立即排查激活失败原因。",
     history: "历史记录",
     loadHistoryFailed: "加载版本历史失败。",
     noHistoryRecords: "暂无版本历史记录。",
@@ -164,7 +181,8 @@ export const pluginManagementCopy = {
     toolId: "Tool ID",
     version: "版本",
     usedIn: "使用场景",
-    status: "生命周期状态",
+    status: "状态",
+    upgradeStatus: "升级状态",
     usageCount: "使用次数",
     failureCount: "失败次数",
     description: "功能介绍",
@@ -236,6 +254,14 @@ export const pluginManagementCopy = {
     pluginOverview: "Plugin Overview",
     pluginRelations: "Relationships",
     versionHistory: "Version History",
+    currentRunningVersion: "Current Running Version",
+    currentViewedVersion: "Current Viewed Version",
+    versionActivationRules: "Cognitive plugins use blue-green activation: the old version stops only after the new version activates successfully; if activation fails, the current running version stays unchanged.",
+    activateThisVersion: "Activate This Version",
+    activationFailureReason: "Failure Reason",
+    candidateVersion: "Candidate Version",
+    activeVersion: "Active Version",
+    offlineWarning: "No active version is currently running for this cognitive plugin. This capability is offline until activation is restored.",
     history: "History",
     loadHistoryFailed: "Failed to load version history.",
     noHistoryRecords: "No version history records yet.",
@@ -257,7 +283,8 @@ export const pluginManagementCopy = {
     toolId: "Tool ID",
     version: "Version",
     usedIn: "Used In",
-    status: "Lifecycle",
+    status: "Status",
+    upgradeStatus: "Upgrade Status",
     usageCount: "Usage Count",
     failureCount: "Failure Count",
     description: "Description",
@@ -629,6 +656,13 @@ export function formatPluginStatus(
   locale: Locale,
 ): string {
   return pluginStatusLabels[status][locale];
+}
+
+export function formatPluginOperationalStatus(
+  status: PluginOperationalStatus,
+  locale: Locale,
+): string {
+  return pluginOperationalStatusLabels[status][locale];
 }
 
 export function formatPluginBindingStatus(

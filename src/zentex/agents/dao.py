@@ -196,7 +196,7 @@ class AgentDAO(BaseDAO):
         Returns:
             Number of agents with given status
         """
-        cache_key = self._cache_key("count_by_status", status=status)
+        cache_key = self._cache_key("count_by_status", lifecycle_status=lifecycle_status)
         
         cached = self.cache.get(cache_key)
         if cached is not None:

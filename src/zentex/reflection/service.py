@@ -242,3 +242,19 @@ class ReflectionService:
     def should_update_reflection_list(self, reflection: ReflectionRecord) -> bool:
         """判断是否更新反思列表 - 委托给update_policy"""
         return self._update_policy.should_update_reflection_list(reflection)
+
+
+# Global singleton instance for reflection service
+_default_service: ReflectionService | None = None
+
+
+def get_service() -> ReflectionService:
+    """Standard service factory function for launcher assembly.
+    
+    Returns the global ReflectionService instance, creating it if necessary.
+    This function is required by the SystemAssembler to initialize the reflection service.
+    """
+    global _default_service
+    if _default_service is None:
+        _default_service = ReflectionService()
+    return _default_service

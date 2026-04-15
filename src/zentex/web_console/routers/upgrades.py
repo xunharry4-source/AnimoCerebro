@@ -1,4 +1,28 @@
+"""
+Upgrades Router — /api/web/upgrades/* endpoints.
+
+RESPONSIBILITY:
+  Exposes LLM and plugin upgrade lifecycle management: overview, list, execute,
+  cancel, audit events, memory records, and failed-candidate cleanup.
+
+FAIL-CLOSED CONTRACT (Zentex Codex §1):
+  All upgrade services (management_store, audit_store, memory_store,
+  execution_service, evidence_service, plugin_evolution_runtime) are
+  initialised by create_app() and stored on app.state.*.
+
+  The dependency shims in dependencies.py now check app.state first, so in
+  the normal launcher path these are never None.  The _require_* guards below
+  defend the remaining edge cases (e.g. degraded-mode startup) and raise 503
+  instead of crashing with AttributeError.
+
+DOES NOT:
+  - Own upgrade business logic (that lives in zentex.upgrade.service).
+  - Manage app state or startup lifecycle.
+"""
+
 from __future__ import annotations
+
+from typing import Any
 
 from fastapi import APIRouter, HTTPException, Request
 from fastapi import Depends
@@ -38,10 +62,51 @@ from zentex.web_console.services.upgrades import (
 
 router = APIRouter()
 
+_UPGRADE_503 = {
+    "error": "upgrade_service_unavailable",
+    "message": "Upgrade 服务未初始化，请检查启动流程。",
+}
+
+
+def _require_upgrade_management_store(store: Any = Depends(get_upgrade_management_store)) -> Any:
+    if store is None:
+        raise HTTPException(status_code=503, detail=_UPGRADE_503)
+    return store
+
+
+def _require_upgrade_audit_store(store: Any = Depends(get_upgrade_audit_store)) -> Any:
+    if store is None:
+        raise HTTPException(status_code=503, detail=_UPGRADE_503)
+    return store
+
+
+def _require_upgrade_memory_store(store: Any = Depends(get_upgrade_memory_store)) -> Any:
+    if store is None:
+        raise HTTPException(status_code=503, detail=_UPGRADE_503)
+    return store
+
+
+def _require_upgrade_execution_service(svc: Any = Depends(get_upgrade_execution_service)) -> Any:
+    if svc is None:
+        raise HTTPException(status_code=503, detail=_UPGRADE_503)
+    return svc
+
+
+def _require_upgrade_evidence_service(svc: Any = Depends(get_upgrade_evidence_service)) -> Any:
+    if svc is None:
+        raise HTTPException(status_code=503, detail=_UPGRADE_503)
+    return svc
+
+
+def _require_plugin_evolution_runtime(rt: Any = Depends(get_plugin_evolution_runtime)) -> Any:
+    if rt is None:
+        raise HTTPException(status_code=503, detail=_UPGRADE_503)
+    return rt
+
 
 @router.get("/upgrades/overview", response_model=UpgradeOverviewPayload)
 def get_upgrade_overview(
-    store=Depends(get_upgrade_management_store),
+    store: Any = Depends(_require_upgrade_management_store),
 ) -> UpgradeOverviewPayload:
     return build_upgrade_overview(store)
 

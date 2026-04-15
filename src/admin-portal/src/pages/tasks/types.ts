@@ -8,7 +8,8 @@ export type TaskStatus =
   | 'done' 
   | 'failed' 
   | 'suspended' 
-  | 'archived';
+  | 'archived'
+  | 'cancelled'; // Add cancelled
 
 export interface ZentexTask {
   id: string; // Required for DataGrid
@@ -27,7 +28,7 @@ export interface ZentexTask {
   target_id?: string;
   remarks: string | null;
   started_at: string | null;
-  completed_at: string | null;
+  completed_at?: string | null; // Make optional
   created_at?: string;
   deadline?: string;
   tags?: string[];

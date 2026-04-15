@@ -7,12 +7,13 @@ from typing_extensions import Self
 
 import dspy
 
-from zentex.core.model_provider_spec import ModelProviderCallerContext, ModelProviderSpec
-from zentex.core.models import CognitiveToolSpec
-from zentex.core.plugin_base import PluginLifecycleStatus, PluginHealthStatus
+from zentex.foundation.specs.model_provider import ModelProviderCallerContext, ModelProviderSpec
+from zentex.foundation.specs.cognitive_tool_spec import CognitiveToolSpec
+from zentex.plugins.contracts import PluginLifecycleStatus, PluginHealthStatus
 from zentex.learning.g16_models import SandboxValidationResult, ToolKnowledgeRecord
 from zentex.learning.sandbox import ThoughtSandbox
-from zentex.runtime.transcript import BrainTranscriptEntryType, BrainTranscriptStore
+from zentex.kernel import BrainTranscriptEntryType, BrainTranscriptStore
+from zentex.llm.service import LLMService
 
 from zentex.learning.dspy_adapter import ZentexDSPyLM
 from zentex.learning.g16_dspy_signatures import ToolDistillationModule, ToolCriticModule
@@ -24,7 +25,9 @@ MAX_MEM_MB = 100.0
 async def run_g16_dynamic_tool_self_study(
     *,
     doc_url: str,
-    provider: ModelProviderSpec,
+    provider: ModelProviderSpec | None = None,
+    llm_service: LLMService | None = None,
+    model_provider_key: str | None = None,
     store: BrainTranscriptStore,
     trace_id: str,
 ) -> Optional[ToolKnowledgeRecord]:
@@ -44,7 +47,12 @@ async def run_g16_dynamic_tool_self_study(
     )
 
     # Initialize DSPy LM with our adapter
-    zentex_lm = ZentexDSPyLM(provider=provider, caller_context=caller)
+    zentex_lm = ZentexDSPyLM(
+        provider=provider,
+        llm_service=llm_service,
+        model_provider_key=model_provider_key,
+        caller_context=caller,
+    )
     dspy.settings.configure(lm=zentex_lm)
     
     distiller = ToolDistillationModule()
@@ -116,7 +124,7 @@ async def run_g16_dynamic_tool_self_study(
             version="0.1.0",
             feature_code="g16.dynamic_study",
             is_concurrency_safe=True,
-            status=PluginLifecycleStatus.CANDIDATE,
+            lifecycle_status=PluginLifecycleStatus.CANDIDATE,
             health_status=PluginHealthStatus.HEALTHY,
             rollback_conditions=["sandbox_failed"],
             revocation_reasons=[],

@@ -264,6 +264,8 @@ export interface WorkspaceDomainInferenceView {
   reasoning_summary: string;
   uncertainties: string[];
   suggested_first_step: string;
+  host_runtime_type?: string | null;
+  host_runtime_reason?: string | null;
 }
 
 export interface Q2Q1Summary {

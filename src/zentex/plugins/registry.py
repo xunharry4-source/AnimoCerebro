@@ -25,7 +25,7 @@ class UnifiedPluginBus(AbstractPluginRegistry[BasePluginSpec]):
         """
         List all active plugins regardless of layer.
         """
-        return [p for p in self._plugins.values() if p.status == "active"]
+        return [p for p in self._plugins.values() if p.lifecycle_status == "active" and p.operational_status == "enabled"]
 
     def get_by_category(self, category: str) -> List[BasePluginSpec]:
         """

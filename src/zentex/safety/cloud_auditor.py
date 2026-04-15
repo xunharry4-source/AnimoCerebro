@@ -471,7 +471,7 @@ class CloudAuditorClient:
 
         return CloudAuditDecision(
             request_id=request.request_id,
-            status=status,
+            lifecycle_status=lifecycle_status,
             reason=f"[DEGRADED MODE] {reason}. Using local policy fallback.",
             policy_version=self._config.degraded_policy_version,
             constraints={

@@ -12,7 +12,8 @@ from zentex.learning.service import (
     describe_direction,
     run_learning_cycle,
 )
-from zentex.runtime.models import BrainTranscriptEntryType
+from zentex.kernel import BrainTranscriptEntryType
+from zentex.llm import get_llm_service
 from zentex.web_console.contracts.learning import (
     LearningDirectionPlanItem,
     LearningHistoryRow,
@@ -103,8 +104,13 @@ async def execute_learning_cycle(
 ) -> LearningRunCycleResponse:
     store = get_transcript_store(request)
     provider = None
+    llm_service = None
+    model_provider_key = None
     if not dry_run:
+        llm_service = get_llm_service()
         provider = get_active_model_provider(request)
+        if isinstance(provider, str) and provider.strip():
+            model_provider_key = provider.strip()
 
     default_budget = int(os.environ.get("ZENTEX_LEARNING_BUDGET_TOKENS", "32000"))
     budget = ReasoningBudget(remaining_tokens=default_budget)
@@ -113,6 +119,8 @@ async def execute_learning_cycle(
         store=store,
         direction=direction,
         provider=provider,
+        llm_service=llm_service,
+        model_provider_key=model_provider_key,
         budget=budget,
         load_factor=load_factor,
         dry_run=dry_run,

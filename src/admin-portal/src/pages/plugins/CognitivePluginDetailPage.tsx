@@ -30,20 +30,28 @@ import HistoryIcon from "@mui/icons-material/History";
 import LinkIcon from "@mui/icons-material/Link";
 import DeleteOutlineIcon from "@mui/icons-material/DeleteOutline";
 import ScienceIcon from "@mui/icons-material/Science";
-import { formatLocalizedDateTime, formatPluginStatus, pluginManagementCopy, type Locale } from "../../i18n";
+import {
+  formatLocalizedDateTime,
+  formatPluginOperationalStatus,
+  formatPluginStatus,
+  pluginManagementCopy,
+  type Locale,
+} from "../../i18n";
 import {
   bindFunctionalPlugin,
   fetchCognitivePluginDetail,
   fetchFunctionalPlugins,
+  forceEnablePlugin,
   testFunctionalPlugin,
   unbindFunctionalPlugin,
   type CognitivePluginDetailResponse,
+  type PluginHistoryItem,
   type PluginRow,
   type PluginRelationshipItem,
 } from "./pluginsApi";
 
 function getStatusColor(
-  status: PluginRow["status"],
+  status: PluginRow["lifecycle_status"],
 ): "default" | "success" | "warning" | "error" | "info" {
   switch (status) {
     case "active":
@@ -59,29 +67,71 @@ function getStatusColor(
   }
 }
 
+function getOperationalStatusColor(
+  status: PluginRow["operational_status"],
+): "default" | "success" | "warning" | "error" {
+  switch (status) {
+    case "enabled":
+      return "success";
+    case "abnormal":
+      return "warning";
+    case "unavailable":
+      return "error";
+    default:
+      return "default";
+  }
+}
+
 function HistoryTable({
   history,
   locale,
+  actionLoadingPluginId,
+  onActivateVersion,
+  relatedVersions,
+  activeVersionToolId,
 }: {
   history: CognitivePluginDetailResponse["history"];
   locale: Locale;
+  actionLoadingPluginId: string | null;
+  onActivateVersion: (item: PluginHistoryItem) => void;
+  relatedVersions: PluginRow[];
+  activeVersionToolId: string | null;
 }) {
   const { t } = useTranslation();
+  const activeVersion = relatedVersions.find((item) => item.tool_id === activeVersionToolId) ?? null;
+
   if (history.length === 0) {
-    return <Alert severity="info">{pluginManagementCopy[locale].noHistoryRecords}</Alert>;
+    return (
+      <Stack spacing={2}>
+        <Alert severity={activeVersion ? "success" : "warning"}>
+          <strong>{pluginManagementCopy[locale].currentRunningVersion}:</strong>{" "}
+          {activeVersion ? `${activeVersion.tool_id} · ${activeVersion.version}` : "--"}
+        </Alert>
+        <Alert severity="info">{pluginManagementCopy[locale].versionActivationRules}</Alert>
+        <Alert severity="info">{pluginManagementCopy[locale].noHistoryRecords}</Alert>
+      </Stack>
+    );
   }
 
   return (
     <TableContainer component={Paper} variant="outlined">
+      <Stack spacing={2} sx={{ mb: 2 }}>
+        <Alert severity={activeVersion ? "success" : "warning"}>
+          <strong>{pluginManagementCopy[locale].currentRunningVersion}:</strong>{" "}
+          {activeVersion ? `${activeVersion.tool_id} · ${activeVersion.version}` : "--"}
+        </Alert>
+        <Alert severity="info">{pluginManagementCopy[locale].versionActivationRules}</Alert>
+      </Stack>
       <Table>
         <TableHead>
           <TableRow>
             <TableCell>{t("plugins.version")}</TableCell>
-            <TableCell>{t("plugins.lifecycleStatus")}</TableCell>
+            <TableCell>{t("plugins.upgradeStatus")}</TableCell>
             <TableCell>{pluginManagementCopy[locale].startedAt}</TableCell>
             <TableCell>{pluginManagementCopy[locale].updatedAt}</TableCell>
             <TableCell>{pluginManagementCopy[locale].rollbackConditions}</TableCell>
             <TableCell>{pluginManagementCopy[locale].lastUsedAt}</TableCell>
+            <TableCell align="right">{t("plugins.actions")}</TableCell>
           </TableRow>
         </TableHead>
         <TableBody>
@@ -92,14 +142,34 @@ function HistoryTable({
                 <Typography variant="body2" color="text.secondary">
                   {item.previous_version ? `from ${item.previous_version}` : item.plugin_id}
                 </Typography>
+                {item.plugin_id === activeVersionToolId ? (
+                  <Chip
+                    size="small"
+                    sx={{ mt: 0.5 }}
+                    color="success"
+                    label={pluginManagementCopy[locale].activeVersion}
+                  />
+                ) : null}
               </TableCell>
               <TableCell>
-                <Chip size="small" label={item.status} variant="outlined" />
+                <Chip size="small" label={item.upgrade_status} variant="outlined" />
               </TableCell>
               <TableCell>{formatLocalizedDateTime(item.started_at, locale)}</TableCell>
               <TableCell>{formatLocalizedDateTime(item.completed_at, locale)}</TableCell>
               <TableCell>{item.error_message || "--"}</TableCell>
               <TableCell>{item.previous_version || "--"}</TableCell>
+              <TableCell align="right">
+                {item.plugin_id !== activeVersionToolId ? (
+                  <Button
+                    size="small"
+                    variant="contained"
+                    disabled={actionLoadingPluginId === item.plugin_id}
+                    onClick={() => onActivateVersion(item)}
+                  >
+                    {pluginManagementCopy[locale].activateThisVersion}
+                  </Button>
+                ) : null}
+              </TableCell>
             </TableRow>
           ))}
         </TableBody>
@@ -132,6 +202,7 @@ function RelationTable({
             <TableCell>{t("plugins.toolId")}</TableCell>
             <TableCell>{t("plugins.version")}</TableCell>
             <TableCell>{t("plugins.lifecycleStatus")}</TableCell>
+            <TableCell>{t("plugins.status")}</TableCell>
             <TableCell>{t("plugins.description")}</TableCell>
             <TableCell align="right">{t("plugins.actions")}</TableCell>
           </TableRow>
@@ -147,7 +218,10 @@ function RelationTable({
               </TableCell>
               <TableCell>{row.plugin.version}</TableCell>
               <TableCell>
-                <Chip size="small" label={formatPluginStatus(row.plugin.status, locale)} color={getStatusColor(row.plugin.status)} variant="outlined" />
+                <Chip size="small" label={formatPluginStatus(row.plugin.lifecycle_status, locale)} color={getStatusColor(row.plugin.lifecycle_status)} variant="outlined" />
+              </TableCell>
+              <TableCell>
+                <Chip size="small" label={formatPluginOperationalStatus(row.plugin.operational_status, locale)} color={getOperationalStatusColor(row.plugin.operational_status)} variant="outlined" />
               </TableCell>
               <TableCell>
                 <Typography variant="body2" noWrap sx={{ maxWidth: 300 }}>
@@ -181,6 +255,7 @@ export default function CognitivePluginDetailPage() {
   const [functionalPlugins, setFunctionalPlugins] = useState<PluginRow[]>([]);
   const [loading, setLoading] = useState(true);
   const [actionLoading, setActionLoading] = useState(false);
+  const [actionLoadingPluginId, setActionLoadingPluginId] = useState<string | null>(null);
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
   const [bindPluginId, setBindPluginId] = useState("");
   const [bindRole, setBindRole] = useState("primary");
@@ -240,6 +315,7 @@ export default function CognitivePluginDetailPage() {
       return;
     }
     setActionLoading(true);
+    setActionLoadingPluginId(bindPluginId);
     try {
       await bindFunctionalPlugin(pluginId, bindPluginId, {
         audit_reason: bindAuditReason.trim(),
@@ -254,6 +330,7 @@ export default function CognitivePluginDetailPage() {
       setErrorMessage(error instanceof Error ? error.message : "绑定功能插件失败");
     } finally {
       setActionLoading(false);
+      setActionLoadingPluginId(null);
     }
   };
 
@@ -266,6 +343,7 @@ export default function CognitivePluginDetailPage() {
       return;
     }
     setActionLoading(true);
+    setActionLoadingPluginId(row.plugin.tool_id);
     try {
       await unbindFunctionalPlugin(pluginId, row.plugin.tool_id, {
         audit_reason: reason.trim(),
@@ -278,6 +356,7 @@ export default function CognitivePluginDetailPage() {
       setErrorMessage(error instanceof Error ? error.message : "解绑功能插件失败");
     } finally {
       setActionLoading(false);
+      setActionLoadingPluginId(null);
     }
   };
 
@@ -290,6 +369,7 @@ export default function CognitivePluginDetailPage() {
       return;
     }
     setActionLoading(true);
+    setActionLoadingPluginId(row.plugin.tool_id);
     try {
       await testFunctionalPlugin(pluginId, row.plugin.tool_id, {
         audit_reason: reason.trim(),
@@ -298,6 +378,23 @@ export default function CognitivePluginDetailPage() {
       await refresh();
     } catch (error) {
       setErrorMessage(error instanceof Error ? error.message : "测试功能插件失败");
+    } finally {
+      setActionLoading(false);
+      setActionLoadingPluginId(null);
+    }
+  };
+
+  const handleActivateVersion = async (item: PluginHistoryItem) => {
+    const reason = window.prompt(pluginManagementCopy[locale].auditReasonPrompt);
+    if (!reason || !reason.trim()) {
+      return;
+    }
+    setActionLoading(true);
+    try {
+      await forceEnablePlugin(item.plugin_id, reason.trim());
+      await refresh();
+    } catch (error) {
+      setErrorMessage(error instanceof Error ? error.message : "激活插件版本失败");
     } finally {
       setActionLoading(false);
     }
@@ -350,10 +447,14 @@ export default function CognitivePluginDetailPage() {
       <Card variant="outlined">
         <CardContent>
           <Stack spacing={2}>
+            {detail.active_version_tool_id == null ? (
+              <Alert severity="warning">{pluginManagementCopy[locale].offlineWarning}</Alert>
+            ) : null}
             <Stack direction="row" spacing={1} flexWrap="wrap" useFlexGap>
               <Chip label={detail.plugin.plugin_kind} variant="outlined" />
               <Chip label={detail.plugin.version} variant="outlined" />
-              <Chip label={formatPluginStatus(detail.plugin.status, locale)} color={getStatusColor(detail.plugin.status)} />
+              <Chip label={formatPluginStatus(detail.plugin.lifecycle_status, locale)} color={getStatusColor(detail.plugin.lifecycle_status)} />
+              <Chip label={formatPluginOperationalStatus(detail.plugin.operational_status, locale)} color={getOperationalStatusColor(detail.plugin.operational_status)} />
               {detail.plugin.is_default ? <Chip label={t("plugins.defaultPlugin")} color="info" /> : null}
             </Stack>
             <Typography variant="body1" color="text.secondary">
@@ -461,7 +562,14 @@ export default function CognitivePluginDetailPage() {
               <HistoryIcon fontSize="small" />
               <Typography variant="h6">{pluginManagementCopy[locale].versionHistory}</Typography>
             </Stack>
-            <HistoryTable history={detail.history} locale={locale} />
+            <HistoryTable
+              history={detail.history}
+              locale={locale}
+              actionLoadingPluginId={actionLoadingPluginId}
+              onActivateVersion={handleActivateVersion}
+              relatedVersions={detail.related_versions}
+              activeVersionToolId={detail.active_version_tool_id}
+            />
           </Stack>
         </CardContent>
       </Card>

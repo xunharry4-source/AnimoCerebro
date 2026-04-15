@@ -18,19 +18,20 @@ from zentex.common.locking import get_lock_for_resource
 from uuid import uuid4
 
 from pydantic import BaseModel, ConfigDict, Field
-
-from zentex.common.plugin_registry import PluginNotBoundError
-from zentex.core.model_provider_spec import (
+from zentex.foundation.specs.model_provider import (
     ModelProviderCallerContext,
     ModelProviderRateLimitError,
     ModelProviderSpec,
 )
-from zentex.core.models import CognitiveToolSpec
-from zentex.core.plugin_base import PluginLifecycleStatus
-from zentex.runtime.transcript import (
-    BrainTranscriptEntryType,
-    BrainTranscriptStore,
-)
+from zentex.llm.service import LLMService
+from zentex.kernel import BrainTranscriptEntryType, BrainTranscriptStore
+from zentex.plugins.contracts import PluginLifecycleStatus
+
+try:
+    from zentex.common.plugin_registry import PluginNotBoundError
+except ModuleNotFoundError:  # pragma: no cover
+    class PluginNotBoundError(RuntimeError):
+        pass
 
 
 class StaleWriteError(RuntimeError):
@@ -221,7 +222,7 @@ class ReflectionClusteringPlugin:
 
     def __init__(self, plugin_id: str = "reflection_clusterer") -> None:
         self.plugin_id = plugin_id
-        self.status = PluginLifecycleStatus.ACTIVE
+        self.lifecycle_status=PluginLifecycleStatus.ACTIVE
         self.behavior_key = "memory_consolidation"
         self.supports_multi_active = True
 
@@ -274,7 +275,9 @@ class ConsolidationEngine:
     def __init__(
         self,
         *,
-        model_provider: ModelProviderSpec,
+        llm_service: LLMService | None = None,
+        model_provider: ModelProviderSpec | None = None,
+        model_provider_key: str | None = None,
         analysis_plugins: List[ConsolidationAnalysisPlugin],
         transcript_store: BrainTranscriptStore,
         brain_scope: str,
@@ -284,13 +287,16 @@ class ConsolidationEngine:
         Initialize the consolidation engine.
 
         Args:
-            model_provider: Active live LLM plugin used for semantic summarization.
+            llm_service: Unified LLM service entrypoint for semantic summarization.
+            model_provider: Legacy fallback provider.
             analysis_plugins: Active multi-plugin analyzers for clustering/pruning hints.
             transcript_store: Append-only audit stream for cycle success/failure records.
             brain_scope: Shared state scope used for lease ownership and stale-write checks.
             queue: Optional background queue adapter. Defaults to a local thread-pool queue.
         """
-        self._model_provider: ModelProviderSpec = model_provider
+        self._llm_service = llm_service
+        self._model_provider: ModelProviderSpec | None = model_provider
+        self._model_provider_key = model_provider_key
         self._analysis_plugins: List[ConsolidationAnalysisPlugin] = list(analysis_plugins)
         self._transcript_store: BrainTranscriptStore = transcript_store
         self._brain_scope: str = brain_scope
@@ -430,6 +436,29 @@ class ConsolidationEngine:
         future = self._queue.submit(self._execute_cycle, task_request)
         return handle, future
 
+    def submit_manual_trigger(self, operator: str = "web_console") -> "ConsolidationTaskHandle":
+        """Convenience entry-point for ad-hoc / operator-initiated consolidation.
+
+        All business decisions (trigger_stage, idempotency_key generation,
+        snapshot_version capture, empty refs/rules) are owned HERE in the
+        domain layer so that callers such as web_console routers remain
+        parameter-free.
+
+        Returns the task handle; the associated Future is discarded because
+        manual triggers are fire-and-forget from the caller's perspective.
+        """
+        import uuid as _uuid
+
+        handle, _future = self.submit_cycle(
+            trigger_stage="sleep_phase",
+            input_memory_refs=[],
+            noise_rules=[],
+            context={"operator": operator, "trigger": "manual"},
+            idempotency_key=str(_uuid.uuid4()),
+            snapshot_version=self.snapshot_version,
+        )
+        return handle
+
     def _execute_cycle(self, task_request: ConsolidationTaskRequest) -> ConsolidationCycle:
         """Run a consolidation cycle inside a worker thread and commit the result safely."""
         started_at = datetime.now(timezone.utc)
@@ -556,22 +585,39 @@ class ConsolidationEngine:
             for ref in output.compressed_refs
         ]
 
-        response = self._model_provider.generate_json(
-            prompt=(
-                "Summarize the reusable memory value of the supplied memory fragments. "
-                "Return JSON with keys summary, promotion_candidates, compressed_refs."
-            ),
-            context=self._translate_model_context(
-                task_request=task_request,
-                plugin_outputs=plugin_outputs,
-            ),
-            caller_context=ModelProviderCallerContext(
-                source_module="Offline memory consolidation engine",
-                invocation_phase="extracting stable memory patterns and compression summary",
-                question_driver_refs=["什么值得长期记住", "哪些内容可以安全遗忘", "哪些模式值得升格"],
-                decision_id=task_request.cycle_id,
-            ),
+        prompt = (
+            "Summarize the reusable memory value of the supplied memory fragments. "
+            "Return JSON with keys summary, promotion_candidates, compressed_refs."
         )
+        llm_context = self._translate_model_context(
+            task_request=task_request,
+            plugin_outputs=plugin_outputs,
+        )
+        caller_context = ModelProviderCallerContext(
+            source_module="Offline memory consolidation engine",
+            invocation_phase="extracting stable memory patterns and compression summary",
+            question_driver_refs=["什么值得长期记住", "哪些内容可以安全遗忘", "哪些模式值得升格"],
+            decision_id=task_request.cycle_id,
+        )
+        if self._llm_service is not None:
+            response = self._llm_service.generate_json(
+                prompt=prompt,
+                context=llm_context,
+                caller_context=caller_context,
+                source_module=caller_context.source_module,
+                invocation_phase=caller_context.invocation_phase,
+                decision_id=caller_context.decision_id,
+                model_provider=self._model_provider_key,
+                metadata={"question_driver_refs": caller_context.question_driver_refs},
+            ).output
+        elif self._model_provider is not None:
+            response = self._model_provider.generate_json(
+                prompt=prompt,
+                context=llm_context,
+                caller_context=caller_context,
+            )
+        else:
+            raise RuntimeError("LLM MANDATORY: missing llm_service and model_provider fallback")
 
         promoted_candidates = [
             MemoryPromotionCandidate.model_validate({**candidate, "status": "quarantined"})

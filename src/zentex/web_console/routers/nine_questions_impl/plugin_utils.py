@@ -7,9 +7,12 @@ and feature code mappings.
 
 from typing import Any
 
-from zentex.web_console.contracts.plugins import PluginFeatureCatalogItem
+from zentex.plugins.service import (
+    query_all_plugins_by_operational_status,
+    query_cognitive_plugin_functionals_by_operational_status,
+)
 from zentex.web_console.contracts.nine_questions import MountedPluginInfo
-from zentex.core.plugin_base import PluginLifecycleStatus
+from zentex.plugins.contracts import PluginLifecycleStatus
 
 
 # Feature code explanations for plugin function descriptions
@@ -53,7 +56,7 @@ def _derive_plugin_display_name(
     plugin_id: str,
     feature_code: str | None,
     plugin: object | None,
-    catalog_by_feature: dict[str, PluginFeatureCatalogItem],
+    catalog_by_feature: dict[str, Any],
 ) -> str:
     """Derive display name for a plugin from multiple sources."""
     display_name = str(getattr(plugin, "display_name", "") or "").strip()
@@ -92,7 +95,7 @@ def _derive_plugin_function_description(
 def _get_mounted_plugins_for_question(
     runtime: Any,
     q_id: str,
-    plugin_feature_catalog: list[PluginFeatureCatalogItem] | None = None,
+    plugin_feature_catalog: list[Any] | None = None,
 ) -> list[MountedPluginInfo]:
     """
     Expose the truth of capability patch mountings for the frontend.
@@ -104,7 +107,7 @@ def _get_mounted_plugins_for_question(
     catalog_by_feature = {
         item.feature_code: item
         for item in (plugin_feature_catalog or [])
-        if isinstance(item, PluginFeatureCatalogItem)
+        if isinstance(item, dict)
     }
 
     mounted: list[MountedPluginInfo] = []
@@ -153,15 +156,20 @@ def _get_mounted_plugins_for_question(
 
     dependency_feature_codes = _functional_feature_codes_for_question(q_id)
     plugin_service: Any = getattr(runtime, "plugin_service", None)
-    if plugin_service is not None and hasattr(plugin_service, "query_cognitive_functionals"):
-        service_plugins: dict[str, Any] = {}
-        if hasattr(plugin_service, "get_all_plugins"):
-            try:
-                raw_plugins = plugin_service.get_all_plugins() or {}
-                if isinstance(raw_plugins, dict):
-                    service_plugins = raw_plugins
-            except Exception:
-                service_plugins = {}
+    if plugin_service is not None:
+        try:
+            service_plugins = {
+                str(item.get("plugin_id") or ""): item
+                for item in query_all_plugins_by_operational_status(
+                    plugin_service,
+                    category="functional",
+                    operational_status="enabled",
+                    limit=500,
+                )
+                if str(item.get("plugin_id") or "").strip()
+            }
+        except Exception:
+            service_plugins = {}
 
         cognitive_candidates: list[str] = []
         if registry is not None:
@@ -172,7 +180,15 @@ def _get_mounted_plugins_for_question(
 
         for cognitive_plugin_id in cognitive_candidates:
             try:
-                relations = list(plugin_service.query_cognitive_functionals(cognitive_plugin_id) or [])
+                relations = list(
+                    query_cognitive_plugin_functionals_by_operational_status(
+                        plugin_service,
+                        cognitive_plugin_id,
+                        operational_status="enabled",
+                        limit=200,
+                    )
+                    or []
+                )
             except Exception:
                 continue
 

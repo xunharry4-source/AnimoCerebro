@@ -541,7 +541,7 @@ class AutomatedAuditor:
                     rule_id=rule['rule_id'],
                     rule_name=rule['name'],
                     category=rule['category'],
-                    status=status,
+                    lifecycle_status=lifecycle_status,
                     description=rule['description'],
                     findings=findings,
                     recommendations=recommendations,

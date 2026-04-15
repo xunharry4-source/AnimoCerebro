@@ -7,15 +7,13 @@ from time import perf_counter
 from typing import Any
 from uuid import uuid4
 
-from zentex.core.model_provider_spec import ModelProviderCallerContext, ModelProviderSpec
-from zentex.core.models import LogicalCognitiveToolSpec
-from zentex.core.plugin_base import PluginHealthStatus, PluginLifecycleStatus
-from zentex.runtime.cognitive_tools import CognitiveToolResult
-from zentex.runtime.transcript import BrainTranscriptEntryType, BrainTranscriptStore
+from pydantic import BaseModel, ConfigDict
+
+from plugins.shared.cognitive_result import CognitiveToolResult
+from zentex.common.plugin_ids import NINE_QUESTION_Q3
+from zentex.plugins.models import PluginLifecycleStatus
 
 from plugins.nine_questions.q3_what_do_i_have.models import Q3WhatDoIHaveInference
-# Decoupled: Assets are discovered via the plugin registry
-from zentex.core.plugin_family import ExecutionPluginSpec
 
 
 QUESTION_REF = "我有什么"
@@ -30,6 +28,7 @@ from zentex.common.nine_questions_shared import (
     require_model_provider,
     require_transcript_store,
 )
+from zentex.plugins.service import execute_enabled_cognitive_plugin_functionals
 
 logger = logging.getLogger(__name__)
 
@@ -171,7 +170,17 @@ def _catalog_rows_from_runtime_context(context: dict[str, Any], *, plugin_ids: l
     return rows
 
 
-class Q3WhatDoIHavePlugin(LogicalCognitiveToolSpec):
+class Q3WhatDoIHavePlugin(BaseModel):
+    model_config = ConfigDict(extra="allow")
+
+    plugin_id: str = NINE_QUESTION_Q3
+    version: str = "1.0.0"
+    feature_code: str = "nine_questions.q3"
+    display_name: str = "Q3: What do I have?"
+    behavior_key: str = "nine_questions"
+    lifecycle_status: str = PluginLifecycleStatus.ACTIVE.value
+    health_status: str = "healthy"
+    operational_status: str = "enabled"
     """
     Q3: 我有什么 (unified asset inventory + resource evaluation)
 
@@ -218,6 +227,29 @@ class Q3WhatDoIHavePlugin(LogicalCognitiveToolSpec):
             _describe_agent(agent)
             for agent in connected_agents
         ]
+        plugin_service = context.get("plugin_service")
+        functional_assets: list[dict[str, Any]] = []
+        if plugin_service is not None:
+            functional_assets = execute_enabled_cognitive_plugin_functionals(
+                plugin_service,
+                self.plugin_id,
+                default_parameters=dict(context),
+                trace_id=str(context.get("trace_id") or "q3"),
+                originator_id=str(context.get("session_id") or "unknown-session"),
+                caller_plugin_id=self.plugin_id,
+            )
+            for item in functional_assets:
+                if item.get("status") != "done":
+                    continue
+                plugin_id = str(item.get("plugin_id") or "")
+                result = item.get("result")
+                execution_domain_registry.append(_describe_tool(plugin_id, registry_rows=runtime_execution_rows))
+                if isinstance(result, dict):
+                    connected_agent_catalog.extend(
+                        _describe_agent(agent)
+                        for agent in (result.get("connected_agents") or [])
+                        if isinstance(agent, dict)
+                    )
 
         system_prompt = (
             "你现在是 Zentex 外部大脑的资产评估中枢。请严格阅读提供的资源清单及活跃插件家族。\n"
@@ -264,6 +296,7 @@ class Q3WhatDoIHavePlugin(LogicalCognitiveToolSpec):
             "accessible_workspace_zones": accessible_workspace_zones,
             "workspace_assets": snapshot.get("workspace_assets", {}),
             "permissions": snapshot.get("permissions", {}),
+            "functional_assets": functional_assets,
         }
 
         trace_id = str(context.get("trace_id") or f"q3-what-do-i-have:{uuid4().hex}")
@@ -377,6 +410,7 @@ class Q3WhatDoIHavePlugin(LogicalCognitiveToolSpec):
                     "cognitive_tool_rows": cognitive_tool_registry,
                     "execution_tool_rows": execution_domain_registry,
                     "connected_agent_rows": connected_agent_catalog,
+                    "functional_assets": functional_assets,
                 },
                 "q3_resource_status_humanized": {
                     "label": _resource_status_label(inference.resource_evaluation.resource_status.value),
@@ -389,31 +423,14 @@ class Q3WhatDoIHavePlugin(LogicalCognitiveToolSpec):
 
 def build_q3_what_do_i_have_plugin(
     *,
-    plugin_id: str = "nine-question-q3-what-do-i-have",
+    plugin_id: str = NINE_QUESTION_Q3,
     version: str = "1.0.0",
-    status: PluginLifecycleStatus = PluginLifecycleStatus.ACTIVE,
+    lifecycle_status: str | PluginLifecycleStatus = PluginLifecycleStatus.ACTIVE,
 ) -> Q3WhatDoIHavePlugin:
     return Q3WhatDoIHavePlugin(
         plugin_id=plugin_id,
         version=version,
         feature_code="nine_questions.q3",
-        is_concurrency_safe=True,
-        status=status,
-        health_status=PluginHealthStatus.HEALTHY,
-        rollback_conditions=["q3_asset_inventory_regression"],
-        revocation_reasons=["reserved_for_runtime_audit"],
-        tool_type="nine_question",
-        purpose="LLM-backed nine-question Q3: 我有什么 (asset inventory + resource evaluation).",
-        input_schema={"type": "object"},
-        output_schema={
-            "type": "object",
-            "required": ["unified_asset_inventory", "resource_evaluation"],
-        },
-        required_context=["context_snapshot", "model_provider", "transcript_store"],
-        trigger_conditions=["inspection"],
+        lifecycle_status=getattr(lifecycle_status, "value", lifecycle_status),
         behavior_key="nine_questions",
-        supports_multiple_plugins=True,
-        is_default_version=True,
-        is_official_release=True,
-        do_not_use_when=["missing_model_provider", "unsafe_external_action"],
     )

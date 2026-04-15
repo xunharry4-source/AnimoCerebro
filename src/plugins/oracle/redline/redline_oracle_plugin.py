@@ -2,19 +2,25 @@ from __future__ import annotations
 
 from typing import Any
 
-from zentex.core.plugin_base import PluginHealthStatus, PluginLifecycleStatus
-from zentex.core.plugin_family import RedlinePluginSpec
+from pydantic import BaseModel, ConfigDict, Field
+
+from zentex.plugins.models import PluginLifecycleStatus
 
 
-class BaselineRedlineOracle(RedlinePluginSpec):
-    plugin_id: str = "baseline_redline_oracle"
+class BaselineRedlineOracle(BaseModel):
+    model_config = ConfigDict(extra="allow")
+
+    plugin_id: str = "oracle_redline"
     version: str = "1.0.0"
-    feature_code: str = "redline.core"
-    is_concurrency_safe: bool = True
-    status: PluginLifecycleStatus = PluginLifecycleStatus.ACTIVE
-    health_status: PluginHealthStatus = PluginHealthStatus.HEALTHY
-    rollback_conditions: list[str] = ["redline_regression"]
-    revocation_reasons: list[str] = []
+    feature_code: str = "oracle.redline"
+    display_name: str = "Redline Oracle"
+    description: str = "Return forbidden zones and critical redlines."
+    behavior_key: str = "oracle_redline"
+    lifecycle_status: str = PluginLifecycleStatus.CANDIDATE.value
+    health_status: str = "healthy"
+    operational_status: str = "enabled"
+    rollback_conditions: list[str] = Field(default_factory=lambda: ["redline_regression"])
+    revocation_reasons: list[str] = Field(default_factory=list)
 
     def get_forbidden_zones(self) -> list[dict[str, Any]]:
         return [

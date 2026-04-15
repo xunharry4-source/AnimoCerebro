@@ -46,10 +46,20 @@ class ReflectionPersistence:
         try:
             # 加载现有数据
             reflections = self.load_reflections()
-            reflections[reflection.reflection_id] = reflection.model_dump()
+            
+            # ✅ 关键修复：转换所有对象为字典，不仅仅是新的那个！
+            reflections_data = {}
+            for reflection_id, ref in reflections.items():
+                if isinstance(ref, ReflectionRecord):
+                    reflections_data[reflection_id] = ref.model_dump(mode='json')
+                else:
+                    reflections_data[reflection_id] = ref
+            
+            # 添加或更新新的反思
+            reflections_data[reflection.reflection_id] = reflection.model_dump(mode='json')
             
             # 保存到文件
-            return self._save_json(self.reflections_file, reflections)
+            return self._save_json(self.reflections_file, reflections_data)
             
         except Exception as e:
             logger.error(f"Failed to save reflection {reflection.reflection_id}: {e}")
@@ -61,9 +71,9 @@ class ReflectionPersistence:
             # 创建备份
             self._create_backup()
             
-            # 转换为字典
+            # 转换为字典 - ✅ 使用 mode='json' 确保所有 datetime 被正确序列化
             reflections_data = {
-                reflection_id: reflection.model_dump() 
+                reflection_id: reflection.model_dump(mode='json')
                 for reflection_id, reflection in reflections.items()
             }
             
@@ -130,8 +140,17 @@ class ReflectionPersistence:
         """保存反思模板"""
         try:
             templates = self.load_templates()
-            templates[template.template_id] = template.model_dump()
-            return self._save_json(self.templates_file, templates)
+            
+            # ✅ 转换所有对象为字典
+            templates_data = {}
+            for template_id, tpl in templates.items():
+                if isinstance(tpl, ReflectionTemplate):
+                    templates_data[template_id] = tpl.model_dump(mode='json')
+                else:
+                    templates_data[template_id] = tpl
+            
+            templates_data[template.template_id] = template.model_dump(mode='json')
+            return self._save_json(self.templates_file, templates_data)
             
         except Exception as e:
             logger.error(f"Failed to save template {template.template_id}: {e}")
@@ -164,8 +183,17 @@ class ReflectionPersistence:
         """保存反思洞察"""
         try:
             insights = self.load_insights()
-            insights[insight.insight_id] = insight.model_dump()
-            return self._save_json(self.insights_file, insights)
+            
+            # ✅ 转换所有对象为字典
+            insights_data = {}
+            for insight_id, ins in insights.items():
+                if isinstance(ins, ReflectionInsight):
+                    insights_data[insight_id] = ins.model_dump(mode='json')
+                else:
+                    insights_data[insight_id] = ins
+            
+            insights_data[insight.insight_id] = insight.model_dump(mode='json')
+            return self._save_json(self.insights_file, insights_data)
             
         except Exception as e:
             logger.error(f"Failed to save insight {insight.insight_id}: {e}")
@@ -192,8 +220,17 @@ class ReflectionPersistence:
         """保存反思模式"""
         try:
             patterns = self.load_patterns()
-            patterns[pattern.pattern_id] = pattern.model_dump()
-            return self._save_json(self.patterns_file, patterns)
+            
+            # ✅ 转换所有对象为字典
+            patterns_data = {}
+            for pattern_id, pat in patterns.items():
+                if isinstance(pat, ReflectionPattern):
+                    patterns_data[pattern_id] = pat.model_dump(mode='json')
+                else:
+                    patterns_data[pattern_id] = pat
+            
+            patterns_data[pattern.pattern_id] = pattern.model_dump(mode='json')
+            return self._save_json(self.patterns_file, patterns_data)
             
         except Exception as e:
             logger.error(f"Failed to save pattern {pattern.pattern_id}: {e}")
@@ -219,7 +256,7 @@ class ReflectionPersistence:
     def save_metrics(self, metrics: ReflectionMetrics) -> bool:
         """保存反思指标"""
         try:
-            return self._save_json(self.metrics_file, metrics.model_dump())
+            return self._save_json(self.metrics_file, metrics.model_dump(mode='json'))
             
         except Exception as e:
             logger.error(f"Failed to save metrics: {e}")
@@ -361,23 +398,104 @@ class ReflectionPersistence:
     
     # 辅助方法
     def _save_json(self, file_path: Path, data: Dict[str, Any]) -> bool:
-        """保存JSON数据"""
+        """
+        原子方式保存JSON数据 (write-then-move 模式)
+        
+        优点:
+        1. 防止部分写入导致的文件损坏
+        2. 原子性操作 - 要么完全成功，要么完全失败
+        3. 文件丢失或损坏概率极低
+        """
+        import os
+        import tempfile
+        
         try:
-            with open(file_path, 'w', encoding='utf-8') as f:
-                json.dump(data, f, indent=2, ensure_ascii=False, default=str)
-            return True
+            # 1. 写入到临时文件
+            temp_fd, temp_path = tempfile.mkstemp(
+                suffix='.json',
+                prefix=f'.{file_path.name}.',
+                dir=file_path.parent,
+                text=True
+            )
+            
+            try:
+                with os.fdopen(temp_fd, 'w', encoding='utf-8') as f:
+                    # ✅ 移除 default=str，因为所有日期已通过 model_dump(mode='json') 转换
+                    json.dump(data, f, indent=2, ensure_ascii=False)
+                
+                # 2. 原子地移动临时文件到目标位置 (write-then-move)
+                # 在 POSIX 系统上，os.replace() 是原子操作
+                os.replace(temp_path, str(file_path))
+                
+                logger.debug(f"Successfully saved JSON to {file_path}")
+                return True
+                
+            except Exception as write_error:
+                # 清理临时文件
+                if os.path.exists(temp_path):
+                    try:
+                        os.remove(temp_path)
+                    except:
+                        pass
+                raise write_error
+        
+        except TypeError as e:
+            logger.error(f"JSON serialization error for {file_path}: {e}")
+            # 提供调试信息
+            logger.debug(f"Data sample: {str(data)[:500]}")
+            return False
         except Exception as e:
             logger.error(f"Failed to save JSON to {file_path}: {e}")
             return False
     
     def _load_json(self, file_path: Path, default: Dict[str, Any]) -> Dict[str, Any]:
-        """加载JSON数据"""
+        """
+        安全加载JSON数据，并支持从损坏文件恢复
+        """
+        import shutil
+        
         if not file_path.exists():
             return default
         
         try:
             with open(file_path, 'r', encoding='utf-8') as f:
                 return json.load(f)
+        
+        except json.JSONDecodeError as e:
+            logger.warning(f"JSON file corrupted at {file_path}: {e}")
+            
+            # 尝试从备份恢复
+            backup_dirs = sorted(
+                [d for d in self.storage_path.iterdir() if d.is_dir() and d.name.startswith('backup_')],
+                key=lambda x: x.name,
+                reverse=True
+            )
+            
+            for backup_dir in backup_dirs:
+                backup_file = backup_dir / file_path.name
+                if backup_file.exists():
+                    try:
+                        logger.info(f"Attempting to recover from backup: {backup_file}")
+                        with open(backup_file, 'r', encoding='utf-8') as f:
+                            data = json.load(f)
+                        
+                        # 恢复成功 - 恢复到主文件
+                        shutil.copy2(backup_file, file_path)
+                        logger.info(f"Successfully recovered {file_path} from backup")
+                        return data
+                    except Exception as recovery_error:
+                        logger.warning(f"Failed to recover from backup {backup_file}: {recovery_error}")
+                        continue
+            
+            # 如果无法从备份恢复，删除损坏的文件并返回默认值
+            logger.error(f"Cannot recover from backup, removing corrupted file: {file_path}")
+            try:
+                file_path.unlink()
+            except:
+                pass
+            
+            return default
+        
         except Exception as e:
             logger.error(f"Failed to load JSON from {file_path}: {e}")
             return default

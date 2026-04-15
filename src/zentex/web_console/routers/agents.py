@@ -1,3 +1,39 @@
+"""
+Agents Router — HTTP route handlers for agent management and task coordination.
+
+RESPONSIBILITY:
+  Exposes REST endpoints for registering, monitoring, and coordinating
+  AgentAsset objects.  Does NOT implement agent logic; all coordination
+  delegates to AgentCoordinationService and TaskManagementService obtained
+  via FastAPI Depends().
+
+CAPABILITIES:
+  - GET    /agents                          — list agents with task inbox/receipts
+  - POST   /agents/register                 — register a new agent
+  - GET    /agents/{id}/handshake           — trigger handshake
+  - POST   /agents/{id}/safety-audit        — trigger safety audit
+  - POST   /agents/{id}/dispatch            — dispatch a task to an agent
+  - DELETE /agents/{id}                     — unregister an agent
+  - GET    /agents-health/status            — health check across all agents
+  - PATCH  /agents/{id}/policy             — update trust level / scope
+  - GET    /agents/{id}/tasks              — list tasks for an agent
+  - GET    /agents/{id}/audit              — audit events from transcript store
+  - GET    /agents/{id}/detail             — credit score + statistics
+  - GET    /agents/{id}/tasks/by-status    — paginated status-filtered task view
+  - POST   /agents/{id}/tasks/{tid}/cancel — cancel a task
+  - POST   /agents/{id}/tasks/{tid}/retry  — retry a failed task
+
+FAIL-CLOSED CONTRACT (Zentex Codex §1):
+  - get_agent_coordination_service() and get_task_service() raise HTTPException(503)
+    when the underlying service is None.  Route handlers always receive valid
+    service objects, never None.
+
+DOES NOT:
+  - Own AgentCoordinationService, TaskManagementService, or TranscriptStore.
+  - Implement agent handshake, safety-audit, or dispatch logic directly.
+  - Silently return empty results when a required service is absent.
+"""
+
 from __future__ import annotations
 from typing import Any, Dict, List, Optional
 
@@ -10,20 +46,24 @@ from zentex.agents.service import AgentAsset, AgentCoordinationService, AgentReg
 from zentex.tasks.service import TaskManagementService, ZentexTask
 from zentex.web_console.contracts.agents import (
     AgentConsoleRecord,
-    AgentInboxItem,
     AgentPolicyUpdateRequest,
-    AgentReceiptItem,
     AgentDispatchTaskRequest,
     AgentAuditRecord,
 )
-from zentex.web_console.contracts.transcript import TranscriptEventPayload
-from zentex.web_console.dependencies import get_agent_coordination_service
-from zentex.web_console.dependencies import get_task_service, get_transcript_store
-from zentex.web_console.transcript_serialization import serialize_transcript_entry
-from zentex.web_console.services.agents import (
-    calculate_agent_credit_score,
-    get_agent_statistics,
-    get_tasks_by_status,
+from zentex.web_console.dependencies import (
+    get_agent_coordination_service,
+    get_task_service,
+    get_transcript_store,
+    get_kernel_service_facade,
+)
+from zentex.web_console.contracts.kernel_service import KernelServiceFacade
+from zentex.web_console.services.agents import get_tasks_by_status as handle_get_tasks_by_status
+from .agents_handlers import (
+    handle_list_agents,
+    handle_get_agent_audit_events,
+    handle_get_agent_detail,
+    handle_cancel_agent_task,
+    handle_retry_agent_task,
 )
 
 
@@ -35,54 +75,8 @@ def list_agents(
     service: Annotated[AgentCoordinationService, Depends(get_agent_coordination_service)],
     task_service: Annotated[TaskManagementService, Depends(get_task_service)],
 ) -> List[AgentConsoleRecord]:
-    tasks = task_service.list_tasks()
-    records: List[AgentConsoleRecord] = []
-    for asset in service.manager.list_assets():
-        inbox_tasks = service.build_inbox(asset.agent_id, tasks)
-        receipt_tasks = service.build_receipts(asset.agent_id, tasks)
-        records.append(
-            AgentConsoleRecord(
-                agent_id=asset.agent_id,
-                name=asset.name,
-                agent_name=asset.agent_name,
-                version=asset.version,
-                function_description=asset.function_description,
-                endpoint=asset.endpoint,
-                role_tag=asset.role_tag,
-                trust_level=asset.trust_level,
-                status=asset.status,
-                scope=list(asset.scope),
-                capabilities=list(asset.capabilities),
-                latency_ms=asset.latency_ms,
-                success_rate=asset.success_rate,
-                last_ping_at=asset.last_ping_at.isoformat() if asset.last_ping_at else None,
-                registered_at=asset.registered_at.isoformat(),
-                inbox=[
-                    AgentInboxItem(
-                        task_id=task.task_id,
-                        title=task.title,
-                        status=task.status.value,
-                        idempotency_key=task.idempotency_key,
-                        originator_id=task.originator_id,
-                        remarks=task.remarks,
-                    )
-                    for task in inbox_tasks
-                ],
-                assigned_goal=service.build_assigned_goal(asset.agent_id, tasks),
-                receipts=[
-                    AgentReceiptItem(
-                        task_id=task.task_id,
-                        title=task.title,
-                        status=task.status.value,
-                        idempotency_key=task.idempotency_key,
-                        completed_at=task.completed_at.isoformat() if task.completed_at else None,
-                        remarks=task.remarks,
-                    )
-                    for task in receipt_tasks
-                ],
-            )
-        )
-    return records
+    """获取所有智能体及其收件箱/回执列表"""
+    return handle_list_agents(service, task_service)
 
 
 @router.post("/agents/register", response_model=AgentAsset)
@@ -179,7 +173,7 @@ def list_agent_tasks(
     agent_id: str,
     service: Annotated[TaskManagementService, Depends(get_task_service)],
 ) -> List[ZentexTask]:
-    return [task for task in service.list_tasks() if task.target_id == agent_id]
+    return service.list_tasks(target_id=agent_id)
 
 
 @router.get("/agents/{agent_id}/audit", response_model=List[AgentAuditRecord])
@@ -187,26 +181,9 @@ def list_agent_audit_events(
     agent_id: str,
     request: Request,
 ) -> List[AgentAuditRecord]:
-    store = get_transcript_store(request)
-    events: List[AgentAuditRecord] = []
-    for entry in reversed(store.get_entries_snapshot()):
-        if entry.session_id != "agent-management-audit":
-            continue
-        payload = entry.payload if isinstance(entry.payload, dict) else {}
-        if str(payload.get("agent_id") or "") != agent_id:
-            continue
-            
-        events.append(AgentAuditRecord(
-            agent_id=agent_id,
-            event_type=str(payload.get("event_type") or "UNKNOWN"),
-            timestamp=entry.timestamp.isoformat(),
-            summary=str(payload.get("summary") or ""),
-            details=payload.get("details") if isinstance(payload.get("details"), dict) else {}
-        ))
-        if len(events) >= 200:
-            break
-    events.reverse()
-    return events
+    """获取所有智能体的审计日志"""
+    transcript_store = get_transcript_store(request)
+    return handle_get_agent_audit_events(agent_id, transcript_store)
 
 
 @router.get("/agents/{agent_id}/detail")
@@ -215,114 +192,28 @@ def get_agent_detail(
     agent_service: Annotated[AgentCoordinationService, Depends(get_agent_coordination_service)],
     task_service: Annotated[TaskManagementService, Depends(get_task_service)],
 ) -> Dict[str, Any]:
-    """
-    Get detailed information about an agent including credit score and statistics.
-    """
-    # Get basic agent info
-    asset = agent_service.manager.get_asset(agent_id)
-    if not asset:
-        raise HTTPException(status_code=404, detail=f"Agent {agent_id} not found")
-    
-    # Get tasks for inbox and receipts
-    tasks = task_service.list_tasks()
-    inbox_tasks = agent_service.build_inbox(agent_id, tasks)
-    receipt_tasks = agent_service.build_receipts(agent_id, tasks)
-    
-    # Calculate credit score
-    try:
-        credit_score = calculate_agent_credit_score(agent_id, agent_service, task_service)
-    except Exception as e:
-        credit_score = {
-            "total_score": 0,
-            "dimensions": [],
-            "history": [],
-            "error": str(e),
-        }
-    
-    # Get statistics
-    try:
-        statistics = get_agent_statistics(agent_id, task_service)
-    except Exception as e:
-        statistics = {
-            "total_tasks": 0,
-            "completed_tasks": 0,
-            "failed_tasks": 0,
-            "in_progress_tasks": 0,
-            "pending_tasks": 0,
-            "avg_completion_time": 0,
-            "uptime_percentage": 0,
-            "error": str(e),
-        }
-    
-    return {
-        "agent_id": asset.agent_id,
-        "name": asset.name,
-        "agent_name": asset.agent_name,
-        "version": asset.version,
-        "function_description": asset.function_description,
-        "endpoint": asset.endpoint,
-        "role_tag": asset.role_tag,
-        "trust_level": asset.trust_level,
-        "status": asset.status,
-        "scope": list(asset.scope),
-        "capabilities": list(asset.capabilities),
-        "latency_ms": asset.latency_ms,
-        "success_rate": asset.success_rate,
-        "last_ping_at": asset.last_ping_at.isoformat() if asset.last_ping_at else None,
-        "registered_at": asset.registered_at.isoformat(),
-        "assigned_goal": agent_service.build_assigned_goal(agent_id, tasks),
-        "inbox": [
-            {
-                "task_id": task.task_id,
-                "title": task.title,
-                "status": task.status.value,
-                "idempotency_key": task.idempotency_key,
-                "originator_id": task.originator_id,
-                "remarks": task.remarks,
-            }
-            for task in inbox_tasks
-        ],
-        "receipts": [
-            {
-                "task_id": task.task_id,
-                "title": task.title,
-                "status": task.status.value,
-                "idempotency_key": task.idempotency_key,
-                "completed_at": task.completed_at.isoformat() if task.completed_at else None,
-                "remarks": task.remarks,
-            }
-            for task in receipt_tasks
-        ],
-        "credit_score": credit_score,
-        "statistics": statistics,
-    }
+    """获取智能体详细详情（含信用分、统计信息、收发件箱）"""
+    return handle_get_agent_detail(agent_id, agent_service, task_service)
 
 
 @router.get("/agents/{agent_id}/tasks/by-status")
-def get_agent_tasks_by_status(
+def get_agent_tasks_view(
     agent_id: str,
+    agent_service: Annotated[AgentCoordinationService, Depends(get_agent_coordination_service)],
     task_service: Annotated[TaskManagementService, Depends(get_task_service)],
-    status: str = Query(..., description="Comma-separated status values"),
-    page: int = Query(1, ge=1, description="Page number"),
-    page_size: int = Query(20, ge=1, le=100, description="Items per page"),
-    sort_by: str = Query("started_at", description="Sort field"),
-    order: str = Query("desc", pattern="^(asc|desc)$", description="Sort order"),
-    search: str = Query("", description="Search in task title or ID"),
-    task_type: str = Query("", description="Filter by task type"),
-    originator: str = Query("", description="Filter by originator ID"),
-    date_from: str = Query("", description="Filter from date (ISO format)"),
-    date_to: str = Query("", description="Filter to date (ISO format)"),
+    status: str = Query(..., description="状态过滤"),
+    page: int = Query(1, ge=1),
+    page_size: int = Query(20, ge=1, le=100),
+    sort_by: str = Query("started_at"),
+    order: str = Query("desc"),
+    search: str = Query(""),
+    task_type: str = Query(""),
+    originator: str = Query(""),
+    date_from: str = Query(""),
+    date_to: str = Query(""),
 ) -> Dict[str, Any]:
-    """
-    Get tasks for an agent filtered by status with pagination and advanced filtering support.
-    """
-    # Verify agent exists
-    agent_service: AgentCoordinationService = get_agent_coordination_service()
-    asset = agent_service.manager.get_asset(agent_id)
-    if not asset:
-        raise HTTPException(status_code=404, detail=f"Agent {agent_id} not found")
-    
-    return get_tasks_by_status(
+    """带分页和过滤的智能体任务视图"""
+    return handle_get_tasks_by_status(
         agent_id=agent_id,
         status_filter=status,
         task_service=task_service,
@@ -342,87 +233,17 @@ def get_agent_tasks_by_status(
 def cancel_agent_task(
     agent_id: str,
     task_id: str,
+    agent_service: Annotated[AgentCoordinationService, Depends(get_agent_coordination_service)],
     task_service: Annotated[TaskManagementService, Depends(get_task_service)],
 ) -> Dict[str, Any]:
-    """
-    Cancel a task for an agent.
-    """
-    # Verify agent exists
-    agent_service: AgentCoordinationService = get_agent_coordination_service()
-    asset = agent_service.manager.get_asset(agent_id)
-    if not asset:
-        raise HTTPException(status_code=404, detail=f"Agent {agent_id} not found")
-    
-    # Find the task
-    task = None
-    for t in task_service.list_tasks():
-        if t.task_id == task_id and t.target_id == agent_id:
-            task = t
-            break
-    
-    if not task:
-        raise HTTPException(status_code=404, detail=f"Task {task_id} not found for agent {agent_id}")
-    
-    # Check if task can be cancelled
-    if task.status.value in ["done", "failed", "cancelled"]:
-        raise HTTPException(
-            status_code=409,
-            detail=f"Cannot cancel task with status: {task.status.value}"
-        )
-    
-    # Cancel the task (update status)
-    try:
-        task_service.update_task_status(task_id, "cancelled")
-        return {
-            "success": True,
-            "message": f"Task {task_id} has been cancelled",
-            "task_id": task_id,
-            "new_status": "cancelled"
-        }
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Failed to cancel task: {str(e)}")
+    return handle_cancel_agent_task(agent_id, task_id, agent_service, task_service)
 
 
 @router.post("/agents/{agent_id}/tasks/{task_id}/retry")
 def retry_agent_task(
     agent_id: str,
     task_id: str,
+    agent_service: Annotated[AgentCoordinationService, Depends(get_agent_coordination_service)],
     task_service: Annotated[TaskManagementService, Depends(get_task_service)],
 ) -> Dict[str, Any]:
-    """
-    Retry a failed task for an agent.
-    """
-    # Verify agent exists
-    agent_service: AgentCoordinationService = get_agent_coordination_service()
-    asset = agent_service.manager.get_asset(agent_id)
-    if not asset:
-        raise HTTPException(status_code=404, detail=f"Agent {agent_id} not found")
-    
-    # Find the task
-    task = None
-    for t in task_service.list_tasks():
-        if t.task_id == task_id and t.target_id == agent_id:
-            task = t
-            break
-    
-    if not task:
-        raise HTTPException(status_code=404, detail=f"Task {task_id} not found for agent {agent_id}")
-    
-    # Check if task can be retried (only failed tasks)
-    if task.status.value != "failed":
-        raise HTTPException(
-            status_code=409,
-            detail=f"Can only retry failed tasks. Current status: {task.status.value}"
-        )
-    
-    # Retry the task (reset to todo status)
-    try:
-        task_service.update_task_status(task_id, "todo")
-        return {
-            "success": True,
-            "message": f"Task {task_id} has been reset to todo for retry",
-            "task_id": task_id,
-            "new_status": "todo"
-        }
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Failed to retry task: {str(e)}")
+    return handle_retry_agent_task(agent_id, task_id, agent_service, task_service)

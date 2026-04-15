@@ -10,6 +10,7 @@ for why an upgrade started, what changed, how it progressed, and why it ended.
 
 from datetime import UTC, datetime
 import json
+import sqlite3
 from pathlib import Path
 from threading import Lock
 from typing import Any
@@ -114,79 +115,118 @@ class UpgradeMemoryRecord(BaseModel):
     created_at: datetime = Field(default_factory=utc_now)
 
 
-class _JSONLStore:
+class _SQLiteStore:
     def __init__(self, file_path: str | Path | None = None) -> None:
         self._file_path = Path(file_path) if file_path is not None else None
         self._lock = Lock()
         if self._file_path is not None:
             self._file_path.parent.mkdir(parents=True, exist_ok=True)
+            if self._file_path.suffix == ".jsonl":
+                self._file_path = self._file_path.with_suffix(".sqlite3")
+
+        if self._file_path is not None:
+            self._init_db()
+        else:
+            self._memory_db = sqlite3.connect(":memory:", check_same_thread=False)
+            self._init_schema(self._memory_db)
+
+    def _get_connection(self) -> sqlite3.Connection:
+        if self._file_path is None:
+            return self._memory_db
+        conn = sqlite3.connect(
+            str(self._file_path),
+            timeout=30.0,
+            check_same_thread=False,
+            isolation_level=None
+        )
+        conn.execute("PRAGMA journal_mode=WAL")
+        conn.execute("PRAGMA synchronous=NORMAL")
+        return conn
+
+    def _init_db(self) -> None:
+        with self._lock:
+            with self._get_connection() as conn:
+                self._init_schema(conn)
+
+    def _init_schema(self, conn: sqlite3.Connection) -> None:
+        conn.execute('''
+            CREATE TABLE IF NOT EXISTS ledger_records (
+                id TEXT PRIMARY KEY,
+                record_id TEXT NOT NULL,
+                trace_id TEXT NOT NULL,
+                created_at DATETIME NOT NULL,
+                payload TEXT NOT NULL
+            )
+        ''')
+        conn.execute('CREATE INDEX IF NOT EXISTS idx_record_id ON ledger_records(record_id)')
+        conn.execute('CREATE INDEX IF NOT EXISTS idx_trace_id ON ledger_records(trace_id)')
 
     @property
     def file_path(self) -> Path | None:
         return self._file_path
 
-    def _append_line(self, payload: dict[str, Any]) -> None:
-        if self._file_path is None:
-            return
-        line = json.dumps(payload, ensure_ascii=False)
-        with self._file_path.open("a", encoding="utf-8") as handle:
-            handle.write(line)
-            handle.write("\n")
+    def _insert_payload(self, pk: str, record_id: str, trace_id: str, created_at: datetime, payload: dict[str, Any]) -> None:
+        with self._lock:
+            with self._get_connection() as conn:
+                conn.execute(
+                    "INSERT INTO ledger_records (id, record_id, trace_id, created_at, payload) VALUES (?, ?, ?, ?, ?)",
+                    (pk, record_id, trace_id, created_at.isoformat(), json.dumps(payload, ensure_ascii=False))
+                )
 
-    def _read_lines(self) -> list[dict[str, Any]]:
-        if self._file_path is None or not self._file_path.exists():
-            return []
-        rows: list[dict[str, Any]] = []
-        with self._file_path.open("r", encoding="utf-8") as handle:
-            for raw in handle:
-                raw = raw.strip()
-                if not raw:
-                    continue
-                rows.append(json.loads(raw))
-        return rows
+    def _select_payloads(self, record_id: str | None = None) -> list[dict[str, Any]]:
+        sql = "SELECT payload FROM ledger_records"
+        params = []
+        if record_id is not None:
+            sql += " WHERE record_id = ?"
+            params.append(record_id)
+        sql += " ORDER BY created_at ASC"
+        
+        results = []
+        with self._get_connection() as conn:
+            cursor = conn.execute(sql, params)
+            for row in cursor:
+                try:
+                    results.append(json.loads(row[0]))
+                except Exception:
+                    pass
+        return results
 
 
-class UpgradeAuditStore(_JSONLStore):
+class UpgradeAuditStore(_SQLiteStore):
     """Append-only store for upgrade audit events."""
 
     def __init__(self, file_path: str | Path | None = None) -> None:
         super().__init__(file_path)
-        self._events: list[UpgradeAuditEvent] = [
-            UpgradeAuditEvent.model_validate(row) for row in self._read_lines()
-        ]
 
     def append_event(self, event: UpgradeAuditEvent) -> UpgradeAuditEvent:
-        with self._lock:
-            self._append_line(event.model_dump(mode="json"))
-            self._events.append(event)
+        self._insert_payload(
+            pk=event.event_id,
+            record_id=event.record_id,
+            trace_id=event.trace_id,
+            created_at=event.created_at,
+            payload=event.model_dump(mode="json")
+        )
         return event
 
     def list_events(self, *, record_id: str | None = None) -> list[UpgradeAuditEvent]:
-        with self._lock:
-            events = list(self._events)
-        if record_id is not None:
-            events = [item for item in events if item.record_id == record_id]
-        return sorted(events, key=lambda item: item.created_at)
+        return [UpgradeAuditEvent.model_validate(row) for row in self._select_payloads(record_id)]
 
 
-class UpgradeMemoryStore(_JSONLStore):
+class UpgradeMemoryStore(_SQLiteStore):
     """Append-only store for upgrade memory snapshots."""
 
     def __init__(self, file_path: str | Path | None = None) -> None:
         super().__init__(file_path)
-        self._records: list[UpgradeMemoryRecord] = [
-            UpgradeMemoryRecord.model_validate(row) for row in self._read_lines()
-        ]
 
     def append_record(self, record: UpgradeMemoryRecord) -> UpgradeMemoryRecord:
-        with self._lock:
-            self._append_line(record.model_dump(mode="json"))
-            self._records.append(record)
+        self._insert_payload(
+            pk=record.memory_id,
+            record_id=record.record_id,
+            trace_id=record.trace_id,
+            created_at=record.created_at,
+            payload=record.model_dump(mode="json")
+        )
         return record
 
     def list_records(self, *, record_id: str | None = None) -> list[UpgradeMemoryRecord]:
-        with self._lock:
-            records = list(self._records)
-        if record_id is not None:
-            records = [item for item in records if item.record_id == record_id]
-        return sorted(records, key=lambda item: item.created_at)
+        return [UpgradeMemoryRecord.model_validate(row) for row in self._select_payloads(record_id)]

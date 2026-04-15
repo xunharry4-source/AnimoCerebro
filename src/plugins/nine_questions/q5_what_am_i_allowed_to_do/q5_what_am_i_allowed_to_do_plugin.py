@@ -5,11 +5,11 @@ from datetime import datetime, timezone
 from typing import Any
 from uuid import uuid4
 
-from zentex.core.model_provider_spec import ModelProviderCallerContext, ModelProviderSpec
-from zentex.core.models import LogicalCognitiveToolSpec
-from zentex.core.plugin_base import PluginHealthStatus, PluginLifecycleStatus
-from zentex.runtime.cognitive_tools import CognitiveToolResult
-from zentex.runtime.transcript import BrainTranscriptEntryType, BrainTranscriptStore
+from pydantic import BaseModel, ConfigDict
+
+from plugins.shared.cognitive_result import CognitiveToolResult
+from zentex.common.plugin_ids import NINE_QUESTION_Q5
+from zentex.plugins.models import PluginLifecycleStatus
 
 QUESTION_REF = "我被允许做什么"
 
@@ -26,11 +26,22 @@ from zentex.common.nine_questions_shared import (
     require_transcript_store,
     safe_provider_plugin_id,
 )
+from zentex.plugins.service import execute_enabled_cognitive_plugin_functionals
 
 logger = logging.getLogger(__name__)
 
 
-class Q5WhatAmIAllowedToDoPlugin(LogicalCognitiveToolSpec):
+class Q5WhatAmIAllowedToDoPlugin(BaseModel):
+    model_config = ConfigDict(extra="allow")
+
+    plugin_id: str = NINE_QUESTION_Q5
+    version: str = "2.0.0"
+    feature_code: str = "nine_questions.q5"
+    display_name: str = "Q5: What am I allowed to do?"
+    behavior_key: str = "nine_questions"
+    lifecycle_status: str = PluginLifecycleStatus.ACTIVE.value
+    health_status: str = "healthy"
+    operational_status: str = "enabled"
     """
     Zentex Cognitive Kernel Phase 5: 我被允许做什么 (Q5: Authorization & Compliance).
 
@@ -41,8 +52,21 @@ class Q5WhatAmIAllowedToDoPlugin(LogicalCognitiveToolSpec):
         provider = require_model_provider(context)
         transcript_store = require_transcript_store(context)
         snapshot = context.get("context_snapshot", {}) or {}
+        if not snapshot and any(key.startswith("q") or key in {"contact_policy", "tenant_scope", "agent_trust_policy"} for key in context):
+            snapshot = dict(context)
         q4_profile = snapshot.get("q4_capability_boundary_profile", {}) or {}
-        actionable_space = list(q4_profile.get("actionable_space", []) or [])
+        actionable_space = list(q4_profile.get("actionable_space", []) or q4_profile.get("available_actions", []) or [])
+        plugin_service = context.get("plugin_service")
+        functional_authorization_inputs: list[dict[str, Any]] = []
+        if plugin_service is not None:
+            functional_authorization_inputs = execute_enabled_cognitive_plugin_functionals(
+                plugin_service,
+                self.plugin_id,
+                default_parameters={"action_trace": dict(context)},
+                trace_id=str(context.get("trace_id") or "q5"),
+                originator_id=str(context.get("session_id") or "unknown-session"),
+                caller_plugin_id=self.plugin_id,
+            )
 
         prompt = (
             "You are Zentex. Determine what actions are authorized (Q5: 我被允许做什么).\n\n"
@@ -66,6 +90,7 @@ class Q5WhatAmIAllowedToDoPlugin(LogicalCognitiveToolSpec):
             "tenant_scope": snapshot.get("tenant_scope"),
             "agent_trust_policy": snapshot.get("agent_trust_policy"),
             "q3_connected_agents": snapshot.get("q3_connected_agents"),
+            "functional_authorization_inputs": functional_authorization_inputs,
         }
 
         # 3. Prepare Metadata & Traceability
@@ -128,7 +153,25 @@ class Q5WhatAmIAllowedToDoPlugin(LogicalCognitiveToolSpec):
             )
             raise
 
-        profile = raw.get("authorization_boundary_profile") if isinstance(raw, dict) else None
+        profile = None
+        permission_boundary = None
+        if isinstance(raw, dict):
+            profile = raw.get("authorization_boundary_profile")
+            permission_boundary = raw.get("permission_boundary")
+            if not isinstance(profile, dict) and isinstance(permission_boundary, dict):
+                allowed = list(permission_boundary.get("authorized_actions", []) or [])
+                if actionable_space:
+                    allowed = [action for action in allowed if str(action) in set(map(str, actionable_space))]
+                forbidden_actions = [
+                    {"action": action, "reason": "explicitly unauthorized"}
+                    for action in list(permission_boundary.get("unauthorized_actions", []) or [])
+                ]
+                profile = {
+                    "allowed_action_space": allowed,
+                    "forbidden_action_space": forbidden_actions,
+                    "contact_and_org_boundaries": {},
+                    "requires_escalation_actions": list(permission_boundary.get("conditional_actions", []) or []),
+                }
         if not isinstance(profile, dict):
             raise ValueError("Invalid Q5 output: missing authorization_boundary_profile")
         allowed = profile.get("allowed_action_space")
@@ -136,6 +179,15 @@ class Q5WhatAmIAllowedToDoPlugin(LogicalCognitiveToolSpec):
             raise ValueError("Invalid Q5 output: allowed_action_space must be a list")
         if not set(map(str, allowed)).issubset(set(map(str, actionable_space))):
             raise RuntimeError("Q5 authorization violation: allowed_action_space exceeds Q4 actionable_space")
+        normalized_permission_boundary = {
+            "authorized_actions": list(allowed),
+            "unauthorized_actions": [
+                str(item.get("action"))
+                for item in list(profile.get("forbidden_action_space", []) or [])
+                if isinstance(item, dict) and str(item.get("action") or "").strip()
+            ],
+            "conditional_actions": list(profile.get("requires_escalation_actions", []) or []),
+        }
 
         # 7. Audit Log: Completion
         record_model_completed(
@@ -169,6 +221,8 @@ class Q5WhatAmIAllowedToDoPlugin(LogicalCognitiveToolSpec):
             context_updates={
                 "nine_questions": {QUESTION_REF: summary},
                 "q5_authorization_boundary_profile": profile,
+                "q5_permission_boundary": normalized_permission_boundary,
+                "q5_functional_authorization_inputs": functional_authorization_inputs,
             },
             confidence=0.9,
         )
@@ -176,27 +230,14 @@ class Q5WhatAmIAllowedToDoPlugin(LogicalCognitiveToolSpec):
 
 def build_q5_what_am_i_allowed_to_do_plugin(
     *,
-    plugin_id: str = "nine-question-q5-what-am-i-allowed-to-do",
+    plugin_id: str = NINE_QUESTION_Q5,
     version: str = "2.0.0",
-    status: PluginLifecycleStatus = PluginLifecycleStatus.ACTIVE,
+    lifecycle_status: str | PluginLifecycleStatus = PluginLifecycleStatus.ACTIVE,
 ) -> Q5WhatAmIAllowedToDoPlugin:
     return Q5WhatAmIAllowedToDoPlugin(
         plugin_id=plugin_id,
         version=version,
         feature_code="nine_questions.q5",
-        is_concurrency_safe=True,
-        status=status,
-        health_status=PluginHealthStatus.HEALTHY,
-        rollback_conditions=["authorization_inference_regression"],
-        revocation_reasons=[],
-        tool_type="nine_question",
-        purpose="Semantic authorization boundary & compliance check (Q5).",
-        input_schema={"type": "object"},
-        output_schema={"type": "object", "required": ["permission_boundary", "compliance_checklist"]},
-        required_context=["context_snapshot", "transcript_store"],
-        trigger_conditions=["inspection"],
+        lifecycle_status=getattr(lifecycle_status, "value", lifecycle_status),
         behavior_key="nine_questions",
-        supports_multiple_plugins=True,
-        is_default_version=True,
-        do_not_use_when=["missing_model_provider"],
     )

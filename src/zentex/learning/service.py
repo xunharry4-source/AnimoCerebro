@@ -46,6 +46,8 @@ class LearningServiceFacade:
         *,
         direction: str | LearningDirection,
         provider: Any = None,
+        llm_service: Any = None,
+        model_provider_key: str | None = None,
         doc_url: str | None = None,
         dry_run: bool = False,
         load_factor: float = 0.0,
@@ -55,6 +57,8 @@ class LearningServiceFacade:
             store=store,
             direction=direction,
             provider=provider,
+            llm_service=llm_service,
+            model_provider_key=model_provider_key,
             doc_url=doc_url,
             dry_run=dry_run,
             load_factor=load_factor,
@@ -82,6 +86,15 @@ def get_learning_service() -> LearningServiceFacade:
     if _default_service is None:
         _default_service = LearningServiceFacade()
     return _default_service
+
+
+def get_service() -> LearningServiceFacade:
+    """Standard service factory function for launcher assembly.
+    
+    Alias for get_learning_service() to maintain compatibility
+    with the SystemAssembler's expectation of a get_service() function.
+    """
+    return get_learning_service()
 
 
 def _to_learning_outcome(result: Any) -> LearningOutcome:

@@ -36,10 +36,6 @@ from plugins.nine_questions.q6_what_should_i_not_do import build_q6_what_should_
 from plugins.nine_questions.q7_what_else_can_i_do import build_q7_what_else_can_i_do_plugin
 from plugins.nine_questions.q8_what_should_i_do_now import build_q8_what_should_i_do_now_plugin
 from plugins.nine_questions.q9_how_should_i_act import build_q9_how_should_i_act_plugin
-from plugins.nine_questions.q2_who_am_i.identity_core_plugin import (
-    ConstraintPackPlugin,
-    RolePackPlugin,
-)
 from plugins.oracle.alternative.alternative_oracle_plugin import (
     build_default_alternative_oracle,
 )
@@ -76,6 +72,30 @@ from plugins.simulation.market.market_simulator_plugin import (
 from plugins.simulation.thought.thought_sandbox_plugin import (
     build_default_thought_sandbox,
 )
+from plugins.tasks.capability_matcher.task_capability_matcher_plugin import (
+    build_task_capability_matcher_plugin,
+)
+from plugins.tasks.compensation_workspace_cleanup.task_compensation_workspace_cleanup_plugin import (
+    build_task_compensation_workspace_cleanup_plugin,
+)
+from plugins.tasks.constraint_checker.task_constraint_checker_plugin import (
+    build_task_constraint_checker_plugin,
+)
+from plugins.tasks.document_router.document_router_plugin import (
+    build_document_router_plugin,
+)
+from plugins.tasks.evidence_extractor.task_evidence_extractor_plugin import (
+    build_task_evidence_extractor_plugin,
+)
+from plugins.tasks.project_plan_document.project_plan_document_plugin import (
+    build_project_plan_document_plugin,
+)
+from plugins.tasks.result_normalizer.task_result_normalizer_plugin import (
+    build_task_result_normalizer_plugin,
+)
+from plugins.tasks.verification_rule_based.task_verification_rule_based_plugin import (
+    build_task_rule_based_verification_plugin,
+)
 from plugins.weights.assembler.weight_assembler_plugin import (
     RationalAuditRejectError,
     SubjectiveWeightPlugin,
@@ -87,9 +107,7 @@ from plugins.weights.assembler.weight_assembler_plugin import (
 )
 
 __all__ = [
-    "ConstraintPackPlugin",
     "RationalAuditRejectError",
-    "RolePackPlugin",
     "SubjectiveWeightPlugin",
     "WeightPluginAssembler",
     "build_budget_conflict_plugin",
@@ -109,9 +127,11 @@ __all__ = [
     "build_default_redline_oracle",
     "build_default_thought_sandbox",
     "build_default_webhook_ingest_plugin",
+    "build_document_router_plugin",
     "build_expired_assumption_cleaner_plugin",
     "build_failure_mode_cluster_plugin",
     "build_memory_extractor_plugin",
+    "build_project_plan_document_plugin",
     "build_q1_where_am_i_plugin",
     "build_q2_who_am_i_plugin",
     "build_q3_what_do_i_have_plugin",
@@ -124,4 +144,10 @@ __all__ = [
     "build_reflection_generator_plugin",
     "build_risk_balanced_weight",
     "build_semantic_conflict_plugin",
+    "build_task_capability_matcher_plugin",
+    "build_task_compensation_workspace_cleanup_plugin",
+    "build_task_constraint_checker_plugin",
+    "build_task_evidence_extractor_plugin",
+    "build_task_result_normalizer_plugin",
+    "build_task_rule_based_verification_plugin",
 ]

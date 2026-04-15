@@ -22,4 +22,6 @@ class WorkspaceDomainInference(BaseModel):
     reasoning_summary: str = Field(min_length=1)
     uncertainties: List[str] = Field(default_factory=list, min_length=1)
     suggested_first_step: str = Field(min_length=1)
+    host_runtime_type: str | None = Field(default=None)
+    host_runtime_reason: str | None = Field(default=None)
 

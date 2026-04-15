@@ -25,6 +25,7 @@ import {
 import Q9EvidencePanel from "../../../components/Q9EvidencePanel";
 import LLMTracePanel from "../../../components/LLMTracePanel";
 import NineQuestionIntroCard from "../../../components/NineQuestionIntroCard";
+import Q9DataTabs from "../../../components/Q9DataTabs";
 
 function resolveErrorGuidance(errMsg: string): { title: string; action: string } {
   if (errMsg.includes("No active session") || errMsg.includes("没有活动 session")) {
@@ -123,6 +124,11 @@ export default function Q9Detail() {
       {/* 问题介绍栏目 */}
       <NineQuestionIntroCard questionId="q9" />
 
+      {/* Q9 实际数据详情 Tab 面板 */}
+      <Q9DataTabs 
+        evidence={evidence as any} 
+        inference={inference as any} 
+      />
       <Card variant="outlined">
         <CardContent>
           <Stack direction="row" spacing={1} sx={{ mb: 2 }} useFlexGap flexWrap="wrap">

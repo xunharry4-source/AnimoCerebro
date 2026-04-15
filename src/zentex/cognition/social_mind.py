@@ -14,10 +14,11 @@ from uuid import uuid4
 
 from pydantic import BaseModel, ConfigDict, Field
 
-from zentex.core.model_provider_spec import (
+from zentex.foundation.specs.model_provider import (
     ModelProviderCallerContext,
     ModelProviderSpec,
 )
+from zentex.llm.service import LLMService
 
 
 class StaleWriteError(RuntimeError):
@@ -109,7 +110,9 @@ class InteractionMindEngine:
     def __init__(
         self,
         *,
-        model_provider: ModelProviderSpec,
+        llm_service: LLMService | None = None,
+        model_provider: ModelProviderSpec | None = None,
+        model_provider_key: str | None = None,
         brain_scope: str = "zentex.runtime",
         initial_states: Dict[str, InteractionMindState] | None = None,
     ) -> None:
@@ -117,11 +120,14 @@ class InteractionMindEngine:
         初始化社会心智模型引擎。
 
         Args:
-            model_provider: 已挂载的激活态大模型提供商插件。
+            llm_service: 统一 LLM 服务入口。
+            model_provider: 兼容旧调用链的回退 provider。
             brain_scope: 当前集群/运行域的作用域标识。
             initial_states: 可选的初始快照，用于开发态或测试态种子。
         """
-        self._model_provider: ModelProviderSpec = model_provider
+        self._llm_service = llm_service
+        self._model_provider: ModelProviderSpec | None = model_provider
+        self._model_provider_key = model_provider_key
         self._brain_scope: str = brain_scope
         self._states: Dict[str, InteractionMindState] = dict(initial_states or {})
 
@@ -175,15 +181,31 @@ class InteractionMindEngine:
         )
 
         try:
-            payload: Dict[str, Any] = self._model_provider.generate_json(
-                prompt=(
-                    "Infer the other party's intent, knowledge gaps, communication fit, "
-                    "and misunderstanding signals. Return JSON with keys model, "
-                    "knowledge_gap, communication_fit, misunderstanding_signals."
-                ),
-                context=self._translate_context(context),
-                caller_context=caller_context,
+            prompt = (
+                "Infer the other party's intent, knowledge gaps, communication fit, "
+                "and misunderstanding signals. Return JSON with keys model, "
+                "knowledge_gap, communication_fit, misunderstanding_signals."
             )
+            translated_context = self._translate_context(context)
+            if self._llm_service is not None:
+                payload = self._llm_service.generate_json(
+                    prompt=prompt,
+                    context=translated_context,
+                    caller_context=caller_context,
+                    source_module=caller_context.source_module,
+                    invocation_phase=caller_context.invocation_phase,
+                    decision_id=caller_context.decision_id,
+                    model_provider=self._model_provider_key,
+                    metadata={"question_driver_refs": caller_context.question_driver_refs},
+                ).output
+            elif self._model_provider is not None:
+                payload = self._model_provider.generate_json(
+                    prompt=prompt,
+                    context=translated_context,
+                    caller_context=caller_context,
+                )
+            else:
+                raise RuntimeError("LLM MANDATORY: missing llm_service and model_provider fallback")
         except Exception:
             raise
 

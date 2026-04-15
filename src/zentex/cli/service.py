@@ -5,9 +5,9 @@ from __future__ import annotations
 from typing import List, Optional, Dict, Any
 from datetime import datetime, timezone
 
-from zentex.cli.adapter import CliAdapterPlugin
+from zentex.cli.adapter import CliAdapterPlugin, create_cli_adapter_plugin
 from zentex.cli.adapter import SubprocessCliTransport
-from zentex.core.cli import CliInvocationResult, CliToolRegistrationConfig, CliToolRuntimeState
+from zentex.cli.models import CliInvocationResult, CliToolRegistrationConfig, CliToolRuntimeState
 
 
 class CliIntegrationService:
@@ -236,11 +236,20 @@ class CliIntegrationService:
         return stats
 
 
+def get_service(transcript_store: Any = None) -> CliIntegrationService:
+    """Standard service factory function for launcher assembly."""
+    # Build default adapter
+    adapter = create_cli_adapter_plugin(transcript_store=transcript_store)
+    return CliIntegrationService(adapter=adapter, transcript_store=transcript_store)
+
+
 __all__ = [
     "CliIntegrationService",
     "CliAdapterPlugin",
+    "create_cli_adapter_plugin",
     "SubprocessCliTransport",
     "CliToolRegistrationConfig",
     "CliInvocationResult",
     "CliToolRuntimeState",
+    "get_service",
 ]

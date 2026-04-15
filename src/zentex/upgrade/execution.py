@@ -13,6 +13,9 @@ from collections.abc import Callable
 from typing import Any, Dict, List, Optional
 from uuid import uuid4
 
+from zentex.plugins.contracts import PluginLifecycleStatus
+from zentex.plugins.service import query_cognitive_tools
+from zentex.plugins.service.manager import SystemPluginService
 from zentex.upgrade.evidence import UpgradeEvidenceService
 from zentex.upgrade.llm.runtime import LLMUpgradeRuntime
 from zentex.upgrade.management import (
@@ -33,10 +36,7 @@ from zentex.upgrade.base_models import (
     VerificationBundle,
     PromotionDecision,
 )
-from zentex.core.plugin_base import PluginLifecycleStatus
 from zentex.upgrade.plugin.runtime import PluginEvolutionRuntime
-from zentex.upgrade.plugin.runtime import PluginEvolutionRuntime
-from zentex.runtime.service import get_runtime_service
 import subprocess
 
 
@@ -81,6 +81,7 @@ class UpgradeExecutionService:
         llm_runtime: LLMUpgradeRuntime | None = None,
         plugin_runtime: PluginEvolutionRuntime | None = None,
         plugin_worker: Callable[[Any], dict[str, Any]] | None = None,
+        plugin_service: SystemPluginService | None = None,
         evidence_service: UpgradeEvidenceService | None = None,
     ) -> None:
         self._evidence_service = evidence_service or UpgradeEvidenceService()
@@ -95,6 +96,8 @@ class UpgradeExecutionService:
         self._llm_runtime = llm_runtime or LLMUpgradeRuntime()
         self._plugin_runtime = plugin_runtime or PluginEvolutionRuntime()
         self._plugin_worker = plugin_worker
+        self._plugin_service = plugin_service
+        self._tool_registry: Any | None = None
 
     @property
     def management_store(self) -> UpgradeManagementStore:
@@ -536,11 +539,11 @@ class UpgradeExecutionService:
             # Security: scan for forbidden calls before execution (Function 58 gap)
             violations = self._plugin_runtime.scan_for_forbidden_calls(candidate.candidate_plugin_path)
             if violations:
-                 runtime_service = get_runtime_service()
-                 tool_registry = runtime_service.get_cognitive_tool_registry()
-                 if tool_registry:
-                     tool_registry.revoke_plugin(candidate.plugin_id, reason=f"Forbidden calls detected: {violations}")
-                 raise SecurityError(f"Upgrade rejected due to security violations: {violations}")
+                self._revoke_problematic_plugin(
+                    candidate.plugin_id,
+                    reason=f"Forbidden calls detected: {violations}",
+                )
+                raise SecurityError(f"Upgrade rejected due to security violations: {violations}")
 
             result = self._plugin_worker(candidate)
             record.current_status = UpgradeLifecycleStatus.COMPLETED
@@ -601,37 +604,73 @@ class UpgradeExecutionService:
         """Detect gaps in system capabilities with failure pattern clustering (Sub-function 1.1)."""
         proposals = []
         FAILURE_THRESHOLD = 3 # Spec: N times repeat
-        
-        runtime_service = get_runtime_service()
-        tool_registry = runtime_service.get_cognitive_tool_registry()
-        
-        if tool_registry:
-            registrations = tool_registry.list_registrations()
-            for reg in registrations:
-                # Basic clustering: count consecutive failures from registry records
-                # In a real system, we'd query UpgradeManagementStore for recent history
-                failure_count = reg.metadata.get("consecutive_failures", 0)
-                if failure_count >= FAILURE_THRESHOLD or reg.status == PluginLifecycleStatus.DEGRADED:
-                    # Calculate risk and impact scores based on failure patterns
-                    risk_score = min(0.9, 0.3 + (failure_count * 0.1))  # More failures = higher risk
-                    impact_score = 0.9 if reg.status == PluginLifecycleStatus.DEGRADED else 0.7
-                    
-                    proposals.append(
-                        SelfUpgradeProposal(
-                            program_id=reg.plugin_id,
-                            target_metric="reliability",
-                            baseline_version="current",
-                            candidate_version="candidate",
-                            description=f"Plugin {reg.plugin_id} failed {failure_count} times; clustering detected. Status: {reg.status.value}",
-                            capability_gap=f"Plugin {reg.plugin_id} failed {failure_count} times; clustering detected.",
-                            impact_score=impact_score,
-                            risk_score=risk_score,
-                            occurrence_count=failure_count,
-                            proposed_changes=["Optimize error handling", "Refactor core logic"],
-                            affected_modules=[reg.plugin_id],
-                        )
+
+        for plugin_id, failure_count, lifecycle_status in self._iter_problematic_cognitive_tools():
+            if failure_count >= FAILURE_THRESHOLD or lifecycle_status == PluginLifecycleStatus.DEGRADED:
+                risk_score = min(0.9, 0.3 + (failure_count * 0.1))
+                impact_score = 0.9 if lifecycle_status == PluginLifecycleStatus.DEGRADED else 0.7
+                proposals.append(
+                    SelfUpgradeProposal(
+                        program_id=plugin_id,
+                        target_metric="reliability",
+                        baseline_version="current",
+                        candidate_version="candidate",
+                        description=(
+                            f"Plugin {plugin_id} failed {failure_count} times; "
+                            f"clustering detected. Status: {lifecycle_status.value}"
+                        ),
+                        capability_gap=f"Plugin {plugin_id} failed {failure_count} times; clustering detected.",
+                        impact_score=impact_score,
+                        risk_score=risk_score,
+                        occurrence_count=max(1, failure_count),
+                        proposed_changes=["Optimize error handling", "Refactor core logic"],
+                        affected_modules=[plugin_id],
                     )
+                )
         return proposals
+
+    def _revoke_problematic_plugin(self, plugin_id: str, *, reason: str) -> None:
+        if self._tool_registry is not None and hasattr(self._tool_registry, "revoke_plugin"):
+            self._tool_registry.revoke_plugin(plugin_id, reason=reason)
+            return
+        if self._plugin_service is not None and hasattr(self._plugin_service, "disable_plugin"):
+            self._plugin_service.disable_plugin(plugin_id, reason)
+
+    def _iter_problematic_cognitive_tools(self) -> list[tuple[str, int, PluginLifecycleStatus]]:
+        if self._tool_registry is not None:
+            registrations = getattr(self._tool_registry, "list_registrations", lambda: [])()
+            return [
+                (
+                    str(getattr(reg, "plugin_id", "")),
+                    int(getattr(reg, "metadata", {}).get("consecutive_failures", 0)),
+                    self._normalize_lifecycle_status(getattr(reg, "status", PluginLifecycleStatus.CANDIDATE)),
+                )
+                for reg in registrations
+                if getattr(reg, "plugin_id", None)
+            ]
+        if self._plugin_service is None:
+            return []
+        records = query_cognitive_tools(self._plugin_service, operational_status=None, limit=500)
+        normalized: list[tuple[str, int, PluginLifecycleStatus]] = []
+        for record in records:
+            metadata = dict(record.get("metadata") or {})
+            normalized.append(
+                (
+                    str(record.get("plugin_id") or ""),
+                    int(metadata.get("consecutive_failures", 0)),
+                    self._normalize_lifecycle_status(record.get("lifecycle_status") or record.get("status")),
+                )
+            )
+        return [item for item in normalized if item[0]]
+
+    @staticmethod
+    def _normalize_lifecycle_status(value: Any) -> PluginLifecycleStatus:
+        if isinstance(value, PluginLifecycleStatus):
+            return value
+        try:
+            return PluginLifecycleStatus(str(value))
+        except ValueError:
+            return PluginLifecycleStatus.CANDIDATE
 
     def generate_candidate_patch(self, proposal: SelfUpgradeProposal) -> CandidatePatch:
         """Use evolution workers to generate a physical patch (Sub-function 1.2)."""

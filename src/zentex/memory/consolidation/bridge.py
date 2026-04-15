@@ -30,7 +30,7 @@ class ConsolidationToEnhancedBridge:
     
     def update_management_state(self, memory_id: str, status: str, operator: str = "system", reason: str = ""):
         """Public API to update management state."""
-        return self._enhanced_service.update_management_state(memory_id, status=status, operator=operator, reason=reason)
+        return self._enhanced_service.update_management_state(memory_id, lifecycle_status=lifecycle_status, operator=operator, reason=reason)
     
     def list_audit_events(self, memory_id: str = None) -> list:
         """Public API to list audit events."""

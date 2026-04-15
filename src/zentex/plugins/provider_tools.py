@@ -22,6 +22,7 @@ from plugins.provider_tools import (
     get_default_provider_key,
     is_env_var_reference,
     load_provider_tool_configs,
+    resolve_env_value,
 )
 
 __all__ = [
@@ -40,4 +41,5 @@ __all__ = [
     "get_default_provider_key",
     "is_env_var_reference",
     "load_provider_tool_configs",
+    "resolve_env_value",
 ]

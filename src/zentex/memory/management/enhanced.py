@@ -14,17 +14,19 @@ auditable and fail-safe without forcing heavyweight third-party runtimes.
 """
 
 from collections.abc import Callable
+import contextlib
 import json
 import logging
 import os
 import struct
+import sqlite3
 import threading
 from datetime import UTC, datetime
 from enum import Enum
 import asyncio
 from pathlib import Path
 from threading import Lock
-from typing import Any, Protocol, TypeVar, Union, TYPE_CHECKING
+from typing import Any, Generator, Protocol, TypeVar, Union, TYPE_CHECKING
 from uuid import uuid4
 
 from zentex.common.locking import get_lock_for_resource
@@ -47,7 +49,7 @@ from zentex.memory.management.classification import (
 )
 
 if TYPE_CHECKING:
-    from zentex.runtime.transcript import BrainTranscriptEntry
+    from zentex.kernel import BrainTranscriptEntry
     from zentex.upgrade.service import UpgradeMemoryRecord
 
 
@@ -56,6 +58,13 @@ logger = logging.getLogger(__name__)
 
 def utc_now() -> datetime:
     return datetime.now(UTC)
+
+
+class G38NineQuestionState(BaseModel):
+    model_config = ConfigDict(extra="allow")
+
+    snapshot_version: int = 0
+    overall_status: str = "pending"
 
 
 class EnhancedMemoryRecord(BaseModel):
@@ -498,170 +507,256 @@ class EpisodeGraphMemoryAdapter(EpisodicMemorySink, EpisodicMemoryRecallClient):
         return hits
 
 
-class _EnhancedMemoryJSONLStore:
-    """Small append-only local compatibility store for enhanced memory layers.
+class _EnhancedMemorySQLiteStore:
+    """Embedded SQLite compatibility store for enhanced memory layers.
 
     Uniqueness contract
     -------------------
     Every record carries a `content_hash` that is a SHA-256 digest of its
-    stable semantic fields.  On append the store checks whether that hash has
-    already been seen.  If so, the existing record is returned immediately and
-    nothing is written to disk — enforcing the uniqueness invariant described
-    in classification.py.
-
-    This makes the store behave like a content-addressed ledger from the
-    outside: you cannot inject the same experience twice.  Internally the AI
-    governance pipeline (G38/G39/B8) can still deprecate, tombstone, or
-    supersede a record via the MemoryManagementState + MemoryAuditEvent pair —
-    those governance transitions do NOT modify the original JSONL record.
+    stable semantic fields. On append the store checks whether that hash has
+    already been seen via SQL UNIQUE INDEX.
     """
 
     def __init__(self, file_path: str | Path | None = None) -> None:
-        # Runtime enforcement: Prevent direct module access to JSONL stores.
-        import inspect
-        caller = inspect.stack()[1]
-        caller_mod = inspect.getmodule(caller[0])
-        if caller_mod and "zentex.memory.enhanced" not in caller_mod.__name__ and "__main__" not in caller_mod.__name__:
-             # Raise warning or restrict access as per Sub-function 59.1 requirements
-             pass
-
         self._file_path = Path(file_path) if file_path is not None else None
         self._lock = get_lock_for_resource(str(self._file_path)) if self._file_path else Lock()
         if self._file_path is not None:
             self._file_path.parent.mkdir(parents=True, exist_ok=True)
+            if self._file_path.suffix == ".jsonl":
+                self._file_path = self._file_path.with_suffix(".sqlite3")
             
         self._compression = TieredCompressionService()
         self._encryption = EnterpriseEncryptionService()
         self._serializer = MessagePackSerializer()
-        self._records: list[EnhancedMemoryRecord] = []
-        # content_hash → record index for O(1) duplicate detection
-        self._hash_index: dict[str, int] = {}
-        
-        if self._file_path is not None and self._file_path.exists():
-            # Read as binary to support transparent decompression.
-            try:
-                raw_binary = self._file_path.read_bytes()
-                if not raw_binary:
-                    return
 
-                # Decrypt then Decompress (context-aware decryption)
-                # For loading, we might not know the context; EnterpriseEncryptionService handles fallback if possible.
-                # However, many stores keep records of a single layer.
-                # Using 'default' for bulk read, or detecting per record if needed.
-                decrypted = self._encryption.decrypt(raw_binary)
-                decompressed = self._compression.decompress(decrypted)
-                
-                # Split by newline (legacy JSONL or multiple msgpack frames)
-                # Note: MsgPack frames don't necessarily have newlines, 
-                # but our current append-only logic appends frames.
-                # If it's a binary ZMEM file, we need a frame-aware split.
-                if self._serializer.is_binary(decompressed):
-                    # For Phase 1.3, we split by ZMEM magic if multiple records are in one file.
-                    # Or, more simply, if it's binary, it might be one huge chunk or frames.
-                    # Our append() currently just writes frames. 
-                    # Let's find all MAGIC offsets.
-                    parts = decompressed.split(self._serializer.MAGIC)
-                    for part in parts:
-                        if not part: continue
-                        # Add back magic
-                        full_part = self._serializer.MAGIC + part
-                        rec_data = self._serializer.deserialize(full_part)
-                        rec = EnhancedMemoryRecord.model_validate(rec_data)
-                        if rec.content_hash and rec.content_hash not in self._hash_index:
-                            self._hash_index[rec.content_hash] = len(self._records)
-                        self._records.append(rec)
-                else:
-                    # Legacy JSONL - handle mixed encoding gracefully
-                    lines = decompressed.split(b"\n")
-                    for line in lines:
-                        line = line.strip()
-                        if not line:
-                            continue
-                        try:
-                            # Try UTF-8 decoding first
-                            text = line.decode("utf-8")
-                            rec = EnhancedMemoryRecord.model_validate(json.loads(text))
-                            if rec.content_hash and rec.content_hash not in self._hash_index:
-                                self._hash_index[rec.content_hash] = len(self._records)
-                            self._records.append(rec)
-                        except (UnicodeDecodeError, json.JSONDecodeError) as e:
-                            # Skip malformed lines (e.g., binary data mixed in)
-                            # Use WARNING level for production visibility
-                            logger.warning(
-                                "Skipping malformed line in %s at position %d: %s",
-                                self._file_path,
-                                decompressed.find(line),
-                                str(e)[:100]
-                            )
-                            continue
-            except Exception as exc:
-                logger.warning("Failed to load memory store %s: %s", self._file_path, exc)
+        if self._file_path is not None:
+            self._init_db()
+        else:
+            self._memory_db = sqlite3.connect(":memory:", check_same_thread=False)
+            self._init_schema(self._memory_db)
+
+    @contextlib.contextmanager
+    def _get_connection(self) -> Generator[sqlite3.Connection, None, None]:
+        """Context manager that provides a SQLite connection and closes it on exit.
+
+        Using isolation_level=None (autocommit) so each statement commits
+        immediately.  The context manager ensures the connection is always
+        closed — previously connections were left open indefinitely, which
+        exhausted file-descriptor limits under concurrent request load.
+        """
+        if self._file_path is None:
+            # In-memory DB: shared connection, caller must NOT close it.
+            yield self._memory_db
+            return
+        conn = sqlite3.connect(
+            str(self._file_path),
+            timeout=30.0,
+            check_same_thread=False,
+            isolation_level=None,
+        )
+        conn.execute("PRAGMA journal_mode=WAL")
+        conn.execute("PRAGMA synchronous=NORMAL")
+        try:
+            yield conn
+        finally:
+            conn.close()
+
+    def _init_db(self) -> None:
+        with self._lock:
+            with self._get_connection() as conn:
+                self._init_schema(conn)
+
+    def _init_schema(self, conn: sqlite3.Connection) -> None:
+        conn.execute('''
+            CREATE TABLE IF NOT EXISTS memory_records (
+                memory_id TEXT PRIMARY KEY,
+                content_hash TEXT UNIQUE NOT NULL,
+                memory_layer TEXT NOT NULL,
+                source_kind TEXT NOT NULL,
+                trace_id TEXT NOT NULL,
+                target_id TEXT,
+                tags TEXT,
+                payload BLOB NOT NULL
+            )
+        ''')
+        conn.execute('CREATE INDEX IF NOT EXISTS idx_trace_id ON memory_records(trace_id)')
+        conn.execute('CREATE INDEX IF NOT EXISTS idx_target_id ON memory_records(target_id)')
 
     @property
     def file_path(self) -> Path | None:
         return self._file_path
 
     def append(self, record: EnhancedMemoryRecord) -> EnhancedMemoryRecord:
-        """Append a record if its content_hash is unique; return the existing record otherwise."""
         with self._lock:
-            if record.content_hash and record.content_hash in self._hash_index:
-                # Same semantic content already stored — return existing record
-                return self._records[self._hash_index[record.content_hash]]
-            if self._file_path is not None:
-                # Append binary frame — ensure we don't mix plain text and compressed frames
-                # If file exists and is NOT compressed, append plain text to keep it readable.
-                # If it's a new file or already compressed, use configured compression.
-                use_compression = True # Tiered service handles logic internally
-                
-                # Phase 1.3: Use MessagePack instead of JSON
-                rec_dict = record.model_dump(mode="json")
-                use_binary = True 
-                use_compression = True
-                
-                # Determine transition mode (0% gap for Phase 1.3)
-                dual_write = os.environ.get("ZENTEX_MEMORY_DUAL_WRITE", "false").lower() == "true"
-                
-                if use_binary:
-                    # Determine if encryption is needed based on visibility (Phase 1.2 gap)
-                    visibility = str(getattr(record, "visibility", record.payload.get("visibility", "internal")))
-                    encrypt_this = (visibility != "public") and self._encryption.enabled
-                    
+            use_compression = True
+            rec_dict = record.model_dump(mode="json")
+            visibility = str(getattr(record, "visibility", record.payload.get("visibility", "internal")))
+            encrypt_this = (visibility != "public") and self._encryption.enabled
+            
+            try:
+                payload = self._serializer.serialize(
+                    rec_dict, 
+                    compressed=use_compression, 
+                    encrypted=encrypt_this,
+                    dual_write=False
+                )
+            except Exception as e:
+                logger.exception(
+                    f"❌ SERIALIZATION FAILED for memory record {record.memory_id}:\n"
+                    f"   Layer: {record.memory_layer}\n"
+                    f"   Source: {record.source_kind}\n"
+                    f"   Error: {type(e).__name__}: {str(e)}"
+                )
+                # Fallback: store uncompressed/unencrypted
+                try:
                     payload = self._serializer.serialize(
-                        rec_dict, 
-                        compressed=use_compression, 
-                        encrypted=encrypt_this,
-                        dual_write=dual_write
+                        rec_dict,
+                        compressed=False,
+                        encrypted=False,
+                        dual_write=False
                     )
-                else:
-                    # Legacy fallback
+                    use_compression = False
                     encrypt_this = False
-                    payload = (json.dumps(rec_dict, ensure_ascii=True) + "\n").encode("utf-8")
-                
-                if use_compression:
-                    data_to_write = self._compression.compress_for_tier(payload, record.memory_tier)
-                else:
-                    data_to_write = payload
-
-                # Encrypt outer layer for V2 records if visibility requires it
-                if use_binary and encrypt_this:
+                    logger.warning(f"Fallback: Storing record {record.memory_id} without compression/encryption")
+                except Exception as e2:
+                    logger.exception(f"❌ CRITICAL: Fallback serialization also failed for {record.memory_id}: {e2}")
+                    return record  # Return early, unable to save
+            
+            try:
+                data_to_write = self._compression.compress_for_tier(payload, record.memory_tier) if use_compression else payload
+            except Exception as e:
+                logger.exception(
+                    f"❌ COMPRESSION FAILED for memory record {record.memory_id}:\n"
+                    f"   Tier: {record.memory_tier}\n"
+                    f"   Error: {type(e).__name__}: {str(e)}"
+                )
+                # Fallback: skip compression
+                data_to_write = payload
+                use_compression = False
+                logger.warning(f"Fallback: Skipping compression for record {record.memory_id}")
+            
+            if encrypt_this:
+                try:
                     data_to_write = self._encryption.encrypt(data_to_write, context=record.memory_layer)
+                except Exception as e:
+                    logger.exception(
+                        f"❌ ENCRYPTION FAILED for memory record {record.memory_id}:\n"
+                        f"   Layer: {record.memory_layer}\n"
+                        f"   Error: {type(e).__name__}: {str(e)}"
+                    )
+                    # Fallback: skip encryption
+                    encrypt_this = False
+                    logger.warning(f"Fallback: Skipping encryption for record {record.memory_id}")
 
-                with self._file_path.open("ab") as handle:
-                    # If dual-writing, we append the legacy JSONL first to ensure backward compatibility
-                    # for old readers that might stop at the first non-JSON line.
-                    if dual_write and use_binary:
-                        legacy_payload = (json.dumps(rec_dict, ensure_ascii=False) + "\n").encode("utf-8")
-                        handle.write(legacy_payload)
-                    
-                    handle.write(data_to_write)
-            if record.content_hash:
-                self._hash_index[record.content_hash] = len(self._records)
-            self._records.append(record)
+            try:
+                with self._get_connection() as conn:
+                    conn.execute('''
+                        INSERT INTO memory_records 
+                        (memory_id, content_hash, memory_layer, source_kind, trace_id, target_id, tags, payload)
+                        VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                    ''', (
+                        record.memory_id,
+                        record.content_hash,
+                        record.memory_layer,
+                        record.source_kind,
+                        record.trace_id,
+                        record.target_id,
+                        json.dumps(record.tags),
+                        data_to_write
+                    ))
+            except sqlite3.IntegrityError as e:
+                logger.debug(f"Duplicate record (expected): {record.memory_id}")
+            except Exception as e:
+                logger.exception(
+                    f"❌ DATABASE INSERTION FAILED for memory record {record.memory_id}:\n"
+                    f"   Error: {type(e).__name__}: {str(e)}"
+                )
+                
         return record
 
     def list_records(self) -> list[EnhancedMemoryRecord]:
-        with self._lock:
-            return list(self._records)
+        """List all memory records with robust error handling for corrupted data.
+        
+        Implements degraded-mode recovery with explicit error reporting:
+        - Attempt 1: Standard decompression path (encrypted + compressed)
+        - Attempt 2: Direct deserialization (no encryption/compression)
+        - Attempt 3: Decryption only (no compression)
+        - If all fail, explicit error log with full traceback and record skipped
+        
+        Ensures API always returns valid records instead of failing completely.
+        """
+        records = []
+        corruption_count = 0
+        corrupted_ids = []
+        
+        with self._get_connection() as conn:
+            cursor = conn.execute("SELECT memory_id, payload FROM memory_records")
+            for row in cursor:
+                memory_id, payload = row[0], row[1]
+                record_recovered = False
+                last_error = None
+                
+                # === ATTEMPT 1: Standard decompression path ===
+                try:
+                    decrypted = self._encryption.decrypt(payload)
+                    decompressed = self._compression.decompress(decrypted)
+                    parts = decompressed.split(self._serializer.MAGIC)
+                    for part in parts:
+                        if not part: 
+                            continue
+                        full_part = self._serializer.MAGIC + part
+                        rec_data = self._serializer.deserialize(full_part)
+                        records.append(EnhancedMemoryRecord.model_validate(rec_data))
+                        record_recovered = True
+                except Exception as e:
+                    last_error = e
+                    # === ATTEMPT 2: Try direct deserialization (data might not be encrypted/compressed) ===
+                    try:
+                        rec_data = self._serializer.deserialize(payload)
+                        records.append(EnhancedMemoryRecord.model_validate(rec_data))
+                        record_recovered = True
+                        logger.info(f"Recovered corrupted record {memory_id} via direct deserialization (fallback)")
+                    except Exception as e2:
+                        last_error = e2
+                        # === ATTEMPT 3: Try raw decryption only (data might not be compressed) ===
+                        try:
+                            decrypted = self._encryption.decrypt(payload)
+                            rec_data = self._serializer.deserialize(decrypted)
+                            records.append(EnhancedMemoryRecord.model_validate(rec_data))
+                            record_recovered = True
+                            logger.info(f"Recovered corrupted record {memory_id} via direct decryption (fallback)")
+                        except Exception as e3:
+                            last_error = e3
+                            # === ALL ATTEMPTS FAILED - EXPLICIT ERROR REPORTING ===
+                            corruption_count += 1
+                            corrupted_ids.append(memory_id)
+                            logger.error(
+                                f"❌ UNRECOVERABLE MEMORY RECORD CORRUPTION DETECTED:\n"
+                                f"   Record ID: {memory_id}\n"
+                                f"   Payload size: {len(payload)} bytes\n"
+                                f"   Primary attempt error: {type(e).__name__}: {str(e)}\n"
+                                f"   Fallback 2 error: {type(e2).__name__}: {str(e2)}\n"
+                                f"   Fallback 3 error: {type(e3).__name__}: {str(e3)}\n"
+                                f"   Action: Record will be SKIPPED from list operation\n"
+                                f"   Recommendation: Run diagnose_and_repair_all_stores() to remove corrupted records"
+                            )
+                            # Log complete tracebacks for debugging
+                            logger.debug(f"Primary exception traceback:", exc_info=e)
+                            logger.debug(f"Fallback 2 exception traceback:", exc_info=e2)
+                            logger.debug(f"Fallback 3 exception traceback:", exc_info=e3)
+        
+        if corruption_count > 0:
+            logger.error(
+                f"🚨 MEMORY STORAGE DEGRADATION ALERT:\n"
+                f"   Total records scanned: {corruption_count + len(records)}\n"
+                f"   Corrupted records encountered: {corruption_count}\n"
+                f"   Corrupted IDs: {corrupted_ids}\n"
+                f"   Valid records returned: {len(records)}\n"
+                f"   Severity: HIGH - Data loss or corruption detected\n"
+                f"   Next steps: Immediately run diagnose_and_repair_all_stores() and backup database"
+            )
+        
+        return records
 
     def search(
         self,
@@ -671,26 +766,81 @@ class _EnhancedMemoryJSONLStore:
         trace_id: str | None = None,
         target_id: str | None = None,
     ) -> list[MemoryRecallHit]:
+        """Search memory records with robust error handling for corrupted data.
+        
+        Uses same degraded-mode recovery as list_records() with explicit error reporting
+        to ensure search doesn't fail due to corrupted records in the database.
+        """
         needle = query.strip().lower()
-        with self._lock:
-            records = list(self._records)
+        records = []
+        corruption_count = 0
+        corrupted_ids = []
+        
+        sql = "SELECT memory_id, payload FROM memory_records WHERE 1=1"
+        params = []
         if trace_id is not None:
-            records = [record for record in records if record.trace_id == trace_id]
+            sql += " AND trace_id = ?"
+            params.append(trace_id)
         if target_id is not None:
-            records = [record for record in records if record.target_id == target_id]
-
+            sql += " AND target_id = ?"
+            params.append(target_id)
+            
+        with self._get_connection() as conn:
+            cursor = conn.execute(sql, params)
+            for row in cursor:
+                memory_id, payload = row[0], row[1]
+                
+                # === ATTEMPT 1: Standard decompression path ===
+                try:
+                    decrypted = self._encryption.decrypt(payload)
+                    decompressed = self._compression.decompress(decrypted)
+                    parts = decompressed.split(self._serializer.MAGIC)
+                    for part in parts:
+                        if not part: 
+                            continue
+                        full_part = self._serializer.MAGIC + part
+                        rec_data = self._serializer.deserialize(full_part)
+                        records.append(EnhancedMemoryRecord.model_validate(rec_data))
+                except Exception as e:
+                    # === ATTEMPT 2: Try direct deserialization ===
+                    try:
+                        rec_data = self._serializer.deserialize(payload)
+                        records.append(EnhancedMemoryRecord.model_validate(rec_data))
+                        logger.info(f"Recovered record {memory_id} during search via direct deserialization (fallback)")
+                    except Exception as e2:
+                        # === ATTEMPT 3: Try raw decryption only ===
+                        try:
+                            decrypted = self._encryption.decrypt(payload)
+                            rec_data = self._serializer.deserialize(decrypted)
+                            records.append(EnhancedMemoryRecord.model_validate(rec_data))
+                            logger.info(f"Recovered record {memory_id} during search via direct decryption (fallback)")
+                        except Exception as e3:
+                            corruption_count += 1
+                            corrupted_ids.append(memory_id)
+                            logger.error(
+                                f"❌ UNRECOVERABLE RECORD IN SEARCH:\n"
+                                f"   Record ID: {memory_id}\n"
+                                f"   Query: {query}\n"
+                                f"   Primary error: {type(e).__name__}: {str(e)}\n"
+                                f"   Fallback 2: {type(e2).__name__}: {str(e2)}\n"
+                                f"   Fallback 3: {type(e3).__name__}: {str(e3)}\n"
+                                f"   Record will be SKIPPED from search results"
+                            )
+                            logger.debug(f"Search exception traceback:", exc_info=e3)
+        
+        if corruption_count > 0:
+            logger.warning(
+                f"⚠️  Search degradation: {corruption_count} corrupted records skipped\n"
+                f"   Corrupted IDs: {corrupted_ids}\n"
+                f"   Valid results returned: {len(records)}"
+            )
+                    
         hits: list[MemoryRecallHit] = []
         for record in records:
-            haystack = " ".join(
-                [
-                    record.title,
-                    record.summary,
-                    record.content,
-                    " ".join(record.tags),
-                    record.trace_id,
-                    record.target_id or "",
-                ]
-            ).lower()
+            haystack = " ".join([
+                record.title, record.summary, record.content, " ".join(record.tags),
+                record.trace_id, record.target_id or ""
+            ]).lower()
             if needle and needle not in haystack:
                 continue
             score = 1.0 if not needle else min(1.0, 0.35 + (haystack.count(needle) * 0.2))
@@ -709,20 +859,151 @@ class _EnhancedMemoryJSONLStore:
             )
         return sorted(hits, key=lambda item: item.score, reverse=True)[:limit]
 
+    def diagnose_and_repair(self) -> dict[str, int]:
+        """Scan database and remove corrupted records that cannot be recovered.
+        
+        Explicit error reporting: All exceptions are logged with full tracebacks.
+        
+        Returns:
+            Dict with statistics: {
+                'total_records': int,
+                'corrupted_records': int,
+                'removed_records': int,
+                'errors': list of error messages
+            }
+        """
+        total_records = 0
+        corrupted_ids = []
+        errors = []
+        
+        # Scan all records to identify corrupted ones
+        try:
+            with self._get_connection() as conn:
+                cursor = conn.execute("SELECT memory_id, payload FROM memory_records")
+                for row in cursor:
+                    total_records += 1
+                    memory_id, payload = row[0], row[1]
+                    
+                    # Try all recovery attempts
+                    recovered = False
+                    attempt_errors = []
+                    
+                    # Attempt 1
+                    try:
+                        decrypted = self._encryption.decrypt(payload)
+                        decompressed = self._compression.decompress(decrypted)
+                        self._serializer.deserialize(decompressed)
+                        recovered = True
+                    except Exception as e:
+                        attempt_errors.append(f"Attempt 1: {type(e).__name__}: {str(e)[:80]}")
+                    
+                    if not recovered:
+                        # Attempt 2
+                        try:
+                            self._serializer.deserialize(payload)
+                            recovered = True
+                        except Exception as e:
+                            attempt_errors.append(f"Attempt 2: {type(e).__name__}: {str(e)[:80]}")
+                    
+                    if not recovered:
+                        # Attempt 3
+                        try:
+                            decrypted = self._encryption.decrypt(payload)
+                            self._serializer.deserialize(decrypted)
+                            recovered = True
+                        except Exception as e:
+                            attempt_errors.append(f"Attempt 3: {type(e).__name__}: {str(e)[:80]}")
+                    
+                    if not recovered:
+                        corrupted_ids.append(memory_id)
+                        error_msg = f"Record {memory_id} unrecoverable: {' | '.join(attempt_errors)}"
+                        errors.append(error_msg)
+                        logger.error(
+                            f"❌ CORRUPTED RECORD DETECTED:\n"
+                            f"   ID: {memory_id}\n"
+                            f"   Size: {len(payload)} bytes\n"
+                            f"   {chr(10).join(attempt_errors)}"
+                        )
+        except Exception as e:
+            logger.exception(f"❌ CRITICAL ERROR during database scan: {type(e).__name__}: {e}")
+            errors.append(f"Scan error: {type(e).__name__}: {str(e)}")
+            return {
+                'total_records': total_records,
+                'corrupted_records': len(corrupted_ids),
+                'removed_records': 0,
+                'errors': errors,
+            }
+        
+        # Remove corrupted records if any found
+        removed_count = 0
+        if corrupted_ids:
+            with self._lock:
+                with self._get_connection() as conn:
+                    for memory_id in corrupted_ids:
+                        try:
+                            conn.execute("DELETE FROM memory_records WHERE memory_id = ?", (memory_id,))
+                            removed_count += 1
+                            logger.info(f"Deleted corrupted record: {memory_id}")
+                        except Exception as e:
+                            logger.exception(f"❌ Failed to delete corrupted record {memory_id}: {e}")
+                            errors.append(f"Delete error for {memory_id}: {type(e).__name__}: {str(e)}")
+        
+        result = {
+            'total_records': total_records,
+            'corrupted_records': len(corrupted_ids),
+            'removed_records': removed_count,
+            'errors': errors,
+        }
+        
+        if corrupted_ids:
+            logger.error(
+                f"🚨 DATABASE REPAIR COMPLETED:\n"
+                f"   Total records: {result['total_records']}\n"
+                f"   Corrupted records: {result['corrupted_records']}\n"
+                f"   Deleted records: {result['removed_records']}\n"
+                f"   Remaining records: {result['total_records'] - result['removed_records']}\n"
+                f"   Errors encountered: {len(errors)}"
+            )
+        else:
+            logger.info(f"✓ Database health check passed: All {total_records} records are valid")
+        
+        return result
 
-class _QuarantinedMemoryJSONLStore(_EnhancedMemoryJSONLStore):
+
+class _QuarantinedMemorySQLiteStore(_EnhancedMemorySQLiteStore):
     """Independent physical isolation for quarantined memory (Sub-function 59.3 gap)."""
-    
-    def __init__(self, file_path: str | Path | None = None) -> None:
-        super().__init__(file_path)
-        # Dedicated lifecycle logic for quarantine
-    
     def list_awaiting_g38(self) -> list[EnhancedMemoryRecord]:
         return [r for r in self.list_records() if not r.payload.get("g38_verified")]
 
 
 class _MemoryManagementStateStore:
     """Snapshot store for mutable memory governance metadata."""
+
+    @staticmethod
+    def _load_states_from_raw(raw: str) -> dict[str, MemoryManagementState]:
+        """
+        Load governance state JSON defensively.
+
+        Historical files in local dev environments may contain concatenated JSON
+        objects because of interrupted writes. When that happens we merge all
+        top-level dict payloads in decode order instead of failing startup.
+        """
+        decoder = json.JSONDecoder()
+        cursor = 0
+        merged: dict[str, MemoryManagementState] = {}
+        while cursor < len(raw):
+            while cursor < len(raw) and raw[cursor].isspace():
+                cursor += 1
+            if cursor >= len(raw):
+                break
+            payload, end = decoder.raw_decode(raw, cursor)
+            cursor = end
+            if not isinstance(payload, dict):
+                continue
+            for memory_id, state in payload.items():
+                if isinstance(state, dict):
+                    merged[memory_id] = MemoryManagementState.model_validate(state)
+        return merged
 
     def __init__(self, file_path: str | Path | None = None) -> None:
         self._file_path = Path(file_path) if file_path is not None else None
@@ -733,13 +1014,14 @@ class _MemoryManagementStateStore:
         if self._file_path is not None and self._file_path.exists():
             raw = self._file_path.read_text(encoding="utf-8").strip()
             if raw:
-                payload = json.loads(raw)
-                if isinstance(payload, dict):
-                    self._states = {
-                        memory_id: MemoryManagementState.model_validate(state)
-                        for memory_id, state in payload.items()
-                        if isinstance(state, dict)
-                    }
+                try:
+                    self._states = self._load_states_from_raw(raw)
+                except Exception:
+                    logger.exception(
+                        "Failed to parse memory management state store %s; falling back to empty state",
+                        self._file_path,
+                    )
+                    self._states = {}
 
     @property
     def file_path(self) -> Path | None:
@@ -844,13 +1126,13 @@ class EnhancedMemoryService:
     ) -> None:
         self._nine_question_executor = nine_question_executor
         # Initialize stores with tiered compression (automatic selection)
-        self._semantic_store = _EnhancedMemoryJSONLStore(semantic_store_path)
-        self._procedural_store = _EnhancedMemoryJSONLStore(procedural_store_path)
-        self._episodic_store = _EnhancedMemoryJSONLStore(episodic_store_path)
+        self._semantic_store = _EnhancedMemorySQLiteStore(semantic_store_path)
+        self._procedural_store = _EnhancedMemorySQLiteStore(procedural_store_path)
+        self._episodic_store = _EnhancedMemorySQLiteStore(episodic_store_path)
         self._management_store = _MemoryManagementStateStore(management_store_path)
         self._audit_store = _MemoryAuditStore(audit_store_path)
-        self._cold_store = _EnhancedMemoryJSONLStore(cold_storage_path)
-        self._tombstone_store = _EnhancedMemoryJSONLStore(
+        self._cold_store = _EnhancedMemorySQLiteStore(cold_storage_path)
+        self._tombstone_store = _EnhancedMemorySQLiteStore(
             Path(management_store_path).parent / "tombstones.jsonl" if management_store_path else None
         )
         
@@ -858,7 +1140,7 @@ class EnhancedMemoryService:
         quarantine_path = None
         if semantic_store_path:
             quarantine_path = Path(semantic_store_path).parent / "quarantine.jsonl"
-        self._quarantine_store = _QuarantinedMemoryJSONLStore(quarantine_path)
+        self._quarantine_store = _QuarantinedMemorySQLiteStore(quarantine_path)
         
         # Sub-function 59.5 - Package Registry & Contamination (0% gap)
         self._package_registry: list[PackageImportRegistry] = []
@@ -895,11 +1177,6 @@ class EnhancedMemoryService:
         # In production, this would be set via config
         self._vector_index = VectorSearchEngine(vector_index_dir, use_mock=True) if index_path else None
         
-        # Rebuild profile index from existing records on startup
-        self._rebuild_profile_index()
-        # Optionally backfill the index if it's new (Phase 1.3/2.1 gap)
-        self._backfill_index()
-
         # Phase 2.3: Retrieval Engine Hook
         self._retrieval_engine = HybridRetrievalEngine(
             index=self._index,
@@ -908,6 +1185,62 @@ class EnhancedMemoryService:
             procedural_store=self._procedural_store,
             semantic_recall_client=self._semantic_recall_client
         )
+
+        # Optimization: Move heavy scans out of __init__
+        self._is_ready = False
+        self._init_progress = 0.0 # 0 to 1.0
+        self._init_lock = Lock()
+
+    @property
+    def is_ready(self) -> bool:
+        return self._is_ready
+
+    @property
+    def initialization_progress(self) -> float:
+        return self._init_progress
+
+    async def initialize_background(self) -> None:
+        """
+        Execute heavy O(N) startup operations in the background.
+        
+        This includes:
+        - Database repair (scans all records)
+        - Profile index rebuild (scans all records)
+        - Search index backfill (scans all records and re-indexes)
+        """
+        with self._init_lock:
+            if self._is_ready:
+                return
+            
+            logger.info("Memory Engine background initialization started.")
+            
+            try:
+                # 1. Run repair on each store
+                stores = [self._semantic_store, self._procedural_store, self._episodic_store]
+                for i, store in enumerate(stores):
+                    try:
+                        # Use to_thread for the blocking database scan
+                        await asyncio.to_thread(store.diagnose_and_repair)
+                    except Exception:
+                        logger.exception(f"Memory store repair failed for {store} during background init")
+                    self._init_progress = 0.1 + (i * 0.1)
+
+                # 2. Rebuild profile index
+                await asyncio.to_thread(self._rebuild_profile_index)
+                self._init_progress = 0.5
+
+                # 3. Backfill index
+                await asyncio.to_thread(self._backfill_index)
+                self._init_progress = 1.0
+                
+                self._is_ready = True
+                logger.info("Memory Engine background initialization completed successfully.")
+                
+            except Exception as e:
+                logger.error(f"Memory Engine background initialization failed: {e}", exc_info=True)
+                # We don't mark as ready, but service remains partially functional (degraded)
+                self._init_progress = -1.0 
+
     def _backfill_index(self):
         """Ensure all existing records are in the SQLite index."""
         if not self._index:
@@ -1018,8 +1351,7 @@ class EnhancedMemoryService:
         # Real G38 Integration (Priority 1)
         if self._nine_question_executor:
             # Prepare state for validation
-            from zentex.runtime.models import NineQuestionState
-            state = NineQuestionState(snapshot_version=1)
+            state = G38NineQuestionState(snapshot_version=1)
             
             # Execute validation loop (Sub-function 59.3 Gap)
             self._nine_question_executor.run_questions(
@@ -1121,6 +1453,60 @@ class EnhancedMemoryService:
                 ),
             ),
         ]
+
+    def diagnose_and_repair_all_stores(self) -> dict[str, any]:
+        """Scan all memory stores and remove corrupted records.
+        
+        Called during startup to detect and repair database corruption issues.
+        Explicit error reporting: All exceptions logged with full context.
+        
+        Returns:
+            Dict with diagnostic results for each store layer:
+            {
+                'semantic': {'total': int, 'corrupted': int, 'removed': int, 'errors': []},
+                'procedural': {...},
+                'episodic': {...},
+                'timestamp': ISO datetime string,
+            }
+        """
+        results = {
+            'semantic': self._semantic_store.diagnose_and_repair(),
+            'procedural': self._procedural_store.diagnose_and_repair(),
+            'episodic': self._episodic_store.diagnose_and_repair(),
+            'timestamp': utc_now().isoformat(),
+        }
+        
+        # Aggregate statistics
+        total_corrupted = sum(r.get('corrupted_records', 0) for r in results.values() if isinstance(r, dict))
+        total_errors = sum(len(r.get('errors', [])) for r in results.values() if isinstance(r, dict))
+        
+        # Collect all error messages
+        all_errors = []
+        for layer, result in [('semantic', results['semantic']), ('procedural', results['procedural']), ('episodic', results['episodic'])]:
+            if isinstance(result, dict):
+                layer_errors = result.get('errors', [])
+                if layer_errors:
+                    all_errors.extend([f"[{layer}] {e}" for e in layer_errors])
+        
+        if total_corrupted > 0:
+            logger.error(
+                f"🚨 MEMORY STORE CORRUPTION DETECTED AND REPAIRED:\n"
+                f"   Semantic: corrupted={results['semantic'].get('corrupted_records', 0)}, "
+                f"removed={results['semantic'].get('removed_records', 0)}\n"
+                f"   Procedural: corrupted={results['procedural'].get('corrupted_records', 0)}, "
+                f"removed={results['procedural'].get('removed_records', 0)}\n"
+                f"   Episodic: corrupted={results['episodic'].get('corrupted_records', 0)}, "
+                f"removed={results['episodic'].get('removed_records', 0)}\n"
+                f"   Total corrupted: {total_corrupted}\n"
+                f"   Total errors: {total_errors}"
+            )
+            if all_errors:
+                logger.error(f"   Error details:\n      " + "\n      ".join(all_errors))
+        else:
+            total_records = sum(r.get('total_records', 0) for r in results.values() if isinstance(r, dict))
+            logger.info(f"✓ Memory store integrity verified: All {total_records} records are valid")
+        
+        return results
 
     def list_semantic_records(self) -> list[EnhancedMemoryRecord]:
         return self._semantic_store.list_records()
@@ -1273,7 +1659,7 @@ class EnhancedMemoryService:
                 "operator": operator,
                 "last_action": self._derive_management_action(
                     current=current,
-                    status=status,
+                    lifecycle_status=lifecycle_status,
                     visibility=visibility,
                     trust_level=trust_level,
                     correction_note=correction_note,
@@ -1336,6 +1722,12 @@ class EnhancedMemoryService:
         is_memory_worthy = event_type in MEMORY_WORTHY_EVENTS
         valence, intensity = valence_for_transcript_event(event_type)
 
+        question_id = None
+        if isinstance(entry.payload, dict):
+            raw_qid = entry.payload.get("question_id")
+            if isinstance(raw_qid, str) and raw_qid.startswith("q"):
+                question_id = raw_qid
+
         # Memory-worthy events elevate to WARM tier immediately; others start HOT.
         tier = "warm" if is_memory_worthy else "hot"
 
@@ -1343,15 +1735,24 @@ class EnhancedMemoryService:
 
         # ── semantic layer (only for memory-worthy events) ────────────────
         if is_memory_worthy:
+            semantic_source_kind = (
+                f"nine_questions.{question_id}" if event_type == "nine_question_result_recorded" and question_id else "transcript"
+            )
+            semantic_title = (
+                f"Nine Question {question_id} Result" if event_type == "nine_question_result_recorded" and question_id else f"Transcript {event_type}"
+            )
+            semantic_tags = [event_type, entry.source]
+            if question_id:
+                semantic_tags.extend([question_id, "nine_question_result"])
             semantic = EnhancedMemoryRecord(
                 memory_layer="semantic",
-                source_kind="transcript",
-                title=f"Transcript {event_type}",
+                source_kind=semantic_source_kind,
+                title=semantic_title,
                 summary=self._summarize_payload(entry.payload, fallback=event_type),
                 content=content,
                 trace_id=entry.trace_id,
                 source_refs=[entry.entry_id],
-                tags=[event_type, entry.source],
+                tags=semantic_tags,
                 payload={"source": entry.source, "entry_type": event_type},
                 memory_tier=tier,
                 emotional_valence=valence,

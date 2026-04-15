@@ -21,7 +21,7 @@ from urllib import error as urllib_error
 from urllib import request as urllib_request
 
 from pydantic import BaseModel, ConfigDict, Field
-from zentex.core.config import CONFIG_DIR, load_required_mapping_section, load_yaml_config
+from zentex.launcher.config import CONFIG_DIR, load_required_mapping_section, load_yaml_config
 
 try:
     from openai import (
@@ -39,6 +39,11 @@ except ImportError:  # pragma: no cover - exercised through runtime config check
     OpenAIAPITimeoutError = None
     OpenAIAuthenticationError = None
     OpenAIRateLimitError = None
+
+try:
+    from google import genai
+except ImportError:  # pragma: no cover - exercised through runtime config checks
+    genai = None
 
 
 class ProviderToolConfig(BaseModel):
@@ -101,6 +106,8 @@ class ResponseParseError(ModelProviderError):
 
 
 DEFAULT_PROVIDER_CONFIG_PATH = CONFIG_DIR / "provider_tools.yml"
+PROJECT_ROOT = Path(__file__).resolve().parents[2]
+DEFAULT_DOTENV_PATH = PROJECT_ROOT / ".env"
 
 
 class BaseProviderTool:
@@ -221,46 +228,104 @@ class ChatGPTTool(OpenAITool):
 
 
 class GeminiTool(BaseProviderTool):
-    def _build_url(self) -> str:
-        return (
-            f"{self.config.api_base.rstrip('/')}/models/"
-            f"{self.config.default_model}:generateContent"
+    def call(self, invocation: ToolInvocationRequest) -> ToolInvocationResponse:
+        if genai is None:
+            raise ConfigError("google-genai package is not installed in the local environment")
+
+        api_key = self._resolve_api_key()
+        client = genai.Client(api_key=api_key)
+
+        contents = invocation.prompt
+        if invocation.system_prompt:
+            contents = f"{invocation.system_prompt}\n\n{invocation.prompt}"
+
+        try:
+            response = client.models.generate_content(
+                model=invocation.model,
+                contents=contents,
+            )
+        except Exception as exc:
+            raise self._classify_sdk_error(exc) from exc
+
+        raw_response = self._response_to_dict(response)
+        return ToolInvocationResponse(
+            provider=self.config.provider_name,
+            model=invocation.model,
+            output_text=str(getattr(response, "text", "") or ""),
+            usage=self._extract_usage(raw_response),
+            raw_response=raw_response,
         )
 
+    def _classify_sdk_error(self, exc: Exception) -> ModelProviderError:
+        status_code = getattr(exc, "status_code", None)
+        if status_code in {401, 403}:
+            return AuthError(
+                f"Authentication failed for provider {self.config.provider_name} with status {status_code}"
+            )
+        if status_code == 429:
+            return RateLimitError(
+                f"Rate limit exceeded for provider {self.config.provider_name}"
+            )
+        if status_code is not None and int(status_code) >= 500:
+            return RemoteServiceError(
+                f"Remote provider {self.config.provider_name} failed with status {status_code}"
+            )
+
+        message = str(exc).lower()
+        if "auth" in message or "api key" in message or "permission" in message:
+            return AuthError(f"Authentication failed for provider {self.config.provider_name}")
+        if "rate" in message or "quota" in message or "429" in message:
+            return RateLimitError(f"Rate limit exceeded for provider {self.config.provider_name}")
+        if isinstance(exc, (TimeoutError, socket.timeout)):
+            return RemoteTimeoutError(
+                f"Remote provider timeout or network failure for {self.config.provider_name}"
+            )
+        return RemoteTimeoutError(
+            f"Remote provider timeout or network failure for {self.config.provider_name}"
+        )
+
+    def _response_to_dict(self, response: Any) -> Dict[str, Any]:
+        if hasattr(response, "model_dump") and callable(response.model_dump):
+            dumped = response.model_dump()
+            return dumped if isinstance(dumped, dict) else {"response": dumped}
+        if hasattr(response, "to_dict") and callable(response.to_dict):
+            dumped = response.to_dict()
+            return dumped if isinstance(dumped, dict) else {"response": dumped}
+        text = getattr(response, "text", None)
+        usage = getattr(response, "usage_metadata", None)
+        usage_dict = None
+        if usage is not None:
+            if hasattr(usage, "model_dump") and callable(usage.model_dump):
+                usage_dict = usage.model_dump()
+            elif hasattr(usage, "to_dict") and callable(usage.to_dict):
+                usage_dict = usage.to_dict()
+        payload: Dict[str, Any] = {}
+        if text is not None:
+            payload["text"] = text
+        if isinstance(usage_dict, dict):
+            payload["usage_metadata"] = usage_dict
+        return payload
+
+    def _build_url(self) -> str:
+        raise NotImplementedError("GeminiTool uses the official google.genai SDK")
+
     def _provider_headers(self, api_key: str) -> Dict[str, str]:
-        return {"x-goog-api-key": api_key}
+        raise NotImplementedError("GeminiTool uses the official google.genai SDK")
 
     def _build_payload(self, invocation: ToolInvocationRequest) -> Dict[str, Any]:
-        contents = []
-        if invocation.system_prompt:
-            contents.append({"role": "user", "parts": [{"text": invocation.system_prompt}]})
-        contents.append({"role": "user", "parts": [{"text": invocation.prompt}]})
-        return {
-            "contents": contents,
-            "generationConfig": {
-                "temperature": invocation.temperature,
-                "maxOutputTokens": invocation.max_output_tokens,
-            },
-        }
+        raise NotImplementedError("GeminiTool uses the official google.genai SDK")
 
     def _extract_text(self, payload: Dict[str, Any]) -> str:
-        candidates = payload.get("candidates", [])
-        for candidate in candidates:
-            content = candidate.get("content", {})
-            for part in content.get("parts", []):
-                text = part.get("text")
-                if text:
-                    return str(text)
-        return ""
+        return str(payload.get("text", "") or "")
 
     def _extract_usage(self, payload: Dict[str, Any]) -> Optional[Dict[str, Any]]:
-        usage = payload.get("usageMetadata")
-        if not usage:
+        usage = payload.get("usage_metadata") or payload.get("usageMetadata")
+        if not isinstance(usage, dict):
             return None
         return {
-            "input_tokens": usage.get("promptTokenCount"),
-            "output_tokens": usage.get("candidatesTokenCount"),
-            "total_tokens": usage.get("totalTokenCount"),
+            "input_tokens": usage.get("prompt_token_count") or usage.get("promptTokenCount"),
+            "output_tokens": usage.get("candidates_token_count") or usage.get("candidatesTokenCount"),
+            "total_tokens": usage.get("total_token_count") or usage.get("totalTokenCount"),
         }
 
 
@@ -408,9 +473,69 @@ def is_env_var_reference(value: Optional[str]) -> bool:
     return candidate.replace("_", "").isalnum() and candidate.upper() == candidate and "-" not in candidate
 
 
+def is_placeholder_secret(value: Optional[str]) -> bool:
+    candidate = str(value or "").strip().lower()
+    if not candidate:
+        return True
+    known_placeholders = {
+        "your-openai-key-here",
+        "your-claude-key-here",
+        "replace-me",
+        "changeme",
+    }
+    return candidate in known_placeholders
+
+
+@functools.lru_cache(maxsize=1)
+def load_project_dotenv(
+    dotenv_path: Union[str, os.PathLike[str], None] = None,
+) -> Dict[str, str]:
+    path = Path(dotenv_path) if dotenv_path is not None else DEFAULT_DOTENV_PATH
+    if not path.exists():
+        return {}
+
+    values: Dict[str, str] = {}
+    for raw_line in path.read_text(encoding="utf-8").splitlines():
+        line = raw_line.strip()
+        if not line or line.startswith("#") or "=" not in line:
+            continue
+        key, value = line.split("=", 1)
+        key = key.strip()
+        value = value.strip()
+        if not key:
+            continue
+        if value and len(value) >= 2 and value[0] == value[-1] and value[0] in {"'", '"'}:
+            value = value[1:-1]
+        values[key] = value
+    return values
+
+
+def resolve_env_value(name: str) -> Optional[str]:
+    key = str(name or "").strip()
+    if not key:
+        return None
+    value = os.getenv(key)
+    if value and not is_placeholder_secret(value):
+        return value
+
+    dotenv_values = load_project_dotenv()
+    if key in dotenv_values and dotenv_values[key] and not is_placeholder_secret(dotenv_values[key]):
+        return dotenv_values[key]
+
+    # Gemini setups often use GOOGLE_API_KEY in .env while provider config names GEMINI_API_KEY.
+    aliases: Dict[str, tuple[str, ...]] = {
+        "GEMINI_API_KEY": ("GOOGLE_API_KEY",),
+    }
+    for alias in aliases.get(key, ()):
+        alias_value = os.getenv(alias) or dotenv_values.get(alias)
+        if alias_value and not is_placeholder_secret(alias_value):
+            return alias_value
+    return None
+
+
 def resolve_provider_api_key(config: ProviderToolConfig) -> str:
     env_name = str(config.api_key_env or "").strip()
-    env_value = os.getenv(env_name) if env_name else None
+    env_value = resolve_env_value(env_name) if env_name else None
     if env_value:
         return env_value
     if env_name and not is_env_var_reference(env_name):
@@ -441,12 +566,12 @@ def get_default_provider_key(
     2. 'default_provider' key in config/provider_tools.yml
     3. 'openai' if OPENAI_API_KEY is present in env, else 'openai_compat'
     """
-    env_default = os.getenv("ZENTEX_DEFAULT_PROVIDER")
+    env_default = resolve_env_value("ZENTEX_DEFAULT_PROVIDER")
     if env_default and env_default.strip():
         return env_default.strip()
 
     try:
-        from zentex.core.config import load_yaml_config
+        from zentex.launcher.config import load_yaml_config
         payload = load_yaml_config(config_path)
         config_default = payload.get("default_provider")
         if config_default and isinstance(config_default, str) and config_default.strip():
@@ -454,5 +579,4 @@ def get_default_provider_key(
     except Exception:
         pass
 
-    return "openai" if os.getenv("OPENAI_API_KEY") else "openai_compat"
-
+    return "openai" if resolve_env_value("OPENAI_API_KEY") else "openai_compat"

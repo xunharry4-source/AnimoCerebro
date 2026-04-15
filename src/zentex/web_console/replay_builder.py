@@ -1,15 +1,37 @@
 from __future__ import annotations
 
 from datetime import timezone
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Protocol
 
-from zentex.runtime.models import BrainTranscriptEntryType
+from zentex.kernel import BrainTranscriptEntryType
 from zentex.web_console.contracts.replay import (
     TranscriptReplayPayload,
     TurnReplayPayload,
     TurnReplayTraceGroup,
 )
 from zentex.web_console.transcript_serialization import serialize_transcript_entry
+
+
+class _TranscriptStoreLike(Protocol):
+    def get_entries_snapshot(self) -> list[Any]: ...
+
+    def read_by_trace_id(self, trace_id: str) -> list[Any]: ...
+
+    def read_by_turn_id(self, turn_id: str) -> list[Any]: ...
+
+
+def _resolve_transcript_store(source: Any) -> _TranscriptStoreLike:
+    if all(hasattr(source, attr) for attr in ("get_entries_snapshot", "read_by_trace_id", "read_by_turn_id")):
+        return source
+    if hasattr(source, "get_transcript_store") and callable(source.get_transcript_store):
+        store = source.get_transcript_store()
+        if all(hasattr(store, attr) for attr in ("get_entries_snapshot", "read_by_trace_id", "read_by_turn_id")):
+            return store
+    if hasattr(source, "transcript_store"):
+        store = source.transcript_store
+        if all(hasattr(store, attr) for attr in ("get_entries_snapshot", "read_by_trace_id", "read_by_turn_id")):
+            return store
+    raise TypeError("Expected transcript store, runtime, or facade with transcript store access")
 
 
 def build_replay_payload(
@@ -25,10 +47,11 @@ def build_replay_payload(
     - 前端调试是从“某次事件”跳进来，但底层 replay 需要回放整条 trace。
     - 因此这里允许 event_id 同时匹配 entry_id 和 trace_id，再统一展开全链路。
     """
-    entries = runtime.transcript_store.get_entries_snapshot()
+    transcript_store = _resolve_transcript_store(runtime)
+    entries = transcript_store.get_entries_snapshot()
     matched_entry = next((entry for entry in entries if entry.entry_id == event_id), None)
     trace_id = matched_entry.trace_id if matched_entry is not None else event_id
-    related_entries = runtime.transcript_store.read_by_trace_id(trace_id)
+    related_entries = transcript_store.read_by_trace_id(trace_id)
     if not related_entries:
         raise KeyError(f"Unknown replay event_id or trace_id: {event_id}")
 
@@ -102,7 +125,8 @@ def build_turn_replay_payload(
     session_id: Optional[str] = None,
     include_payload: bool = True,
 ) -> TurnReplayPayload:
-    turn_entries = runtime.transcript_store.read_by_turn_id(turn_id)
+    transcript_store = _resolve_transcript_store(runtime)
+    turn_entries = transcript_store.read_by_turn_id(turn_id)
     if session_id is not None:
         turn_entries = [entry for entry in turn_entries if entry.session_id == session_id]
     if not turn_entries:

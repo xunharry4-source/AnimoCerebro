@@ -7,7 +7,7 @@
 import asyncio
 import logging
 from datetime import datetime
-from typing import Any, Dict, List
+from typing import Any, Dict, List, Optional
 
 from zentex.tasks.models import ZentexTask
 from zentex.tasks.verification.models import (
@@ -17,6 +17,14 @@ from zentex.tasks.verification.models import (
     VerificationStatus,
 )
 from zentex.tasks.verification.registry import VerifierRegistry
+
+# Phase C3: 失败分类集成
+try:
+    from zentex.tasks.verification.classifier import FailureClassifier
+    CLASSIFIER_AVAILABLE = True
+except ImportError:
+    CLASSIFIER_AVAILABLE = False
+    FailureClassifier = None
 
 logger = logging.getLogger(__name__)
 
@@ -128,6 +136,10 @@ class VerificationEngine:
         overall_result.recommendation = self._generate_recommendation(
             overall_result, config
         )
+
+        # Phase C3: 如果验证失败，自动进行失败分类
+        if not overall_result.overall_passed and CLASSIFIER_AVAILABLE:
+            self._classify_verification_failure(overall_result, task)
 
         logger.info(
             f"Verification completed for task {task.task_id}: "
@@ -370,3 +382,45 @@ class VerificationEngine:
         else:
             # 默认行为：重试
             return "retry"
+    
+    def _classify_verification_failure(
+        self,
+        result: VerificationResult,
+        task: ZentexTask,
+    ) -> None:
+        """
+        Phase C3: 对验证失败进行自动分类
+        
+        从失败的验证结果中提取信息，
+        自动分类失败原因，
+        并将分类结果附加到 VerificationResult。
+        
+        Args:
+            result: VerificationResult 对象
+            task: ZentexTask 对象
+        """
+        if not CLASSIFIER_AVAILABLE or not FailureClassifier:
+            logger.debug("Failure classifier not available, skipping classification")
+            return
+        
+        try:
+            # 从验证结果分类失败
+            classification = FailureClassifier.classify_verification_result(result)
+            
+            if classification:
+                result.failure_classification = classification
+                
+                logger.info(
+                    f"Task {result.task_id} failure classified: "
+                    f"{classification.failure_type.value} "
+                    f"(severity: {classification.failure_severity.value}, "
+                    f"action: {classification.recommended_action})"
+                )
+            else:
+                logger.debug(f"No failure classification generated for {result.task_id}")
+        
+        except Exception as e:
+            logger.error(
+                f"Failed to classify verification failure for {result.task_id}: {e}",
+                exc_info=True
+            )

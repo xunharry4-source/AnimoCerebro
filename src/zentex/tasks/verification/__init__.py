@@ -13,6 +13,11 @@ from zentex.tasks.verification.models import (
     VerificationConfig,
     SingleVerifierResult,
     VerificationResult,
+    # Phase C2: 失败分类相关
+    FailureType,
+    FailureSeverity,
+    VerificationEvidence,
+    FailureClassification,
 )
 from zentex.tasks.verification.verifiers import (
     BaseVerifier,
@@ -22,6 +27,7 @@ from zentex.tasks.verification.verifiers import (
 )
 from zentex.tasks.verification.engine import VerificationEngine
 from zentex.tasks.verification.registry import VerifierRegistry
+from zentex.tasks.verification.classifier import FailureClassifier
 
 __all__ = [
     "VerificationType",
@@ -31,10 +37,19 @@ __all__ = [
     "VerificationConfig",
     "SingleVerifierResult",
     "VerificationResult",
+    # Phase C2: 失败分类相关
+    "FailureType",
+    "FailureSeverity",
+    "VerificationEvidence",
+    "FailureClassification",
+    # 验证器
     "BaseVerifier",
     "AutomatedTestVerifier",
     "LLMEvaluationVerifier",
     "RuleBasedVerifier",
+    # 引擎
     "VerificationEngine",
     "VerifierRegistry",
+    # 分类器
+    "FailureClassifier",
 ]

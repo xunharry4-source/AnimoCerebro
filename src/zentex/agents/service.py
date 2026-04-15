@@ -8,7 +8,7 @@ from uuid import uuid4
 from pydantic import BaseModel, Field
 from zentex.agents.manager import AgentManager, AgentAsset, AgentStatus, AgentTrustLevel
 from zentex.agents.bridge import AgentBridge
-from zentex.runtime.transcript import BrainTranscriptEntryType
+from zentex.kernel import BrainTranscriptEntryType
 from zentex.tasks.service import TaskStatus, ZentexTask
 
 logger = logging.getLogger(__name__)
@@ -74,6 +74,12 @@ class AgentCoordinationService:
         """
         Leave a permanent physical audit trail.
         """
+        if self.transcript_store is None:
+            logger.warning(
+                "Skipping agent audit record because transcript_store is not attached",
+                extra={"agent_id": agent_id, "action": action},
+            )
+            return
         self.transcript_store.write_entry(
             session_id="agent-management-audit",
             turn_id=str(uuid4()),
@@ -310,6 +316,212 @@ class AgentCoordinationService:
             self.record_audit(agent_id, "TASK_FAILED", {"error": str(e)})
             raise
 
+    def calculate_credit_score(
+        self,
+        agent_id: str,
+        task_service: Any,
+    ) -> Dict[str, Any]:
+        """
+        Calculate credit score for an agent based on multiple dimensions.
+        Core logic moved from web_console for architectural alignment.
+        """
+        asset = self.manager.get_asset(agent_id)
+        if not asset:
+            raise KeyError(f"Agent {agent_id} not found")
+        
+        all_tasks = [task for task in task_service.list_tasks() if task.target_id == agent_id]
+        total_tasks = len(all_tasks)
+        completed_tasks = len([t for t in all_tasks if str(t.status.value).lower() in ["done", "completed"]])
+        failed_tasks = len([t for t in all_tasks if str(t.status.value).lower() == "failed"])
+        
+        # Dimension 1: Task Completion Rate (30% weight)
+        completion_rate = (completed_tasks / total_tasks * 100) if total_tasks > 0 else 100
+        completion_score = min(completion_rate, 100)
+        
+        # Dimension 2: Response Latency Score (25% weight)
+        latency_ms = asset.latency_ms
+        if latency_ms is None:
+            latency_score = 80
+        elif latency_ms < 100:
+            latency_score = 100
+        elif latency_ms < 500:
+            latency_score = 80
+        else:
+            latency_score = 60
+        
+        # Dimension 3: Error Rate Score (20% weight)
+        error_rate = (failed_tasks / total_tasks) if total_tasks > 0 else 0
+        error_score = max((1 - error_rate) * 100, 0)
+        
+        # Dimension 4: Audit Compliance Score (15% weight)
+        trust_level_scores = {
+            AgentTrustLevel.TRUSTED.value: 100,
+            AgentTrustLevel.PENDING.value: 70,
+            AgentTrustLevel.RESTRICTED.value: 50,
+            AgentTrustLevel.REVOKED.value: 20,
+            AgentTrustLevel.UNKNOWN.value: 50,
+        }
+        audit_score = trust_level_scores.get(str(asset.trust_level.value), 50)
+        
+        # Dimension 5: Historical Stability Score (10% weight)
+        stability_score = asset.success_rate * 100
+        
+        total_score = (
+            completion_score * 0.30 +
+            latency_score * 0.25 +
+            error_score * 0.20 +
+            audit_score * 0.15 +
+            stability_score * 0.10
+        )
+        
+        return {
+            "total_score": round(total_score, 2),
+            "dimensions": [
+                {
+                    "id": "completion",
+                    "label": "Task Completion",
+                    "score": round(completion_score, 2),
+                    "weight": 0.30,
+                    "description": f"Completed {completed_tasks}/{total_tasks} tasks"
+                },
+                {
+                    "id": "latency",
+                    "label": "Latency",
+                    "score": round(latency_score, 2),
+                    "weight": 0.25,
+                    "description": f"Avg Latency {latency_ms or 'N/A'}ms"
+                },
+                {
+                    "id": "error_rate",
+                    "label": "Error Rate",
+                    "score": round(error_score, 2),
+                    "weight": 0.20,
+                    "description": f"Failure rate {error_rate*100:.1f}%"
+                },
+                {
+                    "id": "audit",
+                    "label": "Audit Compliance",
+                    "score": round(audit_score, 2),
+                    "weight": 0.15,
+                    "description": f"Trust Level: {asset.trust_level}"
+                },
+                {
+                    "id": "stability",
+                    "label": "Stability",
+                    "score": round(stability_score, 2),
+                    "weight": 0.10,
+                    "description": f"Success rate {asset.success_rate*100:.1f}%"
+                },
+            ]
+        }
+
+    def get_statistics(
+        self,
+        agent_id: str,
+        task_service: Any,
+    ) -> Dict[str, Any]:
+        """Aggregate performance statistics for an agent."""
+        all_tasks = [task for task in task_service.list_tasks() if task.target_id == agent_id]
+        total_tasks = len(all_tasks)
+        completed_tasks = len([t for t in all_tasks if str(t.status.value).lower() in ["done", "completed"]])
+        failed_tasks = len([t for t in all_tasks if str(t.status.value).lower() == "failed"])
+        in_progress_tasks = len([t for t in all_tasks if str(t.status.value).lower() == "in_progress"])
+        pending_tasks = total_tasks - completed_tasks - failed_tasks - in_progress_tasks
+        
+        # Avg completion time
+        completed_with_time = [
+            t for t in all_tasks 
+            if str(t.status.value).lower() in ["done", "completed"] and t.started_at and t.completed_at
+        ]
+        avg_completion_time = (
+            sum((t.completed_at - t.started_at).total_seconds() for t in completed_with_time) / len(completed_with_time)
+            if completed_with_time else 0
+        )
+
+        return {
+            "total_tasks": total_tasks,
+            "completed_tasks": completed_tasks,
+            "failed_tasks": failed_tasks,
+            "in_progress_tasks": in_progress_tasks,
+            "pending_tasks": max(0, pending_tasks),
+            "avg_completion_time": round(avg_completion_time, 2),
+            "uptime_percentage": 95.0, # Placeholder
+        }
+
+    def query_agent_tasks(
+        self,
+        agent_id: str,
+        task_service: Any,
+        *,
+        status_filter: Optional[str] = None,
+        page: int = 1,
+        page_size: int = 20,
+        sort_by: str = "started_at",
+        order: str = "desc",
+        search: str = "",
+        task_type: str = "",
+        originator: str = "",
+        date_from: Optional[datetime] = None,
+        date_to: Optional[datetime] = None,
+    ) -> Dict[str, Any]:
+        """
+        Advanced task querying with filtering and pagination.
+        Migrated from web_console for zero-logic UI.
+        """
+        # 1. Base query
+        tasks = [task for task in task_service.list_tasks() if task.target_id == agent_id]
+        
+        # 2. Status filter
+        if status_filter:
+            statuses = [s.strip().lower() for s in status_filter.split(",")]
+            tasks = [t for t in tasks if str(t.status.value).lower() in statuses]
+            
+        # 3. Search
+        if search:
+            search_lower = search.lower()
+            tasks = [
+                t for t in tasks
+                if search_lower in (t.title or "").lower() or search_lower in (t.task_id or "").lower()
+            ]
+            
+        # 4. Dimension filters
+        if task_type:
+            tasks = [t for t in tasks if str(t.task_type.value).lower() == task_type.lower()]
+        if originator:
+            tasks = [t for t in tasks if t.originator_id == originator]
+            
+        # 5. Date filters
+        if date_from:
+            tasks = [t for t in tasks if t.started_at and t.started_at >= date_from]
+        if date_to:
+            tasks = [t for t in tasks if t.started_at and t.started_at <= date_to]
+            
+        # 6. Sorting
+        reverse = order.lower() == "desc"
+        if sort_by == "completed_at":
+            tasks.sort(key=lambda t: t.completed_at or datetime.min.replace(tzinfo=timezone.utc), reverse=reverse)
+        elif sort_by == "priority":
+            tasks.sort(key=lambda t: getattr(t, 'priority', 0), reverse=reverse)
+        else: # Default: started_at
+            tasks.sort(key=lambda t: t.started_at or datetime.min.replace(tzinfo=timezone.utc), reverse=reverse)
+            
+        # 7. Pagination
+        total = len(tasks)
+        total_pages = (total + page_size - 1) // page_size if page_size > 0 else 0
+        start_idx = (page - 1) * page_size
+        end_idx = start_idx + page_size
+        paginated_tasks = tasks[start_idx:end_idx]
+        
+        return {
+            "tasks": paginated_tasks,
+            "pagination": {
+                "page": page,
+                "page_size": page_size,
+                "total": total,
+                "total_pages": total_pages,
+            }
+        }
+
 
 __all__ = [
     "AgentCoordinationService",
@@ -319,3 +531,26 @@ __all__ = [
     "AgentStatus",
     "AgentTrustLevel",
 ]
+
+
+# Global singleton instance for agents service
+_default_service: AgentCoordinationService | None = None
+
+
+def get_service() -> AgentCoordinationService:
+    """Standard service factory function for launcher assembly.
+    
+    Returns the global AgentCoordinationService instance, creating it if necessary.
+    This function is required by the SystemAssembler to initialize the agents service.
+    
+    Note: This creates a minimal instance. For full initialization with dependencies,
+    use the AgentCoordinationService constructor directly or initialize via the kernel.
+    """
+    global _default_service
+    if _default_service is None:
+        # Create a minimal instance - will be properly initialized by kernel
+        _default_service = AgentCoordinationService(
+            manager=None,  # Will use default AgentManager
+            transcript_store=None,  # Will be set by kernel
+        )
+    return _default_service

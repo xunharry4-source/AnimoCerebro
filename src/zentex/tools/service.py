@@ -10,8 +10,8 @@ Provides a unified interface for agent reasoning loops to discover and invoke ac
 import logging
 from typing import Any, Dict, List, Optional
 
-from zentex.core.execution_registry import ExecutionDomainRegistry
-from zentex.core.execution_spec import ExecutionDomainPlugin
+from zentex.plugins.execution import ExecutionDomainPlugin
+from zentex.plugins.service import ExecutionDomainRegistry
 
 logger = logging.getLogger(__name__)
 

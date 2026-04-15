@@ -1,107 +1,193 @@
+"""
+Events Router Module (v4)
+WebSocket event streaming endpoints
+Facade-First route layer extracted from events.py
+"""
+
 from __future__ import annotations
 
 import asyncio
+import logging
+from typing import Optional, Any
 
-from fastapi import APIRouter, WebSocket, WebSocketDisconnect
+from fastapi import APIRouter, WebSocket, Query, Request, WebSocketDisconnect
 
-from typing import Any, Dict, List, Optional
-from zentex.web_console.contracts.runtime import TranscriptStreamMessage
-from zentex.web_console.dependencies import get_weight_assembler
-from zentex.web_console.services.overview import build_overview_payload
-from zentex.web_console.transcript_serialization import serialize_transcript_entry
+from .events_commons import (
+    get_or_create_event_session,
+    get_active_connections,
+    get_event_statistics,
+    wait_for_disconnect,
+    setup_transcript_stream,
+)
+from .events_handlers import (
+    validate_event_stream_session,
+    send_event_message,
+    process_transcript_entries,
+    wait_for_new_entries,
+    build_overview_update,
+    handle_stream_error,
+)
 
+logger = logging.getLogger(__name__)
 
 router = APIRouter()
 
 
-async def _wait_for_disconnect(websocket: WebSocket) -> None:
-    while True:
-        message = await websocket.receive()
-        if message.get("type") == "websocket.disconnect":
-            return
-
+# ============================================================================
+# WebSocket Endpoints
+# ============================================================================
 
 @router.websocket("/events/stream")
-async def stream_events(websocket: WebSocket) -> None:
+async def stream_events(websocket: WebSocket, last_entry_id: Optional[str] = Query(None)):
+    """
+    WebSocket endpoint for real-time event streaming
+    
+    Streams transcript entries and overview updates as they become available.
+    
+    Query Parameters:
+        last_entry_id: Optional entry ID to start streaming from (delta mode)
+        
+    WebSocket Message Format:
+        {
+            "event": {...transcript entry...},
+            "overview": {...system overview...}
+        }
+    
+    Usage:
+        ws://localhost:8000/api/web/events/stream
+        ws://localhost:8000/api/web/events/stream?last_entry_id=entry-123
+    """
     await websocket.accept()
-    runtime = getattr(websocket.app.state, "runtime", None)
-    if runtime is None:
-        await websocket.close(code=1011, reason="BrainRuntime is not attached")
+    
+    # Initialize session
+    session = await get_or_create_event_session(websocket)
+    if not await validate_event_stream_session(session):
+        await websocket.close(code=1011, reason="Session initialization failed")
         return
-
-    session = getattr(websocket.app.state, "session", None)
-    if session is not None and not hasattr(session, "advance_turn"): # Duck type check
-        session = None
-
-    last_entry_id = websocket.query_params.get("last_entry_id")
-    transcript_store = runtime.transcript_store
-    current_entries = transcript_store.get_entries_snapshot()
-    if last_entry_id:
-        last_sent_index = next(
-            (index for index, entry in enumerate(current_entries) if entry.entry_id == last_entry_id),
-            len(current_entries) - 1,
-        )
-    else:
-        # Real-time stream is delta-only by default. Historical events are already
-        # available via `/api/web/overview.recent_events` and replay endpoints.
-        last_sent_index = len(current_entries) - 1
-    last_seen_revision = transcript_store.get_revision()
-    disconnect_task = asyncio.create_task(_wait_for_disconnect(websocket))
-
+    
+    # Setup transcript tracking
+    last_sent_index, last_seen_revision = await setup_transcript_stream(session, last_entry_id)
+    if last_sent_index < 0:
+        await websocket.close(code=1011, reason="Failed to setup transcript stream")
+        return
+    
+    # Create disconnect monitoring task
+    disconnect_task = asyncio.create_task(wait_for_disconnect(websocket))
+    
     try:
         while True:
+            # Check if client disconnected
             if disconnect_task.done():
+                logger.info("Client disconnected, closing stream")
                 return
-
-            current_entries = transcript_store.get_entries_snapshot()
+            
+            # Get current state
+            current_entries = session.transcript_store.get_entries_snapshot()
             newest_index = len(current_entries) - 1
+            
+            # Wait for new entries if none available
             if newest_index <= last_sent_index:
-                revision_wait_task = asyncio.create_task(asyncio.to_thread(
-                    transcript_store.wait_for_revision_after,
+                updated = await wait_for_new_entries(
+                    websocket,
+                    session.transcript_store,
                     last_seen_revision,
-                    3.0,
-                ))
-                done, pending = await asyncio.wait(
-                    {revision_wait_task, disconnect_task},
-                    return_when=asyncio.FIRST_COMPLETED,
+                    timeout=3.0
                 )
-                if disconnect_task in done:
-                    # Client disconnected — cancel the revision wait and exit.
-                    # Never cancel disconnect_task here; it already finished.
-                    revision_wait_task.cancel()
-                    return
-                # revision_wait_task completed first.
-                # disconnect_task is still pending — leave it alive for the
-                # remainder of this connection's lifetime.
-                try:
-                    updated = revision_wait_task.result()
-                except Exception:
-                    updated = False
-                if updated:
-                    last_seen_revision = transcript_store.get_revision()
+                
+                if not updated:
+                    # Timeout or disconnect
+                    if disconnect_task.done():
+                        return
+                    continue
+                
+                last_seen_revision = session.transcript_store.get_revision()
                 continue
-
-            if session is None and getattr(websocket.app.state, "session", None) is not None:
-                session = getattr(websocket.app.state, "session")
-
-            overview = build_overview_payload(
-                runtime,
-                session,
-                get_weight_assembler(websocket.app),
-            )
-            for entry in current_entries[last_sent_index + 1 :]:
-                if disconnect_task.done():
-                    return
-                message = TranscriptStreamMessage(
-                    event=serialize_transcript_entry(entry),
-                    overview=overview,
-                )
-                await websocket.send_json(message.model_dump(mode="json"))
-            last_sent_index = newest_index
-            last_seen_revision = transcript_store.get_revision()
-    except (WebSocketDisconnect, RuntimeError):
+            
+            # Update session reference if changed
+            if session.session is None and hasattr(websocket.app.state, "session"):
+                new_session = getattr(websocket.app.state, "session", None)
+                if new_session is not None and hasattr(new_session, "advance_turn"):
+                    session.session = new_session
+            
+            # Build overview and send entries
+            overview = await build_overview_update(session, websocket)
+            if overview is None:
+                logger.warning("Failed to build overview, skipping update")
+                continue
+            
+            # Process new entries
+            if newest_index > last_sent_index:
+                from zentex.web_console.contracts.runtime import TranscriptStreamMessage
+                from zentex.web_console.transcript_serialization import serialize_transcript_entry
+                
+                for entry in current_entries[last_sent_index + 1:]:
+                    if disconnect_task.done():
+                        return
+                    
+                    try:
+                        message = TranscriptStreamMessage(
+                            event=serialize_transcript_entry(entry),
+                            overview=overview,
+                        )
+                        success = await send_event_message(websocket, message)
+                        if not success:
+                            logger.warning("Failed to send message, stopping stream")
+                            return
+                    except Exception as e:
+                        logger.error(f"Error sending entry: {e}")
+                        return
+                
+                last_sent_index = newest_index
+                last_seen_revision = session.transcript_store.get_revision()
+                
+    except WebSocketDisconnect:
+        logger.info("WebSocket disconnected")
         return
-    except Exception:
+        
+    except RuntimeError as e:
+        logger.error(f"Runtime error in stream: {e}")
         return
+        
+    except Exception as e:
+        handled = await handle_stream_error(websocket, e)
+        if not handled:
+            return
+            
     finally:
         disconnect_task.cancel()
+        try:
+            await websocket.close()
+        except Exception:
+            pass
+
+
+# ============================================================================
+# REST Endpoints (Query)
+# ============================================================================
+
+@router.get("/events/status")
+async def get_events_status(request: Request) -> dict:
+    """Get current event stream status and statistics"""
+    return await get_event_statistics(request)
+
+
+@router.get("/events/connections")
+async def list_active_connections(request: Request) -> dict:
+    """List all active WebSocket connections"""
+    connections = await get_active_connections(request)
+    return {
+        "connections": connections,
+        "count": len(connections),
+        "status": "ok"
+    }
+
+
+@router.get("/events/healthcheck")
+async def events_healthcheck() -> dict:
+    """Health check endpoint for event stream service"""
+    return {
+        "status": "healthy",
+        "service": "events",
+        "version": "4.0",
+        "component": "transcript-stream"
+    }

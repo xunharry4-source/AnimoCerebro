@@ -16,14 +16,15 @@ from zentex.cognition.simulation import (
     ScenarioBranch,
     SimulationBundle,
 )
-from zentex.core.simulation_spec import SimulationIntent
+from zentex.plugins.simulation import SimulationIntent
 from zentex.cognition.social_mind import (
     CommunicationFitProfile,
     InteractionMindEngine,
     InteractionMindModel,
     InteractionMindState,
 )
-from zentex.core.model_provider_spec import ModelProviderSpec
+from zentex.foundation.specs.model_provider import ModelProviderSpec
+from zentex.llm.service import LLMService
 
 logger = logging.getLogger(__name__)
 
@@ -37,19 +38,41 @@ class CognitionService:
 
     def __init__(
         self,
-        model_provider: ModelProviderSpec,
+        model_provider: ModelProviderSpec | None = None,
+        llm_service: LLMService | None = None,
+        model_provider_key: str | None = None,
         simulation_plugins: Optional[List[Any]] = None,
         brain_scope: str = "zentex.runtime"
     ) -> None:
+        if not simulation_plugins:
+            raise RuntimeError("CognitionService requires at least one simulation plugin.")
         self._simulation = CounterfactualSimulationEngine(
+            llm_service=llm_service,
             model_provider=model_provider,
-            simulation_plugins=simulation_plugins or []
+            model_provider_key=model_provider_key,
+            simulation_plugins=simulation_plugins
         )
         self._social_mind = InteractionMindEngine(
+            llm_service=llm_service,
             model_provider=model_provider,
+            model_provider_key=model_provider_key,
             brain_scope=brain_scope
         )
         logger.info("CognitionService initialized")
+
+    @property
+    def interaction_mind_engine(self) -> InteractionMindEngine:
+        """Public access to the interaction mind engine (social mind)."""
+        return self._social_mind
+
+    @property
+    def simulation_engine(self) -> Any:
+        """Public access to the counterfactual simulation engine.
+        
+        This property is used by kernel.service.simulation_engine to expose
+        the simulation engine to web console routers.
+        """
+        return self._simulation
 
     def submit_simulation(
         self,
@@ -127,15 +150,71 @@ def get_cognition_service() -> CognitionService:
     return _default_service
 
 
+def get_service() -> CognitionService:
+    """Standard service factory function for launcher assembly.
+    
+    Lazily initializes CognitionService with default configuration if not already initialized.
+    This ensures the service is always available when requested by the launcher.
+    
+    Returns:
+        CognitionService instance (never None)
+    """
+    global _default_service
+    if _default_service is None:
+        # Lazy initialization with minimal defaults
+        # In production, this should be properly configured via init_cognition_service()
+        logger.warning(
+            "CognitionService not explicitly initialized. "
+            "Auto-initializing with default simulation plugin. "
+            "For production, call init_cognition_service() with proper configuration."
+        )
+        try:
+            # Create a minimal default simulation plugin
+            from zentex.plugins.simulation import SimulationDomainPlugin, SimulationIntent, SimulationResult
+            
+            class DefaultSimulationPlugin(SimulationDomainPlugin):
+                """Minimal fallback simulation plugin for development."""
+                plugin_id: str = "default_simulation"
+                version: str = "1.0.0"
+                supported_domains: list[str] = ["general"]
+                
+                def simulate_action(self, intent: SimulationIntent, context: dict) -> SimulationResult:
+                    return SimulationResult(
+                        is_safe=True,
+                        predicted_impacts=["Default simulation - no specific impacts predicted"],
+                        simulated_by="default_simulation",
+                    )
+            
+            _default_service = CognitionService(
+                model_provider=None,
+                llm_service=None,
+                simulation_plugins=[DefaultSimulationPlugin()],
+                brain_scope="zentex.cognition"
+            )
+            logger.info("✓ CognitionService auto-initialized with default simulation plugin")
+        except Exception as exc:
+            logger.error(f"Failed to auto-initialize CognitionService: {exc}", exc_info=True)
+            raise RuntimeError(
+                f"CognitionService initialization failed: {exc}. "
+                "Please call init_cognition_service() with proper configuration."
+            ) from exc
+    
+    return _default_service
+
+
 def init_cognition_service(
-    model_provider: ModelProviderSpec,
+    model_provider: ModelProviderSpec | None = None,
+    llm_service: LLMService | None = None,
+    model_provider_key: str | None = None,
     simulation_plugins: Optional[List[Any]] = None,
-    brain_scope: str = "zentex.runtime"
+    brain_scope: str = "zentex.cognition"
 ) -> CognitionService:
     """Initialize the global CognitionService with required dependencies."""
     global _default_service
     _default_service = CognitionService(
         model_provider=model_provider,
+        llm_service=llm_service,
+        model_provider_key=model_provider_key,
         simulation_plugins=simulation_plugins,
         brain_scope=brain_scope
     )

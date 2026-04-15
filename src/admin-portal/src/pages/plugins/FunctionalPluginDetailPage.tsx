@@ -22,7 +22,13 @@ import {
 } from "@mui/material";
 import ArrowBackIcon from "@mui/icons-material/ArrowBack";
 import HistoryIcon from "@mui/icons-material/History";
-import { formatLocalizedDateTime, formatPluginStatus, pluginManagementCopy, type Locale } from "../../i18n";
+import {
+  formatLocalizedDateTime,
+  formatPluginOperationalStatus,
+  formatPluginStatus,
+  pluginManagementCopy,
+  type Locale,
+} from "../../i18n";
 import {
   fetchFunctionalPluginDetail,
   type FunctionalPluginDetailResponse,
@@ -30,7 +36,7 @@ import {
 } from "./pluginsApi";
 
 function getStatusColor(
-  status: FunctionalPluginDetailResponse["plugin"]["status"],
+  status: FunctionalPluginDetailResponse["plugin"]["lifecycle_status"],
 ): "default" | "success" | "warning" | "error" | "info" {
   switch (status) {
     case "active":
@@ -41,6 +47,21 @@ function getStatusColor(
       return "error";
     case "sandbox_verified":
       return "info";
+    default:
+      return "default";
+  }
+}
+
+function getOperationalStatusColor(
+  status: FunctionalPluginDetailResponse["plugin"]["operational_status"],
+): "default" | "success" | "warning" | "error" {
+  switch (status) {
+    case "enabled":
+      return "success";
+    case "abnormal":
+      return "warning";
+    case "unavailable":
+      return "error";
     default:
       return "default";
   }
@@ -64,7 +85,7 @@ function HistoryTable({
         <TableHead>
           <TableRow>
             <TableCell>{t("plugins.version")}</TableCell>
-            <TableCell>{t("plugins.lifecycleStatus")}</TableCell>
+            <TableCell>{t("plugins.upgradeStatus")}</TableCell>
             <TableCell>{pluginManagementCopy[locale].startedAt}</TableCell>
             <TableCell>{pluginManagementCopy[locale].updatedAt}</TableCell>
             <TableCell>{pluginManagementCopy[locale].rollbackConditions}</TableCell>
@@ -81,7 +102,7 @@ function HistoryTable({
                 </Typography>
               </TableCell>
               <TableCell>
-                <Chip size="small" label={item.status} variant="outlined" />
+                <Chip size="small" label={item.upgrade_status} variant="outlined" />
               </TableCell>
               <TableCell>{formatLocalizedDateTime(item.started_at, locale)}</TableCell>
               <TableCell>{formatLocalizedDateTime(item.completed_at, locale)}</TableCell>
@@ -117,6 +138,7 @@ function RelatedCognitiveTable({
             <TableCell>{t("plugins.toolId")}</TableCell>
             <TableCell>{t("plugins.version")}</TableCell>
             <TableCell>{t("plugins.lifecycleStatus")}</TableCell>
+            <TableCell>{t("plugins.status")}</TableCell>
             <TableCell>{t("plugins.description")}</TableCell>
             <TableCell align="right">{t("plugins.actions")}</TableCell>
           </TableRow>
@@ -132,7 +154,10 @@ function RelatedCognitiveTable({
               </TableCell>
               <TableCell>{row.plugin.version}</TableCell>
               <TableCell>
-                <Chip size="small" label={formatPluginStatus(row.plugin.status, locale)} color={getStatusColor(row.plugin.status)} variant="outlined" />
+                <Chip size="small" label={formatPluginStatus(row.plugin.lifecycle_status, locale)} color={getStatusColor(row.plugin.lifecycle_status)} variant="outlined" />
+              </TableCell>
+              <TableCell>
+                <Chip size="small" label={formatPluginOperationalStatus(row.plugin.operational_status, locale)} color={getOperationalStatusColor(row.plugin.operational_status)} variant="outlined" />
               </TableCell>
               <TableCell>
                 <Typography variant="body2" noWrap sx={{ maxWidth: 300 }}>
@@ -240,7 +265,8 @@ export default function FunctionalPluginDetailPage() {
             <Stack direction="row" spacing={1} flexWrap="wrap" useFlexGap>
               <Chip label={detail.plugin.plugin_kind} variant="outlined" />
               <Chip label={detail.plugin.version} variant="outlined" />
-              <Chip label={formatPluginStatus(detail.plugin.status, locale)} color={getStatusColor(detail.plugin.status)} />
+              <Chip label={formatPluginStatus(detail.plugin.lifecycle_status, locale)} color={getStatusColor(detail.plugin.lifecycle_status)} />
+              <Chip label={formatPluginOperationalStatus(detail.plugin.operational_status, locale)} color={getOperationalStatusColor(detail.plugin.operational_status)} />
             </Stack>
             <Typography variant="body1" color="text.secondary">
               {detail.plugin.description}

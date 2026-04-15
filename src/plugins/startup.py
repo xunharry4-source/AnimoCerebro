@@ -36,6 +36,7 @@ ALLOWED_GROUP_DIRS = (
     "reflection",
     "sensory",
     "simulation",
+    "tasks",
     "weights",
 )
 

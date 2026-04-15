@@ -20,12 +20,12 @@ install:
 	@echo "  Starting one-click installation..."
 	@echo "=========================================="
 	@# Install system dependencies (swig for faiss-cpu)
-	@if [ "$$OSTYPE" = "darwin"* ]; then \
+	@if [[ "$$OSTYPE" == darwin* ]]; then \
 		if ! command -v swig >/dev/null 2>&1; then \
 			echo ">>> Installing swig via Homebrew..."; \
 			brew install swig || true; \
 		fi; \
-	elif [ "$$OSTYPE" = "linux-gnu"* ]; then \
+	elif [[ "$$OSTYPE" == linux-gnu* ]]; then \
 		if ! command -v swig >/dev/null 2>&1; then \
 			echo ">>> Installing swig via apt-get..."; \
 			sudo apt-get update -qq && sudo apt-get install -y -qq swig || true; \

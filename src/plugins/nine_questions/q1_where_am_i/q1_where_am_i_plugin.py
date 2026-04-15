@@ -6,20 +6,20 @@ from time import perf_counter
 from typing import Any, Dict, List
 from uuid import uuid4
 
-from zentex.core.model_provider_spec import ModelProviderCallerContext, ModelProviderSpec
-from zentex.core.models import LogicalCognitiveToolSpec
-from zentex.core.plugin_base import PluginHealthStatus, PluginLifecycleStatus
-from zentex.runtime.cognitive_tools import CognitiveToolResult
-from zentex.runtime.transcript import BrainTranscriptEntryType, BrainTranscriptStore
+from pydantic import BaseModel, ConfigDict
+
+from plugins.shared.cognitive_result import CognitiveToolResult
+from zentex.common.plugin_ids import NINE_QUESTION_Q1
+from zentex.plugins.models import PluginLifecycleStatus
 
 from plugins.nine_questions.q1_where_am_i.compression_budget import LocalCompressionBudget
 from plugins.nine_questions.q1_where_am_i.llm_upgrade import build_q1_upgrade_payload
 from plugins.nine_questions.q1_where_am_i.models import WorkspaceDomainInference
 # Decoupled: Inputs come from sensory plugins, not direct snapshot extract
-from zentex.common.plugin_registry import PluginNotBoundError
-from zentex.core.plugin_family import HostTelemetryPluginSpec, SensoryPluginSpec
-from zentex.common.plugin_registry import PluginNotBoundError
-from zentex.core.plugin_family import SensoryPluginSpec
+from zentex.plugins.service import (
+    query_enabled_cognitive_plugin_functionals,
+    unwrap_plugin_feedback_result,
+)
 
 QUESTION_REF = "我在哪"
 
@@ -39,7 +39,67 @@ from zentex.common.nine_questions_shared import (
 logger = logging.getLogger(__name__)
 
 
-class Q1WhereAmIPlugin(LogicalCognitiveToolSpec):
+def _infer_host_runtime_type(physical_host_state: Dict[str, Any]) -> tuple[str, str]:
+    """
+    Infer whether current runtime host is likely a server or a regular computer.
+
+    This is a deterministic heuristic to guarantee Q1 can answer the host type even
+    when model output is brief or omits this distinction.
+    """
+    platform_text = str(physical_host_state.get("platform") or "").lower()
+    hostname = str(physical_host_state.get("hostname") or "").lower()
+    cwd_text = str(physical_host_state.get("cwd") or "").lower()
+
+    server_markers = [
+        "linux",
+        "ubuntu",
+        "debian",
+        "centos",
+        "red hat",
+        "alpine",
+        "server",
+        "prod",
+        "staging",
+        "k8s",
+        "kubernetes",
+        "container",
+    ]
+    desktop_markers = [
+        "darwin",
+        "macos",
+        "windows",
+        "desktop",
+        "laptop",
+        "notebook",
+    ]
+
+    server_hits = sum(1 for token in server_markers if token in platform_text or token in hostname or token in cwd_text)
+    desktop_hits = sum(1 for token in desktop_markers if token in platform_text or token in hostname)
+
+    if server_hits >= 2 and server_hits >= desktop_hits:
+        return "服务器", "平台/主机名特征更接近服务端运行环境"
+    if desktop_hits >= 1 and desktop_hits > server_hits:
+        return "普通电脑", "平台特征更接近个人电脑（桌面或笔记本）"
+    if "darwin" in platform_text or "macos" in platform_text:
+        return "普通电脑", "检测到 macOS 运行环境"
+    if "windows" in platform_text:
+        return "普通电脑", "检测到 Windows 运行环境"
+    if "linux" in platform_text:
+        return "服务器", "检测到 Linux 运行环境（默认按服务器场景判定）"
+    return "未知", "宿主机特征不足，无法稳定区分服务器或普通电脑"
+
+
+class Q1WhereAmIPlugin(BaseModel):
+    model_config = ConfigDict(extra="allow")
+
+    plugin_id: str = NINE_QUESTION_Q1
+    version: str = "1.0.0"
+    feature_code: str = "nine_questions.q1"
+    display_name: str = "Q1: Where am I?"
+    behavior_key: str = "nine_questions"
+    lifecycle_status: str = PluginLifecycleStatus.ACTIVE.value
+    health_status: str = "healthy"
+    operational_status: str = "enabled"
     """
     Q1: 我在哪 (workspace domain inference)
 
@@ -59,23 +119,8 @@ class Q1WhereAmIPlugin(LogicalCognitiveToolSpec):
         # 1. G14 Sensory Chain Implementation via Registry
         # This replaces: extract_q1_local_inputs(context)
         local_inputs: Dict[str, Any]
-        registry = context.get("plugin_registry")
+        plugin_service = context.get("plugin_service")
         sensory_chain_ok = False
-        if registry is not None:
-            try:
-                workspace_sensor: SensoryPluginSpec = registry.get_bound_plugin(SensoryPluginSpec)
-                raw_data = context.get("context_snapshot", {})
-                ingested = workspace_sensor.ingest(raw_data)
-                sanitized = workspace_sensor.sanitize(ingested)
-                local_inputs = workspace_sensor.interpret(sanitized)
-                sensory_chain_ok = True
-            except PluginNotBoundError:
-                # SensoryPluginSpec not bound in this registry (e.g. dev-server uses a
-                # CognitiveToolSpec-only registry). Fall through to the direct snapshot path.
-                logger.debug("G14 Sensory Chain: SensoryPluginSpec not bound, using context_snapshot fallback")
-            except Exception as exc:
-                logger.error(f"G14 Sensory Chain Break: {exc}")
-                raise RuntimeError(f"Q1 Ingestion Failed: {exc}") from exc
         if not sensory_chain_ok:
             snapshot = context.get("context_snapshot", {}) or {}
             structure = snapshot.get("workspace_structure_analysis", {}) or {}
@@ -89,32 +134,66 @@ class Q1WhereAmIPlugin(LogicalCognitiveToolSpec):
                 "risk_markers": None,
             }
 
-        host_telemetry_plugin = context.get("host_telemetry_plugin")
-        if host_telemetry_plugin is None and registry is not None:
+        if plugin_service is not None:
+            raw_signal: Any = None
+            sanitized_signal: Any = None
             try:
-                host_telemetry_plugin = registry.get_bound_plugin(HostTelemetryPluginSpec)
-            except Exception:
-                host_telemetry_plugin = None
-        if host_telemetry_plugin is not None and callable(
-            getattr(host_telemetry_plugin, "capture_host_state", None)
-        ):
-            try:
-                captured_host_state = host_telemetry_plugin.capture_host_state(
-                    {
-                        "workspace_root": (
-                            (context.get("context_snapshot", {}) or {}).get("workspace_root")
-                            or (context.get("context_snapshot", {}) or {}).get("cwd")
-                            or context.get("workspace_root")
+                for binding in query_enabled_cognitive_plugin_functionals(plugin_service, self.plugin_id, limit=200):
+                    functional_plugin_id = str(binding.get("plugin_id") or "")
+                    feature_code = str(binding.get("feature_code") or "")
+                    parameters: dict[str, Any]
+                    if feature_code == "sensory.ingest":
+                        parameters = {}
+                    elif feature_code == "sensory.sanitize":
+                        parameters = {"raw_signal": raw_signal or ""}
+                    elif feature_code == "sensory.interpret":
+                        parameters = {"signal": sanitized_signal}
+                    else:
+                        parameters = {
+                            "workspace_root": (
+                                (context.get("context_snapshot", {}) or {}).get("workspace_root")
+                                or (context.get("context_snapshot", {}) or {}).get("cwd")
+                                or context.get("workspace_root")
+                            )
+                        }
+                    feedback = plugin_service.execute_plugin_once_sync(
+                        plugin_id=functional_plugin_id,
+                        task_id=f"{str(context.get('trace_id') or 'q1')}:{functional_plugin_id}",
+                        parameters=parameters,
+                        trace_id=str(context.get("trace_id") or "q1"),
+                        originator_id=str(context.get("session_id") or "unknown-session"),
+                        caller_plugin_id=self.plugin_id,
+                    )
+                    if getattr(feedback, "status", None) != "done":
+                        continue
+                    result = unwrap_plugin_feedback_result(getattr(feedback, "result", None))
+                    if feature_code == "sensory.ingest" and isinstance(result, str):
+                        raw_signal = result
+                        continue
+                    if feature_code == "sensory.sanitize":
+                        sanitized_signal = result
+                        local_inputs["risk_markers"] = list(getattr(result, "redaction_evidence", []) or [])
+                        continue
+                    if feature_code == "sensory.interpret" and result is not None:
+                        local_inputs["environment_event"] = {
+                            "event_type": getattr(result, "event_type", None),
+                            "summary": getattr(result, "summary", None),
+                            "structured_payload": getattr(result, "structured_payload", {}),
+                            "risk_flags": list(getattr(result, "risk_flags", []) or []),
+                            "audit_evidence": list(getattr(result, "audit_evidence", []) or []),
+                        }
+                        local_inputs["interpretation_markers"] = list(
+                            getattr(result, "risk_flags", []) or []
                         )
-                    }
-                )
-                if isinstance(captured_host_state, dict):
-                    merged_host_state = dict(local_inputs.get("physical_host_state") or {})
-                    merged_host_state.update(captured_host_state)
-                    local_inputs["physical_host_state"] = merged_host_state
+                        sensory_chain_ok = True
+                        continue
+                    if isinstance(result, dict):
+                        merged_host_state = dict(local_inputs.get("physical_host_state") or {})
+                        merged_host_state.update(result)
+                        local_inputs["physical_host_state"] = merged_host_state
             except Exception as exc:
-                logger.error("Q1 host telemetry capture failed: %s", exc)
-                raise RuntimeError(f"Q1 Host Telemetry Failed: {exc}") from exc
+                logger.error("Q1 functional plugin execution failed: %s", exc)
+                raise RuntimeError(f"Q1 Functional Plugin Chain Failed: {exc}") from exc
 
         # 2. Local compression budget + three-layer payload assembly.
         # Note: local_inputs is now the dictionary from workspace_sensor.interpret
@@ -225,6 +304,23 @@ class Q1WhereAmIPlugin(LogicalCognitiveToolSpec):
             raise
 
         inference = WorkspaceDomainInference.model_validate(raw)
+
+        # Hard requirement for Q1: explicitly answer whether current host is a server
+        # or a regular computer based on local telemetry.
+        host_type, host_reason = _infer_host_runtime_type(local_inputs.get("physical_host_state") or {})
+        host_line = f"当前运行主机类型判断：{host_type}（{host_reason}）。"
+        updated_reasoning = f"{inference.reasoning_summary.strip()}\n\n{host_line}".strip()
+        updated_uncertainties = list(inference.uncertainties)
+        if host_type == "未知":
+            updated_uncertainties.append("宿主机类型区分存在不确定性（server vs regular computer）")
+        inference = inference.model_copy(
+            update={
+                "reasoning_summary": updated_reasoning,
+                "uncertainties": updated_uncertainties,
+                "host_runtime_type": host_type,
+                "host_runtime_reason": host_reason,
+            }
+        )
         upgrade_payload = build_q1_upgrade_payload(
             baseline_version=self.version,
             inference=inference,
@@ -290,40 +386,14 @@ class Q1WhereAmIPlugin(LogicalCognitiveToolSpec):
 
 def build_q1_where_am_i_plugin(
     *,
-    plugin_id: str = "nine-question-q1-where-am-i",
+    plugin_id: str = NINE_QUESTION_Q1,
     version: str = "1.0.0",
-    status: PluginLifecycleStatus = PluginLifecycleStatus.ACTIVE,
+    lifecycle_status: str | PluginLifecycleStatus = PluginLifecycleStatus.ACTIVE,
 ) -> Q1WhereAmIPlugin:
     return Q1WhereAmIPlugin(
         plugin_id=plugin_id,
         version=version,
         feature_code="nine_questions.q1",
-        is_concurrency_safe=True,
-        status=status,
-        health_status=PluginHealthStatus.HEALTHY,
-        rollback_conditions=["q1_where_am_i_regression"],
-        revocation_reasons=["reserved_for_runtime_audit"],
-        tool_type="nine_question",
-        purpose=(
-            "LLM-backed nine-question Q1: 我在哪 (workspace domain inference) with strict local pre-processing."
-        ),
-        input_schema={"type": "object"},
-        output_schema={
-            "type": "object",
-            "required": [
-                "primary_domain",
-                "secondary_domains",
-                "confidence",
-                "reasoning_summary",
-                "uncertainties",
-                "suggested_first_step",
-            ],
-        },
-        required_context=["context_snapshot", "model_provider", "transcript_store"],
-        trigger_conditions=["inspection"],
+        lifecycle_status=getattr(lifecycle_status, "value", lifecycle_status),
         behavior_key="nine_questions",
-        supports_multiple_plugins=True,
-        is_default_version=True,
-        is_official_release=True,
-        do_not_use_when=["missing_model_provider", "unsafe_external_action"],
     )

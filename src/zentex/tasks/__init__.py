@@ -8,10 +8,10 @@ from zentex.tasks.models import ZentexTask, TaskStatus, TaskType, TaskPriority, 
 from zentex.tasks.service import TaskManagementService
 from zentex.tasks.registry import TaskRegistry
 from zentex.tasks.persistence import TaskPersistence
-from zentex.tasks.decomposer import TaskDecomposerPlugin
-from zentex.tasks.errors import TaskStateError
-from zentex.tasks.interface import TaskServiceInterface
-from zentex.tasks.plugin_registry_llm import create_default_task_plugin_registry
+from zentex.tasks.core.decomposer import TaskDecomposerPlugin
+from zentex.tasks.models.errors import TaskStateError
+from zentex.tasks.core.interface import TaskServiceInterface
+from zentex.tasks.registry.plugin_registry_llm import create_default_task_plugin_registry
 
 logger = logging.getLogger(__name__)
 

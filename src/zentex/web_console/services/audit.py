@@ -1,8 +1,8 @@
 from __future__ import annotations
 
 from datetime import timezone
-from typing import Any, Dict, List, Tuple
-from zentex.runtime.models import BrainTranscriptEntry, BrainTranscriptEntryType
+from typing import Any, Dict, List, Protocol, Tuple
+from zentex.kernel import BrainTranscriptEntry, BrainTranscriptEntryType
 from zentex.web_console.contracts.audit import (
     AuditPagePayload,
     AuditRecordItem,
@@ -14,8 +14,24 @@ from zentex.web_console.contracts.model_provider import ModelProviderTraceItem
 from zentex.web_console.contracts.transcript import TranscriptEventPayload
 
 
+class _TranscriptStoreLike(Protocol):
+    def get_entries_snapshot(self) -> list[BrainTranscriptEntry]: ...
+
+
+def _resolve_transcript_entries(source: Any) -> List[BrainTranscriptEntry]:
+    if hasattr(source, "get_entries_snapshot"):
+        return list(source.get_entries_snapshot())
+    if hasattr(source, "get_transcript_store") and callable(source.get_transcript_store):
+        store = source.get_transcript_store()
+        if hasattr(store, "get_entries_snapshot"):
+            return list(store.get_entries_snapshot())
+    if hasattr(source, "transcript_store") and hasattr(source.transcript_store, "get_entries_snapshot"):
+        return list(source.transcript_store.get_entries_snapshot())
+    raise TypeError("Expected transcript store, runtime, or facade with transcript store access")
+
+
 def build_model_provider_traces(runtime: Any) -> List[ModelProviderTraceItem]:
-    entries: List[BrainTranscriptEntry] = runtime.transcript_store.get_entries_snapshot()
+    entries = _resolve_transcript_entries(runtime)
     entries_by_trace_id: Dict[str, List[BrainTranscriptEntry]] = {}
     for entry in entries:
         entries_by_trace_id.setdefault(entry.trace_id, []).append(entry)

@@ -26,6 +26,7 @@ import Q7EvidencePanel from "../../../components/Q7EvidencePanel";
 import MountedPluginsZone from "../../../components/MountedPluginsZone";
 import LLMTracePanel from "../../../components/LLMTracePanel";
 import NineQuestionIntroCard from "../../../components/NineQuestionIntroCard";
+import Q7DataTabs from "../../../components/Q7DataTabs";
 
 function resolveErrorGuidance(errMsg: string): { title: string; action: string } {
   if (errMsg.includes("No active session") || errMsg.includes("没有活动 session")) {
@@ -128,6 +129,11 @@ export const Q7Detail: React.FC = () => {
       {/* 问题介绍栏目 */}
       <NineQuestionIntroCard questionId="q7" />
 
+      {/* Q7 实际数据详情 Tab 面板 */}
+      <Q7DataTabs 
+        evidence={evidence as any} 
+        inference={inference as any} 
+      />
       <Card variant="outlined">
         <CardContent>
           <Stack direction="row" spacing={1} sx={{ mb: 2 }} useFlexGap flexWrap="wrap">

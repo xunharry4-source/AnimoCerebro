@@ -3,15 +3,15 @@ from time import perf_counter
 from typing import Any, Dict, List, Optional
 from uuid import uuid4
 
-from zentex.core.models import LogicalCognitiveToolSpec
-from zentex.core.plugin_base import PluginLifecycleStatus, PluginHealthStatus
-from zentex.runtime.cognitive_tools import CognitiveToolResult
+from pydantic import BaseModel, ConfigDict
+
+from plugins.shared.cognitive_result import CognitiveToolResult
+from zentex.common.plugin_ids import NINE_QUESTION_Q8
+from zentex.plugins.models import PluginLifecycleStatus
 
 from plugins.nine_questions.q8_what_should_i_do_now.models import (
     Q8InferenceResult,
 )
-# Decoupled: Inputs come from objective strategy plugins
-from zentex.core.plugin_family import ObjectiveSpec
 
 logger = logging.getLogger(__name__)
 
@@ -30,30 +30,35 @@ from zentex.common.nine_questions_shared import (
     require_transcript_store,
     safe_provider_plugin_id,
 )
+from zentex.plugins.service import (
+    execute_enabled_cognitive_plugin_functionals,
+)
 
 
-class WhatShouldIDoNowPlugin(LogicalCognitiveToolSpec):
+class WhatShouldIDoNowPlugin(BaseModel):
+    model_config = ConfigDict(extra="allow")
+
     """
     [LLM MANDATORY] Q8 Phase Plugin.
     Synopsizes Q1-Q7 to generate the current focus and task queue.
     The core decision hub for the Zentex G31A Autonomous Controller.
     """
-    plugin_id: str = "nine_question_q8_decision"
+    plugin_id: str = NINE_QUESTION_Q8
     display_name: str = "Q8: What should I do now? (Decision & Tasking)"
     behavior_key: str = "q8_final_decision"
     version: str = "1.0.0"
     is_concurrency_safe: bool = True
-    status: PluginLifecycleStatus = PluginLifecycleStatus.ACTIVE
-    health_status: PluginHealthStatus = PluginHealthStatus.HEALTHY
+    lifecycle_status: str = PluginLifecycleStatus.ACTIVE.value
+    health_status: str = "healthy"
     rollback_conditions: List[str] = ["unhandled_llm_failure"]
     revocation_reasons: List[str] = []
     tool_type: str = "nine_question"
     purpose: str = "Synthesize current primary objective and task queue under Q1-Q7 constraints."
     input_schema: Dict[str, Any] = {"type": "object"}
     output_schema: Dict[str, Any] = {"type": "object"}
-    required_context: List[str] = ["nine_questions", "persistent_task_state", "plugin_registry", "transcript_store", "model_provider"]
+    required_context: List[str] = ["nine_questions", "persistent_task_state", "plugin_service", "transcript_store", "llm_service"]
     trigger_conditions: List[str] = ["inspection", "always"]
-    do_not_use_when: List[str] = ["missing_model_provider"]
+    do_not_use_when: List[str] = ["missing_llm_service"]
     read_only: bool = True
     side_effect_free: bool = True
     is_default_version: bool = True
@@ -66,19 +71,32 @@ class WhatShouldIDoNowPlugin(LogicalCognitiveToolSpec):
         provider = require_model_provider(context)
         transcript_store = require_transcript_store(context)
         
-        # 1. G-series Objective Strategy Oracle Discovery
-        try:
-             registry = context.get("plugin_registry")
-             if not registry:
-                 raise RuntimeError("Plugin Registry missing from context.")
-             
-             # Locate active objective oracles
-             active_plugins = registry.get_active_plugins()
-             obj_oracles = [p.plugin_id for p in active_plugins if isinstance(p, ObjectiveSpec)]
-             
-        except Exception as exc:
-             logger.error(f"Objective Discovery Failure: {exc}")
-             raise RuntimeError(f"Q8 Decision Path Break: {exc}") from exc
+        plugin_service = context.get("plugin_service")
+        trace_id = str(context.get("trace_id") or f"q8-decision:{uuid4().hex}")
+        session_id = str(context.get("session_id") or "unknown-session")
+        turn_id = str(context.get("turn_id") or "unknown-turn")
+        request_id = str(uuid4())
+        decision_id = str(context.get("decision_id") or f"{turn_id}:{self.plugin_id}")
+
+        functional_objectives: list[dict[str, Any]] = []
+        obj_oracles: list[str] = []
+        if plugin_service is not None:
+            functional_objectives = execute_enabled_cognitive_plugin_functionals(
+                plugin_service,
+                self.plugin_id,
+                default_parameters={
+                    "task_queue": list(context.get("persistent_task_state", []) or []),
+                    "context": dict(context),
+                },
+                trace_id=trace_id,
+                originator_id=session_id,
+                caller_plugin_id=self.plugin_id,
+            )
+            obj_oracles = [
+                str(item.get("plugin_id") or "")
+                for item in functional_objectives
+                if item.get("status") == "done"
+            ]
 
         # 3. Build synthesis prompt
         system_prompt = (
@@ -149,12 +167,6 @@ class WhatShouldIDoNowPlugin(LogicalCognitiveToolSpec):
 核心关注点：物理任务优先级是否匹配活跃策略插件逻辑？
 """
 
-        trace_id = str(context.get("trace_id") or f"q8-decision:{uuid4().hex}")
-        session_id = str(context.get("session_id") or "unknown-session")
-        turn_id = str(context.get("turn_id") or "unknown-turn")
-        request_id = str(uuid4())
-        decision_id = str(context.get("decision_id") or f"{turn_id}:{self.plugin_id}")
-
         # 4. Invoke LLM with strict traceability
         caller_context = build_caller_context(
             invocation_phase="nine_question_q8_decision",
@@ -183,6 +195,14 @@ class WhatShouldIDoNowPlugin(LogicalCognitiveToolSpec):
                     "nine_questions": context.get('nine_questions'),
                     "persistent_task_state": context.get("persistent_task_state"),
                     "active_objectives": obj_oracles,
+                    "functional_objectives": [
+                        {
+                            "plugin_id": item.get("plugin_id"),
+                            "result": item.get("result"),
+                        }
+                        for item in functional_objectives
+                        if item.get("status") == "done"
+                    ],
                 },
             },
         )
@@ -195,6 +215,14 @@ class WhatShouldIDoNowPlugin(LogicalCognitiveToolSpec):
                     "nine_questions": context.get("nine_questions"),
                     "persistent_task_state": context.get("persistent_task_state"),
                     "active_objectives": obj_oracles,
+                    "functional_objectives": [
+                        {
+                            "plugin_id": item.get("plugin_id"),
+                            "result": item.get("result"),
+                        }
+                        for item in functional_objectives
+                        if item.get("status") == "done"
+                    ],
                 },
                 caller_context=caller_context
             )
@@ -271,11 +299,11 @@ class WhatShouldIDoNowPlugin(LogicalCognitiveToolSpec):
 
 def build_q8_what_should_i_do_now_plugin(
     *,
-    plugin_id: str = "nine_question_q8_decision",
-    status: PluginLifecycleStatus = PluginLifecycleStatus.ACTIVE,
+    plugin_id: str = NINE_QUESTION_Q8,
+    lifecycle_status: str | PluginLifecycleStatus = PluginLifecycleStatus.ACTIVE,
 ) -> WhatShouldIDoNowPlugin:
     return WhatShouldIDoNowPlugin(
         plugin_id=plugin_id,
         feature_code="nine_questions.q8",
-        status=status,
+        lifecycle_status=getattr(lifecycle_status, "value", lifecycle_status),
     )

@@ -1,0 +1,5 @@
+{
+  "plugin_id": "task_compensation_workspace_cleanup",
+  "name": "Task Compensation Workspace Cleanup",
+  "description": "Build a safe cleanup compensation plan for task-generated temporary artifacts."
+}

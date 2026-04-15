@@ -1,139 +1,120 @@
 from __future__ import annotations
 
-from typing import Any, Dict, Optional
+from typing import Any, Optional
 
-from pydantic import Field
+from pydantic import BaseModel, ConfigDict, Field, PrivateAttr
 
-from plugins.provider_tools import DEFAULT_PROVIDER_CONFIG_PATH, load_provider_tool_configs
-from zentex.core.model_provider_spec import (
-    ModelProviderAuthError,
+from zentex.foundation.specs.model_provider import (
     ModelProviderCallerContext,
     ModelProviderConfigError,
-    ModelProviderHealthError,
-    ModelProviderParseError,
     ModelProviderRateLimitError,
-    ModelProviderRemoteError,
-    ModelProviderSpec,
-    ModelProviderTimeoutError,
 )
-from zentex.core.plugin_base import PluginHealthStatus, PluginLifecycleStatus
-from zentex.llm.gateway import LLMGateway, LLMTokenUsage
+from zentex.llm.gateway import LLMGateway
+from zentex.plugins.contracts import PluginHealthStatus
+from zentex.plugins.models import PluginLifecycleStatus
+from zentex.plugins.provider_tools import get_default_provider_key, load_provider_tool_configs
 
 
-class ProviderToolsModelProvider(ModelProviderSpec):
+class ProviderToolsModelProvider(BaseModel):
     """
-    ModelProvider plugin backed by `plugins.provider_tools` + `config/provider_tools.yml`.
+    Metadata-backed model provider plugin for provider-tools integration.
 
-    This is the repository-wide single entrypoint for model calls:
-    every upstream component calls `ModelProviderSpec.generate_json()`,
-    and this implementation routes into `zentex.llm.gateway.LLMGateway`.
+    Responsibilities:
+    - expose one configured provider as an active model-provider plugin
+    - source provider_name/api_base/default_model/api_key_env from config/provider_tools.yml
+    - delegate real LLM access to zentex.llm.gateway.LLMGateway
+
+    Non-responsibilities:
+    - it is not an independent LLM transport stack
+    - callers should not treat this plugin as a second official request path
+    - business code should prefer LLMService/LLMGateway as the canonical entrypoint
     """
 
+    model_config = ConfigDict(extra="allow")
+
+    plugin_id: str = "model_provider_tools"
+    version: str = "1.0.0"
+    feature_code: str = "model_provider.tools"
+    display_name: str = "Provider Tools Model Adapter"
+    description: str = "Model provider adapter via provider tools gateway."
+    behavior_key: str = "model_provider_tools"
+    lifecycle_status: str = PluginLifecycleStatus.ACTIVE.value
+    health_status: str = "healthy"
+    operational_status: str = "enabled"
     provider_name: str = Field(default="openai_compat", min_length=1)
-    api_base: str = Field(default="", min_length=1)
-    api_key_env: str = Field(default="", min_length=1)
-    default_model: str = Field(default="", min_length=1)
+    api_base: str = Field(default="https://api.openai.com/v1", min_length=1)
+    api_key_env: str = Field(default="OPENAI_API_KEY", min_length=1)
+    default_model: str = Field(default="stub-json-model", min_length=1)
     timeout_seconds: float = Field(default=30.0, gt=0)
-    health_probe_endpoint: str = Field(default="provider_tools://health", min_length=1)
-    health_status: PluginHealthStatus = PluginHealthStatus.UNKNOWN
+    rollback_conditions: list[str] = Field(default_factory=lambda: ["provider_timeout_spike", "provider_auth_regression"])
+    revocation_reasons: list[str] = Field(default_factory=lambda: ["reserved_for_runtime_audit"])
 
     def __init__(self, **data: Any) -> None:
-        provider_name = str(data.get("provider_name") or "openai_compat").strip()
-        configs = load_provider_tool_configs(DEFAULT_PROVIDER_CONFIG_PATH)
-        if provider_name not in configs:
-            raise ModelProviderConfigError(
-                f"Unknown provider_name for ProviderToolsModelProvider: {provider_name}"
-            )
-        tool_config = configs[provider_name]
-        hydrated = {
-            "provider_name": tool_config.provider_name,
-            "api_base": tool_config.api_base,
-            "api_key_env": tool_config.api_key_env,
-            "default_model": tool_config.default_model,
-            "timeout_seconds": tool_config.timeout_seconds,
-            "health_probe_endpoint": f"{tool_config.api_base.rstrip('/')}/health",
-        }
-        super().__init__(**{**data, **hydrated})
-        object.__setattr__(
-            self,
-            "_gateway",
-            LLMGateway(default_provider_key=self.provider_name),
-        )
-        object.__setattr__(self, "_last_token_usage", LLMTokenUsage())
+        super().__init__(**data)
+        self._gateway = LLMGateway(default_provider_key=self.provider_name)
+        object.__setattr__(self, "_last_token_usage", {"input_tokens": 0, "output_tokens": 0, "total_tokens": 0})
         object.__setattr__(self, "_last_raw_response", {})
         object.__setattr__(self, "_last_model_name", self.default_model)
+
+    _gateway: LLMGateway = PrivateAttr()
 
     def generate_json(
         self,
         prompt: str,
-        context: Dict[str, Any],
-        caller_context: ModelProviderCallerContext,
+        context: dict[str, Any],
+        caller_context: Any,
         *,
         model: Optional[str] = None,
-    ) -> Dict[str, Any]:
-        if not prompt or not prompt.strip():
-            raise ModelProviderConfigError("prompt must not be empty")
-        if not isinstance(caller_context, ModelProviderCallerContext):
-            raise ModelProviderConfigError("caller_context must be a ModelProviderCallerContext")
-
-        call = self._gateway.invoke_generate_json(
+    ) -> dict[str, Any]:
+        normalized_context = self._normalize_caller_context(caller_context)
+        result = self._gateway.invoke_generate_json(
             prompt=prompt,
             context=context,
-            caller_context=caller_context,
+            caller_context=normalized_context,
             provider_key=self.provider_name,
-            model=model,
+            model=str(model or self.default_model),
         )
-        object.__setattr__(self, "_last_token_usage", call.usage)
-        object.__setattr__(self, "_last_raw_response", call.raw_response)
-        object.__setattr__(self, "_last_model_name", call.model)
-        return call.output
+        object.__setattr__(self, "_last_token_usage", result.usage.__dict__)
+        object.__setattr__(self, "_last_raw_response", result.raw_response)
+        object.__setattr__(self, "_last_model_name", result.model)
+        return result.output
 
     def health_probe(self) -> PluginHealthStatus:
         try:
-            call = self._gateway.invoke_generate_json(
+            result = self._gateway.invoke_generate_json(
                 prompt='Respond with {"status":"ok"}',
                 context={},
                 caller_context=ModelProviderCallerContext(
-                    source_module="ProviderToolsModelProvider",
+                    source_module="model_provider.health_probe",
                     invocation_phase="health_probe",
-                    question_driver_refs=[],
-                    decision_id="health_probe",
                 ),
                 provider_key=self.provider_name,
-                model=None,
+                model=self.default_model,
                 temperature=0.0,
                 max_output_tokens=32,
             )
-            object.__setattr__(self, "_last_token_usage", call.usage)
-            object.__setattr__(self, "_last_raw_response", call.raw_response)
-            object.__setattr__(self, "_last_model_name", call.model)
         except ModelProviderRateLimitError:
             return PluginHealthStatus.DEGRADED
-        except ModelProviderAuthError as exc:
-            raise ModelProviderHealthError(
-                f"Provider {self.provider_name} health probe authentication failed: {exc}"
-            ) from exc
-        except (ModelProviderTimeoutError, ModelProviderRemoteError):
-            return PluginHealthStatus.UNHEALTHY
-        except ModelProviderParseError as exc:
-            raise ModelProviderHealthError(
-                f"Provider {self.provider_name} health probe returned invalid JSON: {exc}"
-            ) from exc
-        except Exception:
-            return PluginHealthStatus.UNHEALTHY
+
+        object.__setattr__(self, "_last_token_usage", result.usage.__dict__)
+        object.__setattr__(self, "_last_raw_response", result.raw_response)
+        object.__setattr__(self, "_last_model_name", result.model)
         return PluginHealthStatus.HEALTHY
 
-    @property
-    def last_token_usage(self) -> Dict[str, int]:
-        usage: LLMTokenUsage = getattr(self, "_last_token_usage", LLMTokenUsage())
-        return {
-            "input_tokens": usage.input_tokens,
-            "output_tokens": usage.output_tokens,
-            "total_tokens": usage.total_tokens,
-        }
+    @staticmethod
+    def _normalize_caller_context(caller_context: Any) -> ModelProviderCallerContext:
+        if isinstance(caller_context, ModelProviderCallerContext):
+            return caller_context
+        if isinstance(caller_context, dict):
+            return ModelProviderCallerContext.model_validate(caller_context)
+        raise ModelProviderConfigError("caller_context must be a ModelProviderCallerContext or dict")
 
     @property
-    def last_raw_response(self) -> Dict[str, Any]:
+    def last_token_usage(self) -> dict[str, int]:
+        return dict(getattr(self, "_last_token_usage", {}))
+
+    @property
+    def last_raw_response(self) -> dict[str, Any]:
         payload = getattr(self, "_last_raw_response", {})
         return payload if isinstance(payload, dict) else {}
 
@@ -145,16 +126,25 @@ class ProviderToolsModelProvider(ModelProviderSpec):
 
 def build_default_provider_tools_model_provider(
     *,
-    provider_name: str = "openai_compat",
-    plugin_id: str = "model-provider-openai-compat",
+    provider_name: str | None = None,
+    plugin_id: str = "model_provider_tools",
     version: str = "1.0.0",
 ) -> ProviderToolsModelProvider:
+    resolved_provider_name = str(provider_name or get_default_provider_key()).strip()
+    configs = load_provider_tool_configs()
+    if resolved_provider_name not in configs:
+        available = ", ".join(sorted(configs))
+        raise ModelProviderConfigError(
+            f"Unknown provider_name for model_provider_tools: {resolved_provider_name}. "
+            f"Available providers: {available}"
+        )
+    config = configs[resolved_provider_name]
     return ProviderToolsModelProvider(
         plugin_id=plugin_id,
         version=version,
-        is_concurrency_safe=True,
-        status=PluginLifecycleStatus.ACTIVE,
-        rollback_conditions=["provider_timeout_spike", "provider_auth_regression"],
-        revocation_reasons=["reserved_for_runtime_audit"],
-        provider_name=provider_name,
+        provider_name=resolved_provider_name,
+        api_key_env=config.api_key_env,
+        api_base=config.api_base,
+        default_model=config.default_model,
+        timeout_seconds=config.timeout_seconds,
     )

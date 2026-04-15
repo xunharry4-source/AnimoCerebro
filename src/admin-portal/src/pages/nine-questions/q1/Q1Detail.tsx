@@ -28,6 +28,7 @@ import LLMTracePanel from "../../../components/LLMTracePanel";
 import MountedPluginsZone from "../../../components/MountedPluginsZone";
 import Q1UpgradePanel from "../../../components/Q1UpgradePanel";
 import NineQuestionIntroCard from "../../../components/NineQuestionIntroCard";
+import Q1DataTabs from "../../../components/Q1DataTabs";
 
 // Maps HTTP error context → human-readable guidance
 function resolveErrorGuidance(errMsg: string, t: (key: string) => string): { title: string; action: string } {
@@ -158,6 +159,13 @@ export default function Q1Detail() {
 
       {/* 问题介绍栏目 */}
       <NineQuestionIntroCard questionId={qId} />
+
+      {/* Q1 实际数据详情 Tab 面板 */}
+      <Q1DataTabs 
+        evidence={evidence as any} 
+        inference={inference as any} 
+      />
+
 
       <Card variant="outlined" sx={{ mb: 3 }}>
         <CardContent>

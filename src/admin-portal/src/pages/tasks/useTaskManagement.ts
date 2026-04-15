@@ -1,11 +1,13 @@
 import { useState, useEffect, useRef, useCallback } from 'react';
 import { ZentexTask, TasksByStatus } from './types';
+import { generateTestTasks, groupTasksByStatus } from './testData';
 
 interface UseTaskManagementReturn {
   tasksByStatus: TasksByStatus;
   loading: boolean;
   error: string | null;
   fetchTasks: () => Promise<void>;
+  loadTestTasks: () => void; // Add test data loader
   currentTasks: ZentexTask[];
   tabValue: number;
   setTabValue: (value: number) => void;
@@ -102,6 +104,17 @@ const useTaskManagement = (): UseTaskManagementReturn => {
     };
   }, [fetchTasks]);
 
+  // Load test tasks
+  const loadTestTasks = useCallback(() => {
+    console.log('Loading test tasks...');
+    const testTasks = generateTestTasks();
+    const grouped = groupTasksByStatus(testTasks);
+    setTasksByStatus(grouped);
+    setError(null);
+    setLoading(false);
+    console.log(`Loaded ${testTasks.length} test tasks`);
+  }, []);
+
   useEffect(() => {
     fetchTasks();
     connectWebSocket();
@@ -140,6 +153,7 @@ const useTaskManagement = (): UseTaskManagementReturn => {
     loading,
     error,
     fetchTasks,
+    loadTestTasks, // Export test data loader
     currentTasks,
     tabValue,
     setTabValue

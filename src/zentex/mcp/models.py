@@ -52,7 +52,7 @@ class McpToolRuntimeState(BaseModel):
     tool_name: str
     description: str
     mapped_domain: Literal["cognitive", "execution"]
-    plugin_id: str
+    mcp_id: str
     feature_code: str
     execution_domain: Optional[str] = None
     read_only: bool = True
@@ -75,3 +75,7 @@ class McpServerRuntimeState(BaseModel):
     tool_count: int = 0
     error_message: Optional[str] = None
     tools: List[McpToolRuntimeState] = Field(default_factory=list)
+
+    @property
+    def lifecycle_status(self) -> str:
+        return self.status

@@ -62,7 +62,7 @@ class ZMSPBridge:
         records = self.service.list_managed_records(
             layer=layer,
             limit=limit,
-            status=status,
+            lifecycle_status=lifecycle_status,
             trust_level=trust_level
         )
         

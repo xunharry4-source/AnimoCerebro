@@ -1,54 +1,78 @@
 from __future__ import annotations
 
-from typing import Any, Dict, Optional
+from typing import Any, Optional
 
-from zentex.core.model_provider_spec import (
-    ModelProviderAuthError,
-    ModelProviderCallerContext,
-    ModelProviderConfigError,
-    ModelProviderError,
-    ModelProviderRateLimitError,
-    ModelProviderRemoteError,
-    ModelProviderSpec,
-    ModelProviderTimeoutError,
-)
-from zentex.core.models import CognitiveToolSpec
-from zentex.core.plugin_base import PluginHealthStatus, PluginLifecycleStatus
+from pydantic import BaseModel, ConfigDict
+
+from zentex.common.plugin_ids import COGNITIVE_SEMANTIC_CONFLICT
+from zentex.common.nine_questions_shared import resolve_model_provider_key
+from zentex.foundation.specs.model_provider import ModelProviderCallerContext
+from zentex.plugins.service import execute_enabled_cognitive_plugin_functionals
 from zentex.safety.conflict_engine import CognitiveConflictReport
 
 
-class SemanticConflictPlugin(CognitiveToolSpec):
+class SemanticConflictPlugin(BaseModel):
+    model_config = ConfigDict(extra="allow")
+
+    plugin_id: str = COGNITIVE_SEMANTIC_CONFLICT
+    version: str = "1.0.0"
+    feature_code: str = "cognitive.semantic_conflict"
+    display_name: str = "Semantic Conflict"
+    description: str = "Detect conflicts between goals and identity constraints."
+    behavior_key: str = "cognitive_conflict_detection"
+    lifecycle_status: str = "active"
+    health_status: str = "healthy"
+    operational_status: str = "enabled"
+
     def detect_conflict(
         self,
         *,
-        context: Dict[str, Any],
-        model_provider: ModelProviderSpec,
+        context: dict[str, Any],
+        model_provider: Any,
+        llm_service: Any = None,
     ) -> Optional[CognitiveConflictReport]:
+        plugin_service = context.get("plugin_service")
+        functional_inputs: list[dict[str, Any]] = []
+        if plugin_service is not None:
+            functional_inputs = execute_enabled_cognitive_plugin_functionals(
+                plugin_service,
+                self.plugin_id,
+                default_parameters=dict(context),
+                trace_id=str(context.get("trace_id") or "semantic-conflict"),
+                originator_id=str(context.get("session_id") or "semantic-conflict"),
+                caller_plugin_id=self.plugin_id,
+            )
+        prompt = (
+            "Assess whether the proposed goal conflicts with identity constraints. "
+            "Return JSON with keys has_conflict, severity, suggested_resolution, rationale."
+        )
+        llm_context = {
+            **dict(context),
+            "functional_inputs": functional_inputs,
+        }
         caller_context = ModelProviderCallerContext(
             source_module="CognitiveConflictEngine",
             invocation_phase="semantic_conflict_detection",
-            question_driver_refs=["我是谁", "我现在应该做什么", "我受到哪些约束"],
-            decision_id=context.get("decision_id"),
+            decision_id=str(context.get("decision_id") or "semantic-conflict"),
+            trace_id=str(context.get("trace_id") or "semantic-conflict"),
         )
-        try:
+        if llm_service is not None and hasattr(llm_service, "generate_json"):
+            payload = llm_service.generate_json(
+                prompt=prompt,
+                context=llm_context,
+                caller_context=caller_context,
+                source_module=caller_context.source_module,
+                invocation_phase=caller_context.invocation_phase,
+                decision_id=caller_context.decision_id,
+                model_provider=resolve_model_provider_key(context),
+                metadata={"trace_id": caller_context.trace_id},
+            ).output
+        else:
             payload = model_provider.generate_json(
-                prompt=(
-                    "Assess whether the proposed goal conflicts with identity constraints. "
-                    "Return JSON with keys has_conflict, severity, suggested_resolution, rationale."
-                ),
-                context=context,
+                prompt=prompt,
+                context=llm_context,
                 caller_context=caller_context,
             )
-        except (
-            ModelProviderConfigError,
-            ModelProviderAuthError,
-            ModelProviderTimeoutError,
-            ModelProviderRateLimitError,
-            ModelProviderRemoteError,
-            ModelProviderError,
-        ):
-            raise
-
         if not payload.get("has_conflict"):
             return None
         return CognitiveConflictReport(
@@ -62,32 +86,10 @@ class SemanticConflictPlugin(CognitiveToolSpec):
                 "rationale": payload.get("rationale"),
                 "goal": context.get("goal"),
                 "identity_constraints": context.get("identity_constraints"),
+                "functional_inputs": functional_inputs,
             },
         )
 
 
-def build_semantic_conflict_plugin(
-    *,
-    plugin_id: str = "semantic-conflict",
-    status: PluginLifecycleStatus = PluginLifecycleStatus.ACTIVE,
-) -> SemanticConflictPlugin:
-    return SemanticConflictPlugin(
-        plugin_id=plugin_id,
-        version="1.0.0",
-        is_concurrency_safe=True,
-        status=status,
-        health_status=PluginHealthStatus.HEALTHY,
-        rollback_conditions=["semantic_conflict_false_positive_spike"],
-        revocation_reasons=["reserved_for_runtime_audit"],
-        tool_type="semantic_conflict_detector",
-        purpose="Detect conflicts between active goals and identity constraints with live model inference.",
-        input_schema={"type": "object", "required": ["goal", "identity_constraints"]},
-        output_schema={"type": "object", "required": ["has_conflict"]},
-        required_context=["goal", "identity_constraints"],
-        trigger_conditions=["always"],
-        behavior_key="cognitive_conflict_detection",
-        supports_multiple_plugins=True,
-        is_default_version=True,
-        is_official_release=True,
-        do_not_use_when=["missing_model_provider", "execution_requested"],
-    )
+def build_semantic_conflict_plugin() -> SemanticConflictPlugin:
+    return SemanticConflictPlugin()

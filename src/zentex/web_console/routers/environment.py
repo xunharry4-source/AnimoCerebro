@@ -15,7 +15,6 @@ from typing import Any, Dict, List, Optional
 from fastapi import APIRouter, HTTPException, Query
 
 from zentex.environment import EnvironmentAwarenessService
-from zentex.web_console.dependencies import get_runtime
 
 router = APIRouter(prefix="/api/v1/environment", tags=["environment"])
 

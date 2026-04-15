@@ -215,17 +215,10 @@ class VectorSearchEngine:
         ext = "bin" if backend_type == "faiss" else "pkl"
         self.index_path = self.index_dir / f"vector_index.{ext}"
         
-        if use_mock or SentenceTransformer is None:
-            logger.info("Using MockEmbeddingModel for vector search.")
-            self._model = MockEmbeddingModel()
-        else:
-            try:
-                self._model = SentenceTransformer(model_name, device="cpu")
-            except Exception as e:
-                logger.warning(f"Failed to load embedding model {model_name}: {e}. Falling back to mock.")
-                self._model = MockEmbeddingModel()
-
-        self.dimension = self._model.get_sentence_embedding_dimension()
+        self.dimension = 384  # Default for all-MiniLM-L6-v2
+        self._model = None
+        self._model_name = model_name
+        self._use_mock = use_mock
         self._embedding_cache: Dict[str, np.ndarray] = {}
         self._cache_limit = 1000
         
@@ -248,10 +241,29 @@ class VectorSearchEngine:
             except Exception as e:
                 logger.error(f"Failed to load index: {e}. Starting fresh.")
 
+    def _ensure_model(self):
+        """Lazy load the embedding model."""
+        if self._model is not None:
+            return
+
+        if self._use_mock or SentenceTransformer is None:
+            logger.info("Using MockEmbeddingModel for vector search.")
+            self._model = MockEmbeddingModel(self.dimension)
+        else:
+            try:
+                logger.info(f"Loading SentenceTransformer model: {self._model_name}")
+                self._model = SentenceTransformer(self._model_name, device="cpu")
+                # Update dimension if the actual model differs from requested
+                self.dimension = self._model.get_sentence_embedding_dimension()
+            except Exception as e:
+                logger.warning(f"Failed to load embedding model {self._model_name}: {e}. Falling back to mock.")
+                self._model = MockEmbeddingModel(self.dimension)
+
     def _get_embedding(self, text: str) -> np.ndarray:
         if text in self._embedding_cache:
             return self._embedding_cache[text]
         
+        self._ensure_model()
         embedding = self._model.encode([text])[0]
         embedding_arr = np.array(embedding).astype("float32")
         

@@ -4,11 +4,11 @@ import uuid
 from typing import Any, Dict, Optional
 from typing_extensions import Self
 
-from zentex.core.model_provider_spec import ModelProviderSpec
+from zentex.foundation.specs.model_provider import ModelProviderSpec
 from zentex.learning.budget import ReasoningBudget
 from zentex.learning.directions import LearningDirection, describe_direction
-from zentex.runtime.service import get_runtime_service
-from zentex.runtime.transcript import BrainTranscriptEntryType
+from zentex.kernel import BrainTranscriptEntryType
+from zentex.llm.service import LLMService
 
 LEARNING_SESSION_ID = "learning_engine"
 
@@ -18,6 +18,8 @@ class LearningCycleResult(dict):
     Result of a learning cycle, supporting both dict and attribute access.
     """
     def __getattr__(self, name: str) -> Any:
+        if name == "lifecycle_status":
+            return self.get("status")
         try:
             return self[name]
         except KeyError:
@@ -29,6 +31,8 @@ async def run_learning_cycle(
     store: Optional[Any] = None,
     direction: LearningDirection,
     provider: Optional[ModelProviderSpec] = None,
+    llm_service: Optional[LLMService] = None,
+    model_provider_key: Optional[str] = None,
     budget: Optional[ReasoningBudget] = None,
     load_factor: float = 0.0,
     dry_run: bool = False,
@@ -42,7 +46,7 @@ async def run_learning_cycle(
     meta = describe_direction(direction)
 
     if store is None:
-        store = get_runtime_service().get_transcript_store()
+        raise RuntimeError("store is required for auditable learning runs")
 
     if store:
         store.write_entry(
@@ -86,12 +90,12 @@ async def run_learning_cycle(
         from zentex.learning.g16_pipeline import run_g16_dynamic_tool_self_study
 
         doc_url = (extra_context or {}).get("doc_url")
-        if not doc_url or not provider:
+        if not doc_url or (provider is None and llm_service is None):
             store.write_entry(
                 session_id=LEARNING_SESSION_ID,
                 turn_id=turn_id,
                 entry_type=BrainTranscriptEntryType.LEARNING_ENGINE_EVENT,
-                payload={"kind": "aborted", "reason": "G16 requires 'doc_url' and 'provider'"},
+                payload={"kind": "aborted", "reason": "G16 requires 'doc_url' and an LLM service/provider"},
                 source="zentex.learning.engine",
                 trace_id=trace_id,
             )
@@ -100,6 +104,8 @@ async def run_learning_cycle(
         record = await run_g16_dynamic_tool_self_study(
             doc_url=doc_url,
             provider=provider,
+            llm_service=llm_service,
+            model_provider_key=model_provider_key,
             store=store,
             trace_id=trace_id,
         )
@@ -147,6 +153,8 @@ async def start_learning(
     store: Optional[Any] = None,
     direction: str | LearningDirection,
     provider: Optional[ModelProviderSpec] = None,
+    llm_service: Optional[LLMService] = None,
+    model_provider_key: Optional[str] = None,
     doc_url: Optional[str] = None,
     dry_run: bool = False,
     load_factor: float = 0.0,
@@ -183,12 +191,14 @@ async def start_learning(
         extra_context = {"doc_url": doc_url}
 
     if store is None:
-        store = get_runtime_service().get_transcript_store()
+        raise RuntimeError("store is required for start_learning")
 
     return await run_learning_cycle(
         store=store,
         direction=direction,
         provider=provider,
+        llm_service=llm_service,
+        model_provider_key=model_provider_key,
         dry_run=dry_run,
         load_factor=load_factor,
         extra_context=extra_context,
@@ -233,7 +243,7 @@ def get_learning_status(
         包含可用方向、最近事件等信息的字典。
     """
     if store is None:
-        store = get_runtime_service().get_transcript_store()
+        raise RuntimeError("store is required for get_learning_status")
 
     if not store:
         return {

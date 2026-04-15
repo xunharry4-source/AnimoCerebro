@@ -1,14 +1,39 @@
 from __future__ import annotations
 
-from typing import Any, Dict, Optional
+from typing import Any, Optional
 
-from zentex.core.models import CognitiveToolSpec
-from zentex.core.plugin_base import PluginHealthStatus, PluginLifecycleStatus
+from pydantic import BaseModel, ConfigDict
+
+from zentex.common.plugin_ids import COGNITIVE_BUDGET_CONFLICT
+from zentex.plugins.service import execute_enabled_cognitive_plugin_functionals
 from zentex.safety.conflict_engine import CognitiveConflictReport
 
 
-class BudgetConflictPlugin(CognitiveToolSpec):
-    def detect_conflict(self, *, context: Dict[str, Any]) -> Optional[CognitiveConflictReport]:
+class BudgetConflictPlugin(BaseModel):
+    model_config = ConfigDict(extra="allow")
+
+    plugin_id: str = COGNITIVE_BUDGET_CONFLICT
+    version: str = "1.0.0"
+    feature_code: str = "cognitive.budget_conflict"
+    display_name: str = "Budget Conflict"
+    description: str = "Detect conflicts between requested reasoning scope and budget."
+    behavior_key: str = "cognitive_conflict_detection"
+    lifecycle_status: str = "active"
+    health_status: str = "healthy"
+    operational_status: str = "enabled"
+
+    def detect_conflict(self, *, context: dict[str, Any]) -> Optional[CognitiveConflictReport]:
+        plugin_service = context.get("plugin_service")
+        functional_inputs: list[dict[str, Any]] = []
+        if plugin_service is not None:
+            functional_inputs = execute_enabled_cognitive_plugin_functionals(
+                plugin_service,
+                self.plugin_id,
+                default_parameters=dict(context),
+                trace_id=str(context.get("trace_id") or "budget-conflict"),
+                originator_id=str(context.get("session_id") or "budget-conflict"),
+                caller_plugin_id=self.plugin_id,
+            )
         requested_tokens = int(context.get("requested_tokens", 0))
         token_budget = int(context.get("token_budget", 0))
         if requested_tokens <= token_budget:
@@ -21,32 +46,10 @@ class BudgetConflictPlugin(CognitiveToolSpec):
             details={
                 "requested_tokens": requested_tokens,
                 "token_budget": token_budget,
+                "functional_inputs": functional_inputs,
             },
         )
 
 
-def build_budget_conflict_plugin(
-    *,
-    plugin_id: str = "budget-conflict",
-    status: PluginLifecycleStatus = PluginLifecycleStatus.ACTIVE,
-) -> BudgetConflictPlugin:
-    return BudgetConflictPlugin(
-        plugin_id=plugin_id,
-        version="1.0.0",
-        is_concurrency_safe=True,
-        status=status,
-        health_status=PluginHealthStatus.HEALTHY,
-        rollback_conditions=["budget_conflict_false_positive_spike"],
-        revocation_reasons=["reserved_for_runtime_audit"],
-        tool_type="budget_conflict_detector",
-        purpose="Detect conflicts between requested reasoning scope and token budget.",
-        input_schema={"type": "object", "required": ["requested_tokens", "token_budget"]},
-        output_schema={"type": "object", "required": ["requested_tokens", "token_budget"]},
-        required_context=["requested_tokens", "token_budget"],
-        trigger_conditions=["always"],
-        behavior_key="cognitive_conflict_detection",
-        supports_multiple_plugins=True,
-        is_default_version=True,
-        is_official_release=True,
-        do_not_use_when=["execution_requested"],
-    )
+def build_budget_conflict_plugin() -> BudgetConflictPlugin:
+    return BudgetConflictPlugin()

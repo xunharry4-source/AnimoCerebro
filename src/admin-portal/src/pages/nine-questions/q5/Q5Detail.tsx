@@ -26,6 +26,7 @@ import Q5EvidencePanel from "../../../components/Q5EvidencePanel";
 import MountedPluginsZone from "../../../components/MountedPluginsZone";
 import LLMTracePanel from "../../../components/LLMTracePanel";
 import NineQuestionIntroCard from "../../../components/NineQuestionIntroCard";
+import Q5DataTabs from "../../../components/Q5DataTabs";
 
 function resolveErrorGuidance(errMsg: string): { title: string; action: string } {
   if (errMsg.includes("No active session") || errMsg.includes("没有活动 session")) {
@@ -119,6 +120,11 @@ export default function Q5Detail() {
 
       <NineQuestionIntroCard questionId="q5" />
 
+      {/* Q5 实际数据详情 Tab 面板 */}
+      <Q5DataTabs 
+        evidence={evidence as any} 
+        inference={inference as any} 
+      />
       <Card variant="outlined" sx={{ mb: 3 }}>
         <CardContent>
           <Stack direction="row" spacing={1} sx={{ mb: 2 }} useFlexGap flexWrap="wrap">

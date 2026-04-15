@@ -5,13 +5,13 @@ from __future__ import annotations
 from typing import Any, Dict, List
 from uuid import uuid4
 
-from zentex.core.mcp import (
+from zentex.mcp.models import (
     McpServerConfig,
     McpServerRuntimeState,
     McpToolBindingConfig,
     McpToolDescriptor,
 )
-from zentex.mcp.adapter import McpAdapterPlugin, FakeMcpTransportClient
+from zentex.mcp.adapter import McpAdapterPlugin, FakeMcpTransportClient, create_mcp_adapter_plugin
 from zentex.supervision.service import get_ai_supervisor, VerificationStatus
 
 
@@ -41,8 +41,8 @@ class McpIntegrationService:
         )
 
     def get_server_detail(self, server_id: str) -> Any:
-        # Use local import to avoid contracts circular dependency
-        from zentex.web_console.contracts.mcp import McpServerDetailItem, McpServerToolItem
+        # Use local import from core contracts to maintain architectural clean separation
+        from zentex.mcp.contracts import McpServerDetailItem, McpServerToolItem
 
         state = next((s for s in self.list_servers() if s.server_id == server_id), None)
         if not state:
@@ -88,7 +88,7 @@ class McpIntegrationService:
                     tool_name=t.tool_name,
                     description=t.description,
                     mapped_domain=t.mapped_domain,
-                    plugin_id=t.plugin_id,
+                    mcp_id=t.mcp_id,
                     feature_code=t.feature_code,
                     execution_domain=t.execution_domain,
                     read_only=t.read_only,
@@ -102,7 +102,7 @@ class McpIntegrationService:
         )
 
     def list_server_tasks(self, server_id: str, status: str | None = None) -> List[Any]:
-        from zentex.web_console.contracts.mcp import McpTaskSummary
+        from zentex.mcp.contracts import McpTaskSummary
 
         supervisor = get_ai_supervisor()
         records = [
@@ -139,11 +139,41 @@ class McpIntegrationService:
             ))
         return sorted(summaries, key=lambda x: x.start_time, reverse=True)
 
+def get_service() -> McpIntegrationService | None:
+    """Standard service factory function for launcher assembly.
+    
+    Returns a configured McpIntegrationService. This factory is resilient
+    to missing global dependencies during the early assembly phase.
+    """
+    try:
+        # Use local imports for dependencies
+        from zentex.mcp.adapter import create_mcp_adapter_plugin
+        from zentex.kernel import BrainTranscriptStore
+        from zentex.plugins.service import CognitiveToolRegistry
+        
+        # MCP routes need a working transcript store / cognitive registry even
+        # during assembly; otherwise cognitive MCP tools are silently dropped
+        # and list/detail responses lose their tool metadata.
+        transcript_store = BrainTranscriptStore(".zentex/mcp_transcript.jsonl")
+        cognitive_registry = CognitiveToolRegistry(transcript_store=transcript_store)
+
+        adapter, _ = create_mcp_adapter_plugin(
+            transcript_store=transcript_store,
+            cognitive_registry=cognitive_registry,
+            defer_sync=True
+        )
+        return McpIntegrationService(adapter=adapter)
+    except Exception as exc:
+        import logging
+        logging.getLogger(__name__).warning("MCP assembly failed (non-critical): %s", exc)
+        return None
+
 
 __all__ = [
     "McpIntegrationService",
     "McpAdapterPlugin",
     "FakeMcpTransportClient",
+    "create_mcp_adapter_plugin",
     "McpServerConfig",
     "McpServerRuntimeState",
     "McpToolBindingConfig",

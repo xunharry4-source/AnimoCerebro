@@ -59,12 +59,12 @@ class MemoryService:
         
         # Initialize the target internal service with standard path conventions
         self._internal_service = EnhancedMemoryService(
-            semantic_store_path=self.storage_root / "semantic.jsonl",
-            procedural_store_path=self.storage_root / "procedural.jsonl",
-            episodic_store_path=self.storage_root / "episodic.jsonl",
+            semantic_store_path=self.storage_root / "semantic.sqlite3",
+            procedural_store_path=self.storage_root / "procedural.sqlite3",
+            episodic_store_path=self.storage_root / "episodic.sqlite3",
             management_store_path=self.storage_root / "governance.json",
-            audit_store_path=self.storage_root / "audit.jsonl",
-            cold_storage_path=self.storage_root / "cold_archive.jsonl"
+            audit_store_path=self.storage_root / "audit.sqlite3",
+            cold_storage_path=self.storage_root / "cold_archive.sqlite3"
         )
         self._asset_stores: dict[Path, AssetDatabaseStore] = {}
         logger.info(f"MemoryService initialized at {self.storage_root}")
@@ -200,3 +200,12 @@ def get_memory_service() -> MemoryService:
     if _default_service is None:
         _default_service = MemoryService()
     return _default_service
+
+
+def get_service() -> MemoryService:
+    """Standard service factory function for launcher assembly.
+    
+    Alias for get_memory_service() to maintain compatibility
+    with the SystemAssembler's expectation of a get_service() function.
+    """
+    return get_memory_service()

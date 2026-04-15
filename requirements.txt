@@ -20,3 +20,4 @@ sqlalchemy>=2.0,<3.0  # G19 ORM
 alembic>=1.13,<2.0  # G19 数据库迁移
 pydantic-ai>=0.0.10  # G19 LLM 判定引擎
 openai>=1.0,<2.0  # G19 OpenAI provider
+google-genai>=1.0,<2.0

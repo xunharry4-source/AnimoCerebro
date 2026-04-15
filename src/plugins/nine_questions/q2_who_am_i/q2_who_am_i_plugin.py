@@ -7,15 +7,15 @@ from time import perf_counter
 from typing import Any, Dict
 from uuid import uuid4
 
-from zentex.core.model_provider_spec import ModelProviderCallerContext, ModelProviderSpec
-from zentex.core.models import LogicalCognitiveToolSpec
-from zentex.core.plugin_base import PluginHealthStatus, PluginLifecycleStatus
-from zentex.runtime.cognitive_tools import CognitiveToolResult
-from zentex.runtime.transcript import BrainTranscriptEntryType, BrainTranscriptStore
+from pydantic import BaseModel, ConfigDict
+
+from plugins.shared.cognitive_result import CognitiveToolResult
+from zentex.common.plugin_ids import NINE_QUESTION_Q2
+from zentex.plugins.models import PluginLifecycleStatus
 
 from plugins.nine_questions.q2_who_am_i.models import Q2WhoAmIInference
 # Decoupled: Inputs come from identity and weight plugins
-from zentex.core.plugin_family import IdentityPackageSpec, SubjectiveWeightSpec
+from zentex.plugins.service import execute_enabled_cognitive_plugin_functionals
 
 
 QUESTION_REF = "我是谁"
@@ -96,7 +96,17 @@ def _serialize_constraint_payload(constraint_payload: dict[str, Any]) -> str:
     return "(empty)"
 
 
-class Q2WhoAmIPlugin(LogicalCognitiveToolSpec):
+class Q2WhoAmIPlugin(BaseModel):
+    model_config = ConfigDict(extra="allow")
+
+    plugin_id: str = NINE_QUESTION_Q2
+    version: str = "1.0.0"
+    feature_code: str = "nine_questions.q2"
+    display_name: str = "Q2: Who am I?"
+    behavior_key: str = "nine_questions"
+    lifecycle_status: str = PluginLifecycleStatus.ACTIVE.value
+    health_status: str = "healthy"
+    operational_status: str = "enabled"
     """
     Q2: 我是谁 (dynamic role inference & continuity boundary)
 
@@ -132,46 +142,51 @@ class Q2WhoAmIPlugin(LogicalCognitiveToolSpec):
                 ),
             }
         
-        # 1. G10 Identity Package Integration
-        registry = context.get("plugin_registry")
-        if registry is not None:
-            try:
-                identity_packs = registry.get_active_plugins()
-                role_payload = next(
-                    (
-                        p.get_payload()
-                        for p in identity_packs
-                        if isinstance(p, IdentityPackageSpec) and p.pack_type == "role_pack"
-                    ),
-                    {},
-                )
-                constraint_payload = next(
-                    (
-                        p.get_payload()
-                        for p in identity_packs
-                        if isinstance(p, IdentityPackageSpec) and p.pack_type == "constraint_pack"
-                    ),
-                    {},
-                )
-                risk_sensor: SubjectiveWeightSpec = registry.get_bound_plugin(SubjectiveWeightSpec)
-                risk_weight = float(risk_sensor.calculate_weight(context))
-            except Exception as exc:
-                logger.error(f"G10/G17 Integration Failure: {exc}")
-                raise RuntimeError(f"Q2 Lifecycle Break: {exc}") from exc
-        else:
-            snapshot = context.get("context_snapshot", {}) or {}
-            identity_kernel = snapshot.get("identity_kernel_snapshot", {}) or {}
-            role_payload = identity_kernel
-            constraint_payload = {
-                "non_bypassable_constraints": identity_kernel.get("non_bypassable_constraints", []) or []
-            }
-            uncertainty = snapshot.get("q1_uncertainty_profile", {}) or {}
-            intensity = uncertainty.get("uncertainty_intensity", 0.5)
-            try:
-                risk_weight = float(intensity)
-            except Exception:
-                risk_weight = 0.5
-            risk_weight = max(0.0, min(1.0, risk_weight))
+        snapshot = context.get("context_snapshot", {}) or {}
+        identity_kernel = snapshot.get("identity_kernel_snapshot", {}) or {}
+        role_payload = identity_kernel
+        constraint_payload = {
+            "non_bypassable_constraints": identity_kernel.get("non_bypassable_constraints", []) or []
+        }
+        uncertainty = snapshot.get("q1_uncertainty_profile", {}) or {}
+        intensity = uncertainty.get("uncertainty_intensity", 0.5)
+        try:
+            risk_weight = float(intensity)
+        except Exception:
+            risk_weight = 0.5
+        risk_weight = max(0.0, min(1.0, risk_weight))
+
+        plugin_service = context.get("plugin_service")
+        if plugin_service is not None:
+            functional_inputs = execute_enabled_cognitive_plugin_functionals(
+                plugin_service,
+                self.plugin_id,
+                default_parameters=dict(context),
+                trace_id=str(context.get("trace_id") or "q2"),
+                originator_id=str(context.get("session_id") or "unknown-session"),
+                caller_plugin_id=self.plugin_id,
+            )
+            for item in functional_inputs:
+                if item.get("status") != "done":
+                    continue
+                result = item.get("result")
+                if isinstance(result, (int, float)):
+                    risk_weight = max(0.0, min(1.0, float(result)))
+                    continue
+                if not isinstance(result, dict):
+                    continue
+                pack_type = str(result.get("pack_type") or "")
+                payload = result.get("payload") if isinstance(result.get("payload"), dict) else result
+                if pack_type == "role_pack" or "identity_role" in payload or "task_role_mapping" in payload:
+                    role_payload = payload
+                elif pack_type == "constraint_pack" or "non_bypassable_constraints" in payload:
+                    constraint_payload = payload
+                elif "risk_weight" in result or "weight" in result:
+                    raw_weight = result.get("risk_weight", result.get("weight"))
+                    try:
+                        risk_weight = max(0.0, min(1.0, float(raw_weight)))
+                    except Exception:
+                        pass
 
         system_prompt = (
             "你现在是 Zentex 外部大脑。请根据当前所处的 environment 态势（Q1结果）和你的底层身份内核，"
@@ -202,6 +217,9 @@ class Q2WhoAmIPlugin(LogicalCognitiveToolSpec):
             "role_payload": role_payload,
             "constraint_payload": constraint_payload,
             "risk_weight": risk_weight,
+            "functional_identity_inputs": (
+                functional_inputs if plugin_service is not None else []
+            ),
             "manual_role_overrides": snapshot.get("manual_role_overrides", {}),
         }
 
@@ -335,31 +353,14 @@ class Q2WhoAmIPlugin(LogicalCognitiveToolSpec):
 
 def build_q2_who_am_i_plugin(
     *,
-    plugin_id: str = "nine-question-q2-who-am-i",
+    plugin_id: str = NINE_QUESTION_Q2,
     version: str = "1.0.0",
-    status: PluginLifecycleStatus = PluginLifecycleStatus.ACTIVE,
+    lifecycle_status: str | PluginLifecycleStatus = PluginLifecycleStatus.ACTIVE,
 ) -> Q2WhoAmIPlugin:
     return Q2WhoAmIPlugin(
         plugin_id=plugin_id,
         version=version,
         feature_code="nine_questions.q2",
-        is_concurrency_safe=True,
-        status=status,
-        health_status=PluginHealthStatus.HEALTHY,
-        rollback_conditions=["q2_role_inference_regression"],
-        revocation_reasons=["reserved_for_runtime_audit"],
-        tool_type="nine_question",
-        purpose="LLM-backed nine-question Q2: 我是谁 (role inference + continuity boundaries).",
-        input_schema={"type": "object"},
-        output_schema={
-            "type": "object",
-            "required": ["role_profile", "mission_boundary"],
-        },
-        required_context=["context_snapshot", "model_provider", "transcript_store"],
-        trigger_conditions=["inspection"],
+        lifecycle_status=getattr(lifecycle_status, "value", lifecycle_status),
         behavior_key="nine_questions",
-        supports_multiple_plugins=True,
-        is_default_version=True,
-        is_official_release=True,
-        do_not_use_when=["missing_model_provider", "unsafe_external_action"],
     )

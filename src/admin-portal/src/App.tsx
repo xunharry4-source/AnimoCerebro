@@ -15,6 +15,7 @@ import RealtimeDashboard from "./pages/dashboard/RealtimeDashboard";
 import MemoryReasoning from "./pages/dashboard/MemoryReasoning";
 import SimulationExplorer from "./pages/dashboard/SimulationExplorer";
 import HealthDashboard from "./pages/dashboard/HealthDashboard";
+import WorkspacesPage from "./pages/WorkspacesPage";
 import NineQuestionsReport from "./pages/nine-questions/NineQuestionsReport";
 
 // Q1-Q9 Isolated Audit Components (Zentex G31A Compliance)
@@ -138,6 +139,12 @@ const NAV_ITEMS = (t: any) => [
     matchPrefix: "/console/health",
     title: t("app.nav.health.title"),
     subtitle: t("app.nav.health.subtitle"),
+  },
+  {
+    path: "/console/workspaces",
+    matchPrefix: "/console/workspaces",
+    title: t("app.nav.workspaces.title"),
+    subtitle: t("app.nav.workspaces.subtitle"),
   },
 ];
 
@@ -263,6 +270,7 @@ export default function App() {
           <Route path="/console/audit" element={<AuditReplay />} />
           <Route path="/console/learning" element={<LearningDashboard />} />
           <Route path="/console/health" element={<HealthDashboard />} />
+          <Route path="/console/workspaces" element={<WorkspacesPage />} />
           <Route path="*" element={<Navigate to="/console/dashboard" replace />} />
         </Routes>
       </Box>

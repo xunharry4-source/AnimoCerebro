@@ -809,3 +809,12 @@ def get_environment_service() -> EnvironmentAwarenessService:
     if _default_service is None:
         _default_service = EnvironmentAwarenessService()
     return _default_service
+
+
+def get_service() -> EnvironmentAwarenessService:
+    """Standard service factory function for launcher assembly.
+    
+    Alias for get_environment_service() to maintain compatibility
+    with the SystemAssembler's expectation of a get_service() function.
+    """
+    return get_environment_service()

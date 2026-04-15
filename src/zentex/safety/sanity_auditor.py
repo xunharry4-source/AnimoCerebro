@@ -321,7 +321,7 @@ class SanityAuditor:
         )
 
         report = SanityAuditReport(
-            status=status,
+            lifecycle_status=lifecycle_status,
             belief_conflicts=belief_conflicts,
             reasoning_loops=reasoning_loops,
             motivation_drifts=motivation_drifts,

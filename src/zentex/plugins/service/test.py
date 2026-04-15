@@ -143,7 +143,7 @@ class TestService:
                     'exists_in_memory': False,
                     'has_execute_method': False,
                     'is_registered': False,
-                    'status_valid': False,
+                    'lifecycle_valid': False,
                 }
                 
                 # Check 1: Exists in memory
@@ -172,14 +172,17 @@ class TestService:
                     checks_failed += 1
                     errors.append(f"{pid}: Not registered in database")
                 
-                # Check 4: Status valid
-                status = plugin_meta.get('status') if plugin_meta else None
-                if status in ['ACTIVE', 'DEGRADED']:
-                    plugin_checks['status_valid'] = True
+                # Check 4: Lifecycle valid
+                lifecycle_status = (
+                    str(plugin_meta.get('lifecycle_status') or '').strip().lower()
+                    if plugin_meta else None
+                )
+                if lifecycle_status in ['active', 'degraded']:
+                    plugin_checks['lifecycle_valid'] = True
                     checks_passed += 1
                 else:
                     checks_failed += 1
-                    errors.append(f"{pid}: Invalid status: {status}")
+                    errors.append(f"{pid}: Invalid lifecycle_status: {lifecycle_status}")
                 
                 details[pid] = plugin_checks
             
@@ -194,7 +197,7 @@ class TestService:
             return HealthReport(
                 timestamp=timestamp,
                 plugin_id=plugin_id,
-                status=status,
+                lifecycle_status=lifecycle_status,
                 checks_passed=checks_passed,
                 checks_failed=checks_failed,
                 checks_total=checks_total,

@@ -5,15 +5,15 @@ from datetime import datetime, timezone
 from typing import Any, Dict
 from uuid import uuid4
 
-from zentex.core.model_provider_spec import ModelProviderCallerContext, ModelProviderSpec
-from zentex.core.models import LogicalCognitiveToolSpec
-from zentex.core.plugin_base import PluginHealthStatus, PluginLifecycleStatus
-from zentex.runtime.cognitive_tools import CognitiveToolResult
-from zentex.runtime.transcript import BrainTranscriptEntryType, BrainTranscriptStore
+from pydantic import BaseModel, ConfigDict
+
+from plugins.shared.cognitive_result import CognitiveToolResult
+from zentex.common.plugin_ids import NINE_QUESTION_Q6
+from zentex.plugins.models import PluginLifecycleStatus
 
 from plugins.nine_questions.q6_what_should_i_not_do.models import Q6InferenceResult
 # Decoupled: Inputs come from identity constraint and red-line plugins
-from zentex.core.plugin_family import RedlinePluginSpec, IdentityPackageSpec
+from zentex.plugins.service import execute_enabled_cognitive_plugin_functionals
 
 
 QUESTION_REF = "我即使能做也不该做什么"
@@ -37,7 +37,17 @@ from zentex.common.nine_questions_shared import (
 )
 
 
-class Q6WhatShouldINotDoPlugin(LogicalCognitiveToolSpec):
+class Q6WhatShouldINotDoPlugin(BaseModel):
+    model_config = ConfigDict(extra="allow")
+
+    plugin_id: str = NINE_QUESTION_Q6
+    version: str = "1.0.0"
+    feature_code: str = "nine_questions.q6"
+    display_name: str = "Q6: What should I not do?"
+    behavior_key: str = "nine_questions"
+    lifecycle_status: str = PluginLifecycleStatus.ACTIVE.value
+    health_status: str = "healthy"
+    operational_status: str = "enabled"
     """
     Zentex Cognitive Kernel Phase 6: 我即使能做也不该做什么 (Q6: Moral & Strategic Redlines).
 
@@ -48,22 +58,32 @@ class Q6WhatShouldINotDoPlugin(LogicalCognitiveToolSpec):
         provider = require_model_provider(context)
         transcript_store = require_transcript_store(context)
         
-        # 1. G-series Plugin Discovery: Forbidden Zone & Identity Oracles
-        try:
-             registry = context.get("plugin_registry")
-             if not registry:
-                 raise RuntimeError("Plugin Registry missing from context.")
-             
-             # Locate active identity constraint packs (G10)
-             active_plugins = registry.get_active_plugins()
-             global_constraints = [p.get_payload() for p in active_plugins if isinstance(p, IdentityPackageSpec) and p.pack_type == "constraint_pack"]
-             
-             # Locate specialized red-line plugins
-             redline_hints = [p.get_forbidden_zones() for p in active_plugins if isinstance(p, RedlinePluginSpec)]
-             
-        except Exception as exc:
-             logger.error(f"Red-line Discovery Failure: {exc}")
-             raise RuntimeError(f"Q6 Moral Defense Break: {exc}") from exc
+        global_constraints: list[dict[str, Any]] = []
+        redline_hints: list[list[dict[str, Any]] | dict[str, Any]] = []
+        plugin_service = context.get("plugin_service")
+        if plugin_service is not None:
+            try:
+                functional_inputs = execute_enabled_cognitive_plugin_functionals(
+                    plugin_service,
+                    self.plugin_id,
+                    default_parameters=dict(context),
+                    trace_id=str(context.get("trace_id") or "q6"),
+                    originator_id=str(context.get("session_id") or "unknown-session"),
+                    caller_plugin_id=self.plugin_id,
+                )
+                for item in functional_inputs:
+                    if item.get("status") != "done":
+                        continue
+                    result = item.get("result")
+                    if isinstance(result, dict) and "non_bypassable_constraints" in result:
+                        global_constraints.append(result)
+                    elif isinstance(result, dict) and ("zone" in result or "forbidden_actions" in result):
+                        redline_hints.append(result)
+                    elif isinstance(result, list):
+                        redline_hints.append(result)
+            except Exception as exc:
+                logger.error(f"Red-line Discovery Failure: {exc}")
+                raise RuntimeError(f"Q6 Moral Defense Break: {exc}") from exc
 
         # 2. Prepare Mandatory System Prompt
         system_prompt = (
@@ -213,28 +233,14 @@ class Q6WhatShouldINotDoPlugin(LogicalCognitiveToolSpec):
 
 def build_q6_what_should_i_not_do_plugin(
     *,
-    plugin_id: str = "nine-question-q6-what-should-i-not-do",
+    plugin_id: str = NINE_QUESTION_Q6,
     version: str = "1.0.0",
-    status: PluginLifecycleStatus = PluginLifecycleStatus.ACTIVE,
+    lifecycle_status: str | PluginLifecycleStatus = PluginLifecycleStatus.ACTIVE,
 ) -> Q6WhatShouldINotDoPlugin:
     return Q6WhatShouldINotDoPlugin(
         plugin_id=plugin_id,
         version=version,
         feature_code="nine_questions.q6",
-        is_concurrency_safe=True,
-        status=status,
-        health_status=PluginHealthStatus.HEALTHY,
-        rollback_conditions=["redline_inference_regression"],
-        revocation_reasons=[],
-        tool_type="nine_question",
-        purpose="Semantic moral defense & redline generation (Q6).",
-        input_schema={"type": "object"},
-        output_schema={"type": "object", "required": ["forbidden_zone_profile"]},
-        required_context=["context_snapshot", "transcript_store"],
-        trigger_conditions=["inspection"],
+        lifecycle_status=getattr(lifecycle_status, "value", lifecycle_status),
         behavior_key="nine_questions",
-        supports_multiple_plugins=True,
-        is_default_version=True,
-        is_official_release=True,
-        do_not_use_when=["missing_model_provider"],
     )

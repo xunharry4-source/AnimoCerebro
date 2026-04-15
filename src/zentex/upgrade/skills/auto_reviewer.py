@@ -223,7 +223,7 @@ class AutomatedTwoStageReviewer:
         
         return ReviewResult(
             review_id=review_id,
-            status=status,
+            lifecycle_status=lifecycle_status,
             stage="spec_compliance",
             issues=issues,
             summary=summary,
@@ -318,7 +318,7 @@ class AutomatedTwoStageReviewer:
         
         return ReviewResult(
             review_id=review_id,
-            status=status,
+            lifecycle_status=lifecycle_status,
             stage="code_quality",
             issues=issues,
             summary=summary,

@@ -1,7 +1,7 @@
-import React from "react";
+import React, { useState } from "react";
 import { useTranslation } from "react-i18next";
 import {
-  Alert, Box, Card, CardContent, Chip, Grid, Stack, Typography, Accordion, AccordionSummary, AccordionDetails, List, ListItem, ListItemText, ListItemIcon, Badge, Stepper, Step, StepLabel
+  Alert, Box, Card, CardContent, Chip, Grid, Stack, Typography, Accordion, AccordionSummary, AccordionDetails, List, ListItem, ListItemText, ListItemIcon, Badge, Stepper, Step, StepLabel, Tabs, Tab
 } from "@mui/material";
 import ExpandMoreIcon from "@mui/icons-material/ExpandMore";
 import AssignmentTurnedInIcon from '@mui/icons-material/AssignmentTurnedIn';
@@ -224,8 +224,170 @@ export const Q8EvidencePanel: React.FC<Q8EvidencePanelProps> = ({
             </CardContent>
           </Card>
         </Grid>
+
+        {/* Partition 4: 6类展示 Tab表 - 目标画像与自主任务队列详细展示 */}
+        {inference && (
+          <Q8DetailedTablesPartition inference={inference} />
+        )}
       </Grid>
     </Stack>
+  );
+};
+
+/**
+ * 新增的 Tab 表格部分 - 显示 6 类详细数据
+ */
+const Q8DetailedTablesPartition: React.FC<{ inference: Q8WhatShouldIDoNowInferenceView }> = ({ inference }) => {
+  const { t } = useTranslation();
+  const [tabValue, setTabValue] = useState(0);
+
+  const handleTabChange = (event: React.SyntheticEvent, newValue: number) => {
+    setTabValue(newValue);
+  };
+
+  // 表格数据准备
+  const currentObjectiveRows = inference.objective_profile?.current_primary_objective 
+    ? [{ id: 'current-primary', name: t("nineQuestions.currentPrimaryObjective"), value: inference.objective_profile.current_primary_objective }]
+    : [];
+
+  const phaseTasksRows = (inference.objective_profile?.current_phase_tasks || []).map((task, idx) => ({
+    id: `phase-${idx}`,
+    index: idx + 1,
+    task: task,
+  }));
+
+  const priorityOrderRows = (inference.objective_profile?.priority_order || []).map((priority, idx) => ({
+    id: `priority-${idx}`,
+    index: idx + 1,
+    priority: priority,
+  }));
+
+  const nextTasksRows = (inference.task_queue?.next_self_tasks || []).map((task: any, idx: number) => ({
+    id: `next-${idx}`,
+    index: idx + 1,
+    taskId: task.task_id || task.id || '-',
+    title: task.title || task.name || task.task || '-',
+  }));
+
+  const blockedTasksRows = (inference.task_queue?.blocked_self_tasks || []).map((task: any, idx:number) => ({
+    id: `blocked-${idx}`,
+    index: idx + 1,
+    taskId: task.task_id || task.id || '-',
+    title: task.title || task.name || task.task || '-',
+    reason: task.reason || task.blocker_reason || task.block_reason || '-',
+  }));
+
+  const proactiveActionRows = (inference.task_queue?.proactive_actions || []).map((action: any, idx: number) => ({
+    id: `proactive-${idx}`,
+    index: idx + 1,
+    taskId: action.task_id || action.id || '-',
+    title: action.title || action.name || action.task || '-',
+    intent: action.intent || action.reason || '-',
+  }));
+
+  // 定义表格列
+  const objectiveColumns: GridColDef[] = [
+    { field: 'name', headerName: t("nineQuestions.keyName"), width: 200 },
+    { field: 'value', headerName: t("nineQuestions.value"), flex: 1, minWidth: 300 },
+  ];
+
+  const phaseTasksColumns: GridColDef[] = [
+    { field: 'index', headerName: t("nineQuestions.order"), width: 80 },
+    { field: 'task', headerName: t("nineQuestions.taskContent"), flex: 1, minWidth: 300 },
+  ];
+
+  const priorityOrderColumns: GridColDef[] = [
+    { field: 'index', headerName: t("nineQuestions.order"), width: 80 },
+    { field: 'priority', headerName: t("nineQuestions.priorityItem"), flex: 1, minWidth: 300 },
+  ];
+
+  const nextTasksColumns: GridColDef[] = [
+    { field: 'index', headerName: t("nineQuestions.order"), width: 80 },
+    { field: 'taskId', headerName: 'Task ID', width: 120, sx: { fontFamily: 'monospace' } },
+    { field: 'title', headerName: t("nineQuestions.taskTitle"), flex: 1, minWidth: 250 },
+  ];
+
+  const blockedTasksColumns: GridColDef[] = [
+    { field: 'index', headerName: t("nineQuestions.order"), width: 80 },
+    { field: 'taskId', headerName: 'Task ID', width: 120, sx: { fontFamily: 'monospace' } },
+    { field: 'title', headerName: t("nineQuestions.taskTitle"), flex: 1, minWidth: 200 },
+    { field: 'reason', headerName: t("nineQuestions.blockerReason"), flex: 1, minWidth: 200, renderCell: (params) => (
+      <Typography variant="body2" color="error.main">{params.value}</Typography>
+    ) },
+  ];
+
+  const proactiveActionColumns: GridColDef[] = [
+    { field: 'index', headerName: t("nineQuestions.order"), width: 80 },
+    { field: 'taskId', headerName: 'Task ID', width: 120, sx: { fontFamily: 'monospace' } },
+    { field: 'title', headerName: t("nineQuestions.taskTitle"), flex: 1, minWidth: 200 },
+    { field: 'intent', headerName: t("nineQuestions.intent"), flex: 1, minWidth: 200 },
+  ];
+
+  return (
+    <Grid size={{ xs: 12 }}>
+      <Card variant="outlined" sx={{ border: '2px solid', borderColor: 'info.main' }}>
+        <CardContent>
+          <Typography variant="h6" gutterBottom sx={{ fontWeight: 'bold', color: 'info.main', mb: 2 }}>
+            {t("nineQuestions.detailedObjectiveAndQueueView", "目标画像与自主任务队列详细展示")}
+          </Typography>
+
+          <Box sx={{ borderBottom: 1, borderColor: 'divider' }}>
+            <Tabs value={tabValue} onChange={handleTabChange} aria-label="Q8 detailed tables">
+              <Tab label={t("nineQuestions.currentPrimaryObjective", "当前主目标")} />
+              <Tab label={t("nineQuestions.currentPhaseTasksTab", "阶段任务")} />
+              <Tab label={t("nineQuestions.priorityOrder", "优先级排序")} />
+              <Tab label={t("nineQuestions.nextSelfTasks", "下一步任务")} />
+              <Tab label={t("nineQuestions.blockedSelfTasks", "阻塞任务")} />
+              <Tab label={t("nineQuestions.proactiveActions", "主动行动")} />
+            </Tabs>
+          </Box>
+
+          <Box sx={{ mt: 2, height: 400, overflow: 'auto' }}>
+            {tabValue === 0 && currentObjectiveRows.length > 0 && (
+              <DataGrid rows={currentObjectiveRows} columns={objectiveColumns} hideFooter disableColumnMenu rowSelection={false} />
+            )}
+            {tabValue === 0 && currentObjectiveRows.length === 0 && (
+              <Alert severity="info">{t("nineQuestions.noDataAvailable")}</Alert>
+            )}
+
+            {tabValue === 1 && phaseTasksRows.length > 0 && (
+              <DataGrid rows={phaseTasksRows} columns={phaseTasksColumns} hideFooter disableColumnMenu rowSelection={false} />
+            )}
+            {tabValue === 1 && phaseTasksRows.length === 0 && (
+              <Alert severity="info">{t("nineQuestions.noDataAvailable")}</Alert>
+            )}
+
+            {tabValue === 2 && priorityOrderRows.length > 0 && (
+              <DataGrid rows={priorityOrderRows} columns={priorityOrderColumns} hideFooter disableColumnMenu rowSelection={false} />
+            )}
+            {tabValue === 2 && priorityOrderRows.length === 0 && (
+              <Alert severity="info">{t("nineQuestions.noDataAvailable")}</Alert>
+            )}
+
+            {tabValue === 3 && nextTasksRows.length > 0 && (
+              <DataGrid rows={nextTasksRows} columns={nextTasksColumns} hideFooter disableColumnMenu rowSelection={false} />
+            )}
+            {tabValue === 3 && nextTasksRows.length === 0 && (
+              <Alert severity="info">{t("nineQuestions.noDataAvailable")}</Alert>
+            )}
+
+            {tabValue === 4 && blockedTasksRows.length > 0 && (
+              <DataGrid rows={blockedTasksRows} columns={blockedTasksColumns} hideFooter disableColumnMenu rowSelection={false} />
+            )}
+            {tabValue === 4 && blockedTasksRows.length === 0 && (
+              <Alert severity="success">{t("nineQuestions.noBlockedTasks", "暂无阻塞任务")}</Alert>
+            )}
+
+            {tabValue === 5 && proactiveActionRows.length > 0 && (
+              <DataGrid rows={proactiveActionRows} columns={proactiveActionColumns} hideFooter disableColumnMenu rowSelection={false} />
+            )}
+            {tabValue === 5 && proactiveActionRows.length === 0 && (
+              <Alert severity="info">{t("nineQuestions.noDataAvailable")}</Alert>
+            )}
+          </Box>
+        </CardContent>
+      </Card>
+    </Grid>
   );
 };
 

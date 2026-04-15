@@ -8,7 +8,8 @@ except ImportError:
     class LM:
         pass
 
-from zentex.core.model_provider_spec import ModelProviderSpec, ModelProviderCallerContext
+from zentex.foundation.specs.model_provider import ModelProviderSpec, ModelProviderCallerContext
+from zentex.llm.service import LLMService
 
 class ZentexDSPyLM(LM):
     """
@@ -18,12 +19,16 @@ class ZentexDSPyLM(LM):
     
     def __init__(
         self, 
-        provider: ModelProviderSpec, 
-        caller_context: ModelProviderCallerContext, 
+        caller_context: ModelProviderCallerContext,
+        provider: ModelProviderSpec | None = None,
+        llm_service: LLMService | None = None,
+        model_provider_key: Optional[str] = None,
         model_kwargs: Optional[Dict[str, Any]] = None
     ):
         super().__init__("zentex-managed-lm")
         self.provider = provider
+        self.llm_service = llm_service
+        self.model_provider_key = model_provider_key
         self.caller_context = caller_context
         self.model_kwargs = model_kwargs or {}
         self.history = []
@@ -40,12 +45,28 @@ class ZentexDSPyLM(LM):
         context = {"raw_dspy_prompt": prompt}
         
         try:
-            # We call the provider. Since provider returns a dict, we serialize it.
-            json_resp = self.provider.generate_json(
-                prompt=prompt,
-                context=context,
-                caller_context=self.caller_context
-            )
+            if self.llm_service is not None:
+                json_resp = self.llm_service.generate_json(
+                    prompt=prompt,
+                    context=context,
+                    caller_context=self.caller_context,
+                    source_module=self.caller_context.source_module,
+                    invocation_phase=self.caller_context.invocation_phase,
+                    decision_id=self.caller_context.decision_id,
+                    model_provider=self.model_provider_key,
+                    metadata={
+                        "trace_id": self.caller_context.trace_id,
+                        "question_driver_refs": self.caller_context.question_driver_refs,
+                    },
+                ).output
+            elif self.provider is not None:
+                json_resp = self.provider.generate_json(
+                    prompt=prompt,
+                    context=context,
+                    caller_context=self.caller_context
+                )
+            else:
+                raise RuntimeError("LLM MANDATORY: missing llm_service and provider fallback")
             result_str = json.dumps(json_resp)
         except Exception as e:
             # Re-raise to let the retry loop or Sandbox catch it

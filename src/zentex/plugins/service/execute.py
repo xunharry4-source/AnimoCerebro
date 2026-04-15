@@ -16,6 +16,8 @@ import inspect
 from datetime import datetime, timezone
 from typing import Any, Dict, Optional
 
+from zentex.foundation.contracts import ActionIntent
+
 from zentex.plugins.models import PluginLifecycleStatus
 from zentex.common.protocol import TaskFeedback
 
@@ -33,7 +35,7 @@ class ExecutionService:
     - Handle failures and auto-degradation
     """
     
-    def __init__(self, storage, plugin_instances, execution_stats, determine_category_fn=None, promote_fn=None):
+    def __init__(self, storage, plugin_instances, execution_stats, determine_category_fn=None, promote_fn=None, public_service=None):
         """
         Initialize execution service.
         
@@ -49,6 +51,48 @@ class ExecutionService:
         self._execution_stats = execution_stats
         self._determine_category = determine_category_fn
         self._promote_plugin = promote_fn
+        self._public_service = public_service
+
+    @staticmethod
+    def _normalize_lifecycle_status(value: object) -> str:
+        return str(getattr(value, "value", value) or "").strip().lower()
+
+    @staticmethod
+    def _normalize_operational_status(value: object) -> str:
+        return str(value or "").strip().lower()
+
+    @staticmethod
+    def _normalize_result_payload(result: Any) -> Dict[str, Any]:
+        if result is None:
+            return {}
+        if isinstance(result, dict):
+            return result
+        return {"value": result}
+
+    def _derive_operational_status(self, db_plugin: Dict[str, Any]) -> str:
+        lifecycle_status = self._normalize_lifecycle_status(db_plugin.get("lifecycle_status"))
+        if lifecycle_status != PluginLifecycleStatus.ACTIVE.value:
+            return "unavailable"
+
+        if db_plugin.get("stopped_at"):
+            return "stopped"
+
+        plugin_id = str(db_plugin.get("plugin_id") or "").strip()
+        plugin_instance = self._plugin_instances.get(plugin_id)
+        if plugin_instance is None:
+            return "stopped"
+
+        health = getattr(plugin_instance, "health_status", None)
+        normalized_health = str(getattr(health, "value", health) or "").strip().lower()
+        if normalized_health in {"degraded", "unhealthy", "abnormal"}:
+            return "abnormal"
+
+        persisted_operational_status = self._normalize_operational_status(
+            db_plugin.get("operational_status")
+        )
+        if persisted_operational_status in {"enabled", "stopped", "abnormal"}:
+            return persisted_operational_status
+        return "enabled"
 
     async def execute_plugin_once(
         self,
@@ -114,26 +158,59 @@ class ExecutionService:
             if constraint_error:
                 return constraint_error
 
-        # Validate plugin is ACTIVE
-        if db_plugin.get("status") != PluginLifecycleStatus.ACTIVE.value:
+        lifecycle_status = self._normalize_lifecycle_status(db_plugin.get("lifecycle_status"))
+        if lifecycle_status != PluginLifecycleStatus.ACTIVE.value:
             return TaskFeedback(
                 task_id=task_id,
                 status="failed",
                 error="plugin_not_active",
-                remarks=f"Plugin {plugin_id} is {db_plugin.get('status')}, not ACTIVE."
+                remarks=f"Plugin {plugin_id} lifecycle_status is {lifecycle_status or 'unknown'}, not ACTIVE."
             )
 
-        # Get plugin instance from memory
+        operational_status = self._derive_operational_status(db_plugin)
+        if operational_status != "enabled":
+            logger.warning(
+                "[Plugins] Refusing execution for %s trace=%s session=%s turn=%s: lifecycle=%s operational=%s in_memory=%s stopped_at=%s",
+                plugin_id,
+                trace_id,
+                parameters.get("session_id"),
+                parameters.get("turn_id"),
+                lifecycle_status,
+                operational_status,
+                plugin_id in self._plugin_instances,
+                db_plugin.get("stopped_at"),
+            )
+            return TaskFeedback(
+                task_id=task_id,
+                status="failed",
+                error="plugin_not_enabled",
+                remarks=(
+                    f"Plugin {plugin_id} is ACTIVE but operational_status is "
+                    f"{operational_status}, so it cannot execute."
+                ),
+            )
+
+        # Get plugin instance from memory (with on-demand rehydration)
         plugin_instance = self._plugin_instances.get(plugin_id)
+        if not plugin_instance and self._public_service is not None:
+            if hasattr(self._public_service, "ensure_runtime_instance_loaded"):
+                if self._public_service.ensure_runtime_instance_loaded(plugin_id):
+                    plugin_instance = self._plugin_instances.get(plugin_id)
+
         if not plugin_instance:
             return TaskFeedback(
                 task_id=task_id,
                 status="failed",
                 error="plugin_not_instantiated",
-                remarks=f"Plugin {plugin_id} is not instantiated in memory. Call bootstrap() first."
+                remarks=(
+                    f"Plugin {plugin_id} is ACTIVE in the library but failed to instantiate "
+                    "in memory. Check logs for rehydration errors."
+                )
             )
 
         try:
+            if isinstance(parameters, dict) and self._public_service is not None:
+                parameters.setdefault("plugin_service", self._public_service)
             # Call actual plugin execution
             result = await self._call_plugin_execute(
                 plugin_instance=plugin_instance,
@@ -149,7 +226,7 @@ class ExecutionService:
             return TaskFeedback(
                 task_id=task_id,
                 status="done",
-                result=result if result else {
+                result=self._normalize_result_payload(result) if result is not None else {
                     "plugin_id": plugin_id,
                     "trace_id": trace_id,
                     "parameters": parameters,
@@ -207,6 +284,13 @@ class ExecutionService:
                 selected_method_name = method_name
                 break
 
+        family_call_kwargs: Dict[str, Any] = {}
+        if execute_method is None:
+            execute_method, selected_method_name, family_call_kwargs = self._resolve_functional_family_method(
+                plugin_instance=plugin_instance,
+                parameters=parameters,
+            )
+
         if not execute_method:
             logger.warning(
                 "[Plugins] Plugin instance has no execute/process/run/handle/run_tool method"
@@ -215,7 +299,7 @@ class ExecutionService:
         
         # Build parameters based on method signature
         sig = inspect.signature(execute_method)
-        call_kwargs = {}
+        call_kwargs = dict(family_call_kwargs)
         
         for param_name in sig.parameters:
             if param_name == 'self':
@@ -244,6 +328,70 @@ class ExecutionService:
             result = execute_method(**call_kwargs)
         
         return result
+
+    def _resolve_functional_family_method(
+        self,
+        *,
+        plugin_instance: Any,
+        parameters: Dict[str, Any],
+    ) -> tuple[Any | None, str | None, Dict[str, Any]]:
+        family_methods: list[tuple[str, Any]] = [
+            ("ingest_signal", lambda: {}),
+            (
+                "sanitize_signal",
+                lambda: {"raw_signal": parameters.get("raw_signal", parameters.get("signal", ""))},
+            ),
+            (
+                "interpret_signal",
+                lambda: {"signal": parameters.get("signal", parameters.get("sanitized_signal"))},
+            ),
+            ("capture_host_state", lambda: {"context": parameters}),
+            ("get_payload", lambda: {}),
+            ("get_forbidden_zones", lambda: {}),
+            ("get_downgrade_options", lambda: {"block_context": parameters.get("block_context", parameters)}),
+            (
+                "refine_task_queue",
+                lambda: {
+                    "task_queue": parameters.get("task_queue", []),
+                    "context": parameters.get("context", parameters),
+                },
+            ),
+            ("apply_posture", lambda: {"decision_trace": parameters.get("decision_trace", parameters)}),
+            ("calculate_weight", lambda: {"task_context": parameters.get("task_context", parameters)}),
+            ("check_compliance", lambda: {"action_trace": parameters.get("action_trace", parameters)}),
+            ("get_whitelist", lambda: {}),
+            ("get_agent_scope", lambda: {"agent_id": parameters.get("agent_id", "")}),
+            (
+                "execute_action",
+                lambda: {
+                    "intent": self._build_action_intent(parameters),
+                    "context": parameters.get("context", parameters),
+                },
+            ),
+        ]
+
+        for method_name, kwargs_factory in family_methods:
+            if not hasattr(plugin_instance, method_name):
+                continue
+            method = getattr(plugin_instance, method_name)
+            if not callable(method):
+                continue
+            return method, method_name, kwargs_factory()
+        return None, None, {}
+
+    @staticmethod
+    def _build_action_intent(parameters: Dict[str, Any]) -> ActionIntent:
+        raw_intent = parameters.get("intent")
+        if isinstance(raw_intent, ActionIntent):
+            return raw_intent
+        if isinstance(raw_intent, dict):
+            return ActionIntent.model_validate(raw_intent)
+        return ActionIntent(
+            action_type=str(parameters.get("action_type") or parameters.get("action_name") or "describe_capability"),
+            target=str(parameters.get("target") or ""),
+            parameters=dict(parameters.get("parameters") or parameters.get("action_payload") or {}),
+            requester_id=str(parameters.get("requester_id") or parameters.get("originator_id") or ""),
+        )
 
     def _validate_plugin_call_hierarchy(
         self,
@@ -388,7 +536,7 @@ class ExecutionService:
             try:
                 self._promote_plugin(
                     plugin_id=plugin_id,
-                    target_status=PluginLifecycleStatus.DEGRADED,
+                    target_lifecycle_status=PluginLifecycleStatus.DEGRADED,
                     reason=f"Auto-degraded after 3 consecutive failures: {error_msg}"
                 )
             except Exception as e:

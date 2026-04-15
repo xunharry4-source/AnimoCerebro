@@ -12,11 +12,103 @@ import json
 from typing import Any, Dict, List, Optional
 from uuid import uuid4
 
-from zentex.core.model_provider_spec import ModelProviderCallerContext, ModelProviderSpec
-from zentex.runtime.transcript import BrainTranscriptEntryType, BrainTranscriptStore
+from zentex.foundation.specs.model_provider import ModelProviderCallerContext, ModelProviderSpec
+from zentex.kernel.state_domain.brain_transcript import BrainTranscriptStore
+from zentex.kernel.state_domain.brain_transcript_models import BrainTranscriptEntryType
+
+
+def _first_non_empty_str(*values: object) -> str | None:
+    for value in values:
+        if isinstance(value, str):
+            text = value.strip()
+            if text:
+                return text
+    return None
+
+
+def resolve_model_provider_key(context: Dict[str, Any]) -> str | None:
+    explicit_provider = context.get("model_provider")
+    if isinstance(explicit_provider, str) and explicit_provider.strip():
+        return explicit_provider.strip()
+    return _first_non_empty_str(
+        context.get("llm_provider_key"),
+        context.get("provider_key"),
+    )
+
+
+class LLMServiceModelProviderAdapter:
+    """
+    Compatibility shim for legacy nine-question plugins.
+
+    Q1-Q9 plugins historically called `ModelProviderSpec.generate_json(...)`
+    directly. The real LLM entrypoint must now be `src/zentex/llm`, so this
+    adapter preserves the old plugin surface while routing all requests through
+    `LLMService -> LLMGateway`.
+    """
+
+    def __init__(self, llm_service: Any, root_context: Dict[str, Any]) -> None:
+        self._llm_service = llm_service
+        self._root_context = root_context
+        self.plugin_id = "llm_gateway"
+        self.provider_name = "llm_gateway"
+        self.default_model = _first_non_empty_str(
+            root_context.get("llm_model"),
+            root_context.get("model"),
+        ) or ""
+        self.last_raw_response: Dict[str, Any] | None = None
+        self.last_token_usage: Dict[str, Any] = {}
+        self.last_model_name: str | None = None
+
+    def generate_json(
+        self,
+        *,
+        prompt: str,
+        context: dict[str, Any],
+        caller_context: ModelProviderCallerContext | dict[str, Any],
+    ) -> dict[str, Any]:
+        if isinstance(caller_context, dict):
+            normalized_caller_context = ModelProviderCallerContext.model_validate(caller_context)
+        else:
+            normalized_caller_context = caller_context
+
+        provider_key = resolve_model_provider_key(self._root_context)
+        model = _first_non_empty_str(
+            self._root_context.get("llm_model"),
+            self._root_context.get("model"),
+        )
+
+        call = self._llm_service.generate_json(
+            prompt=prompt,
+            context=context,
+            caller_context=normalized_caller_context,
+            source_module=normalized_caller_context.source_module,
+            invocation_phase=normalized_caller_context.invocation_phase,
+            decision_id=normalized_caller_context.decision_id,
+            model_provider=provider_key,
+            model=model,
+            metadata={
+                "trace_id": normalized_caller_context.trace_id,
+                "question_driver_refs": list(normalized_caller_context.question_driver_refs),
+            },
+        )
+        self.plugin_id = call.provider_key
+        self.provider_name = call.provider_key
+        self.default_model = call.model
+        self.last_model_name = call.model
+        self.last_raw_response = call.raw_response
+        self.last_token_usage = {
+            "input_tokens": call.usage.input_tokens,
+            "output_tokens": call.usage.output_tokens,
+            "total_tokens": call.usage.total_tokens,
+        }
+        return call.output
 
 
 def require_model_provider(context: Dict[str, Any]) -> ModelProviderSpec:
+    llm_service = context.get("llm_service")
+    if llm_service is not None and hasattr(llm_service, "generate_json"):
+        return LLMServiceModelProviderAdapter(llm_service, context)
+
     provider = context.get("model_provider")
     if provider is None or not hasattr(provider, "generate_json"):
         registry = context.get("plugin_registry")
@@ -30,7 +122,7 @@ def require_model_provider(context: Dict[str, Any]) -> ModelProviderSpec:
                 ) from exc
         else:
             raise RuntimeError(
-                "LLM MANDATORY: missing active ModelProvider in context['model_provider']"
+                "LLM MANDATORY: missing active llm_service and ModelProvider in execution context"
             )
     return provider
 

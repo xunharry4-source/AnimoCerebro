@@ -5,10 +5,9 @@ from __future__ import annotations
 import asyncio
 from contextlib import asynccontextmanager
 from datetime import timedelta
-from typing import Any, AsyncIterator, Dict, List, Tuple
+from typing import Any, AsyncIterator, Dict, List, Protocol
 
-from zentex.core.mcp import McpServerConfig, McpToolDescriptor
-from zentex.mcp.adapter import McpTransportClient
+from zentex.mcp.models import McpServerConfig, McpToolDescriptor
 
 try:
     from mcp import ClientSession, StdioServerParameters
@@ -19,6 +18,21 @@ except Exception:  # pragma: no cover - optional dependency
     StdioServerParameters = None  # type: ignore[assignment]
     sse_client = None  # type: ignore[assignment]
     stdio_client = None  # type: ignore[assignment]
+
+
+class McpTransportClient(Protocol):
+    def list_tools(self, config: McpServerConfig) -> List[McpToolDescriptor]: ...
+
+    def invoke_tool(
+        self,
+        config: McpServerConfig,
+        *,
+        tool_name: str,
+        arguments: Dict[str, Any],
+        trace_id: str,
+    ) -> Dict[str, Any]: ...
+
+    def health_probe(self, config: McpServerConfig) -> bool: ...
 
 
 class OfficialMcpSdkTransportClient(McpTransportClient):
@@ -116,3 +130,16 @@ def build_official_mcp_client_factory() -> Any:
         return OfficialMcpSdkTransportClient()
 
     return _factory
+class McpTransportClient(Protocol):
+    def list_tools(self, config: McpServerConfig) -> List[McpToolDescriptor]: ...
+
+    def invoke_tool(
+        self,
+        config: McpServerConfig,
+        *,
+        tool_name: str,
+        arguments: Dict[str, Any],
+        trace_id: str,
+    ) -> Dict[str, Any]: ...
+
+    def health_probe(self, config: McpServerConfig) -> bool: ...

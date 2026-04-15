@@ -16,6 +16,7 @@ import {
 import {
   Assignment as TaskIcon,
   Refresh as RefreshIcon,
+  PlayCircle as TestIcon,
 } from '@mui/icons-material';
 import { DataGrid, GridColDef } from '@mui/x-data-grid';
 
@@ -33,6 +34,7 @@ const ZentexTaskManager: React.FC = () => {
     loading,
     error,
     fetchTasks,
+    loadTestTasks, // Add test data loader
     currentTasks,
     tabValue,
     setTabValue
@@ -137,14 +139,24 @@ const ZentexTaskManager: React.FC = () => {
               {t('tasks.multiTabView')}
             </Typography>
           </Box>
-          <Button 
-            startIcon={<RefreshIcon />} 
-            onClick={fetchTasks} 
-            variant="outlined"
-            disabled={loading}
-          >
-            {loading ? t('common.refreshing') : t('common.refresh')}
-          </Button>
+          <Stack direction="row" spacing={1}>
+            <Button 
+              startIcon={<TestIcon />} 
+              onClick={loadTestTasks} 
+              variant="contained"
+              color="secondary"
+            >
+              加载测试数据
+            </Button>
+            <Button 
+              startIcon={<RefreshIcon />} 
+              onClick={fetchTasks} 
+              variant="outlined"
+              disabled={loading}
+            >
+              {loading ? t('common.refreshing') : t('common.refresh')}
+            </Button>
+          </Stack>
         </Stack>
 
         {/* Info Alert */}
