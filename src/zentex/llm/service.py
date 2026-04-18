@@ -230,9 +230,7 @@ class LLMService:
                 reason="no_active_model_provider"
             )
 
-        provider_name = str(getattr(provider, "provider_name", "") or "")
-        api_base = str(getattr(provider, "api_base", "") or "")
-        api_key_env = str(getattr(provider, "api_key_env", "") or "")
+        provider_name, api_base, api_key_env = self._extract_provider_status_fields(provider)
 
         # 2. Check credentials
         missing_env: List[str] = []
@@ -267,20 +265,33 @@ class LLMService:
         
         return status
 
-    def _resolve_active_provider(self) -> ModelProviderSpec | None:
-        """Helper to find the active provider from the gateway's tools."""
-        # Find the tool corresponding to the default provider key
-        tool = self._gateway._tools.get(self._gateway._default_provider_key)
-        if isinstance(tool, ModelProviderSpec):
-            # Check if active - though Gateway usually only has 'bound' tools
-            return tool
-        
-        # Fallback: scan all tools if default is missing or not a Spec
-        for tool in self._gateway._tools.values():
-            if isinstance(tool, ModelProviderSpec):
-                # In core, we assume bound tools are candidate providers
+    def _resolve_active_provider(self) -> object | None:
+        """Return the actual active gateway tool, not an unrelated provider protocol type."""
+        default_key = str(self._gateway._default_provider_key or "").strip()
+        if default_key:
+            tool = self._gateway._tools.get(default_key)
+            if tool is not None:
+                return tool
+
+        for key in sorted(self._gateway._tools):
+            tool = self._gateway._tools.get(key)
+            if tool is not None:
                 return tool
         return None
+
+    def _extract_provider_status_fields(self, provider: object) -> tuple[str, str, str]:
+        """Read provider status metadata from the active gateway tool."""
+        provider_name = str(getattr(provider, "provider_name", "") or "")
+        api_base = str(getattr(provider, "api_base", "") or "")
+        api_key_env = str(getattr(provider, "api_key_env", "") or "")
+
+        config = getattr(provider, "config", None)
+        if config is not None:
+            provider_name = provider_name or str(getattr(config, "provider_name", "") or "")
+            api_base = api_base or str(getattr(config, "api_base", "") or "")
+            api_key_env = api_key_env or str(getattr(config, "api_key_env", "") or "")
+
+        return provider_name, api_base, api_key_env
 
     def _probe_health(self, provider: ModelProviderSpec, current_status: LLMStatus) -> LLMStatus:
         """Perform a live health probe and return updated status."""

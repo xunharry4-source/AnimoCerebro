@@ -2,7 +2,6 @@ from __future__ import annotations
 
 from datetime import timezone
 from typing import Any, Dict, List, Protocol, Tuple
-from zentex.kernel import BrainTranscriptEntry, BrainTranscriptEntryType
 from zentex.web_console.contracts.audit import (
     AuditPagePayload,
     AuditRecordItem,
@@ -14,11 +13,27 @@ from zentex.web_console.contracts.model_provider import ModelProviderTraceItem
 from zentex.web_console.contracts.transcript import TranscriptEventPayload
 
 
+class _TranscriptEntryLike(Protocol):
+    entry_id: str
+    trace_id: str
+    session_id: str
+    turn_id: str
+    entry_type: Any
+    timestamp: Any
+    source: str
+    payload: Any
+
+
 class _TranscriptStoreLike(Protocol):
-    def get_entries_snapshot(self) -> list[BrainTranscriptEntry]: ...
+    def get_entries_snapshot(self) -> list[_TranscriptEntryLike]: ...
 
 
-def _resolve_transcript_entries(source: Any) -> List[BrainTranscriptEntry]:
+def _entry_type_value(entry: _TranscriptEntryLike) -> str:
+    entry_type = getattr(entry, "entry_type", None)
+    return str(getattr(entry_type, "value", entry_type) or "")
+
+
+def _resolve_transcript_entries(source: Any) -> List[_TranscriptEntryLike]:
     if hasattr(source, "get_entries_snapshot"):
         return list(source.get_entries_snapshot())
     if hasattr(source, "get_transcript_store") and callable(source.get_transcript_store):
@@ -32,16 +47,16 @@ def _resolve_transcript_entries(source: Any) -> List[BrainTranscriptEntry]:
 
 def build_model_provider_traces(runtime: Any) -> List[ModelProviderTraceItem]:
     entries = _resolve_transcript_entries(runtime)
-    entries_by_trace_id: Dict[str, List[BrainTranscriptEntry]] = {}
+    entries_by_trace_id: Dict[str, List[_TranscriptEntryLike]] = {}
     for entry in entries:
         entries_by_trace_id.setdefault(entry.trace_id, []).append(entry)
 
     traces: Dict[str, ModelProviderTraceItem] = {}
     for entry in entries:
-        if entry.entry_type not in {
-            BrainTranscriptEntryType.MODEL_PROVIDER_INVOKED,
-            BrainTranscriptEntryType.MODEL_PROVIDER_COMPLETED,
-            BrainTranscriptEntryType.MODEL_PROVIDER_FAILED,
+        if _entry_type_value(entry) not in {
+            "model_provider_invoked",
+            "model_provider_completed",
+            "model_provider_failed",
         }:
             continue
         payload: Dict[str, Any] = entry.payload if isinstance(entry.payload, dict) else {}
@@ -97,13 +112,13 @@ def build_model_provider_traces(runtime: Any) -> List[ModelProviderTraceItem]:
         error_type = current.error_type
         error_message = current.error_message
         model = current.model
-        if entry.entry_type == BrainTranscriptEntryType.MODEL_PROVIDER_INVOKED:
+        if _entry_type_value(entry) == "model_provider_invoked":
             invoked_at = entry.timestamp.astimezone(timezone.utc).isoformat()
-        elif entry.entry_type == BrainTranscriptEntryType.MODEL_PROVIDER_COMPLETED:
+        elif _entry_type_value(entry) == "model_provider_completed":
             completed_at = entry.timestamp.astimezone(timezone.utc).isoformat()
             result_payload = payload.get("result") if isinstance(payload.get("result"), dict) else None
             model = str(payload["model"]) if payload.get("model") is not None else current.model
-        elif entry.entry_type == BrainTranscriptEntryType.MODEL_PROVIDER_FAILED:
+        elif _entry_type_value(entry) == "model_provider_failed":
             failed_at = entry.timestamp.astimezone(timezone.utc).isoformat()
             error_type = str(payload.get("error_type") or "") or None
             error_message = str(payload.get("error_message") or "") or None
@@ -139,10 +154,10 @@ def build_model_provider_traces(runtime: Any) -> List[ModelProviderTraceItem]:
     return result
 
 
-def summarize_audit_entry(entry: BrainTranscriptEntry) -> Tuple[str, List[str]]:
+def summarize_audit_entry(entry: _TranscriptEntryLike) -> Tuple[str, List[str]]:
     payload = entry.payload if isinstance(entry.payload, dict) else {}
     summary = str(
-        payload.get("summary") or payload.get("message") or payload.get("event_type") or entry.entry_type.value
+        payload.get("summary") or payload.get("message") or payload.get("event_type") or _entry_type_value(entry)
     )
     refs = payload.get("question_driver_refs")
     question_driver_refs = [str(item) for item in refs if item is not None] if isinstance(refs, list) else []
@@ -150,7 +165,7 @@ def summarize_audit_entry(entry: BrainTranscriptEntry) -> Tuple[str, List[str]]:
 
 
 def build_audit_page(
-    entries: List[BrainTranscriptEntry],
+    entries: List[_TranscriptEntryLike],
     *,
     page: int,
     page_size: int,
@@ -191,7 +206,7 @@ def build_audit_page(
                 trace_id=entry.trace_id,
                 session_id=entry.session_id,
                 turn_id=entry.turn_id,
-                entry_type=entry.entry_type.value,
+                entry_type=_entry_type_value(entry),
                 timestamp=entry.timestamp.astimezone(timezone.utc).isoformat(),
                 source=entry.source,
                 summary=summary,
@@ -210,7 +225,7 @@ def build_audit_page(
 
 
 def build_turn_audit_page(
-    entries: List[BrainTranscriptEntry],
+    entries: List[_TranscriptEntryLike],
     *,
     page: int,
     page_size: int,
@@ -231,7 +246,7 @@ def build_turn_audit_page(
             ),
         )
         payload = entry.payload if isinstance(entry.payload, dict) else {}
-        if entry.entry_type == BrainTranscriptEntryType.TURN_STARTED:
+        if _entry_type_value(entry) == "turn_started":
             current = current.model_copy(
                 update={
                     "started_at": entry.timestamp.astimezone(timezone.utc).isoformat(),
@@ -239,21 +254,21 @@ def build_turn_audit_page(
                     "goal_titles": list(payload.get("goal_titles") or []),
                 }
             )
-        elif entry.entry_type == BrainTranscriptEntryType.TURN_FINISHED:
+        elif _entry_type_value(entry) == "turn_finished":
             current = current.model_copy(
                 update={
                     "completed_at": entry.timestamp.astimezone(timezone.utc).isoformat(),
                     "status": str(payload.get("status") or "completed"),
                 }
             )
-        elif entry.entry_type in {
-            BrainTranscriptEntryType.COGNITIVE_TOOL_INVOKED,
-            BrainTranscriptEntryType.COGNITIVE_TOOL_COMPLETED,
-            BrainTranscriptEntryType.COGNITIVE_TOOL_FAILED,
+        elif _entry_type_value(entry) in {
+            "cognitive_tool_invoked",
+            "cognitive_tool_completed",
+            "cognitive_tool_failed",
         }:
             tool_id = str(payload.get("tool_id") or payload.get("plugin_id") or "")
             behavior_key = str(payload.get("behavior_key") or payload.get("feature_code") or "")
-            summary = str(payload.get("summary") or entry.entry_type.value)
+            summary = str(payload.get("summary") or _entry_type_value(entry))
             invocation_id = str(payload.get("invocation_id") or "") or None
             current.tool_summaries.append(
                 TurnToolSummaryItem(

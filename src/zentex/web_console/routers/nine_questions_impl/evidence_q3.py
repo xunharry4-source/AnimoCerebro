@@ -4,7 +4,10 @@ Q3 (我有什么) evidence building and extraction.
 Contains functions for building and extracting EVIDENCE_Q3 evidence.
 """
 
+import logging
 from typing import Any, Dict, List, Optional
+
+logger = logging.getLogger(__name__)
 
 from zentex.web_console.contracts.nine_questions import (
     Q3PreprocessedEvidence,
@@ -24,6 +27,12 @@ def _build_q3_preprocessed_evidence(context_payload: dict[str, Any]) -> Q3Prepro
     unified_inventory = context_payload.get("q3_unified_asset_inventory", {})
     if not isinstance(unified_inventory, dict):
         unified_inventory = {}
+    resource_evaluation_raw = context_payload.get("q3_resource_evaluation", {})
+    if not isinstance(resource_evaluation_raw, dict):
+        resource_evaluation_raw = {}
+    humanized_inventory_raw = context_payload.get("q3_humanized_asset_inventory", {})
+    if not isinstance(humanized_inventory_raw, dict):
+        humanized_inventory_raw = {}
 
     permissions_raw = context_payload.get("permissions", {})
     workspace_assets_raw = context_payload.get("workspace_assets", {})
@@ -202,7 +211,24 @@ def _build_q3_preprocessed_evidence(context_payload: dict[str, Any]) -> Q3Prepro
         ),
     )
 
-    if not wp.workspaces and not ta.cognitive_tools and not ta.execution_tools and not ms.strategy_patches and not ms.experience_logs:
+    has_explicit_q3_payload = bool(unified_inventory) or bool(resource_evaluation_raw) or bool(humanized_inventory_raw)
+    if (
+        not has_explicit_q3_payload
+        and not wp.workspaces
+        and not ta.cognitive_tools
+        and not ta.execution_tools
+        and not ms.strategy_patches
+        and not ms.experience_logs
+    ):
+        logger.error(
+            "Q3 evidence extraction: no asset data available — "
+            "q3_unified_asset_inventory=%s, workspaces=%s, cognitive_tools=%s, execution_tools=%s. "
+            "请检查 plugin_service / agent_service / memory_service 是否已正确初始化并注入 Q3 执行上下文。",
+            bool(unified_inventory),
+            bool(wp.workspaces),
+            bool(ta.cognitive_tools),
+            bool(ta.execution_tools),
+        )
         return None
 
     return Q3PreprocessedEvidence(
@@ -215,20 +241,23 @@ def _build_q3_preprocessed_evidence(context_payload: dict[str, Any]) -> Q3Prepro
 def _extract_q3_preprocessed_evidence(context_payload: object) -> Q3PreprocessedEvidence | None:
     if not isinstance(context_payload, dict):
         return None
-    if not any(
-        k in context_payload
-        for k in (
-            "workspaces_and_permissions",
-            "tool_inventory",
-            "memory_and_strategy",
-            "q3_unified_asset_inventory",
-            "permissions",
-            "workspace_assets",
-            "active_tools",
-            "loaded_memories",
-            "connected_agents",
+    required_keys = (
+        "workspaces_and_permissions",
+        "tool_inventory",
+        "memory_and_strategy",
+        "q3_unified_asset_inventory",
+        "permissions",
+        "workspace_assets",
+        "active_tools",
+        "loaded_memories",
+        "connected_agents",
+    )
+    if not any(k in context_payload for k in required_keys):
+        logger.error(
+            "Q3 evidence extraction: context_payload missing all expected keys %s. "
+            "Q3 资产上下文为空，服务可能未注入或 Q3 插件未执行。",
+            required_keys,
         )
-    ):
         return None
     return _build_q3_preprocessed_evidence(context_payload)
 

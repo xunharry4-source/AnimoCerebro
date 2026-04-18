@@ -23,17 +23,42 @@ if [ ! -d "src/admin-portal/node_modules" ]; then
   exit 1
 fi
 
-if lsof -nP -iTCP:"${BACKEND_PORT}" -sTCP:LISTEN -t >/dev/null 2>&1; then
-  echo "Backend port already in use: ${BACKEND_PORT}"
-  echo "Run: make restart-dev"
-  exit 1
-fi
+terminate_port_processes() {
+  local port="$1"
+  local name="$2"
+  local pids=""
 
-if lsof -nP -iTCP:"${FRONTEND_PORT}" -sTCP:LISTEN -t >/dev/null 2>&1; then
-  echo "Frontend port already in use: ${FRONTEND_PORT}"
-  echo "Run: make restart-dev"
-  exit 1
-fi
+  pids="$(lsof -nP -iTCP:"${port}" -sTCP:LISTEN -t 2>/dev/null | tr '\n' ' ' | xargs 2>/dev/null || true)"
+  if [ -z "${pids}" ]; then
+    return 0
+  fi
+
+  echo "${name} port in use: ${port}. Terminating processes: ${pids}"
+  kill ${pids} >/dev/null 2>&1 || true
+
+  # Faster check loop
+  for i in {1..5}; do
+    if ! lsof -nP -iTCP:"${port}" -sTCP:LISTEN -t >/dev/null 2>&1; then
+      return 0
+    fi
+    sleep 0.2
+  done
+
+  # Force kill if still alive
+  pids="$(lsof -nP -iTCP:"${port}" -sTCP:LISTEN -t 2>/dev/null | tr '\n' ' ' | xargs 2>/dev/null || true)"
+  if [ -n "${pids}" ]; then
+    echo "Force killing ${name} processes: ${pids}"
+    kill -9 ${pids} >/dev/null 2>&1 || true
+    sleep 0.5
+  fi
+}
+
+terminate_port_processes "${BACKEND_PORT}" "Backend"
+terminate_port_processes "${FRONTEND_PORT}" "Frontend"
+
+# Uvicorn with --reload keeps a parent reloader process that may survive
+# port-based kills and immediately respawn the worker. Clean it explicitly.
+pkill -f "uvicorn zentex.launcher_asgi:app" >/dev/null 2>&1 || true
 
 if ! "$PYTHON_BIN" - <<'PY'
 import importlib
@@ -57,9 +82,7 @@ echo "Starting backend on http://127.0.0.1:${BACKEND_PORT}"
 echo "Using WebSocket implementation: ${WS_IMPLEMENTATION}"
 (
   export PYTHONPATH=src
-  # Add a small delay to ensure port is fully released
-  sleep 1
-  "$PYTHON_BIN" -m uvicorn zentex.boot.web_dev:app --reload --ws "$WS_IMPLEMENTATION" --host 127.0.0.1 --port "$BACKEND_PORT" --timeout-keep-alive 5
+  "$PYTHON_BIN" -m uvicorn zentex.launcher_asgi:app --reload --ws "$WS_IMPLEMENTATION" --host 127.0.0.1 --port "$BACKEND_PORT" --timeout-keep-alive 5
 ) &
 BACKEND_PID=$!
 

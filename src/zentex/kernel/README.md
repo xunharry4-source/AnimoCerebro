@@ -42,6 +42,11 @@
 - 隔离外部依赖细节
 - 统一错误处理与重试
 
+#### ✅ Q8 → task_service 内部同步
+- `_sync_q8_to_task_service()` 内部方法
+- 注入 `task_service` 通过 `attach_dependencies`
+- 与 HTTP 路径独立，kernel 内部触发九问时同样执行任务同步
+
 ## 严格禁止
 
 | 类别 | 禁止事项 |
@@ -108,6 +113,24 @@ turn_result = kernel_svc.execute_turn(
 
 # 访问状态
 state = kernel_svc.get_session_state(session_id=session.id)
+```
+
+依赖注入（`attach_dependencies`）：
+
+```python
+kernel_svc.attach_dependencies(
+    environment_service=environment_svc,
+    cognition_service=cognition_svc,
+    safety_service=safety_svc,
+    plugins_service=plugin_svc,
+    memory_service=memory_svc,
+    llm_service=llm_svc,
+    foundation_service=foundation_svc,
+    agent_service=agent_svc,
+    cli_service=cli_svc,
+    mcp_service=mcp_svc,
+    task_service=task_svc,   # ← 注入后 Q8 同步生效
+)
 ```
 
 ### ❌ 禁止的调用方式
@@ -182,6 +205,7 @@ audit = kernel_svc.get_audit_log(session_id)
 | `memory` | `memory.service.recall(...)` | ✅ 允许 |
 | `safety` | `safety.service.check_conflict(...)` | ✅ 允许 |
 | `plugins` | `plugins.service.execute_cognitive_plugin(...)` | ✅ 允许（认知插件） |
+| `tasks` | `_task_service`（通过 `attach_dependencies` 注入） | ✅ 允许（仅 Q8 → task 同步，通过 `_sync_q8_to_task_service()`） |
 | 内部实现 | `from zentex.cognition.xxx import YYY` | ❌ 禁止 |
 
 ### 插件调用规范（特殊约束）

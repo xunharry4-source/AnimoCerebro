@@ -138,38 +138,54 @@ class LLMGateway:
                 f"Unknown provider tool: {selected_provider_key}. Available={sorted(self._tools)}"
             )
 
-        # Keep the model prompt contract consistent across providers.
-        rendered_context = json.dumps(context, ensure_ascii=False, separators=(",", ":"), sort_keys=True)
-        user_prompt = "\n\n".join(
-            [
-                "Return only a valid JSON object. Do not wrap it in markdown.",
-                f"Task:\n{prompt}",
-                f"Context JSON:\n{rendered_context}",
-            ]
-        )
         effective_system_prompt = system_prompt or (
             "You are a JSON generator. Output a single JSON object and nothing else."
         )
-
-        invocation = ToolInvocationRequest(
+        invocation_metadata = {
+            **(metadata or {}),
+            "source_module": caller_context.source_module,
+            "invocation_phase": caller_context.invocation_phase,
+            "decision_id": caller_context.decision_id,
+        }
+        invocation = self._build_invocation(
             model=selected_model,
-            prompt=user_prompt,
+            prompt=prompt,
+            context=context,
             system_prompt=effective_system_prompt,
             temperature=temperature,
             max_output_tokens=max_output_tokens,
-            metadata={
-                **(metadata or {}),
-                "source_module": caller_context.source_module,
-                "invocation_phase": caller_context.invocation_phase,
-                "decision_id": caller_context.decision_id,
-            },
+            metadata=invocation_metadata,
         )
 
         self._increment_request_attempt()
         try:
             response: ToolInvocationResponse = tool.call(invocation)  # type: ignore[assignment]
         except Exception as exc:
-            raise self._map_tool_error(exc, provider_key=selected_provider_key) from exc
+            if self._should_retry_with_compact_context(
+                exc=exc,
+                provider_key=selected_provider_key,
+                caller_context=caller_context,
+            ):
+                compact_context = self._compact_context_payload(context)
+                retry_invocation = self._build_invocation(
+                    model=selected_model,
+                    prompt=prompt,
+                    context=compact_context,
+                    system_prompt=effective_system_prompt,
+                    temperature=temperature,
+                    max_output_tokens=max_output_tokens,
+                    metadata={
+                        **invocation_metadata,
+                        "context_compacted": True,
+                    },
+                )
+                self._increment_request_attempt()
+                try:
+                    response = tool.call(retry_invocation)  # type: ignore[assignment]
+                except Exception as retry_exc:
+                    raise self._map_tool_error(retry_exc, provider_key=selected_provider_key) from retry_exc
+            else:
+                raise self._map_tool_error(exc, provider_key=selected_provider_key) from exc
 
         usage = LLMTokenUsage.from_optional_mapping(response.usage)
         self._increment_usage(usage)
@@ -188,6 +204,91 @@ class LLMGateway:
             usage=usage,
             raw_response=response.raw_response,
         )
+
+    @staticmethod
+    def _build_invocation(
+        *,
+        model: str,
+        prompt: str,
+        context: Dict[str, Any],
+        system_prompt: str,
+        temperature: float,
+        max_output_tokens: int,
+        metadata: Dict[str, Any],
+    ) -> ToolInvocationRequest:
+        rendered_context = json.dumps(context, ensure_ascii=False, separators=(",", ":"), sort_keys=True)
+        user_prompt = "\n\n".join(
+            [
+                "Return only a valid JSON object. Do not wrap it in markdown.",
+                f"Task:\n{prompt}",
+                f"Context JSON:\n{rendered_context}",
+            ]
+        )
+        return ToolInvocationRequest(
+            model=model,
+            prompt=user_prompt,
+            system_prompt=system_prompt,
+            temperature=temperature,
+            max_output_tokens=max_output_tokens,
+            metadata=metadata,
+        )
+
+    @staticmethod
+    def _should_retry_with_compact_context(
+        *,
+        exc: Exception,
+        provider_key: str,
+        caller_context: ModelProviderCallerContext,
+    ) -> bool:
+        if provider_key != "openai_compat":
+            return False
+        phase = str(caller_context.invocation_phase or "")
+        source = str(caller_context.source_module or "")
+        is_nine_question_tail = any(
+            marker in phase or marker in source
+            for marker in ("q4", "q5", "q6", "q7", "q8", "q9")
+        )
+        if not is_nine_question_tail:
+            return False
+        message = str(exc).lower()
+        return "500" in message or "status 500" in message or "remote provider" in message
+
+    @classmethod
+    def _compact_context_payload(cls, context: Dict[str, Any]) -> Dict[str, Any]:
+        def _compact(value: Any, *, depth: int) -> Any:
+            if value is None or isinstance(value, (int, float, bool)):
+                return value
+            if isinstance(value, str):
+                text = value.strip()
+                if len(text) <= 240:
+                    return text
+                return f"{text[:240]}...[truncated]"
+            if isinstance(value, list):
+                items = [_compact(item, depth=depth + 1) for item in value[:8]]
+                if len(value) > 8:
+                    items.append(f"...[{len(value) - 8} more items truncated]")
+                return items
+            if isinstance(value, dict):
+                compacted: Dict[str, Any] = {}
+                for index, (key, item) in enumerate(value.items()):
+                    if index >= 20:
+                        compacted["__truncated_keys__"] = len(value) - 20
+                        break
+                    normalized_key = str(key)
+                    if normalized_key in {"raw_response", "reasoning_content"}:
+                        continue
+                    if normalized_key in {"reasoning_summary", "summary", "introduction", "function_description"}:
+                        compacted[normalized_key] = _compact(item, depth=depth + 1)
+                        continue
+                    if depth >= 3 and isinstance(item, (dict, list)):
+                        compacted[normalized_key] = "[nested structure omitted]"
+                        continue
+                    compacted[normalized_key] = _compact(item, depth=depth + 1)
+                return compacted
+            return str(value)
+
+        compacted = _compact(context, depth=0)
+        return compacted if isinstance(compacted, dict) else {"context": compacted}
 
     def _increment_request_attempt(self) -> None:
         with self._lock:
@@ -260,8 +361,10 @@ class LLMGateway:
         default_model: str,
     ) -> str:
         normalized = model.strip()
-        if provider_key == "gemini" and normalized.endswith("(auto)"):
-            return default_model or normalized.removesuffix("(auto)").strip()
+        # Strip the "(auto)" routing hint regardless of provider — it is a
+        # config-level annotation that must never reach the actual API endpoint.
+        if normalized.endswith("(auto)"):
+            normalized = normalized.removesuffix("(auto)").strip()
         return normalized
 
     @staticmethod

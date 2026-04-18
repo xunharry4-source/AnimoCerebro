@@ -21,6 +21,7 @@ from zentex.web_console.contracts.plugins import (
 from zentex.web_console.routers.plugin_commons import (
     get_or_create_plugin_session,
     get_cognitive_plugin_detail,
+    get_functional_plugin_detail,
 )
 from zentex.web_console.services.plugins import (
     build_force_enable_response,
@@ -30,6 +31,21 @@ from zentex.web_console.services.plugins import (
 )
 
 logger = logging.getLogger(__name__)
+
+
+async def _get_plugin_status_item(request: Request, plugin_id: str) -> CognitivePluginStatusItem:
+    """Resolve a managed plugin status item from either cognitive or functional detail routes."""
+    try:
+        detail = await get_cognitive_plugin_detail(request, plugin_id)
+        plugin = getattr(detail, "plugin", None)
+        return plugin or detail
+    except HTTPException as exc:
+        if exc.status_code != 404:
+            raise
+
+    detail = await get_functional_plugin_detail(request, plugin_id)
+    plugin = getattr(detail, "plugin", None)
+    return plugin or detail
 
 
 # ========== Plugin Relationship Operations ==========
@@ -293,17 +309,13 @@ async def force_enable_plugin(
     """
     try:
         session = await get_or_create_plugin_session(request)
-        
-        # Check if plugin can be forced enabled
-        try:
-            detail = await get_cognitive_plugin_detail(request, plugin_id)
-            if not detail.can_force_enable:
-                raise HTTPException(
-                    status_code=400,
-                    detail=f"Plugin {plugin_id} cannot be force enabled"
-                )
-        except HTTPException:
-            raise
+
+        plugin_status = await _get_plugin_status_item(request, plugin_id)
+        if not plugin_status.can_force_enable:
+            raise HTTPException(
+                status_code=400,
+                detail=f"Plugin {plugin_id} cannot be force enabled"
+            )
         
         # Perform force enable
         force_enable_managed_plugin(
@@ -353,17 +365,13 @@ async def force_disable_plugin(
     """
     try:
         session = await get_or_create_plugin_session(request)
-        
-        # Check if plugin can be force disabled
-        try:
-            detail = await get_cognitive_plugin_detail(request, plugin_id)
-            if not detail.can_force_disable:
-                raise HTTPException(
-                    status_code=400,
-                    detail=f"Plugin {plugin_id} cannot be force disabled"
-                )
-        except HTTPException:
-            raise
+
+        plugin_status = await _get_plugin_status_item(request, plugin_id)
+        if not plugin_status.can_force_disable:
+            raise HTTPException(
+                status_code=400,
+                detail=f"Plugin {plugin_id} cannot be force disabled"
+            )
         
         # Perform force disable
         force_disable_managed_plugin(
@@ -374,7 +382,7 @@ async def force_disable_plugin(
         logger.info(f"Force disabled plugin: {plugin_id}")
         
         # Return updated status
-        return await get_cognitive_plugin_detail(request, plugin_id)
+        return await _get_plugin_status_item(request, plugin_id)
         
     except HTTPException:
         raise
@@ -411,17 +419,13 @@ async def delete_plugin(
     """
     try:
         session = await get_or_create_plugin_session(request)
-        
-        # Check if plugin can be deleted
-        try:
-            detail = await get_cognitive_plugin_detail(request, plugin_id)
-            if not detail.can_delete:
-                raise HTTPException(
-                    status_code=400,
-                    detail=f"Plugin {plugin_id} cannot be deleted"
-                )
-        except HTTPException:
-            raise
+
+        plugin_status = await _get_plugin_status_item(request, plugin_id)
+        if not plugin_status.can_delete:
+            raise HTTPException(
+                status_code=400,
+                detail=f"Plugin {plugin_id} cannot be deleted"
+            )
         
         # Perform deletion
         if hasattr(session.plugin_service, "delete_plugin"):

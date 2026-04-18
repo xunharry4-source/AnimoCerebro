@@ -13,6 +13,7 @@ from zentex.common.plugin_ids import NINE_QUESTION_Q1
 from zentex.plugins.models import PluginLifecycleStatus
 
 from plugins.nine_questions.q1_where_am_i.compression_budget import LocalCompressionBudget
+from plugins.nine_questions.q1_where_am_i.llm_prompt import build_q1_llm_request
 from plugins.nine_questions.q1_where_am_i.llm_upgrade import build_q1_upgrade_payload
 from plugins.nine_questions.q1_where_am_i.models import WorkspaceDomainInference
 # Decoupled: Inputs come from sensory plugins, not direct snapshot extract
@@ -37,6 +38,16 @@ from zentex.common.nine_questions_shared import (
 )
 
 logger = logging.getLogger(__name__)
+
+
+def _normalize_dict(value: Any) -> dict[str, Any]:
+    return dict(value) if isinstance(value, dict) else {}
+
+
+def _normalize_list_of_dicts(value: Any) -> list[dict[str, Any]]:
+    if not isinstance(value, list):
+        return []
+    return [dict(item) for item in value if isinstance(item, dict)]
 
 
 def _infer_host_runtime_type(physical_host_state: Dict[str, Any]) -> tuple[str, str]:
@@ -195,55 +206,47 @@ class Q1WhereAmIPlugin(BaseModel):
                 logger.error("Q1 functional plugin execution failed: %s", exc)
                 raise RuntimeError(f"Q1 Functional Plugin Chain Failed: {exc}") from exc
 
+        structure_snapshot = _normalize_dict(local_inputs.get("structure"))
+        samples_snapshot = _normalize_dict(local_inputs.get("samples"))
+        environment_event = _normalize_dict(local_inputs.get("environment_event"))
+        physical_host_state = _normalize_dict(local_inputs.get("physical_host_state"))
+        sampled_file_summaries = _normalize_list_of_dicts(
+            samples_snapshot.get("sampled_file_summaries") or samples_snapshot.get("file_samples")
+        )
+        log_anomaly_snippets = [
+            str(item).strip()
+            for item in (samples_snapshot.get("log_anomaly_snippets") or samples_snapshot.get("anomalies") or [])
+            if str(item).strip()
+        ] if isinstance(samples_snapshot.get("log_anomaly_snippets") or samples_snapshot.get("anomalies") or [], list) else []
+        sensory_audit = {
+            "sensory_chain_ok": sensory_chain_ok,
+            "interpretation_markers": list(local_inputs.get("interpretation_markers") or []),
+            "risk_markers": list(local_inputs.get("risk_markers") or []),
+            "sampled_file_count": len(sampled_file_summaries),
+            "anomaly_count": len(log_anomaly_snippets),
+        }
+
         # 2. Local compression budget + three-layer payload assembly.
         # Note: local_inputs is now the dictionary from workspace_sensor.interpret
         budget = LocalCompressionBudget()
         compressed = budget.compress(
-            structure=local_inputs.get("structure", {}),
-            samples=local_inputs.get("samples", []),
-            environment_event=local_inputs.get("environment_event", {}),
-            physical_host_state=local_inputs.get("physical_host_state", {}),
+            structure=structure_snapshot,
+            samples=samples_snapshot,
+            environment_event=environment_event,
+            physical_host_state=physical_host_state,
         )
 
-        evidence_summary = "\n".join(
-            part
-            for part in [compressed["analysis_summary"], compressed["sample_summary"]]
-            if part.strip()
-        ).strip()
-        local_stats = compressed["schema_summary"].strip()
-        uncertainty_hints = compressed["uncertainty_summary"].strip()
-
-        system_prompt = (
-            "You are Zentex. Infer the current workspace domain (Q1: 我在哪). "
-            "Return STRICT JSON that matches the WorkspaceDomainInference schema exactly."
+        llm_request = build_q1_llm_request(
+            compressed=compressed,
+            environment_event=environment_event,
+            physical_host_state=physical_host_state,
+            interpretation_markers=local_inputs.get("interpretation_markers"),
+            risk_markers=local_inputs.get("risk_markers"),
+            suffix_distribution=(local_inputs.get("structure") or {}).get("suffix_distribution"),
         )
-        prompt = (
-            "Required keys:\n"
-            "- primary_domain (str)\n"
-            "- secondary_domains (List[str])\n"
-            "- confidence (float 0..1)\n"
-            "- reasoning_summary (str)\n"
-            "- uncertainties (List[str], must be non-empty)\n"
-            "- suggested_first_step (str)\n\n"
-            "Evidence Summary:\n"
-            f"{evidence_summary or '(empty)'}\n\n"
-            "Local Stats:\n"
-            f"{local_stats or '(empty)'}\n\n"
-            "Uncertainty Hints:\n"
-            f"{uncertainty_hints or '(empty)'}\n"
-        )
-
-        model_context = {
-            "analysis_summary": compressed["analysis_summary"],
-            "sample_summary": compressed["sample_summary"],
-            "schema_summary": compressed["schema_summary"],
-            "uncertainty_summary": compressed["uncertainty_summary"],
-            "suffix_distribution": (local_inputs.get("structure") or {}).get("suffix_distribution"),
-            "interpretation_markers": local_inputs.get("interpretation_markers"),
-            "risk_markers": local_inputs.get("risk_markers"),
-            "environment_event": local_inputs.get("environment_event"),
-            "physical_host_state": local_inputs.get("physical_host_state"),
-        }
+        system_prompt = llm_request["system_prompt"]
+        prompt = llm_request["prompt"]
+        model_context = llm_request["model_context"]
 
         trace_id = str(context.get("trace_id") or f"q1-where-am-i:{uuid4().hex}")
         session_id = str(context.get("session_id") or "unknown-session")
@@ -307,7 +310,7 @@ class Q1WhereAmIPlugin(BaseModel):
 
         # Hard requirement for Q1: explicitly answer whether current host is a server
         # or a regular computer based on local telemetry.
-        host_type, host_reason = _infer_host_runtime_type(local_inputs.get("physical_host_state") or {})
+        host_type, host_reason = _infer_host_runtime_type(physical_host_state)
         host_line = f"当前运行主机类型判断：{host_type}（{host_reason}）。"
         updated_reasoning = f"{inference.reasoning_summary.strip()}\n\n{host_line}".strip()
         updated_uncertainties = list(inference.uncertainties)
@@ -368,15 +371,32 @@ class Q1WhereAmIPlugin(BaseModel):
             context_updates={
                 "nine_questions": {QUESTION_REF: inference.primary_domain},
                 "workspace_domain_inference": inference.model_dump(mode="json"),
+                "workspace_structure_analysis": structure_snapshot,
+                "workspace_content_samples": {
+                    **samples_snapshot,
+                    "sampled_file_summaries": sampled_file_summaries,
+                    "log_anomaly_snippets": log_anomaly_snippets,
+                },
+                "environment_event": environment_event,
+                "physical_host_state": physical_host_state,
+                "q1_sensory_audit": sensory_audit,
+                "q1_compression_snapshot": {
+                    "analysis_summary": compressed["analysis_summary"],
+                    "sample_summary": compressed["sample_summary"],
+                    "schema_summary": compressed["schema_summary"],
+                    "uncertainty_summary": compressed["uncertainty_summary"],
+                },
                 "q1_scene_model": {
                     "primary_domain": inference.primary_domain,
                     "secondary_domains": list(inference.secondary_domains),
                     "suggested_first_step": inference.suggested_first_step,
+                    "host_runtime_type": host_type,
                 },
                 "q1_uncertainty_profile": {
                     "risk_sources": list(inference.uncertainties),
                     "risk_summary": inference.reasoning_summary,
                     "uncertainty_intensity": max(0.0, min(1.0, 1.0 - float(inference.confidence))),
+                    "sensory_chain_ok": sensory_chain_ok,
                 },
                 "q1_llm_upgrade": upgrade_payload.model_dump(mode="json"),
             },

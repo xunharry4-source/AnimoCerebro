@@ -17,7 +17,11 @@ from zentex.plugins.contracts import PluginLifecycleStatus
 from zentex.plugins.service import query_cognitive_tools
 from zentex.plugins.service.manager import SystemPluginService
 from zentex.upgrade.evidence import UpgradeEvidenceService
-from zentex.upgrade.llm.runtime import LLMUpgradeRuntime
+from zentex.upgrade.llm.prompt_optimizer import LLMSectionContentMutator
+from zentex.upgrade.llm.runtime import (
+    LLMUpgradeRuntime,
+    build_section_aware_prompt_optimizer_runner,
+)
 from zentex.upgrade.management import (
     UpgradeLifecycleStatus,
     UpgradeManagementRecord,
@@ -37,6 +41,7 @@ from zentex.upgrade.base_models import (
     PromotionDecision,
 )
 from zentex.upgrade.plugin.runtime import PluginEvolutionRuntime
+from zentex.tasks.integration.workflow_bridge import WorkflowTaskBridge
 import subprocess
 
 
@@ -83,6 +88,7 @@ class UpgradeExecutionService:
         plugin_worker: Callable[[Any], dict[str, Any]] | None = None,
         plugin_service: SystemPluginService | None = None,
         evidence_service: UpgradeEvidenceService | None = None,
+        workflow_bridge: WorkflowTaskBridge | None = None,
     ) -> None:
         self._evidence_service = evidence_service or UpgradeEvidenceService()
         if facade is None:
@@ -93,11 +99,26 @@ class UpgradeExecutionService:
         else:
             self._facade = facade
         self._management_store = management_store or UpgradeManagementStore()
-        self._llm_runtime = llm_runtime or LLMUpgradeRuntime()
+        self._llm_runtime = llm_runtime or LLMUpgradeRuntime(
+            prompt_optimizer_runner=build_section_aware_prompt_optimizer_runner(
+                section_mutator=LLMSectionContentMutator(),
+            )
+        )
         self._plugin_runtime = plugin_runtime or PluginEvolutionRuntime()
         self._plugin_worker = plugin_worker
         self._plugin_service = plugin_service
+        if workflow_bridge is None:
+            try:
+                workflow_bridge = WorkflowTaskBridge()
+            except Exception:
+                workflow_bridge = None
+        self._workflow_bridge = workflow_bridge
         self._tool_registry: Any | None = None
+
+    def _sync_workflow_task(self, record: UpgradeManagementRecord) -> None:
+        if self._workflow_bridge is None:
+            return
+        self._workflow_bridge.sync_upgrade_record(record)
 
     @property
     def management_store(self) -> UpgradeManagementStore:
@@ -245,6 +266,7 @@ class UpgradeExecutionService:
             started_at=utc_now(),
         )
         self._management_store.upsert(record)
+        self._sync_workflow_task(record)
         self._evidence_service.record_event(
             record,
             event_type="llm_upgrade_started",
@@ -259,6 +281,7 @@ class UpgradeExecutionService:
             record.memory_status = "persisted"
             record.finished_at = utc_now()
             record.change_summary = str(result.get("status") or record.change_summary)
+            record.payload = dict(result)
             self._apply_success_profile(
                 record,
                 stage="llm_execution",
@@ -297,6 +320,7 @@ class UpgradeExecutionService:
             record.memory_status = "persisted"
             record.finished_at = utc_now()
             self._management_store.upsert(record)
+            self._sync_workflow_task(record)
             self._evidence_service.record_event(
                 record,
                 event_type="llm_upgrade_failed",
@@ -305,7 +329,9 @@ class UpgradeExecutionService:
             )
             raise
 
-        return self._management_store.upsert(record)
+        persisted = self._management_store.upsert(record)
+        self._sync_workflow_task(persisted)
+        return persisted
 
     def execute_plugin_evolution(
         self,
@@ -381,6 +407,7 @@ class UpgradeExecutionService:
                 started_at=utc_now(),
             )
             self._management_store.upsert(record)
+            self._sync_workflow_task(record)
             self._evidence_service.record_event(
                 record,
                 event_type="plugin_creation_scaffolding_started",
@@ -393,6 +420,7 @@ class UpgradeExecutionService:
                 record.current_status = UpgradeLifecycleStatus.RUNNING
                 record.current_progress = 40
                 self._management_store.upsert(record)
+                self._sync_workflow_task(record)
                 self._evidence_service.record_event(
                     record,
                     event_type="plugin_creation_worker_started",
@@ -443,6 +471,7 @@ class UpgradeExecutionService:
                 record.memory_status = "persisted"
                 record.finished_at = utc_now()
                 self._management_store.upsert(record)
+                self._sync_workflow_task(record)
                 self._evidence_service.record_event(
                     record,
                     event_type="plugin_creation_failed",
@@ -450,7 +479,9 @@ class UpgradeExecutionService:
                     payload={"error": str(exc)},
                 )
                 raise
-            return self._management_store.upsert(record)
+            persisted = self._management_store.upsert(record)
+            self._sync_workflow_task(persisted)
+            return persisted
 
         if decision.upgrade_candidate is None:
             return None
@@ -516,6 +547,7 @@ class UpgradeExecutionService:
             started_at=utc_now(),
         )
         self._management_store.upsert(record)
+        self._sync_workflow_task(record)
         self._evidence_service.record_event(
             record,
             event_type="plugin_upgrade_copy_started",
@@ -530,6 +562,7 @@ class UpgradeExecutionService:
             record.current_status = UpgradeLifecycleStatus.RUNNING
             record.current_progress = 40
             self._management_store.upsert(record)
+            self._sync_workflow_task(record)
             self._evidence_service.record_event(
                 record,
                 event_type="plugin_upgrade_worker_started",
@@ -590,6 +623,7 @@ class UpgradeExecutionService:
             record.memory_status = "persisted"
             record.finished_at = utc_now()
             self._management_store.upsert(record)
+            self._sync_workflow_task(record)
             self._evidence_service.record_event(
                 record,
                 event_type="plugin_upgrade_failed",
@@ -598,7 +632,9 @@ class UpgradeExecutionService:
             )
             raise
 
-        return self._management_store.upsert(record)
+        persisted = self._management_store.upsert(record)
+        self._sync_workflow_task(persisted)
+        return persisted
 
     def detect_capability_gap(self, session_context: dict[str, Any] | None = None) -> list[SelfUpgradeProposal]:
         """Detect gaps in system capabilities with failure pattern clustering (Sub-function 1.1)."""

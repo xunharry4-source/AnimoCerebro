@@ -29,7 +29,6 @@ from zentex.web_console.services.learning import (
     build_learning_plan,
     execute_learning_cycle,
 )
-from zentex.web_console.services.llm import enforce_llm_available
 
 router = APIRouter()
 
@@ -60,7 +59,13 @@ def learning_history(
 @router.post("/learning/run-cycle", response_model=LearningRunCycleResponse)
 async def learning_run_cycle(request: Request, body: LearningRunCycleRequest) -> LearningRunCycleResponse:
     if not body.dry_run:
-        enforce_llm_available(request)
+        raise HTTPException(
+            status_code=410,
+            detail={
+                "error": "web_console_llm_invocation_removed",
+                "message": "web-console 不再承接非 dry-run 的 learning cycle；如需真实 LLM 执行，请从后台核心模块直接调用。",
+            },
+        )
     try:
         direction = LearningDirection(body.direction)
     except ValueError as exc:

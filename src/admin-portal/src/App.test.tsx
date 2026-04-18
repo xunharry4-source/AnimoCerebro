@@ -53,7 +53,7 @@ describe("App LLM startup banner", () => {
     expect(screen.getByText(/openai_compat/)).toBeInTheDocument();
     expect(screen.getByText(/大模型探针超时或网络不可达/)).toBeInTheDocument();
     expect(mockFetch).toHaveBeenCalledWith(
-      "/api/web/llm/status?probe_live=1",
+      "/api/web/llm/status",
       expect.objectContaining({
         headers: { Accept: "application/json" },
       }),

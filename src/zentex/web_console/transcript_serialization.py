@@ -1,13 +1,28 @@
 from __future__ import annotations
 
 from datetime import timezone
-from typing import Any, Dict, Optional
+from typing import Any, Dict, Optional, Protocol
 
-from zentex.kernel import BrainTranscriptEntry
 from zentex.web_console.contracts.transcript import TranscriptEventPayload
 
 
-def extract_context_info(entry: BrainTranscriptEntry) -> Dict[str, Any]:
+class _TranscriptEntryLike(Protocol):
+    entry_id: str
+    session_id: str
+    turn_id: str
+    entry_type: Any
+    timestamp: Any
+    source: str
+    trace_id: str
+    payload: Any
+
+
+def _entry_type_value(entry: _TranscriptEntryLike) -> str:
+    entry_type = getattr(entry, "entry_type", None)
+    return str(getattr(entry_type, "value", entry_type) or "")
+
+
+def extract_context_info(entry: _TranscriptEntryLike) -> Dict[str, Any]:
     payload = entry.payload if isinstance(entry.payload, dict) else {}
     caller_context = (
         payload.get("caller_context") if isinstance(payload.get("caller_context"), dict) else {}
@@ -92,7 +107,7 @@ def extract_context_info(entry: BrainTranscriptEntry) -> Dict[str, Any]:
 
 
 def serialize_transcript_entry(
-    entry: BrainTranscriptEntry,
+    entry: _TranscriptEntryLike,
     *,
     include_payload: bool = True,
 ) -> TranscriptEventPayload:
@@ -100,7 +115,7 @@ def serialize_transcript_entry(
         entry_id=entry.entry_id,
         session_id=entry.session_id,
         turn_id=entry.turn_id,
-        entry_type=entry.entry_type.value,
+        entry_type=_entry_type_value(entry),
         timestamp=entry.timestamp.astimezone(timezone.utc).isoformat(),
         source=entry.source,
         trace_id=entry.trace_id,

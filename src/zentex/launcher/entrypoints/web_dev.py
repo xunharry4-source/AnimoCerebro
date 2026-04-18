@@ -39,6 +39,7 @@ KEY DESIGN DECISIONS:
 from __future__ import annotations
 
 import logging
+import asyncio
 
 from zentex.launcher.assembly.service_registry import ServiceRegistry
 
@@ -70,6 +71,7 @@ def create_web_app(registry: ServiceRegistry) -> object:
 def _create_full_app(registry: ServiceRegistry) -> object:
     """Bootstrap plugins and delegate to web_console.app.create_app()."""
     from zentex.web_console.app import create_app
+    from zentex.__boot._bootstrap_nine_questions import seed_task_and_agent_runtime_state
     from zentex.__boot._bootstrap_plugins import seed_plugin_runtime_bundle
 
     # --- Plugin bootstrap ---------------------------------------------------
@@ -145,11 +147,27 @@ def _create_full_app(registry: ServiceRegistry) -> object:
                 memory_service=registry.get("memory"),
                 llm_service=registry.get("llm"),
                 foundation_service=registry.get("foundation"),
+                agent_service=agent_service,
+                cli_service=cli_service,
+                mcp_service=mcp_service,
+                task_service=task_service,
             )
 
     enhanced_memory_service = (
         memory if isinstance(memory, EnhancedMemoryService) else None
     )
+
+    try:
+        asyncio.run(
+            seed_task_and_agent_runtime_state(
+                task_service=task_service,
+                agent_service=agent_service,
+            )
+        )
+    except RuntimeError:
+        logger.warning("web_dev: skipped task/agent runtime seeding because an event loop is already running")
+    except Exception:
+        logger.exception("web_dev: failed to seed task/agent runtime state")
     
     # --- Create full app ----------------------------------------------------
     app = create_app(

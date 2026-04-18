@@ -14,6 +14,7 @@ from datetime import UTC, datetime
 from enum import Enum
 import json
 from pathlib import Path
+import sqlite3
 from threading import RLock
 from typing import Callable, Any
 
@@ -162,6 +163,8 @@ class UpgradeManagementStore:
         self._file_path = Path(file_path) if file_path is not None else None
         if self._file_path is not None:
             self._file_path.parent.mkdir(parents=True, exist_ok=True)
+            if self._file_path.suffix in {".json", ".jsonl"}:
+                self._file_path = self._file_path.with_suffix(".sqlite3")
         self._records: dict[str, UpgradeManagementRecord] = self._load_records()
         self._cancel_handlers: dict[str, Callable[[], None]] = {}
         for record in records or []:
@@ -199,6 +202,12 @@ class UpgradeManagementStore:
         action: str | None = None,
     ) -> list[UpgradeManagementRecord]:
         with self._lock:
+            if self._file_path is not None:
+                return self._list_records_from_sqlite(
+                    target_kind=target_kind,
+                    lifecycle=lifecycle,
+                    action=action,
+                )
             records = list(self._records.values())
 
         filtered: list[UpgradeManagementRecord] = []
@@ -217,6 +226,9 @@ class UpgradeManagementStore:
         *,
         target_kind: UpgradeTargetKind | None = None,
     ) -> dict[str, int]:
+        with self._lock:
+            if self._file_path is not None:
+                return self._build_counts_from_sqlite(target_kind=target_kind)
         all_records = self.list_records(target_kind=target_kind, lifecycle=UpgradeLifecycleView.ALL)
         return {
             "all": len(all_records),
@@ -275,32 +287,164 @@ class UpgradeManagementStore:
             self._persist_unlocked()
             return record
 
+    def _list_records_from_sqlite(
+        self,
+        *,
+        target_kind: UpgradeTargetKind | None = None,
+        lifecycle: UpgradeLifecycleView = UpgradeLifecycleView.ALL,
+        action: str | None = None,
+    ) -> list[UpgradeManagementRecord]:
+        if self._file_path is None or not self._file_path.exists():
+            return []
+        self._init_db_unlocked()
+        where_clauses: list[str] = []
+        params: list[str] = []
+        if target_kind is not None:
+            where_clauses.append("target_kind = ?")
+            params.append(target_kind.value)
+        if lifecycle is not UpgradeLifecycleView.ALL:
+            where_clauses.append("lifecycle_view = ?")
+            params.append(lifecycle.value)
+        if action is not None:
+            where_clauses.append("action = ?")
+            params.append(action)
+        sql = "SELECT payload FROM management_records"
+        if where_clauses:
+            sql += " WHERE " + " AND ".join(where_clauses)
+        sql += " ORDER BY updated_at DESC"
+        records: list[UpgradeManagementRecord] = []
+        with self._get_connection() as conn:
+            cursor = conn.execute(sql, tuple(params))
+            for row in cursor:
+                try:
+                    item = json.loads(str(row[0]))
+                except Exception:
+                    continue
+                if not isinstance(item, dict):
+                    continue
+                records.append(self._record_from_payload(item))
+        return records
+
+    def _build_counts_from_sqlite(
+        self,
+        *,
+        target_kind: UpgradeTargetKind | None = None,
+    ) -> dict[str, int]:
+        if self._file_path is None or not self._file_path.exists():
+            return {
+                "all": 0,
+                "waiting": 0,
+                "ongoing": 0,
+                "completed": 0,
+                "failed": 0,
+                "cancelled": 0,
+            }
+        self._init_db_unlocked()
+        where_sql = ""
+        params: tuple[str, ...] = ()
+        if target_kind is not None:
+            where_sql = "WHERE target_kind = ?"
+            params = (target_kind.value,)
+        counts = {
+            "all": 0,
+            "waiting": 0,
+            "ongoing": 0,
+            "completed": 0,
+            "failed": 0,
+            "cancelled": 0,
+        }
+        with self._get_connection() as conn:
+            row = conn.execute(
+                f"SELECT COUNT(*) FROM management_records {where_sql}",
+                params,
+            ).fetchone()
+            counts["all"] = int(row[0]) if row is not None else 0
+            cursor = conn.execute(
+                f"""
+                SELECT lifecycle_view, COUNT(*)
+                FROM management_records
+                {where_sql}
+                GROUP BY lifecycle_view
+                """,
+                params,
+            )
+            lifecycle_map = {
+                UpgradeLifecycleView.WAITING.value: "waiting",
+                UpgradeLifecycleView.ONGOING.value: "ongoing",
+                UpgradeLifecycleView.COMPLETED.value: "completed",
+                UpgradeLifecycleView.FAILED.value: "failed",
+                UpgradeLifecycleView.CANCELLED.value: "cancelled",
+            }
+            for lifecycle_value, count in cursor:
+                key = lifecycle_map.get(str(lifecycle_value))
+                if key is not None:
+                    counts[key] = int(count)
+        return counts
+
     def _load_records(self) -> dict[str, UpgradeManagementRecord]:
         if self._file_path is None or not self._file_path.exists():
             return {}
-        with self._file_path.open("r", encoding="utf-8") as handle:
-            raw = json.load(handle)
-        if not isinstance(raw, list):
-            return {}
+        self._init_db_unlocked()
         records: dict[str, UpgradeManagementRecord] = {}
-        for item in raw:
-            if not isinstance(item, dict):
-                continue
-            record = self._record_from_payload(item)
-            records[record.record_id] = record
+        with self._get_connection() as conn:
+            cursor = conn.execute("SELECT payload FROM management_records ORDER BY created_at ASC")
+            for row in cursor:
+                try:
+                    item = json.loads(str(row[0]))
+                except Exception:
+                    continue
+                if not isinstance(item, dict):
+                    continue
+                record = self._record_from_payload(item)
+                records[record.record_id] = record
         return records
 
     def _persist_unlocked(self) -> None:
         if self._file_path is None:
             return
-        payload = [
-            self._record_to_payload(record)
-            for record in sorted(self._records.values(), key=lambda item: item.created_at)
-        ]
-        temp_path = self._file_path.with_suffix(f"{self._file_path.suffix}.tmp")
-        with temp_path.open("w", encoding="utf-8") as handle:
-            json.dump(payload, handle, ensure_ascii=False, indent=2)
-        temp_path.replace(self._file_path)
+        self._init_db_unlocked()
+        ordered_records = sorted(self._records.values(), key=lambda item: item.created_at)
+        with self._get_connection() as conn:
+            conn.execute("DELETE FROM management_records")
+            conn.executemany(
+                """
+                INSERT INTO management_records (
+                    record_id,
+                    target_kind,
+                    action,
+                    target_id,
+                    title,
+                    reason,
+                    trace_id,
+                    request_id,
+                    current_status,
+                    lifecycle_view,
+                    current_progress,
+                    created_at,
+                    updated_at,
+                    payload
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                [
+                    (
+                        str(record.record_id),
+                        str(record.target_kind.value),
+                        str(record.action),
+                        str(record.target_id),
+                        str(record.title),
+                        str(record.reason),
+                        str(record.trace_id),
+                        str(record.request_id),
+                        str(record.current_status.value),
+                        str(record.lifecycle_view().value),
+                        int(record.current_progress),
+                        str(record.created_at.isoformat()),
+                        str(record.updated_at.isoformat()),
+                        json.dumps(self._record_to_payload(record), ensure_ascii=False),
+                    )
+                    for record in ordered_records
+                ],
+            )
 
     def _record_to_payload(self, record: UpgradeManagementRecord) -> dict[str, object]:
         payload = asdict(record)
@@ -327,3 +471,74 @@ class UpgradeManagementStore:
             value = normalized.get(key)
             normalized[key] = datetime.fromisoformat(value) if isinstance(value, str) else None
         return UpgradeManagementRecord(**normalized)
+
+    def _get_connection(self) -> sqlite3.Connection:
+        if self._file_path is None:
+            raise RuntimeError("UpgradeManagementStore file_path is not configured for SQLite persistence.")
+        conn = sqlite3.connect(
+            str(self._file_path),
+            timeout=30.0,
+            check_same_thread=False,
+            isolation_level=None,
+        )
+        conn.execute("PRAGMA journal_mode=WAL")
+        conn.execute("PRAGMA synchronous=NORMAL")
+        return conn
+
+    def _init_db_unlocked(self) -> None:
+        if self._file_path is None:
+            return
+        with self._get_connection() as conn:
+            conn.execute(
+                """
+                CREATE TABLE IF NOT EXISTS management_records (
+                    record_id TEXT PRIMARY KEY,
+                    target_kind TEXT NOT NULL,
+                    action TEXT NOT NULL,
+                    target_id TEXT NOT NULL,
+                    title TEXT NOT NULL,
+                    reason TEXT NOT NULL,
+                    trace_id TEXT NOT NULL,
+                    request_id TEXT NOT NULL,
+                    current_status TEXT NOT NULL,
+                    lifecycle_view TEXT NOT NULL,
+                    current_progress INTEGER NOT NULL,
+                    created_at DATETIME NOT NULL,
+                    updated_at DATETIME NOT NULL,
+                    payload TEXT NOT NULL
+                )
+                """
+            )
+            existing_columns = {
+                str(row[1])
+                for row in conn.execute("PRAGMA table_info(management_records)")
+            }
+            required_columns: dict[str, str] = {
+                "target_kind": "TEXT NOT NULL DEFAULT ''",
+                "action": "TEXT NOT NULL DEFAULT ''",
+                "target_id": "TEXT NOT NULL DEFAULT ''",
+                "title": "TEXT NOT NULL DEFAULT ''",
+                "reason": "TEXT NOT NULL DEFAULT ''",
+                "trace_id": "TEXT NOT NULL DEFAULT ''",
+                "request_id": "TEXT NOT NULL DEFAULT ''",
+                "current_status": "TEXT NOT NULL DEFAULT ''",
+                "lifecycle_view": "TEXT NOT NULL DEFAULT ''",
+                "current_progress": "INTEGER NOT NULL DEFAULT 0",
+            }
+            for column_name, column_sql in required_columns.items():
+                if column_name not in existing_columns:
+                    conn.execute(
+                        f"ALTER TABLE management_records ADD COLUMN {column_name} {column_sql}"
+                    )
+            conn.execute(
+                "CREATE INDEX IF NOT EXISTS idx_management_updated_at ON management_records(updated_at)"
+            )
+            conn.execute(
+                "CREATE INDEX IF NOT EXISTS idx_management_target_kind ON management_records(target_kind)"
+            )
+            conn.execute(
+                "CREATE INDEX IF NOT EXISTS idx_management_status ON management_records(current_status)"
+            )
+            conn.execute(
+                "CREATE INDEX IF NOT EXISTS idx_management_lifecycle_view ON management_records(lifecycle_view)"
+            )

@@ -38,14 +38,30 @@ def _extract_q5_preprocessed_evidence(context_payload: object) -> Q5Preprocessed
     action_space = _coerce_string_list(context_payload.get("actionable_space"))
     if not action_space and isinstance(q4_profile, dict):
         action_space = _coerce_string_list(q4_profile.get("actionable_space"))
+    if not action_space:
+        authorization_baseline = context_payload.get("q5_authorization_baseline")
+        if isinstance(authorization_baseline, dict):
+            action_space = _coerce_string_list(authorization_baseline.get("allowed_action_space"))
 
     boundaries = _coerce_string_list(context_payload.get("tenant_boundaries"))
     if not boundaries:
         boundaries = _flatten_policy_lines(context_payload.get("tenant_scope"))
+    if not boundaries:
+        authorization_baseline = context_payload.get("q5_authorization_baseline")
+        if isinstance(authorization_baseline, dict):
+            boundaries = _flatten_policy_lines(
+                (authorization_baseline.get("contact_and_org_boundaries") or {}).get("tenant_scope")
+            )
 
     contact_policy = _flatten_policy_lines(context_payload.get("contact_policy"))
+    if not contact_policy:
+        authorization_baseline = context_payload.get("q5_authorization_baseline")
+        if isinstance(authorization_baseline, dict):
+            contact_policy = _flatten_policy_lines(
+                (authorization_baseline.get("contact_and_org_boundaries") or {}).get("contact_policy")
+            )
 
-    trust = context_payload.get("agent_trust_status") or {}
+    trust = context_payload.get("q5_agent_trust_status") or context_payload.get("agent_trust_status") or {}
     if not isinstance(trust, dict):
         trust = {}
     if not trust and isinstance(context_payload.get("q3_connected_agents"), list):
@@ -72,15 +88,27 @@ def _extract_q5_preprocessed_evidence(context_payload: object) -> Q5Preprocessed
 def _extract_q5_inference_result(result_payload: object) -> Q5WhatAmIAllowedToDoInferenceView | None:
     if not isinstance(result_payload, dict):
         return None
-    profile = result_payload.get("authorization_boundary_profile") if isinstance(result_payload.get("authorization_boundary_profile"), dict) else result_payload
+    # Q5 plugin 写入 context_updates 的是 q5_authorization_boundary_profile（直接是 profile dict）
+    # 也可能整个 result_payload 就是 profile
+    profile = result_payload.get("authorization_boundary_profile")
+    if not isinstance(profile, dict):
+        profile = result_payload  # compatibility path: 整个 payload 直接就是 profile
     if not isinstance(profile, dict):
         return None
 
+    # 从 contact_and_org_boundaries 提取组织边界信息
     contact_boundaries = profile.get("contact_and_org_boundaries")
     if not isinstance(contact_boundaries, dict):
         contact_boundaries = {}
 
-    forbidden_payload = profile.get("forbidden_action_space")
+    # allowed_action_space → allowed_delegation_targets（最接近的映射）
+    allowed_delegation_targets = _coerce_string_list(
+        profile.get("allowed_action_space")
+        or contact_boundaries.get("allowed_delegation_targets")
+    )
+
+    # forbidden_action_space → explicitly_forbidden_actions
+    forbidden_payload = profile.get("forbidden_action_space") or []
     forbidden_actions: list[str] = []
     compliance_risks = _coerce_string_list(profile.get("compliance_risks"))
     if isinstance(forbidden_payload, list):
@@ -95,43 +123,39 @@ def _extract_q5_inference_result(result_payload: object) -> Q5WhatAmIAllowedToDo
                     forbidden_actions.append(action)
             elif raw_item is not None:
                 forbidden_actions.append(str(raw_item))
-
     forbidden_actions.extend(_coerce_string_list(profile.get("explicitly_forbidden_actions")))
-    seen_forbidden: set[str] = set()
-    forbidden_actions = [item for item in forbidden_actions if item and not (item in seen_forbidden or seen_forbidden.add(item))]
-
     compliance_risks.extend(_coerce_string_list(profile.get("requires_escalation_actions")))
-    seen_risks: set[str] = set()
-    compliance_risks = [item for item in compliance_risks if item and not (item in seen_risks or seen_risks.add(item))]
 
-    allowed_targets = _coerce_string_list(profile.get("allowed_delegation_targets"))
-    if not allowed_targets:
-        allowed_targets = _coerce_string_list(contact_boundaries.get("allowed_delegation_targets"))
+    # 去重
+    seen: set[str] = set()
+    forbidden_actions = [x for x in forbidden_actions if x and not (x in seen or seen.add(x))]
+    seen2: set[str] = set()
+    compliance_risks = [x for x in compliance_risks if x and not (x in seen2 or seen2.add(x))]
 
-    execution_tier = str(profile.get("execution_tier") or contact_boundaries.get("execution_tier") or "unknown")
-    interaction_scope = str(profile.get("interaction_scope") or contact_boundaries.get("interaction_scope") or "unknown")
+    # 从 contact_and_org_boundaries 推断 execution_tier / interaction_scope
+    execution_tier = str(
+        contact_boundaries.get("execution_tier")
+        or profile.get("execution_tier")
+        or ("read_only" if not profile.get("allowed_action_space") else "constrained_execute")
+    )
+    interaction_scope = str(
+        contact_boundaries.get("interaction_scope")
+        or profile.get("interaction_scope")
+        or "whitelist_only"
+    )
     requires_human_confirmation = bool(
-        profile.get("requires_human_confirmation")
-        if "requires_human_confirmation" in profile
-        else contact_boundaries.get("requires_human_confirmation")
+        contact_boundaries.get("requires_human_confirmation")
+        or profile.get("requires_human_confirmation")
+        or bool(profile.get("requires_escalation_actions"))
     )
     requires_cloud_audit = bool(
-        profile.get("requires_cloud_audit")
-        if "requires_cloud_audit" in profile
-        else contact_boundaries.get("requires_cloud_audit")
+        contact_boundaries.get("requires_cloud_audit")
+        or profile.get("requires_cloud_audit")
+        or False
     )
 
-    if not any(
-        (
-            execution_tier != "unknown",
-            interaction_scope != "unknown",
-            requires_human_confirmation,
-            requires_cloud_audit,
-            bool(forbidden_actions),
-            bool(compliance_risks),
-            bool(allowed_targets),
-        )
-    ):
+    if not any((forbidden_actions, compliance_risks, allowed_delegation_targets,
+                execution_tier not in ("unknown", ""), interaction_scope not in ("unknown", ""))):
         return None
 
     return Q5WhatAmIAllowedToDoInferenceView(
@@ -141,8 +165,6 @@ def _extract_q5_inference_result(result_payload: object) -> Q5WhatAmIAllowedToDo
         requires_cloud_audit=requires_cloud_audit,
         explicitly_forbidden_actions=forbidden_actions,
         compliance_risks=compliance_risks,
-        allowed_delegation_targets=allowed_targets,
+        allowed_delegation_targets=allowed_delegation_targets,
     )
-
-
 

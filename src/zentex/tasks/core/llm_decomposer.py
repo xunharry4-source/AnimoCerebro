@@ -1,3 +1,17 @@
+"""
+LLM Task Decomposer — zentex.tasks.core.llm_decomposer
+
+RESPONSIBILITY:
+  Orchestrates LLM calls for mission decomposition.  Prompt construction and
+  content preprocessing are fully delegated to zentex.tasks.core.llm_prompt —
+  this module MUST NOT build or inline any prompt string sent to the LLM.
+
+DOES NOT:
+  - Build prompt strings (see llm_prompt.py).
+  - Preprocess or truncate mission content (see llm_prompt.py).
+  - Own service lifecycle.
+"""
+
 from __future__ import annotations
 
 import logging
@@ -11,6 +25,10 @@ from zentex.foundation.specs.model_provider import ModelProviderCallerContext, M
 from zentex.kernel import BrainTranscriptEntryType
 from zentex.llm.service import LLMService
 from zentex.tasks.models import CoordinationMode, TaskType, DecompositionContext
+from zentex.tasks.core.llm_prompt import (
+    build_decomposition_prompt,
+    build_decomposition_context_dict,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -86,34 +104,18 @@ class LLMTaskDecomposerPlugin:
             trace_id=trace_id,
         )
 
-        # Phase A1: Inject memory context into prompt
-        memory_section = ""
-        if context:
-            memory_section = "\n历史经验与上下文:\n" + context.memory_text + "\n"
-
-        prompt = (
-            "You are Zentex's Task Decomposer.\n"
-            "Decompose the mission into a small set of executable subtasks.\n"
-            "\n"
-            "Hard constraints:\n"
-            "- Output STRICT JSON with the top-level key: subtasks.\n"
-            "- Each subtask MUST include: local_id, title, task_type, content, objective, requirements, depends_on, coordination_mode.\n"
-            "- local_id MUST be unique and use this format: step-1, step-2, ...\n"
-            "- depends_on MUST reference local_id values only.\n"
-            "- task_type MUST be one of: cognitive_step, agent_delegation, system_action, intervention, mission.\n"
-            "- coordination_mode MUST be one of: parallel, bundle, sequential.\n"
-            "- Keep the number of subtasks between 3 and 8.\n"
-            "- Do not invent capabilities; write requirements as concrete checks/actions.\n"
-            "\n"
-            f"Mission title: {mission_title}\n"
-            f"Mission context/notes: {mission_content}\n"
-            f"{memory_section}"
+        # Phase A1: All prompt construction and content preprocessing is
+        # delegated to llm_prompt.py — never build prompts inline here.
+        memory_text = context.memory_text if context else None
+        prompt = build_decomposition_prompt(
+            mission_title=mission_title,
+            mission_content=mission_content,
+            memory_text=memory_text,
         )
-        ctx_dict: Dict[str, Any] = {
-            "mission_title": mission_title,
-            "mission_content": mission_content,
-            "requested_at": datetime.now(timezone.utc).isoformat(),
-        }
+        ctx_dict: Dict[str, Any] = build_decomposition_context_dict(
+            mission_title=mission_title,
+            mission_content=mission_content,
+        )
 
         self._transcript_store.write_entry(
             session_id=self._session_id,

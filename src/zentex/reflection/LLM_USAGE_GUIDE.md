@@ -236,7 +236,8 @@ reflection = service.generate_reflection(
 
 ```
 zentex/reflection/
-├── llm_generator.py      # LLM驱动的核心逻辑（新增）
+├── llm_prompt.py         # ★ LLM 提问构建 & 内容预处理（唯一 prompt 出口）
+├── llm_generator.py      # LLM 调用编排（委托提问给 llm_prompt.py）
 ├── service.py            # 对外服务接口（轻量）
 ├── models.py             # 数据模型
 ├── persistence.py        # 持久化层
@@ -244,9 +245,16 @@ zentex/reflection/
 ```
 
 **设计原则：**
-- ✅ `llm_generator.py`: 包含所有LLM相关逻辑
+- ✅ `llm_prompt.py`: 唯一负责构建发给 LLM 的 prompt 字符串，以及预处理输入 context（截断、清理、序列化）
+- ✅ `llm_generator.py`: 只做 LLM 调用编排和输出验证，不内联任何 prompt 字符串
 - ✅ `service.py`: 仅提供服务编排，不包含业务逻辑
-- ✅ 职责清晰，易于维护和测试
+- ✅ 职责清晰，任何提问内容变更只改一个文件
+
+**截断规则（由 `llm_prompt.py` 统一控制）：**
+- context 整体 JSON 序列化上限：4000 字符
+- 单个字段值上限：800 字符
+- 反思主题（subject）上限：300 字符
+- 嵌套层级超过 3 层时替换为长度说明占位文本
 
 ### 工作流程
 
@@ -258,11 +266,13 @@ service._generate_reflection_content()
     是否启用LLM？
     ├─ Yes → LLMReflectionGenerator.generate_reflection()
     │          ↓
-    │       构建专业化提示词
+    │       llm_prompt.build_type_specific_guidance()   ← 专业指导段落
     │          ↓
-    │       调用LLM Service
+    │       llm_prompt.build_reflection_prompt()        ← context 预处理 + prompt 组装
     │          ↓
-    │       验证和规范化输出
+    │       调用 LLM Service (generate_json)
+    │          ↓
+    │       验证和规范化输出 (_validate_and_normalize)
     │          ↓
     │       返回深度反思结果
     │

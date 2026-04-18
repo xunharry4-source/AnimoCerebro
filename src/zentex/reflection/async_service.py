@@ -23,6 +23,7 @@ from zentex.background_tasks import (
     TaskType,
     TaskPriority,
 )
+from zentex.tasks.integration.workflow_bridge import WorkflowTaskBridge
 
 logger = logging.getLogger(__name__)
 
@@ -48,6 +49,7 @@ class AsyncReflectionService:
         thread_pool_size: int = 4,
         task_timeout_seconds: int = 300,
         max_retries: int = 3,
+        workflow_bridge: WorkflowTaskBridge | None = None,
     ):
         """
         初始化异步服务
@@ -67,6 +69,12 @@ class AsyncReflectionService:
         self._monitor = get_monitor()
         self._queue = get_task_queue()
         self._max_retries = max_retries
+        if workflow_bridge is None:
+            try:
+                workflow_bridge = WorkflowTaskBridge()
+            except Exception:
+                workflow_bridge = None
+        self._workflow_bridge = workflow_bridge
         self._worker_running = False
         self._worker_thread: Optional[threading.Thread] = None
         
@@ -161,6 +169,16 @@ class AsyncReflectionService:
         
         # 更新状态为PENDING
         self._monitor.update_status(task_id, TaskStatus.PENDING)
+        if self._workflow_bridge is not None:
+            self._workflow_bridge.sync_reflection_submission(
+                task_id=task_id,
+                subject=subject,
+                reflection_type=reflection_type.value,
+                priority=priority,
+                trace_id=trace_id,
+                session_id=session_id,
+                template_id=template_id,
+            )
         
         logger.info(f"Reflection task submitted: {task_id} (priority={priority.name})")
         return task_id
@@ -214,6 +232,12 @@ class AsyncReflectionService:
         removed = self._queue.remove(task_id)
         if removed:
             self._monitor.update_status(task_id, TaskStatus.CANCELLED)
+            if self._workflow_bridge is not None:
+                self._workflow_bridge.sync_reflection_status(
+                    task_id,
+                    "cancelled",
+                    remarks="Reflection task cancelled from async queue",
+                )
             logger.info(f"Task cancelled: {task_id}")
             return True
         
@@ -280,6 +304,14 @@ class AsyncReflectionService:
         
         # 更新状态为RUNNING
         self._monitor.update_status(task_id, TaskStatus.RUNNING)
+        if self._workflow_bridge is not None:
+            self._workflow_bridge.sync_reflection_status(
+                task_id,
+                "running",
+                subject=task_data["subject"],
+                reflection_type=task_data["reflection_type"].value,
+                remarks="Reflection task is running",
+            )
         
         # 提交到执行器
         future = self._executor.submit_task(
@@ -304,6 +336,14 @@ class AsyncReflectionService:
                     result=result.get("result"),
                     progress=100.0,
                 )
+                if self._workflow_bridge is not None:
+                    self._workflow_bridge.sync_reflection_status(
+                        task_id,
+                        "completed",
+                        subject=task_data["subject"],
+                        reflection_type=task_data["reflection_type"].value,
+                        remarks="Reflection task completed successfully",
+                    )
             else:
                 # 失败，检查是否需要重试
                 task = self._monitor.get_task(task_id)
@@ -316,6 +356,14 @@ class AsyncReflectionService:
                         error_message=result.get("error"),
                         error_type=result.get("error_type"),
                     )
+                    if self._workflow_bridge is not None:
+                        self._workflow_bridge.sync_reflection_status(
+                            task_id,
+                            "failed",
+                            subject=task_data["subject"],
+                            reflection_type=task_data["reflection_type"].value,
+                            remarks=str(result.get("error") or "Reflection task failed"),
+                        )
         
         except TimeoutError:
             logger.error(f"Task {task_id} timed out")
@@ -325,6 +373,14 @@ class AsyncReflectionService:
                 error_message=f"Task timeout after {self._executor._task_timeout}s",
                 error_type="TimeoutError",
             )
+            if self._workflow_bridge is not None:
+                self._workflow_bridge.sync_reflection_status(
+                    task_id,
+                    "failed",
+                    subject=task_data["subject"],
+                    reflection_type=task_data["reflection_type"].value,
+                    remarks="Reflection task timed out",
+                )
         
         except Exception as e:
             logger.error(f"Task {task_id} execution error: {e}", exc_info=True)
@@ -334,6 +390,14 @@ class AsyncReflectionService:
                 error_message=str(e),
                 error_type=type(e).__name__,
             )
+            if self._workflow_bridge is not None:
+                self._workflow_bridge.sync_reflection_status(
+                    task_id,
+                    "failed",
+                    subject=task_data["subject"],
+                    reflection_type=task_data["reflection_type"].value,
+                    remarks=str(e),
+                )
 
     def _retry_task(self, task_id: str, task_data: Dict[str, Any], error: str) -> None:
         """

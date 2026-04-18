@@ -1,84 +1,93 @@
-# Task Management Module
+# Tasks Console Page
 
-任务管理模块，采用模块化设计，遵循单一职责原则。
+## 页面定位
 
-## 文件结构
+`/console/tasks` 现在展示的是统一任务视图，不只是“原生任务列表”。
+
+当前页面展示的数据来源于 `zentex.tasks`，而 `zentex.tasks` 已开始承载：
+
+- 普通任务
+- `reflection` 同步进来的工作流任务
+- `upgrade` 同步进来的工作流任务
+
+## 当前前端结构
 
 ```
 tasks/
-├── index.ts                      # 模块导出入口
-├── types.ts                      # TypeScript 类型定义
-├── ZentexTaskManager.tsx         # 主组件（列表页）
-├── TaskDetailPage.tsx            # 任务详情页组件
-├── TaskStatusChip.tsx            # 状态徽章组件
-├── TaskTabPanel.tsx              # 标签面板组件
-├── useTaskManagement.ts          # 任务管理自定义 Hook
-└── README.md                     # 本文档
+├── index.ts
+├── types.ts
+├── ZentexTaskManager.tsx
+├── TaskDetailPage.tsx
+├── TaskStatusChip.tsx
+├── TaskTabPanel.tsx
+├── useTaskManagement.ts
+└── README.md
 ```
 
-## 组件说明
+## 当前页面能力
 
 ### ZentexTaskManager
-主组件，负责任务列表的展示和标签页导航。
-- 5个标签页：进行中、待处理、待确认、已完成、已取消
-- 实时数据更新（WebSocket）
-- 点击任务可跳转到详情页
+
+主列表页，当前职责：
+
+- 按状态展示任务
+- 通过 WebSocket 接收实时更新
+- 跳转到详情页
+
+当前“任务”语义要理解为统一任务，不再局限于用户显式创建的任务。
 
 ### TaskDetailPage
-任务详情页组件，显示单个任务的完整信息。
-- 任务基本信息（ID、标题、类型、优先级、状态等）
-- 子任务列表和统计
-- 依赖关系（前置和后置）
-- 备注信息
-- 支持从子任务跳转到父任务或其他相关任务
 
-### TaskStatusChip
-显示任务状态的彩色徽章组件。
+详情页负责展示：
 
-### TaskTabPanel
-Material-UI TabPanel 的封装，用于标签页内容切换。
+- 基础任务字段
+- 子任务
+- 依赖关系
+- 备注
+- 执行历史
 
-### useTaskManagement
-自定义 Hook，封装所有任务管理逻辑：
-- 数据获取（按状态分类）
-- WebSocket 连接和实时更新
-- 标签页状态管理
-- 错误处理
+如果任务来自 workflow bridge，额外重要的信息在 task metadata 中，例如：
 
-### types.ts
-TypeScript 类型定义：
-- `TaskStatus` - 任务状态枚举
-- `ZentexTask` - 任务接口
-- `TasksByStatus` - 按状态分类的任务集合
-- `TabPanelProps` - 标签面板属性
+- `source_module`
+- `workflow_kind`
+- `workflow_status`
+- `workflow_progress`
 
-## 使用示例
+## 当前后端接口
 
-```tsx
-import { ZentexTaskManager, TaskDetailPage } from './pages/tasks';
+- `GET /api/web/tasks/by-status`
+- `GET /api/web/tasks/{task_id}/detail`
+- `GET /api/web/tasks/{task_id}/subtasks`
+- `GET /api/web/tasks/{task_id}/execution-history`
+- `WS /api/web/tasks/stream`
 
-// 在路由中使用
-<Route path="/console/tasks" element={<ZentexTaskManager />} />
-<Route path="/console/tasks/:task_id" element={<TaskDetailPage />} />
-```
+## 与后端的当前对应关系
 
-## API 端点
+### Reflection / Upgrade 统一任务
 
-### 列表页
-- `GET /api/web/tasks/by-status` - 获取按状态分类的任务
-- `WS /api/web/tasks/stream` - WebSocket 实时更新
+后端通过 `WorkflowTaskBridge` 把 `reflection` 和 `upgrade` 同步成统一任务，因此页面看到的任务可能不是用户手工创建的业务任务，而是工作流映射任务。
 
-### 详情页
-- `GET /api/web/tasks/{task_id}/detail` - 获取任务详细信息
-- `GET /api/web/tasks/{task_id}/subtasks` - 获取子任务列表
-- `POST /api/web/tasks/{task_id}/decompose` - 触发任务分解
-- `GET /api/web/tasks/{task_id}/execution-history` - 获取执行历史
+这类任务的判断依据不是 title，而是 metadata。
 
-## 未来扩展
+推荐前端后续优先使用：
 
-计划添加的组件：
-- `TaskTable.tsx` - 可复用的任务表格组件
-- `InterventionDialog.tsx` - 人工干预对话框
-- `TaskFilters.tsx` - 任务筛选组件
-- `DependencyGraph.tsx` - 依赖关系可视化组件
-- `ExecutionTimeline.tsx` - 执行时间线组件
+- `metadata.source_module`
+- `metadata.workflow_kind`
+- `metadata.workflow_status`
+- `metadata.workflow_progress`
+
+而不是靠字符串猜测。
+
+## 当前限制
+
+- 当前页面文档不再假设 `/console/tasks` 只展示单一任务域
+- 目前列表接口仍主要按状态分组，尚未单独提供按 `source_module` 的页面筛选体验
+- 如果后续要把 `reflection` / `upgrade` 单独分栏展示，应直接基于 metadata 做前端筛选，或推动后端补显式过滤参数
+
+## 推荐后续增强
+
+- 增加 `source_module` 过滤器
+- 在列表中展示 workflow 来源标记
+- 在详情页增加 metadata 区块
+- 对 `upgrade` 任务展示 `workflow_progress`
+- 对 `reflection` 任务展示 `reflection_type`

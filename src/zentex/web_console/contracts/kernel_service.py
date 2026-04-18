@@ -189,6 +189,21 @@ class KernelServiceFacade(ABC):
         pass
 
     @abstractmethod
+    def get_session_meta(self, session_id: str) -> dict | None:
+        """Get kernel session metadata for a session id."""
+        pass
+
+    @abstractmethod
+    def create_kernel_session(self, user_id: str = "") -> str:
+        """Create a kernel-backed session and return its session id."""
+        pass
+
+    @abstractmethod
+    def ensure_nine_questions_bootstrap(self, session_id: str, *, force: bool = False) -> Any:
+        """Run the kernel nine-question bootstrap for a session."""
+        pass
+
+    @abstractmethod
     def get_session_state(self, session_id: str) -> dict | None:
         """Get comprehensive session state (Working Memory, Self Model, Temporal)"""
         pass

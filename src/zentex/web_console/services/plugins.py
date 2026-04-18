@@ -94,22 +94,12 @@ def build_cognitive_plugin_list(
     managed_records: Dict[str, ManagedPluginRecord],
     plugin_service: Any = None,
 ) -> List[CognitivePluginStatusItem]:
-    """Query cognitive plugins directly from plugin_service."""
+    """Thin adapter: delegates to plugin_service, filters and maps results."""
     if plugin_service is None:
         return []
     
-    # Directly query cognitive plugins from plugin_service
-    cognitive_plugins = plugin_service.query_plugins_by_operational_status(
-        category="cognitive",
-        operational_status="enabled",
-        limit=200
-    )
-    
-    # Map to UI contract
-    return [
-        _map_to_cognitive_plugin_status_item(plugin)
-        for plugin in cognitive_plugins
-    ]
+    all_plugins = build_plugin_payloads(cognitive_registry, plugin_registry, managed_records, plugin_service)
+    return [item for item in all_plugins if item.plugin_kind == "cognitive_tool"]
 
 
 def build_functional_plugin_list(
@@ -118,22 +108,12 @@ def build_functional_plugin_list(
     managed_records: Dict[str, ManagedPluginRecord],
     plugin_service: Any = None,
 ) -> List[CognitivePluginStatusItem]:
-    """Query functional plugins directly from plugin_service."""
+    """Thin adapter: delegates to plugin_service, filters and maps results."""
     if plugin_service is None:
         return []
     
-    # Directly query functional plugins from plugin_service (exclude cognitive)
-    functional_plugins = plugin_service.query_plugins_by_operational_status(
-        category="functional",
-        operational_status="enabled",
-        limit=200
-    )
-    
-    # Map to UI contract
-    return [
-        _map_to_cognitive_plugin_status_item(plugin)
-        for plugin in functional_plugins
-    ]
+    all_plugins = build_plugin_payloads(cognitive_registry, plugin_registry, managed_records, plugin_service)
+    return [item for item in all_plugins if item.plugin_kind != "cognitive_tool"]
 
 
 def build_plugin_feature_groups(

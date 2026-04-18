@@ -28,12 +28,8 @@ DOES NOT:
 
 from __future__ import annotations
 
-from zentex.memory import (
-    EnhancedMemoryService,
-    ManagedEnhancedMemoryRecord,
-    MemoryAuditEvent,
-    MemoryRecallHit,
-)
+from typing import Any, Protocol
+
 from zentex.web_console.contracts.memory import (
     EnhancedMemoryAuditEventItem,
     EnhancedMemoryAuditPayload,
@@ -46,15 +42,37 @@ from zentex.web_console.contracts.memory import (
 )
 
 
-def build_enhanced_memory_record_item(record: ManagedEnhancedMemoryRecord) -> EnhancedMemoryRecordItem:
+class _ModelDumpLike(Protocol):
+    def model_dump(self) -> dict[str, Any]: ...
+
+
+class _EnhancedMemoryServiceLike(Protocol):
+    def list_managed_records(self, *args: Any, **kwargs: Any) -> list[Any]: ...
+
+    def list_semantic_records(self) -> list[Any]: ...
+
+    def list_procedural_records(self) -> list[Any]: ...
+
+    def list_episodic_records(self) -> list[Any]: ...
+
+    def list_projection_failures(self) -> list[Any]: ...
+
+    def get_backend_status(self) -> list[Any]: ...
+
+    def recall(self, *args: Any, **kwargs: Any) -> list[Any]: ...
+
+    def list_audit_events(self, *args: Any, **kwargs: Any) -> list[Any]: ...
+
+
+def build_enhanced_memory_record_item(record: _ModelDumpLike) -> EnhancedMemoryRecordItem:
     return EnhancedMemoryRecordItem.model_validate(record.model_dump())
 
 
-def build_recall_hit_item(hit: MemoryRecallHit) -> EnhancedMemoryRecallHitItem:
+def build_recall_hit_item(hit: _ModelDumpLike) -> EnhancedMemoryRecallHitItem:
     return EnhancedMemoryRecallHitItem.model_validate(hit.model_dump())
 
 
-def build_memory_audit_event_item(event: MemoryAuditEvent) -> EnhancedMemoryAuditEventItem:
+def build_memory_audit_event_item(event: _ModelDumpLike) -> EnhancedMemoryAuditEventItem:
     """Convert MemoryAuditEvent to EnhancedMemoryAuditEventItem.
     
     Handles datetime to string conversion for created_at field.
@@ -69,7 +87,7 @@ def build_memory_audit_event_item(event: MemoryAuditEvent) -> EnhancedMemoryAudi
 
 
 def build_enhanced_memory_overview(
-    service: EnhancedMemoryService,
+    service: _EnhancedMemoryServiceLike,
 ) -> EnhancedMemoryOverviewPayload:
     managed = service.list_managed_records(limit=10000)
     return EnhancedMemoryOverviewPayload(
@@ -89,7 +107,7 @@ def build_enhanced_memory_overview(
 
 
 def build_enhanced_memory_records_payload(
-    service: EnhancedMemoryService,
+    service: _EnhancedMemoryServiceLike,
     *,
     layer: str,
     limit: int,
@@ -119,7 +137,7 @@ def build_enhanced_memory_records_payload(
 
 
 def build_enhanced_memory_search_payload(
-    service: EnhancedMemoryService,
+    service: _EnhancedMemoryServiceLike,
     *,
     query: str,
     limit: int,
@@ -142,7 +160,7 @@ def build_enhanced_memory_search_payload(
 
 
 def build_enhanced_memory_audit_payload(
-    service: EnhancedMemoryService,
+    service: _EnhancedMemoryServiceLike,
     *,
     memory_id: str,
     limit: int,

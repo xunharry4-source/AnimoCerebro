@@ -53,7 +53,6 @@ from zentex.web_console.contracts.agents import (
 from zentex.web_console.dependencies import (
     get_agent_coordination_service,
     get_task_service,
-    get_transcript_store,
     get_kernel_service_facade,
 )
 from zentex.web_console.contracts.kernel_service import KernelServiceFacade
@@ -182,7 +181,8 @@ def list_agent_audit_events(
     request: Request,
 ) -> List[AgentAuditRecord]:
     """获取所有智能体的审计日志"""
-    transcript_store = get_transcript_store(request)
+    facade = get_kernel_service_facade(request)
+    transcript_store = facade.get_transcript_store()
     return handle_get_agent_audit_events(agent_id, transcript_store)
 
 

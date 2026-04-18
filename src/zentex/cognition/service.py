@@ -10,6 +10,7 @@ providing a high-level API for intent inference and scenario pre-calculation.
 import logging
 from typing import Any, Dict, List, Optional
 
+from zentex.common.prompt_upgrade_contract import ModulePromptUpgradeContract, build_section_policy
 from zentex.cognition.simulation import (
     CounterfactualSimulationEngine,
     OutcomeComparison,
@@ -137,6 +138,94 @@ class CognitionService:
             "social_mind_scope": self._social_mind.brain_scope,
         }
 
+    def seed_test_simulation_data(self) -> None:
+        """Seed test simulation data for development/demo purposes.
+        
+        This method creates a pre-computed simulation bundle for 'goal-runtime-stability'
+        to support frontend development and testing without requiring actual LLM calls.
+        """
+        from datetime import datetime, timezone
+        
+        goal_id = "goal-runtime-stability"
+        
+        # Check if already seeded
+        existing_bundle = self._simulation.get_bundle(goal_id)
+        if existing_bundle is not None:
+            logger.info(f"Simulation data for {goal_id} already exists, skipping seeding")
+            return
+        
+        # Create test branches
+        test_branches = [
+            ScenarioBranch(
+                branch_id="branch-conservative",
+                branch_label="保守方案",
+                target_domain="general",
+                predicted_impacts=[
+                    "系统稳定性提升 15%",
+                    "内存占用降低 8%",
+                    "响应延迟增加 50ms"
+                ],
+                risk_score=0.2,
+                failure_cascade=False,
+                simulated_by=["default_simulation"],
+            ),
+            ScenarioBranch(
+                branch_id="branch-aggressive",
+                branch_label="激进优化方案",
+                target_domain="general",
+                predicted_impacts=[
+                    "性能提升 40%",
+                    "资源利用率提高 25%",
+                    "存在 15% 的回滚风险"
+                ],
+                risk_score=0.65,
+                failure_cascade=True,
+                simulated_by=["default_simulation"],
+            ),
+            ScenarioBranch(
+                branch_id="branch-balanced",
+                branch_label="平衡方案",
+                target_domain="general",
+                predicted_impacts=[
+                    "性能提升 20%",
+                    "稳定性保持当前水平",
+                    "实施周期适中"
+                ],
+                risk_score=0.35,
+                failure_cascade=False,
+                simulated_by=["default_simulation"],
+            ),
+        ]
+        
+        # Create outcome comparison
+        outcome_comparison = OutcomeComparison(
+            summary="经过多维度评估，保守方案在稳定性和可预测性方面表现最佳，推荐作为首选实施方案。激进方案虽然性能提升显著，但回滚风险较高。平衡方案可作为备选。",
+            risk_ranking=[
+                {"branch_id": "branch-conservative", "risk_score": 0.2, "rank": 1},
+                {"branch_id": "branch-balanced", "risk_score": 0.35, "rank": 2},
+                {"branch_id": "branch-aggressive", "risk_score": 0.65, "rank": 3},
+            ],
+            recommended_branch_id="branch-conservative",
+        )
+        
+        # Create simulation bundle
+        test_bundle = SimulationBundle(
+            goal_id=goal_id,
+            idempotency_key=f"seed-{goal_id}-{int(datetime.now(timezone.utc).timestamp())}",
+            snapshot_version=self._simulation.snapshot_version,
+            status="completed",
+            branches=test_branches,
+            outcome_comparison=outcome_comparison,
+            created_at=datetime.now(timezone.utc),
+            completed_at=datetime.now(timezone.utc),
+        )
+        
+        # Inject into simulation engine
+        with self._simulation._lock:
+            self._simulation._bundles_by_goal[goal_id] = test_bundle
+        
+        logger.info(f"✓ Seeded test simulation data for {goal_id}")
+
 
 # Global singleton instance (Optional, usually needs manual init with provider)
 _default_service: Optional[CognitionService] = None
@@ -192,6 +281,9 @@ def get_service() -> CognitionService:
                 brain_scope="zentex.cognition"
             )
             logger.info("✓ CognitionService auto-initialized with default simulation plugin")
+            
+            # Seed test simulation data for development
+            _default_service.seed_test_simulation_data()
         except Exception as exc:
             logger.error(f"Failed to auto-initialize CognitionService: {exc}", exc_info=True)
             raise RuntimeError(
@@ -218,4 +310,59 @@ def init_cognition_service(
         simulation_plugins=simulation_plugins,
         brain_scope=brain_scope
     )
+    
+    # Seed test simulation data for development/demo
+    _default_service.seed_test_simulation_data()
+    
     return _default_service
+
+
+def list_prompt_upgrade_contracts() -> list[ModulePromptUpgradeContract]:
+    return [
+        ModulePromptUpgradeContract(
+            prompt_id="cognition.interaction_mind",
+            module_id="cognition",
+            prompt_file_path="/Users/harry/Documents/git/AnimoCerebro-V2/src/zentex/cognition/llm_prompt.py",
+            prompt_builder_name="build_interaction_mind_prompt",
+            prompt_builder_symbol="zentex.cognition.llm_prompt.build_interaction_mind_prompt",
+            target_component="cognition.interaction_mind.prompt",
+            immutable_intent="Interaction mind prompt must infer the other party's intent, knowledge gaps, communication fit, and misunderstanding signals.",
+            expected_output_key="model",
+            allowed_prompt_change_scope=["tighten internal-state wording", "clarify social-mind schema"],
+            forbidden_prompt_changes=["must not add action recommendations", "must not remove misunderstanding_signals", "must not change this into execution planning"],
+            editable_prompt_sections=["output_contract", "quality_rules"],
+            immutable_prompt_sections=["role"],
+            section_change_policy=[
+                build_section_policy(section_key="role", mutable=False, intent="Preserve interaction-mind inference identity.", purpose="Prevent drift into action planning.", forbidden_operations=["change prompt identity"]),
+                build_section_policy(section_key="output_contract", mutable=True, intent="Enforce social-mind schema.", purpose="Allow schema clarification.", allowed_operations=["clarify schema"], forbidden_operations=["remove model", "remove misunderstanding_signals"]),
+                build_section_policy(section_key="quality_rules", mutable=True, intent="Constrain inference scope.", purpose="Keep output limited to internal state inference.", allowed_operations=["tighten wording"], forbidden_operations=["allow action recommendations"]),
+            ],
+            validation_commands=["pytest tests/test_module_prompt_upgrade_contracts.py -q"],
+        ),
+        ModulePromptUpgradeContract(
+            prompt_id="cognition.simulation_comparison",
+            module_id="cognition",
+            prompt_file_path="/Users/harry/Documents/git/AnimoCerebro-V2/src/zentex/cognition/llm_prompt.py",
+            prompt_builder_name="build_simulation_comparison_prompt",
+            prompt_builder_symbol="zentex.cognition.llm_prompt.build_simulation_comparison_prompt",
+            target_component="cognition.simulation_comparison.prompt",
+            immutable_intent="Simulation comparison prompt must compare simulated branches and recommend one branch based on evidence.",
+            expected_output_key="recommended_branch_id",
+            allowed_prompt_change_scope=["compress comparison framing", "clarify recommendation schema"],
+            forbidden_prompt_changes=["must not remove risk_ranking", "must not recommend without evidence", "must not turn comparison into chat prose"],
+            editable_prompt_sections=["input_summary", "output_contract", "quality_rules"],
+            immutable_prompt_sections=["role"],
+            section_change_policy=[
+                build_section_policy(section_key="role", mutable=False, intent="Preserve simulation comparison identity.", purpose="Prevent drift into generic analysis.", forbidden_operations=["change prompt identity"]),
+                build_section_policy(section_key="input_summary", mutable=True, intent="Provide comparison scope.", purpose="Allow concise branch-context framing.", allowed_operations=["compress evidence"], forbidden_operations=["change goal identity"]),
+                build_section_policy(section_key="output_contract", mutable=True, intent="Enforce comparison schema.", purpose="Allow schema clarification.", allowed_operations=["clarify schema"], forbidden_operations=["remove recommended_branch_id", "remove risk_ranking"]),
+                build_section_policy(section_key="quality_rules", mutable=True, intent="Constrain recommendation basis.", purpose="Keep recommendation evidence-based.", allowed_operations=["tighten wording"], forbidden_operations=["allow unsupported recommendation"]),
+            ],
+            validation_commands=["pytest tests/test_module_prompt_upgrade_contracts.py -q"],
+        ),
+    ]
+
+
+def get_prompt_upgrade_contract(prompt_id: str) -> ModulePromptUpgradeContract:
+    contracts = {contract.prompt_id: contract for contract in list_prompt_upgrade_contracts()}
+    return contracts[prompt_id]

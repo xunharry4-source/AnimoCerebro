@@ -13,6 +13,7 @@ from zentex.common.plugin_ids import NINE_QUESTION_Q4
 from zentex.plugins.models import PluginLifecycleStatus
 
 from plugins.nine_questions.q4_what_can_i_do.models import Q4WhatCanIDoInference
+from plugins.nine_questions.q4_what_can_i_do.llm_prompt import build_q4_llm_request
 
 
 QUESTION_REF = "我能做什么"
@@ -34,6 +35,158 @@ from zentex.common.nine_questions_shared import (
 from zentex.plugins.service import execute_enabled_cognitive_plugin_functionals
 
 logger = logging.getLogger(__name__)
+
+
+def _normalize_text(value: object) -> str:
+    return str(value or "").strip()
+
+
+def _coerce_string_list(value: object) -> list[str]:
+    if isinstance(value, list):
+        return [str(item).strip() for item in value if str(item).strip()]
+    if isinstance(value, str):
+        text = value.strip()
+        return [text] if text else []
+    return []
+
+
+def _derive_permission_profile(snapshot: dict[str, Any], q3_inventory: dict[str, Any]) -> dict[str, Any]:
+    permissions = snapshot.get("permissions")
+    permissions = permissions if isinstance(permissions, dict) else {}
+    workspace_permissions = snapshot.get("workspaces_and_permissions")
+    workspace_permissions = workspace_permissions if isinstance(workspace_permissions, dict) else {}
+    q3_permissions = q3_inventory.get("permissions")
+    q3_permissions = q3_permissions if isinstance(q3_permissions, dict) else {}
+
+    mode = _normalize_text(q3_permissions.get("mode") or permissions.get("mode")) or "unknown"
+    tenant_permissions = _coerce_string_list(
+        workspace_permissions.get("tenant_permissions") or permissions.get("tenant_scope")
+    )
+    execution_tokens = _coerce_string_list(
+        workspace_permissions.get("execution_tokens")
+        or permissions.get("execution_tokens")
+        or permissions.get("brain_scope")
+    )
+    workspace_zones = _coerce_string_list(
+        (q3_inventory.get("accessible_workspace_zones") if isinstance(q3_inventory, dict) else None)
+        or workspace_permissions.get("available_workspaces")
+        or permissions.get("accessible_workspace_zones")
+    )
+    return {
+        "mode": mode,
+        "tenant_permissions": tenant_permissions,
+        "execution_tokens": execution_tokens,
+        "accessible_workspace_zones": workspace_zones,
+        "is_read_only": mode == "read_only" or not execution_tokens,
+    }
+
+
+def _normalize_functional_capabilities(functional_capabilities: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    normalized: list[dict[str, Any]] = []
+    for item in functional_capabilities:
+        if not isinstance(item, dict) or item.get("status") != "done":
+            continue
+        normalized.append(
+            {
+                "plugin_id": _normalize_text(item.get("plugin_id")),
+                "status": _normalize_text(item.get("status")) or "done",
+                "result": item.get("result") if isinstance(item.get("result"), dict) else {},
+            }
+        )
+    return normalized
+
+
+def _derive_capability_baseline(
+    snapshot: dict[str, Any],
+    q3_inventory: dict[str, Any],
+    exec_domains: list[str],
+    permission_profile: dict[str, Any],
+    functional_capabilities: list[dict[str, Any]],
+) -> dict[str, list[str]]:
+    resource_evaluation = snapshot.get("q3_resource_evaluation")
+    resource_evaluation = resource_evaluation if isinstance(resource_evaluation, dict) else {}
+    cognitive_tools = _coerce_string_list(q3_inventory.get("available_cognitive_tools"))
+    connected_agents = q3_inventory.get("connected_agents")
+    connected_agents = connected_agents if isinstance(connected_agents, list) else []
+    workspace_zones = _coerce_string_list(permission_profile.get("accessible_workspace_zones"))
+    strategy_patches = _coerce_string_list(q3_inventory.get("activated_strategy_patches"))
+
+    capability_upper_limits: list[str] = []
+    actionable_space: list[str] = []
+    executable_strategies: list[str] = []
+
+    if cognitive_tools:
+        capability_upper_limits.append("analyze available workspace and runtime state")
+        actionable_space.append("inspect workspace summaries")
+        executable_strategies.append("static analysis")
+
+    if workspace_zones:
+        capability_upper_limits.append("operate within accessible workspace zones")
+        actionable_space.append("inspect accessible workspace zones")
+
+    if exec_domains:
+        capability_upper_limits.append("invoke enabled execution domains")
+        actionable_space.append("invoke enabled tool endpoints")
+        executable_strategies.append("tool-assisted execution")
+    else:
+        executable_strategies.append("analysis-only planning")
+
+    if connected_agents:
+        capability_upper_limits.append("delegate work to connected agents")
+        actionable_space.append("coordinate connected agents")
+        executable_strategies.append("delegated collaboration")
+
+    if strategy_patches:
+        capability_upper_limits.append("apply active strategy patches")
+        executable_strategies.append("strategy-patch-guided execution")
+
+    for item in functional_capabilities:
+        plugin_id = _normalize_text(item.get("plugin_id"))
+        if plugin_id:
+            capability_upper_limits.append(f"use functional capability {plugin_id}")
+
+    resource_status = _normalize_text(resource_evaluation.get("resource_status"))
+    if resource_status == "critically_lacking":
+        executable_strategies.append("resource recovery before execution")
+    elif resource_status == "degraded":
+        executable_strategies.append("conservative degraded-mode execution")
+
+    if permission_profile.get("is_read_only"):
+        capability_upper_limits.append("perform read-only inspection")
+        actionable_space = [
+            item
+            for item in actionable_space
+            if not _contains_write_like_action(item)
+        ]
+        executable_strategies = [
+            item
+            for item in executable_strategies
+            if not _contains_write_like_action(item)
+        ]
+        actionable_space.append("read logs and inspect snapshots")
+        executable_strategies.append("request human confirmation before any write action")
+
+    capability_upper_limits = list(dict.fromkeys(item for item in capability_upper_limits if _normalize_text(item)))
+    actionable_space = list(dict.fromkeys(item for item in actionable_space if _normalize_text(item)))
+    executable_strategies = list(dict.fromkeys(item for item in executable_strategies if _normalize_text(item)))
+
+    return {
+        "capability_upper_limits": capability_upper_limits,
+        "actionable_space": actionable_space,
+        "executable_strategies": executable_strategies,
+    }
+
+
+def _merge_with_capability_baseline(
+    inferred: list[str],
+    baseline: list[str],
+    *,
+    read_only: bool,
+) -> list[str]:
+    merged = list(dict.fromkeys(_coerce_string_list(inferred) + _coerce_string_list(baseline)))
+    if read_only:
+        merged = [item for item in merged if not _contains_write_like_action(item)]
+    return merged
 
 
 class Q4WhatCanIDoPlugin(BaseModel):
@@ -61,6 +214,8 @@ class Q4WhatCanIDoPlugin(BaseModel):
         transcript_store = require_transcript_store(context)
         snapshot = context.get("context_snapshot", {}) or {}
         q3_inventory = snapshot.get("q3_unified_asset_inventory", {}) or {}
+        if not isinstance(q3_inventory, dict):
+            q3_inventory = {}
         exec_domains = list(q3_inventory.get("available_execution_tools", []) or [])
         plugin_service = context.get("plugin_service")
         functional_capabilities: list[dict[str, Any]] = []
@@ -79,46 +234,39 @@ class Q4WhatCanIDoPlugin(BaseModel):
                 if item.get("status") == "done"
             )
             exec_domains = list(dict.fromkeys(exec_domains))
-
-        system_prompt = (
-            "你现在是 Zentex 外部大脑的能力评估中枢。请严格基于传入的 Q3 真实资产清单、"
-            "当前的物理执行域以及环境态势，"
-            "评估系统当前真正具备的行动能力。绝对禁止把不存在的能力写成可行动作。"
+        normalized_functional_capabilities = _normalize_functional_capabilities(functional_capabilities)
+        permission_profile = _derive_permission_profile(snapshot, q3_inventory)
+        capability_baseline = _derive_capability_baseline(
+            snapshot,
+            q3_inventory,
+            exec_domains,
+            permission_profile,
+            normalized_functional_capabilities,
         )
+
         execution_domain_catalog = render_plugin_catalog(exec_domains, heading="执行工具目录")
         asset_inventory_summary = render_q3_asset_inventory(snapshot)
-
-        prompt = (
-            f"{system_prompt}\n\n"
-            "你必须返回严格 JSON，且必须满足以下结构（少字段直接失败）：\n"
-            "- capability_boundary_profile: { capability_upper_limits, actionable_space, executable_strategies }\n"
-            "- `capability_upper_limits` 必须是字符串数组，列出能力上限，不允许写成长段说明文本。\n"
-            "- `actionable_space` 必须是字符串数组，列出当前可做动作。\n"
-            "- `executable_strategies` 必须是字符串数组，列出当前可执行策略。\n"
-            "- 禁止输出任何额外字段。\n\n"
-            f"{execution_domain_catalog}\n\n"
-            f"{asset_inventory_summary}\n\n"
-            "输出示例:\n"
-            "{\n"
-            '  "capability_boundary_profile": {\n'
-            '    "capability_upper_limits": ["read workspace state", "inspect runtime audit state"],\n'
-            '    "actionable_space": ["read logs", "inspect snapshots"],\n'
-            '    "executable_strategies": ["static analysis", "request human confirmation before write"]\n'
-            "  }\n"
-            "}\n"
+        llm_request = build_q4_llm_request(
+            capability_baseline=capability_baseline,
+            permission_profile=permission_profile,
+            execution_domain_catalog=execution_domain_catalog,
+            asset_inventory_summary=asset_inventory_summary,
+            snapshot_version=snapshot.get("snapshot_version"),
+            q1_scene_model=snapshot.get("q1_scene_model"),
+            q1_uncertainty_profile=snapshot.get("q1_uncertainty_profile"),
+            q2_role_profile=snapshot.get("q2_role_profile"),
+            q2_mission_boundary=snapshot.get("q2_mission_boundary"),
+            q3_unified_asset_inventory=q3_inventory,
+            q3_resource_evaluation=snapshot.get("q3_resource_evaluation"),
+            q3_humanized_asset_inventory=snapshot.get("q3_humanized_asset_inventory"),
+            q3_workspaces_and_permissions=snapshot.get("workspaces_and_permissions"),
+            q3_memory_and_strategy=snapshot.get("memory_and_strategy"),
+            active_execution_domains=exec_domains,
+            functional_capabilities=normalized_functional_capabilities,
         )
-
-        model_context = {
-            "snapshot_version": snapshot.get("snapshot_version"),
-            "q1_scene_model": snapshot.get("q1_scene_model"),
-            "q1_uncertainty_profile": snapshot.get("q1_uncertainty_profile"),
-            "q2_role_profile": snapshot.get("q2_role_profile"),
-            "q2_mission_boundary": snapshot.get("q2_mission_boundary"),
-            "q3_unified_asset_inventory": q3_inventory,
-            "q3_resource_evaluation": snapshot.get("q3_resource_evaluation"),
-            "active_execution_domains": exec_domains,
-            "functional_capabilities": functional_capabilities,
-        }
+        system_prompt = llm_request["system_prompt"]
+        prompt = llm_request["prompt"]
+        model_context = llm_request["model_context"]
 
         trace_id = str(context.get("trace_id") or f"q4-what-can-i-do:{uuid4().hex}")
         session_id = str(context.get("session_id") or "unknown-session")
@@ -154,7 +302,7 @@ class Q4WhatCanIDoPlugin(BaseModel):
 
         try:
             raw = provider.generate_json(
-                prompt=prompt,
+                prompt=f"{system_prompt}\n\n{prompt}",
                 context=model_context,
                 caller_context=caller_context,
             )
@@ -180,14 +328,26 @@ class Q4WhatCanIDoPlugin(BaseModel):
 
         inference = Q4WhatCanIDoInference.model_validate(raw)
         profile = inference.capability_boundary_profile
+        read_only = bool(permission_profile.get("is_read_only"))
+        profile.capability_upper_limits = _merge_with_capability_baseline(
+            profile.capability_upper_limits,
+            capability_baseline.get("capability_upper_limits", []),
+            read_only=read_only,
+        )
+        profile.actionable_space = _merge_with_capability_baseline(
+            profile.actionable_space,
+            capability_baseline.get("actionable_space", []),
+            read_only=read_only,
+        )
+        profile.executable_strategies = _merge_with_capability_baseline(
+            profile.executable_strategies,
+            capability_baseline.get("executable_strategies", []),
+            read_only=read_only,
+        )
 
         # Guardrail validation (anti-hallucination): if there is no execution tool or permissions are read-only,
         # the model must not claim write-like actions.
         execution_tools = q3_inventory.get("available_execution_tools") or []
-        permissions = q3_inventory.get("permissions") or {}
-        read_only = False
-        if isinstance(permissions, dict) and permissions.get("mode") == "read_only":
-            read_only = True
         if not execution_tools:
             read_only = True
         if read_only:
@@ -230,7 +390,17 @@ class Q4WhatCanIDoPlugin(BaseModel):
                 "nine_questions": {QUESTION_REF: summary},
                 "q4_capability_boundary_profile": profile.model_dump(mode="json"),
                 "q4_snapshot_version": snapshot.get("snapshot_version"),
-                "q4_functional_capabilities": functional_capabilities,
+                "q4_active_execution_domains": exec_domains,
+                "q4_permission_profile": permission_profile,
+                "q4_capability_baseline": capability_baseline,
+                "q4_functional_capabilities": normalized_functional_capabilities,
+                "q4_capability_evidence": {
+                    "q1_scene_model": snapshot.get("q1_scene_model"),
+                    "q2_role_profile": snapshot.get("q2_role_profile"),
+                    "q2_mission_boundary": snapshot.get("q2_mission_boundary"),
+                    "q3_unified_asset_inventory": q3_inventory,
+                    "q3_resource_evaluation": snapshot.get("q3_resource_evaluation"),
+                },
             },
             confidence=0.7,
         )

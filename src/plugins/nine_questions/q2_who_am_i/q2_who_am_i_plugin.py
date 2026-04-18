@@ -14,6 +14,7 @@ from zentex.common.plugin_ids import NINE_QUESTION_Q2
 from zentex.plugins.models import PluginLifecycleStatus
 
 from plugins.nine_questions.q2_who_am_i.models import Q2WhoAmIInference
+from plugins.nine_questions.q2_who_am_i.llm_prompt import build_q2_llm_request
 # Decoupled: Inputs come from identity and weight plugins
 from zentex.plugins.service import execute_enabled_cognitive_plugin_functionals
 
@@ -38,6 +39,37 @@ _CONSTRAINT_LABELS = {
     "NO_SKIP_AUDIT": "禁止跳过审计记录、证据链和可追溯性要求",
     "NO_UNAUTHORIZED_WRITE_ACTION": "禁止未授权写入、修改或执行会产生副作用的动作",
 }
+
+
+def _coerce_string_items(value: Any) -> list[str]:
+    if isinstance(value, list):
+        return [str(item).strip() for item in value if str(item).strip()]
+    if isinstance(value, str):
+        text = value.strip()
+        return [text] if text else []
+    return []
+
+
+def _normalize_dict(value: Any) -> dict[str, Any]:
+    return dict(value) if isinstance(value, dict) else {}
+
+
+def _normalize_q2_inference_payload(raw: Any) -> Any:
+    """Repair known scalar-vs-list drift from providers without weakening other contract checks."""
+    if not isinstance(raw, dict):
+        return raw
+
+    normalized = dict(raw)
+    mission_boundary = normalized.get("mission_boundary")
+    if not isinstance(mission_boundary, dict):
+        return normalized
+
+    mission_boundary_normalized = dict(mission_boundary)
+    for key in ("priority_duties", "continuity_boundaries"):
+        if key in mission_boundary_normalized:
+            mission_boundary_normalized[key] = _coerce_string_items(mission_boundary_normalized.get(key))
+    normalized["mission_boundary"] = mission_boundary_normalized
+    return normalized
 
 
 def _safe_provider_plugin_id(provider: Any) -> str | None:
@@ -144,6 +176,8 @@ class Q2WhoAmIPlugin(BaseModel):
         
         snapshot = context.get("context_snapshot", {}) or {}
         identity_kernel = snapshot.get("identity_kernel_snapshot", {}) or {}
+        if not isinstance(identity_kernel, dict):
+            identity_kernel = {}
         role_payload = identity_kernel
         constraint_payload = {
             "non_bypassable_constraints": identity_kernel.get("non_bypassable_constraints", []) or []
@@ -155,6 +189,7 @@ class Q2WhoAmIPlugin(BaseModel):
         except Exception:
             risk_weight = 0.5
         risk_weight = max(0.0, min(1.0, risk_weight))
+        functional_inputs: list[dict[str, Any]] = []
 
         plugin_service = context.get("plugin_service")
         if plugin_service is not None:
@@ -187,41 +222,33 @@ class Q2WhoAmIPlugin(BaseModel):
                         risk_weight = max(0.0, min(1.0, float(raw_weight)))
                     except Exception:
                         pass
-
-        system_prompt = (
-            "你现在是 Zentex 外部大脑。请根据当前所处的 environment 态势（Q1结果）和你的底层身份内核，"
-            "推断出你当前最合适的任务角色、主体定位以及首要职责。"
-            f"当前主观风险偏好权重: {risk_weight:.2f} (0=激进, 1=保守)。"
-            "记住，你的动态角色绝不能违背底层的不可绕过约束。"
-        )
-
-        prompt = (
-            f"{system_prompt}\n\n"
-            "你必须返回严格 JSON，且必须满足以下结构（少字段直接失败）：\n"
-            "- role_profile: { identity_role, active_role, task_role }\n"
-            "- mission_boundary: { current_mission, priority_duties, continuity_boundaries }\n\n"
-            "输入依据：\n"
-            "1) 角色定义包:\n"
-            f"{_serialize_role_payload(role_payload)}\n"
-            "2) 不可绕过约束（禁令包）:\n"
-            f"{_serialize_constraint_payload(constraint_payload)}\n"
-            f"3) 当前主观偏好: Risk={risk_weight}\n"
-        )
-
-        # Build context for the LLM
-        model_context = {
-            "workspace_domain_inference": workspace_domain_inference,
-            "q1_scene_model": q1_scene_model,
-            "q1_uncertainty_profile": q1_uncertainty_profile,
-            "identity_kernel_snapshot": snapshot.get("identity_kernel_snapshot"),
-            "role_payload": role_payload,
-            "constraint_payload": constraint_payload,
+        normalized_role_payload = _normalize_dict(role_payload)
+        normalized_constraint_payload = _normalize_dict(constraint_payload)
+        normalized_manual_overrides = _normalize_dict(snapshot.get("manual_role_overrides", {}))
+        q2_identity_audit = {
             "risk_weight": risk_weight,
-            "functional_identity_inputs": (
-                functional_inputs if plugin_service is not None else []
-            ),
-            "manual_role_overrides": snapshot.get("manual_role_overrides", {}),
+            "role_payload_keys": sorted(normalized_role_payload.keys()),
+            "constraint_count": len(_coerce_string_items(normalized_constraint_payload.get("non_bypassable_constraints"))),
+            "manual_override_keys": sorted(normalized_manual_overrides.keys()),
+            "functional_input_count": len(functional_inputs),
         }
+
+        llm_request = build_q2_llm_request(
+            risk_weight=risk_weight,
+            role_payload_text=_serialize_role_payload(role_payload),
+            constraint_payload_text=_serialize_constraint_payload(constraint_payload),
+            workspace_domain_inference=workspace_domain_inference,
+            q1_scene_model=q1_scene_model,
+            q1_uncertainty_profile=q1_uncertainty_profile,
+            identity_kernel_snapshot=identity_kernel,
+            role_payload=normalized_role_payload,
+            constraint_payload=normalized_constraint_payload,
+            functional_identity_inputs=(functional_inputs if plugin_service is not None else []),
+            manual_role_overrides=normalized_manual_overrides,
+        )
+        system_prompt = llm_request["system_prompt"]
+        prompt = llm_request["prompt"]
+        model_context = llm_request["model_context"]
 
         trace_id = str(context.get("trace_id") or f"q2-who-am-i:{uuid4().hex}")
         session_id = str(context.get("session_id") or "unknown-session")
@@ -281,10 +308,11 @@ class Q2WhoAmIPlugin(BaseModel):
             )
             raise
 
-        inference = Q2WhoAmIInference.model_validate(raw)
+        normalized_raw = _normalize_q2_inference_payload(raw)
+        inference = Q2WhoAmIInference.model_validate(normalized_raw)
 
         # Manual override has highest priority.
-        manual_role_overrides = snapshot.get("manual_role_overrides", {}) or {}
+        manual_role_overrides = normalized_manual_overrides
         override_active_role = manual_role_overrides.get("active_role_override")
         applied_override = False
         if isinstance(override_active_role, str) and override_active_role.strip():
@@ -306,6 +334,7 @@ class Q2WhoAmIPlugin(BaseModel):
                 "question_ref": QUESTION_REF,
                 "caller_context": caller_context.model_dump(mode="json"),
                 "result": inference.model_dump(mode="json"),
+                "normalized_response_applied": normalized_raw != raw,
                 "manual_override_applied": applied_override,
                 "raw_response": _json_compatible(getattr(provider, "last_raw_response", None)),
                 "token_usage": _json_compatible(getattr(provider, "last_token_usage", {})) or {},
@@ -344,6 +373,16 @@ class Q2WhoAmIPlugin(BaseModel):
             ],
             context_updates={
                 "nine_questions": {QUESTION_REF: inference.role_profile.active_role},
+                "workspace_domain_inference": workspace_domain_inference,
+                "q1_scene_model": q1_scene_model,
+                "q1_uncertainty_profile": q1_uncertainty_profile,
+                "identity_kernel_snapshot": identity_kernel,
+                "manual_role_overrides": normalized_manual_overrides,
+                "q2_role_payload": normalized_role_payload,
+                "q2_constraint_payload": normalized_constraint_payload,
+                "q2_risk_weight": risk_weight,
+                "q2_identity_audit": q2_identity_audit,
+                "q2_functional_identity_inputs": functional_inputs,
                 "q2_role_profile": inference.role_profile.model_dump(mode="json"),
                 "q2_mission_boundary": inference.mission_boundary.model_dump(mode="json"),
             },

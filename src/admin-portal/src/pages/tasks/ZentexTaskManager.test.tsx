@@ -4,110 +4,76 @@ import { describe, it, expect, vi, beforeEach } from "vitest";
 import ZentexTaskManager from "./ZentexTaskManager";
 
 const mockFetch = vi.fn();
+class MockWebSocket {
+  static instances: MockWebSocket[] = [];
+  onopen: (() => void) | null = null;
+  onmessage: ((event: MessageEvent) => void) | null = null;
+  onerror: (() => void) | null = null;
+  onclose: ((event: CloseEvent) => void) | null = null;
+  constructor(public url: string) {
+    MockWebSocket.instances.push(this);
+  }
+  close() {}
+}
+
 global.fetch = mockFetch;
+vi.stubGlobal("WebSocket", MockWebSocket as any);
 
 describe("ZentexTaskManager", () => {
   beforeEach(() => {
     mockFetch.mockReset();
+    MockWebSocket.instances = [];
   });
 
-  it("renders real task rows from backend payload", async () => {
-    const tasks = [
-      {
-        task_id: "t1",
-        subtask_id: "st1",
-        idempotency_key: "k1",
-        title: "Compile",
-        task_type: "system_action",
-        status: "in_progress",
-        progress: 0.25,
-        originator_id: "operator",
-        remarks: null,
-        started_at: "2026-04-04T12:01:00Z",
-        completed_at: null,
-      },
-      {
-        task_id: "t2",
-        subtask_id: "st2",
-        idempotency_key: "k2",
-        title: "Run E2E",
-        task_type: "cognitive_step",
-        status: "blocked",
-        progress: 0.5,
-        originator_id: "audit-bot",
-        remarks: "Waiting for credentials",
-        started_at: "2026-04-04T12:02:00Z",
-        completed_at: null,
-      },
-      {
-        task_id: "t3",
-        subtask_id: "st3",
-        idempotency_key: "k3",
-        title: "Publish Receipt",
-        task_type: "intervention",
-        status: "done",
-        progress: 1,
-        originator_id: "memory-bot",
-        remarks: "Receipt archived",
-        started_at: "2026-04-04T12:03:00Z",
-        completed_at: "2026-04-04T12:04:00Z",
-      },
-    ];
-
-    mockFetch.mockResolvedValueOnce({ ok: true, json: async () => tasks } as Response);
+  it("passes source_module filter and renders workflow columns", async () => {
+    mockFetch.mockResolvedValue({
+      ok: true,
+      json: async () => ({
+        in_progress: [
+          {
+            task_id: "upgrade-1",
+            subtask_id: "sub-upgrade-1",
+            idempotency_key: "upgrade:1",
+            title: "Planner prompt upgrade",
+            task_type: "system_action",
+            status: "in_progress",
+            priority: "high",
+            progress: 0.72,
+            originator_id: "upgrade.execution_service",
+            remarks: "Upgrade status -> validating",
+            started_at: "2026-04-18T10:00:00Z",
+            completed_at: null,
+            created_at: "2026-04-18T09:00:00Z",
+            metadata: {
+              source_module: "upgrade",
+              workflow_status: "validating",
+              workflow_progress: 72,
+            },
+          },
+        ],
+        pending: [],
+        waiting_confirmation: [],
+        completed: [],
+        cancelled: [],
+      }),
+    } as Response);
 
     render(<ZentexTaskManager />);
 
     await waitFor(() => {
-      expect(screen.getByText("Zentex 独立任务管理中心")).toBeInTheDocument();
+      expect(screen.getByText("Planner prompt upgrade")).toBeInTheDocument();
     });
 
-    expect(screen.getByText("任务ID")).toBeInTheDocument();
-    expect(screen.getByText("子ID")).toBeInTheDocument();
-    expect(screen.getByText("任务标题")).toBeInTheDocument();
-    expect(screen.getByText("任务类型")).toBeInTheDocument();
-    expect(screen.getByText("状态")).toBeInTheDocument();
-    expect(screen.getByText("进度")).toBeInTheDocument();
-    expect(screen.getByText("人工干预")).toBeInTheDocument();
-    expect(screen.getByText("Compile (t1)")).toBeInTheDocument();
-    expect(screen.getByText("Run E2E (t2)")).toBeInTheDocument();
-    expect(screen.getByText("Publish Receipt (t3)")).toBeInTheDocument();
-    expect(screen.getByText("blocked | k2 | Waiting for credentials")).toBeInTheDocument();
-    expect(screen.getByText("done | k3 | Receipt archived")).toBeInTheDocument();
-  });
+    expect(screen.getByText("来源")).toBeInTheDocument();
+    expect(screen.getByText("工作流状态")).toBeInTheDocument();
+    expect(screen.getByText("upgrade")).toBeInTheDocument();
+    expect(screen.getByText("validating")).toBeInTheDocument();
 
-  it("opens intervene dialog and requires idempotency_key", async () => {
-    const tasks = [
-      {
-        task_id: "t1",
-        subtask_id: "st1",
-        idempotency_key: "k1",
-        title: "Compile",
-        task_type: "system_action",
-        status: "in_progress",
-        progress: 0.25,
-        originator_id: "operator",
-        remarks: null,
-        started_at: "2026-04-04T12:01:00Z",
-        completed_at: null,
-      },
-    ];
-
-    mockFetch.mockResolvedValueOnce({ ok: true, json: async () => tasks } as Response);
-
-    render(<ZentexTaskManager />);
+    fireEvent.mouseDown(screen.getByLabelText("来源模块"));
+    fireEvent.click(screen.getByText("升级"));
 
     await waitFor(() => {
-      expect(screen.getByText("Compile")).toBeInTheDocument();
+      expect(mockFetch).toHaveBeenLastCalledWith("/api/web/tasks/by-status?source_module=upgrade");
     });
-
-    fireEvent.click(screen.getByLabelText("pause-task"));
-
-    await waitFor(() => {
-      expect(screen.getByText(/确认干预: pause/i)).toBeInTheDocument();
-    });
-
-    expect(screen.getByLabelText(/idempotency_key/i)).toBeInTheDocument();
-    expect(screen.getByText("Confirm Action")).toBeEnabled();
   });
 });

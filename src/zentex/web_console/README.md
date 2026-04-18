@@ -1,120 +1,116 @@
-# Web Console Module / Web控制台模块
+# Web Console Module / Web 控制台模块
 
 ## Overview / 概述
 
-This module implements the web-based console and API interface for the Zentex system. It provides RESTful APIs, WebSocket support, real-time monitoring, transcript replay, and a comprehensive web UI for interacting with and managing the Zentex brain system.
+`zentex.web_console` 是系统对外的 Web/API 展示层，负责把后端运行态、安全地暴露成控制台页面和接口。
 
-本模块为Zentex系统实现基于Web的控制台和API接口。它提供RESTful API、WebSocket支持、实时监控、转录回放以及用于交互和管理Zentex大脑系统的全面Web UI。
+当前与本轮改动最相关的能力有两类：
 
-## Module Independence / 模块独立性
+- `/console/tasks` 对统一任务系统的展示
+- `/console/upgrades` 对升级管理账本的展示
 
-**This is an independent functional module.** / **这是一个独立的功能模块。**
+关键后端入口：
 
-- Modules should NOT directly access internal implementation files / 其他模块不应直接访问内部实现文件
-- All interactions must go through the unified public interface (import from specific modules) / 所有交互必须通过统一的公共接口（从特定模块导入）进行
-- Internal files are implementation details / 内部文件是实现细节
+- [routers/tasks.py](/Users/harry/Documents/git/AnimoCerebro-V2/src/zentex/web_console/routers/tasks.py)
+- [routers/upgrades.py](/Users/harry/Documents/git/AnimoCerebro-V2/src/zentex/web_console/routers/upgrades.py)
+- [services/upgrades.py](/Users/harry/Documents/git/AnimoCerebro-V2/src/zentex/web_console/services/upgrades.py)
+- [contracts/upgrades.py](/Users/harry/Documents/git/AnimoCerebro-V2/src/zentex/web_console/contracts/upgrades.py)
 
-## Public Interfaces / 公共接口
+## Tasks Console / 任务控制台
 
-This module exposes interfaces through individual files:
+### Current Data Source / 当前数据源
 
-本模块通过各个文件暴露接口：
+`/console/tasks` 的后端来源是 `TaskManagementService`，不是前端自己拼装。
 
-### Main Application / 主应用
+当前主要接口：
 
-```python
-from zentex.web_console.app import create_app, ZentexWebApp
-```
+- `GET /api/web/tasks`
+- `GET /api/web/tasks/by-status`
+- `GET /api/web/tasks/{task_id}/detail`
+- `GET /api/web/tasks/{task_id}/subtasks`
+- `GET /api/web/tasks/{task_id}/execution-history`
+- `WS /api/web/tasks/stream`
 
-### API Routes / API路由
+### Current Semantics / 当前语义
 
-```python
-from zentex.web_console.api import register_api_routes
-from zentex.web_console.router import setup_routers
-```
+统一任务现在不仅包含“原生任务”，还包含通过 workflow bridge 同步进来的：
 
-### Services / 服务
+- `reflection` 工作流任务
+- `upgrade` 工作流任务
 
-```python
-from zentex.web_console.services import (
-    BrainService,
-    SessionService,
-    TranscriptService,
-    MemoryService,
-)
-```
+这些任务的来源信息写在 task metadata 中，例如：
 
-### Dependencies / 依赖注入
+- `source_module`
+- `workflow_kind`
+- `workflow_status`
+- `workflow_progress`
 
-```python
-from zentex.web_console.dependencies import get_brain_runtime, get_transcript_store
-```
+因此 `/console/tasks` 现在本质上已经是跨模块统一任务视图。
 
-### CLI / 命令行
+## Upgrades Console / 升级控制台
 
-```python
-from zentex.web_console.cli import web_console_cli
-```
+### Current Data Source / 当前数据源
 
-## Core Components / 核心组件
+`/console/upgrades` 的后端来源是升级管理存储和升级账本，不是页面直接扫文件。
 
-### Application Layer / 应用层
+当前主要接口：
 
-- **ZentexWebApp** (`app.py`): Main web application / 主Web应用
-- **create_app** (`app.py`): Application factory / 应用工厂
+- `GET /api/web/upgrades/overview`
+- `GET /api/web/upgrades/by-lifecycle-view`
+- `GET /api/web/upgrades/{record_id}`
+- `GET /api/web/upgrades/{record_id}/audit-events`
+- `GET /api/web/upgrades/{record_id}/memory-records`
+- `POST /api/web/upgrades/llm/execute`
+- `POST /api/web/upgrades/plugins/execute`
+- `POST /api/web/upgrades/{record_id}/cancel`
+- `POST /api/web/upgrades/{record_id}/cleanup-failed-candidate`
 
-### API Layer / API层
+### Prompt Upgrade Fields / Prompt 升级字段
 
-- **register_api_routes** (`api.py`): Registers API endpoints / 注册API端点
-- **setup_routers** (`router.py`): Sets up route handlers / 设置路由处理器
+升级详情现在已经不只返回通用生命周期字段，还会带出 prompt 升级相关展示字段：
 
-### Services / 服务
+- `prompt_target_file`
+- `prompt_upgrade_sections`
+- `prompt_upgrade_notes`
+- `prompt_upgrade_summary`
 
-- **BrainService** (`services/`): Brain management service / 大脑管理服务
-- **SessionService** (`services/`): Session management service / 会话管理服务
-- **TranscriptService** (`services/`): Transcript management service / 转录管理服务
-- **MemoryService** (`services/`): Memory management service / 记忆管理服务
+这些字段由后端服务层从 `record.payload` 里提炼出来，前端不需要再自己解析深层 payload。
 
-### Routers / 路由器
+## Fail-closed Contract / 故障关闭约束
 
-Multiple routers in `routers/` directory handle different API domains:
-`routers/` 目录中的多个路由器处理不同的API域：
+控制台路由遵循 fail-closed：
 
-- Brain operations / 大脑操作
-- Session management / 会话管理
-- Transcript access / 转录访问
-- Memory queries / 记忆查询
-- Plugin management / 插件管理
-- And more... / 等等...
+- 核心服务缺失时返回 `503`
+- 不允许因为依赖缺失而静默返回空数据
+- WebSocket 缺少服务时会显式关闭，而不是挂死
 
-## Features / 功能特性
+这点在 `tasks.py` 和 `upgrades.py` 的 `_require_*` 依赖守卫里已经落地。
 
-- RESTful API endpoints / RESTful API端点
-- WebSocket real-time updates / WebSocket实时更新
-- Transcript replay / 转录回放
-- Real-time monitoring / 实时监控
-- Plugin management UI / 插件管理UI
-- System configuration / 系统配置
-- Debugging tools / 调试工具
+## Relationship with Runtime Modules / 与运行时模块的关系
 
-## Usage Example / 使用示例
+控制台不拥有业务状态机，它只读取和调用：
 
-```python
-from zentex.web_console.app import create_app
+- `zentex.tasks`
+- `zentex.upgrade`
+- `zentex.reflection`
+- `zentex.supervision`
 
-# Use only the public interface / 仅使用公共接口
-app = create_app()
-app.run(host="0.0.0.0", port=8000)
-```
+控制台的职责是：
 
-Or via CLI / 或通过CLI:
+- 提供稳定接口
+- 展示统一视图
+- 触发受控操作
 
-```bash
-python -m zentex.web_console.cli --port 8000
-```
+而不是在页面层或 router 层重写业务逻辑。
 
-## Design Principle / 设计原则
+## What Changed Recently / 最近更新
 
-⚠️ **IMPORTANT**: Other modules should import from specific web_console submodules. The web console is the external interface layer.
+- 统一任务已经开始承载 `reflection / upgrade` 工作流任务
+- upgrades API 已增加更适合 UI 的 prompt 升级字段
+- upgrades 管理页的数据来源已和 SQLite 管理账本一致
+- tasks 页实际承载的已不只是普通任务，而是统一工作流任务视图
 
-⚠️ **重要提示**：其他模块应从特定的web_console子模块导入。Web控制台是外部接口层。
+## Limitations / 当前限制
+
+- `/console/tasks` 当前后端接口还没有单独暴露 `source_module` 过滤参数；服务层已经支持，控制台接口层后续可以继续补
+- `/console/upgrades` 已具备 prompt 升级展示数据，但页面是否完整渲染取决于前端实现状态

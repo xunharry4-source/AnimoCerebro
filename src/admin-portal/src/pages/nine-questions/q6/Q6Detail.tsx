@@ -26,6 +26,8 @@ import MountedPluginsZone from "../../../components/MountedPluginsZone";
 import LLMTracePanel from "../../../components/LLMTracePanel";
 import NineQuestionIntroCard from "../../../components/NineQuestionIntroCard";
 import Q6DataTabs from "../../../components/Q6DataTabs";
+import NineQuestionIncompleteResultAlert from "../../../components/NineQuestionIncompleteResultAlert";
+import NineQuestionRerunButton from "../../../components/NineQuestionRerunButton";
 
 function resolveErrorGuidance(errMsg: string): { title: string; action: string } {
   if (errMsg.includes("No active session") || errMsg.includes("没有活动 session")) {
@@ -119,6 +121,13 @@ export const Q6Detail: React.FC = () => {
   // Q6 使用 'conclusion' 字段作为 inference_result 的别名，但在标准化接口中统一为 inference_result
   const inference = question.inference_result;
   const llmTrace = question.llm_trace_payload;
+  const hasStructuredSnapshot = Boolean(evidence || inference);
+  const safeEvidence: Q6PreprocessedEvidence = evidence || {
+    actionable_space: [],
+    authorization_boundaries: [],
+    non_bypassable_constraints: [],
+    historical_strategy_patches: [],
+  };
 
   return (
     <Box data-testid="q6-detail-root" sx={{ display: "flex", flexDirection: "column", gap: 3 }}>
@@ -131,26 +140,36 @@ export const Q6Detail: React.FC = () => {
             Cognitive Redlines & Forbidden Boundaries (Independent API GET /nine-questions/q6)
           </Typography>
         </Box>
-        <Button
-          component={RouterLink}
-          to={`/console/nine-questions/${qId}/test`}
-          variant="contained"
-          color="warning"
-          data-testid="q6-sandbox-nav-button"
-        >
-          进入独立沙箱测试
-        </Button>
+        <Stack direction="row" spacing={1}>
+          <NineQuestionRerunButton qId={qId} onCompleted={loadDetail} />
+          <Button
+            component={RouterLink}
+            to={`/console/nine-questions/${qId}/test`}
+            variant="contained"
+            color="warning"
+            data-testid="q6-sandbox-nav-button"
+          >
+            进入独立沙箱测试
+          </Button>
+        </Stack>
       </Stack>
 
 
-      {/* 问题介绍栏目 */}
-      <NineQuestionIntroCard questionId="q6" />
-
-      {/* Q6 实际数据详情 Tab 面板 */}
-      <Q6DataTabs 
-        evidence={evidence as any} 
-        inference={inference as any} 
-      />
+      {hasStructuredSnapshot ? (
+        <>
+          <NineQuestionIntroCard questionId="q6" />
+          <Q6DataTabs
+            evidence={safeEvidence as any}
+            inference={inference as any}
+          />
+        </>
+      ) : (
+        <NineQuestionIncompleteResultAlert
+          questionId={qId}
+          result={question.result}
+          contextUpdates={question.context_updates}
+        />
+      )}
       {/* Workspace Forbidden Actions */}
       {workspaceForbiddenActions && (
         <Alert severity="warning" variant="outlined" sx={{ backgroundColor: "#fff3e0" }}>
@@ -176,14 +195,14 @@ export const Q6Detail: React.FC = () => {
         </CardContent>
       </Card>
 
-      {evidence && (
+      {hasStructuredSnapshot ? (
         <Q6EvidencePanel
-          evidence={evidence}
+          evidence={safeEvidence}
           inference={inference as any}
           providerName={question.provider_name || null}
           elapsedMs={llmTrace?.elapsed_ms || 0}
         />
-      )}
+      ) : null}
 
       <LLMTracePanel trace={llmTrace as LLMTracePayloadView} />
     </Box>

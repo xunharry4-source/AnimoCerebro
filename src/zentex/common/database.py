@@ -315,6 +315,26 @@ class BaseDAO:
         self.db = db
         self.cache = cache or LRUCache()
         self.table_name: str = ""  # Must be set by subclasses
+
+    def _get_table_columns(self) -> set[str]:
+        """Return the current table's column names."""
+        rows = self.db.execute_query(f"PRAGMA table_info({self.table_name})")
+        return {str(row["name"]) for row in rows}
+
+    def _default_order_by(self) -> str:
+        """Choose a stable default ordering based on available columns."""
+        columns = self._get_table_columns()
+        if "updated_at" in columns:
+            return "updated_at DESC"
+        if "last_updated_at" in columns:
+            return "last_updated_at DESC"
+        if "created_at" in columns:
+            return "created_at DESC"
+        if "timestamp" in columns:
+            return "timestamp DESC"
+        if "recorded_at" in columns:
+            return "recorded_at DESC"
+        return f"{self._get_id_column()} DESC"
     
     def _cache_key(self, operation: str, **kwargs) -> str:
         """
@@ -424,7 +444,7 @@ class BaseDAO:
             return cached
         
         # Query database
-        query = f"SELECT * FROM {self.table_name} ORDER BY updated_at DESC LIMIT ? OFFSET ?"
+        query = f"SELECT * FROM {self.table_name} ORDER BY {self._default_order_by()} LIMIT ? OFFSET ?"
         rows = self.db.execute_query(query, (limit, offset))
         
         results = [self._row_to_dict(row) for row in rows]
@@ -476,11 +496,13 @@ class BaseDAO:
             else:
                 processed_data[key] = value
         
-        # Add timestamps
+        columns = self._get_table_columns()
+
+        # Add timestamps only when the table actually supports them.
         now = datetime.now(timezone.utc).isoformat()
-        if 'created_at' not in processed_data:
+        if 'created_at' in columns and 'created_at' not in processed_data:
             processed_data['created_at'] = now
-        if 'updated_at' not in processed_data:
+        if 'updated_at' in columns and 'updated_at' not in processed_data:
             processed_data['updated_at'] = now
         
         columns = ', '.join(processed_data.keys())
@@ -519,8 +541,11 @@ class BaseDAO:
             else:
                 processed_data[key] = value
         
-        # Update timestamp
-        processed_data['updated_at'] = datetime.now(timezone.utc).isoformat()
+        columns = self._get_table_columns()
+
+        # Update timestamp only when supported by the table.
+        if 'updated_at' in columns:
+            processed_data['updated_at'] = datetime.now(timezone.utc).isoformat()
         
         # Build UPDATE query
         set_clause = ', '.join([f"{key} = ?" for key in processed_data.keys()])
@@ -545,6 +570,7 @@ class BaseDAO:
         self, 
         condition: str, 
         params: tuple = (),
+        order_by: Optional[str] = None,
         limit: int = 100,
         offset: int = 0
     ) -> List[Dict[str, Any]]:
@@ -560,7 +586,10 @@ class BaseDAO:
         Returns:
             List of entity dictionaries
         """
-        query = f"SELECT * FROM {self.table_name} WHERE {condition} ORDER BY updated_at DESC LIMIT ? OFFSET ?"
+        query = (
+            f"SELECT * FROM {self.table_name} WHERE {condition} "
+            f"ORDER BY {order_by or self._default_order_by()} LIMIT ? OFFSET ?"
+        )
         rows = self.db.execute_query(query, params + (limit, offset))
         return [self._row_to_dict(row) for row in rows]
     

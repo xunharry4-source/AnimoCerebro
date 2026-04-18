@@ -232,10 +232,34 @@ cd src/admin-portal && npm run dev
 
 ## ⚙️ 配置说明
 
-系统通过 YAML 文件进行配置，主要的配置目录为 `config/`。
+系统通过 YAML 文件和环境变量进行配置，主要的配置目录为 `config/`。
 
-- **模型提供商 (Model Providers)**: `config/provider_tools.yml` 定义了各个 LLM 提供商的 API 基地址、模型名称以及环境变量密钥。
+- **模型提供商 (Model Providers)**: `config/provider_tools.yml` 定义了各个 LLM 提供商的 API 基地址、模型名称以及环境变量名称。
+- **API 密钥**: 将 API 密钥存储在项目根目录的 `.env` 文件中（推荐）或设置为环境变量。
 - **系统设置**: 可以通过本地运行态状态和环境变量进一步微调主脑的行为。
+
+### LLM API 密钥配置
+
+**方法一：使用 `.env` 文件（推荐）**
+
+在项目根目录创建 `.env` 文件：
+
+```bash
+# 项目根目录下的 .env 文件
+GEMINI_API_KEY=your-gemini-key-here
+OPENAI_API_KEY=sk-your-openai-key-here
+ANTHROPIC_API_KEY=your-anthropic-key-here
+```
+
+**方法二：环境变量**
+
+```bash
+export GEMINI_API_KEY=your-key-here
+export OPENAI_API_KEY=sk-your-key
+export ANTHROPIC_API_KEY=your-key-here
+```
+
+系统会自动加载 `.env` 文件，并根据 `config/provider_tools.yml` 中的 `api_key_env` 字段解析 API 密钥。
 
 `config/provider_tools.yml` 示例配置：
 ```yaml
@@ -257,15 +281,9 @@ gemini:
 - `gemini`: Google Gemini API (generativelanguage.googleapis.com)
 - `claude`: Anthropic Claude API (api.anthropic.com/v1)
 
-通过环境变量配置 API 密钥：
+在 `.env` 文件或环境变量中配置 API 密钥（参见上方配置说明）。
 
-```bash
-export GEMINI_API_KEY=your-key-here
-export OPENAI_API_KEY=sk-your-key
-export ANTHROPIC_API_KEY=your-key-here
-```
-
-或者在 `config/provider_tools.yml` 中修改 `api_key_env` 字段。
+**注意**：系统支持 `GOOGLE_API_KEY` 作为 `GEMINI_API_KEY` 的别名，以兼容不同的配置习惯。
 
 ## 测试
 

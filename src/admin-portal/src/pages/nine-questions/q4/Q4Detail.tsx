@@ -14,8 +14,10 @@ import {
 } from "../nineQuestionsApi";
 import LLMTracePanel from "../../../components/LLMTracePanel";
 import NineQuestionIntroCard from "../../../components/NineQuestionIntroCard";
-import Q4DataTabs from "../../../components/Q4DataTabs";
+import MountedPluginsZone from "../../../components/MountedPluginsZone";
 import Q4EvidencePanel from "../../../components/Q4EvidencePanel";
+import NineQuestionIncompleteResultAlert from "../../../components/NineQuestionIncompleteResultAlert";
+import NineQuestionRerunButton from "../../../components/NineQuestionRerunButton";
 
 export default function Q4Detail() {
   const qId = "q4";
@@ -33,9 +35,13 @@ export default function Q4Detail() {
     try {
       const detail = await fetchNineQuestionDetail(qId);
       setQuestion(detail);
-      if (detail.trace_id) {
+      // Only fetch trace if trace_id is valid (not a placeholder)
+      if (detail.trace_id && !detail.trace_id.endsWith(":no-trace") && detail.trace_id !== "none") {
         const trace = await fetchNineQuestionTrace(detail.trace_id);
         setTraceDetail(trace);
+      } else {
+        // Placeholder trace ID, no need to fetch
+        setTraceDetail(null);
       }
       setErrorMsg("");
     } catch (err: any) {
@@ -52,6 +58,7 @@ export default function Q4Detail() {
   const evidence = (question.preprocessed_evidence || traceDetail?.preprocessed_evidence) as Q4PreprocessedEvidence;
   const inference = (question.inference_result || traceDetail?.inference_result) as Q4WhatCanIDoInferenceView;
   const llmTrace = question.llm_trace_payload || traceDetail?.llm_trace_payload;
+  const hasStructuredSnapshot = Boolean(evidence && inference);
 
   return (
     <Box data-testid="q4-detail-root">
@@ -60,16 +67,22 @@ export default function Q4Detail() {
           <Typography variant="h4" gutterBottom>{getQuestionDisplayLabel(qId)} 正式审计页</Typography>
           <Typography variant="body2" color="text.secondary">Capability Boundary & Actionable Space Audit</Typography>
         </Box>
-        <Button component={RouterLink} to="/console/nine-questions/q4/test" variant="contained" color="warning">进入独立沙箱测试</Button>
+        <Stack direction="row" spacing={1}>
+          <NineQuestionRerunButton qId={qId} onCompleted={loadDetail} />
+          <Button component={RouterLink} to="/console/nine-questions/q4/test" variant="contained" color="warning">进入独立沙箱测试</Button>
+        </Stack>
       </Stack>
 
-      <NineQuestionIntroCard questionId="q4" />
+      {hasStructuredSnapshot ? (
+        <NineQuestionIntroCard questionId="q4" />
+      ) : (
+        <NineQuestionIncompleteResultAlert
+          questionId={qId}
+          result={question.result}
+          contextUpdates={question.context_updates}
+        />
+      )}
 
-      {/* Q4 实际数据详情 Tab 面板 */}
-      <Q4DataTabs 
-        evidence={evidence as any} 
-        inference={inference as any} 
-      />
       <MountedPluginsZone plugins={question.mounted_plugins || []} />
 
       <Card variant="outlined" sx={{ mb: 3, mt: 2 }}>
@@ -84,7 +97,7 @@ export default function Q4Detail() {
             结构化能力边界证据 (Zentex G31A.Q4)
           </Typography>
 
-          {evidence ? (
+          {hasStructuredSnapshot ? (
             <Q4EvidencePanel
               evidence={evidence}
               inference={inference}

@@ -116,4 +116,4 @@ echo "=========================================="
 
 # Start backend with full logging
 export PYTHONPATH=src
-"$PYTHON_BIN" -m uvicorn zentex.boot.web_dev:app --reload --ws "$WS_IMPLEMENTATION" --host 127.0.0.1 --port "$PORT_BACKEND" --timeout-keep-alive 5
+"$PYTHON_BIN" -m uvicorn zentex.launcher_asgi:app --reload --ws "$WS_IMPLEMENTATION" --host 127.0.0.1 --port "$PORT_BACKEND" --timeout-keep-alive 5

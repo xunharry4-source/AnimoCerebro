@@ -89,10 +89,11 @@ export default function NineQuestionDetailPage() {
         question_driver_refs: [],
         questions: [data],
       });
-      if (data.trace_id) {
+      if (data.trace_id && !data.trace_id.endsWith(":no-trace") && data.trace_id !== "none") {
         const trace = await fetchNineQuestionTrace(data.trace_id);
         setTraceDetail(trace);
       } else {
+        // Placeholder or missing trace ID
         setTraceDetail(null);
       }
     } catch (err: any) {

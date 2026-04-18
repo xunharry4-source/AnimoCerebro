@@ -18,6 +18,7 @@ from zentex.common.coordination import LeaderElection
 from zentex.tasks.management.negotiation import NegotiationGenerator
 from zentex.tasks.core.llm_decomposer import LLMTaskDecomposerPlugin
 from zentex.tasks.scheduling.loop_scheduler import TaskAutoLoopScheduler
+from zentex.tasks.schema import ensure_task_database_schema
 
 # Database support
 try:
@@ -81,6 +82,7 @@ class TaskManagementService:
         if self.use_database:
             try:
                 self._db = DatabaseConnection(db_path)
+                ensure_task_database_schema(self._db)
                 self._cache = LRUCache(max_size=1000, ttl_seconds=60)
                 
                 self._task_dao = TaskDAO(self._db, self._cache)
@@ -226,7 +228,9 @@ class TaskManagementService:
                  tags: Optional[List[str]] = None,
                  parent_task_id: Optional[str] = None,
                  target_id: Optional[str] = None,
-                 overdue_only: bool = False) -> List[ZentexTask]:
+                 overdue_only: bool = False,
+                 source_module: Optional[str] = None,
+                 metadata_filters: Optional[Dict[str, Any]] = None) -> List[ZentexTask]:
         """List tasks with optional filtering."""
         tasks = list(self._tasks.values())
 
@@ -242,6 +246,16 @@ class TaskManagementService:
             tasks = [t for t in tasks if t.target_id == target_id]
         if overdue_only:
             tasks = [t for t in tasks if t.is_overdue()]
+        if source_module:
+            tasks = [
+                t for t in tasks if str(t.metadata.get("source_module", "")) == source_module
+            ]
+        if metadata_filters:
+            tasks = [
+                t
+                for t in tasks
+                if all(t.metadata.get(key) == value for key, value in metadata_filters.items())
+            ]
 
         tasks.sort(key=lambda t: (t.get_priority_score(), t.created_at), reverse=True)
         return tasks
@@ -278,9 +292,12 @@ class TaskManagementService:
 
     def get_task(self, task_id: str) -> Optional[ZentexTask]:
         """Get a task by ID, checking shared state first, then database."""
+        if not task_id:
+            return None
         # Favor shared state as source of truth
         task = self._shared_tasks.get(task_id, ZentexTask)
         if task:
+            self._tasks[task_id] = task
             return task
         
         # Fallback to database if enabled
@@ -289,6 +306,7 @@ class TaskManagementService:
             if task:
                 # Cache in shared state for future access
                 self._shared_tasks.set(task_id, task)
+                self._tasks[task_id] = task
         
         return task
 
@@ -362,7 +380,9 @@ class TaskManagementService:
             existing_id = self._shared_idempotency.get(key)
             if existing_id:
                 logger.warning(f"Duplicate task submission with idempotency_key: {key}")
-        return self.get_task(existing_id)
+                existing_task = self.get_task(existing_id)
+                if existing_task is not None:
+                    return existing_task
 
         # Distributed lock to prevent race during creation
         lock_id = key if key else f"new-task-{uuid4()}"
@@ -386,6 +406,7 @@ class TaskManagementService:
             
             # Save to shared state
             self._shared_tasks.set(task_id, task)
+            self._tasks[task_id] = task
             
             # Save to database if enabled
             if self.use_database:
@@ -405,6 +426,46 @@ class TaskManagementService:
                 asyncio.create_task(self.decompose_and_dispatch_mission(task))
                 
             return task
+
+    def update_task_metadata(
+        self,
+        task_id: str,
+        metadata_updates: Dict[str, Any],
+        *,
+        remarks: Optional[str] = None,
+    ) -> ZentexTask:
+        """Merge metadata into a task and persist the change."""
+        task = self.get_task(task_id)
+        if not task:
+            raise KeyError(f"Task {task_id} not found")
+
+        task.metadata = {**task.metadata, **metadata_updates}
+        task.last_updated_at = datetime.now(timezone.utc)
+        if remarks:
+            task.remarks = remarks
+
+        self._shared_tasks.set(task_id, task)
+        self._tasks[task_id] = task
+
+        if self.use_database:
+            self._sync_task_to_database(task)
+            if self._audit_dao:
+                self._audit_dao.log_action(
+                    task_id=task_id,
+                    action="TASK_METADATA_UPDATED",
+                    operator_id="system",
+                    old_status=task.status.value,
+                    new_status=task.status.value,
+                    details={"metadata_updates": metadata_updates, "remarks": remarks},
+                )
+
+        self._record_audit(
+            task_id,
+            "TASK_METADATA_UPDATED",
+            {"metadata_updates": metadata_updates, "remarks": remarks},
+        )
+        self._save_to_persistence()
+        return task
 
     async def decompose_and_dispatch_mission(self, mission_task: ZentexTask):
         """
@@ -490,6 +551,7 @@ class TaskManagementService:
         
         # Save to shared state
         self._shared_tasks.set(task_id, task)
+        self._tasks[task_id] = task
         
         # Save to database if enabled
         if self.use_database:
@@ -508,7 +570,7 @@ class TaskManagementService:
         
         # Record audit to transcript (legacy)
         self._record_audit(task_id, "TASK_STATUS_UPDATED", {"new_status": new_status, "remarks": remarks})
-        
+
         # Legacy persistence
         self._save_to_persistence()
         
@@ -1150,6 +1212,7 @@ class TaskManagementService:
         # Check if verification is available and enabled
         if not VERIFICATION_AVAILABLE or not self._verification_engine:
             logger.warning(f"Verification engine not available, completing task {task_id} without verification")
+            self._persist_execution_result(task_id, result)
             updated_task = self.update_task_status(task_id, TaskStatus.DONE, remarks)
             return {
                 "success": True,
@@ -1157,10 +1220,11 @@ class TaskManagementService:
                 "verification_skipped": True,
                 "message": "Task completed without verification (engine not available)"
             }
-        
+
         # Check if verification is enabled for this task
         if not task.contract.verification.enabled:
             logger.debug(f"Verification disabled for task {task_id}, completing directly")
+            self._persist_execution_result(task_id, result)
             updated_task = self.update_task_status(task_id, TaskStatus.DONE, remarks)
             return {
                 "success": True,
@@ -1201,17 +1265,19 @@ class TaskManagementService:
             
             # Step 4: Handle based on recommendation
             if verification_result.overall_passed:
-                # Verification passed - complete the task
+                # Verification passed - persist execution output before marking DONE
+                self._persist_execution_result(task_id, result)
+
                 final_remarks = f"Verified: {verification_result.summary}"
                 if remarks:
                     final_remarks += f" | {remarks}"
-                    
+
                 updated_task = self.update_task_status(
                     task_id,
                     TaskStatus.DONE,
                     remarks=final_remarks
                 )
-                
+
                 logger.info(f"Task {task_id} verified and completed successfully")
                 return {
                     "success": True,
@@ -1254,6 +1320,45 @@ class TaskManagementService:
                     "error_code": "VERIFICATION_AND_STATUS_ERROR"
                 }
     
+    def _persist_execution_result(
+        self,
+        task_id: str,
+        result: Dict[str, Any],
+    ) -> None:
+        """Persist execution output to the tasks row.
+
+        Writes ``execution_output`` (JSON) and ``execution_finished_at`` to the
+        DB so the result is queryable independently of the task status field.
+        Safe to call even when the DB layer is disabled — it logs a warning and
+        returns without raising.
+        """
+        import json as _json
+
+        if not self.use_database or not self._task_dao:
+            logger.debug(
+                "DB persistence disabled — execution result for task %s not saved", task_id
+            )
+            return
+
+        try:
+            output_json = _json.dumps(result, ensure_ascii=False, default=str)
+        except Exception as exc:
+            logger.warning(
+                "Could not serialise execution result for task %s: %s", task_id, exc
+            )
+            output_json = _json.dumps({"serialisation_error": str(exc)})
+
+        try:
+            self._task_dao.update_task(task_id, {
+                "execution_output": output_json,
+                "execution_finished_at": datetime.now(timezone.utc).isoformat(),
+            })
+            logger.debug("Persisted execution_output for task %s", task_id)
+        except Exception as exc:
+            logger.error(
+                "Failed to persist execution result for task %s: %s", task_id, exc
+            )
+
     async def _handle_verification_failure(
         self,
         task_id: str,
@@ -1414,7 +1519,7 @@ class TaskManagementService:
             "message": "Verification engine ready"
         }
 
-def get_database_status(self) -> Dict[str, Any]:
+    def get_database_status(self) -> Dict[str, Any]:
         """
         Get database layer status and statistics.
         

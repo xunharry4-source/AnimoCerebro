@@ -766,7 +766,28 @@ export async function runAllNineQuestions(forceRefresh = true): Promise<NineQues
   return data as NineQuestionsRunResponse;
 }
 
+export async function runSingleNineQuestion(questionId: string, forceRefresh = true): Promise<NineQuestionsRunResponse> {
+  const resp = await fetch(`/api/web/nine-questions/${questionId}/run`, {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+    },
+    body: JSON.stringify({ force_refresh: forceRefresh }),
+  });
+  const data = await readResponseBody(resp);
+  if (!resp.ok) {
+    const detail = extractApiErrorMessage(data, "");
+    throw new Error(detail || `执行 ${questionId} 单独重跑失败（HTTP ${resp.status}）`);
+  }
+  return data as NineQuestionsRunResponse;
+}
+
 export async function fetchNineQuestionTrace(traceId: string): Promise<TraceDetail> {
+  // Validate trace ID before making the request
+  if (!traceId || traceId === "none" || traceId.endsWith(":no-trace")) {
+    throw new Error(`Invalid trace ID: ${traceId}`);
+  }
+  
   const resp = await fetch(`/api/web/nine-questions/traces/${traceId}`);
   const data = await readResponseBody(resp);
   if (!resp.ok) {

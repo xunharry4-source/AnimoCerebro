@@ -21,10 +21,6 @@ from zentex.web_console.contracts.memory import (
     EnhancedMemorySearchPayload,
     EnhancedMemoryRecordItem,
 )
-from zentex.web_console.dependencies import (
-    get_enhanced_memory_service,
-    get_consolidation_engine,
-)
 from zentex.web_console.services.memory import (
     build_enhanced_memory_audit_payload,
     build_enhanced_memory_overview,
@@ -34,6 +30,14 @@ from zentex.web_console.services.memory import (
 )
 
 logger = logging.getLogger(__name__)
+
+
+def _get_enhanced_memory_service(request: Request) -> Any:
+    return getattr(request.app.state, "enhanced_memory_service", None)
+
+
+def _get_consolidation_engine(request: Request) -> Any:
+    return getattr(request.app.state, "consolidation_engine", None)
 
 
 class MemorySession:
@@ -48,8 +52,8 @@ class MemorySession:
     def __init__(self, request: Request):
         """Initialize memory session from request dependencies."""
         try:
-            self.service = get_enhanced_memory_service(request)
-            self.consolidation_engine = get_consolidation_engine(request)
+            self.service = _get_enhanced_memory_service(request)
+            self.consolidation_engine = _get_consolidation_engine(request)
         except (AttributeError, TypeError) as e:
             logger.error(f"Failed to initialize MemorySession: {e}")
             raise HTTPException(status_code=503, detail="Memory service unavailable") from e

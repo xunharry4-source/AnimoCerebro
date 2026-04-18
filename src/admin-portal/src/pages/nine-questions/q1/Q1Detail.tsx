@@ -29,6 +29,8 @@ import MountedPluginsZone from "../../../components/MountedPluginsZone";
 import Q1UpgradePanel from "../../../components/Q1UpgradePanel";
 import NineQuestionIntroCard from "../../../components/NineQuestionIntroCard";
 import Q1DataTabs from "../../../components/Q1DataTabs";
+import NineQuestionIncompleteResultAlert from "../../../components/NineQuestionIncompleteResultAlert";
+import NineQuestionRerunButton from "../../../components/NineQuestionRerunButton";
 
 // Maps HTTP error context → human-readable guidance
 function resolveErrorGuidance(errMsg: string, t: (key: string) => string): { title: string; action: string } {
@@ -134,6 +136,7 @@ export default function Q1Detail() {
   const inference = question.inference_result;
   const llmTracePayload = question.llm_trace_payload;
   const q1Upgrade = question.q1_llm_upgrade;
+  const hasStructuredSnapshot = Boolean(evidence && inference);
 
   return (
     <Box data-testid="q1-detail-root">
@@ -146,25 +149,35 @@ export default function Q1Detail() {
             Production Snapshot: Workspace &amp; Environment Audit（只读，数据来源 GET /nine-questions/q1）
           </Typography>
         </Box>
-        <Button
-          component={RouterLink}
-          to={`/console/nine-questions/${qId}/test`}
-          variant="contained"
-          color="warning"
-          data-testid="q1-sandbox-nav-button"
-        >
-          {t("nineQuestions.q1.enterSandbox")}
-        </Button>
+        <Stack direction="row" spacing={1}>
+          <NineQuestionRerunButton qId={qId} onCompleted={loadDetail} />
+          <Button
+            component={RouterLink}
+            to={`/console/nine-questions/${qId}/test`}
+            variant="contained"
+            color="warning"
+            data-testid="q1-sandbox-nav-button"
+          >
+            {t("nineQuestions.q1.enterSandbox")}
+          </Button>
+        </Stack>
       </Stack>
 
-      {/* 问题介绍栏目 */}
-      <NineQuestionIntroCard questionId={qId} />
-
-      {/* Q1 实际数据详情 Tab 面板 */}
-      <Q1DataTabs 
-        evidence={evidence as any} 
-        inference={inference as any} 
-      />
+      {hasStructuredSnapshot ? (
+        <>
+          <NineQuestionIntroCard questionId={qId} />
+          <Q1DataTabs
+            evidence={evidence as any}
+            inference={inference as any}
+          />
+        </>
+      ) : (
+        <NineQuestionIncompleteResultAlert
+          questionId={qId}
+          result={question.result}
+          contextUpdates={question.context_updates}
+        />
+      )}
 
 
       <Card variant="outlined" sx={{ mb: 3 }}>
@@ -220,7 +233,7 @@ export default function Q1Detail() {
           </Typography>
 
           {/* 主证据面板 - Q1EvidencePanel 内部的 Accordion 均默认折叠 */}
-          {evidence ? (
+          {hasStructuredSnapshot ? (
             <Q1EvidencePanel
               evidence={evidence as Q1PreprocessedEvidence}
               inference={inference as WorkspaceDomainInferenceView}

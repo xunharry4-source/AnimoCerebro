@@ -10,6 +10,7 @@ from zentex.plugins.contracts import FunctionalPluginSpec, PluginHealthStatus
 from zentex.tasks.models import TaskType, CoordinationMode
 from zentex.llm.gateway import LLMGateway
 from zentex.foundation.specs.model_provider import ModelProviderCallerContext
+from zentex.tasks.core.simple_llm_prompt import build_simple_decomposition_request
 
 logger = logging.getLogger(__name__)
 
@@ -62,12 +63,9 @@ class LLMTaskDecompositionPlugin:
         
         logger.info(f"LLMTaskDecompositionPlugin initialized with strategy: {self.strategy}")
     
-    def _call_llm(self, prompt: str, max_tokens: int = 2000) -> str:
+    def _call_llm(self, prompt: str, system_prompt: str, max_tokens: int = 2000) -> str:
         """调用LLM API进行任务拆分"""
         try:
-            # 构建系统提示词
-            system_message = "你是一个专业的任务管理专家，擅长将复杂任务拆解为可执行的子任务。"
-            
             # 构建上下文
             context = {
                 "strategy": self.strategy.value,
@@ -83,7 +81,7 @@ class LLMTaskDecompositionPlugin:
                 prompt=prompt,
                 context=context,
                 caller_context=self.caller_context,
-                system_prompt=system_message,
+                system_prompt=system_prompt,
                 temperature=0.7,
                 max_output_tokens=max_tokens,
                 metadata={
@@ -106,10 +104,18 @@ class LLMTaskDecompositionPlugin:
         
         try:
             # 构建LLM提示词
-            prompt = self._build_decomposition_prompt(mission_title, mission_content, context)
+            prompt_request = build_simple_decomposition_request(
+                strategy=self.strategy.value,
+                mission_title=mission_title,
+                mission_content=mission_content,
+                context=context,
+            )
             
             # 调用LLM
-            llm_response = self._call_llm(prompt)
+            llm_response = self._call_llm(
+                prompt_request["prompt"],
+                prompt_request["system_prompt"],
+            )
             
             if not llm_response:
                 raise RuntimeError(f"[LLM MANDATORY] Mission decomposition failed for '{mission_title}': LLM returned no response.")
@@ -134,72 +140,12 @@ class LLMTaskDecompositionPlugin:
     def _build_decomposition_prompt(self, mission_title: str, mission_content: str, 
                                  context: Optional[Dict[str, Any]]) -> str:
         """构建LLM拆分提示词"""
-        strategy_prompts = {
-            TaskDecompositionStrategy.SEQUENTIAL: """
-请将任务拆分为严格的顺序执行阶段，每个阶段必须依赖前一个阶段。
-按照项目管理的标准流程：分析→规划→准备→执行→验证→收尾。
-""",
-            TaskDecompositionStrategy.PARALLEL: """
-请将任务拆分为可以并行执行的子任务。
-识别可以同时进行的工作，减少总体执行时间。
-""",
-            TaskDecompositionStrategy.HYBRID: """
-请将任务拆分为混合模式：前期顺序（分析、规划），后期并行执行。
-结合顺序和并行策略的优点。
-""",
-            TaskDecompositionStrategy.DEPENDENCY_DRIVEN: """
-请基于任务依赖关系进行拆分。
-识别关键依赖路径，确保依赖关系清晰合理。
-"""
-        }
-        
-        strategy_prompt = strategy_prompts.get(self.strategy, strategy_prompts[TaskDecompositionStrategy.HYBRID])
-        
-        context_info = ""
-        if context:
-            if "max_subtasks" in context:
-                context_info += f"\\n- 最大子任务数: {context['max_subtasks']}"
-            if "estimated_duration_per_subtask" in context:
-                context_info += f"\\n- 每个子任务预估时长: {context['estimated_duration_per_subtask']}分钟"
-        
-        prompt = f"""你是一个专业的任务管理专家，请将以下任务拆解为可执行的子任务。
-
-任务标题: {mission_title}
-任务内容: {mission_content}
-拆分策略: {self.strategy.value}
-{context_info}
-
-{strategy_prompt}
-
-请按照以下JSON格式返回子任务列表：
-{{
-    "subtasks": [
-        {{
-            "local_id": "unique-id",
-            "title": "子任务标题",
-            "task_type": "cognitive_step",
-            "content": "子任务详细描述",
-            "objective": "子任务目标",
-            "requirements": ["需求1", "需求2"],
-            "depends_on": ["id1"],
-            "coordination_mode": "sequential",
-            "estimated_duration": 60,
-            "priority": "high"
-        }}
-    ]
-}}
-
-要求：
-1. 每个子任务都有明确的目标和可执行的需求
-2. 任务类型为cognitive_step
-3. 依赖关系要合理，避免循环依赖
-4. 预估时长要合理（30-240分钟之间）
-5. 优先级要根据重要性和紧急性设置
-6. 协调模式要符合执行方式
-
-请只返回JSON格式的结果，不要包含其他解释。"""
-
-        return prompt
+        return build_simple_decomposition_request(
+            strategy=self.strategy.value,
+            mission_title=mission_title,
+            mission_content=mission_content,
+            context=context,
+        )["prompt"]
     
     def _parse_llm_response(self, llm_response: str) -> List[Dict[str, Any]]:
         """解析LLM响应为子任务列表"""

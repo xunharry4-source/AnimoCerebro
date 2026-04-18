@@ -14,21 +14,14 @@ from typing import Any, Dict, List, Optional
 
 from fastapi import APIRouter, HTTPException, Query
 
-from zentex.environment import EnvironmentAwarenessService
+from zentex.environment.service import get_environment_service
 
 router = APIRouter(prefix="/api/v1/environment", tags=["environment"])
 
 
-# Global service instance (initialized on first request)
-_service: Optional[EnvironmentAwarenessService] = None
-
-
-def _get_service() -> EnvironmentAwarenessService:
-    """Get or create environment awareness service instance."""
-    global _service
-    if _service is None:
-        _service = EnvironmentAwarenessService()
-    return _service
+def _get_service() -> Any:
+    """Resolve the environment module through its public service entrypoint."""
+    return get_environment_service()
 
 
 @router.get("/host-state")

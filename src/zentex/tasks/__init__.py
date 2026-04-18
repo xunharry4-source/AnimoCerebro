@@ -133,10 +133,22 @@ class TaskManager:
         priority: Optional[TaskPriority] = None,
         tags: Optional[List[str]] = None,
         parent_task_id: Optional[str] = None,
-        overdue_only: bool = False
+        target_id: Optional[str] = None,
+        overdue_only: bool = False,
+        source_module: Optional[str] = None,
+        metadata_filters: Optional[Dict[str, Any]] = None,
     ) -> List[ZentexTask]:
         """List tasks with optional filtering"""
-        return self.service.list_tasks(status, priority, tags, parent_task_id, overdue_only)
+        return self.service.list_tasks(
+            status=status,
+            priority=priority,
+            tags=tags,
+            parent_task_id=parent_task_id,
+            target_id=target_id,
+            overdue_only=overdue_only,
+            source_module=source_module,
+            metadata_filters=metadata_filters,
+        )
     
     def update_task_status(self, task_id: str, new_status: TaskStatus, remarks: Optional[str] = None) -> ZentexTask:
         """Update task status"""

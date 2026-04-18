@@ -10,6 +10,7 @@ from zentex.upgrade.base_models import (
 from zentex.foundation.specs.model_provider import ModelProviderCallerContext
 from zentex.upgrade.plugin.models import PluginUpgradeCandidate
 from zentex.upgrade.llm.models import LLMUpgradeCandidate
+from zentex.upgrade.ai_executors_llm_prompt import build_plugin_generation_request
 
 class OpenHandsEvolutionExecutor:
     """Sub-function 58.3 - AI-driven code modification via OpenHands SDK integration."""
@@ -36,28 +37,17 @@ class OpenHandsEvolutionExecutor:
         
         # 2. Authentic Code Generation via LLM (Priority 1)
         # Instead of templates, we use the LLM to generate code based on the goal
-        prompt = f"""Generate Python code for a plugin based on this goal: {candidate.goal}
-        
-        Requirements:
-        1. Output a single Python file named 'plugin.py'.
-        2. Output a single Pytest file named 'test_plugin.py'.
-        3. Output a README.md explaining the plugin.
-        
-        Return JSON format:
-        {{
-            "plugin_py": "code content",
-            "test_plugin_py": "test content",
-            "readme_md": "readme content",
-            "diff_summary": "brief summary of changes"
-        }}
-        """
+        request = build_plugin_generation_request(
+            plugin_id=candidate.plugin_id,
+            goal=candidate.goal,
+        )
         
         try:
             response = self.llm_gateway.invoke_generate_json(
-                prompt=prompt,
+                prompt=request["prompt"],
                 context={"plugin_id": candidate.plugin_id, "goal": candidate.goal},
                 caller_context=self.caller_context,
-                system_prompt="You are an expert software engineer specialized in Zentex plugin architecture."
+                system_prompt=request["system_prompt"],
             )
             data = response.output
         except Exception as e:

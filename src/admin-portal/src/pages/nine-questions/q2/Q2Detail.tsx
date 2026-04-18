@@ -27,6 +27,8 @@ import MountedPluginsZone from "../../../components/MountedPluginsZone";
 import LLMTracePanel from "../../../components/LLMTracePanel";
 import NineQuestionIntroCard from "../../../components/NineQuestionIntroCard";
 import Q2DataTabs from "../../../components/Q2DataTabs";
+import NineQuestionIncompleteResultAlert from "../../../components/NineQuestionIncompleteResultAlert";
+import NineQuestionRerunButton from "../../../components/NineQuestionRerunButton";
 
 function resolveErrorGuidance(errMsg: string): { title: string; action: string } {
   if (errMsg.includes("No active session") || errMsg.includes("没有活动 session")) {
@@ -95,6 +97,7 @@ export default function Q2Detail() {
   const evidence = question.preprocessed_evidence as Q2PreprocessedEvidence;
   const inference = question.inference_result as Q2WhoAmIInferenceView;
   const llmTrace = question.llm_trace_payload;
+  const hasStructuredSnapshot = Boolean(evidence && inference);
 
   return (
     <Box data-testid="q2-detail-root">
@@ -103,18 +106,28 @@ export default function Q2Detail() {
           <Typography variant="h4" gutterBottom>{getQuestionDisplayLabel(qId)} 正式审计页</Typography>
           <Typography variant="body2" color="text.secondary">Mission Continuity & Role Identity Audit（独立接口 GET /nine-questions/q2）</Typography>
         </Box>
-        <Button component={RouterLink} to="/console/nine-questions/q2/test" variant="contained" color="warning" data-testid="q2-sandbox-nav-button">进入独立沙箱测试</Button>
+        <Stack direction="row" spacing={1}>
+          <NineQuestionRerunButton qId={qId} onCompleted={loadDetail} />
+          <Button component={RouterLink} to="/console/nine-questions/q2/test" variant="contained" color="warning" data-testid="q2-sandbox-nav-button">进入独立沙箱测试</Button>
+        </Stack>
       </Stack>
 
 
-      {/* 问题介绍栏目 */}
-      <NineQuestionIntroCard questionId="q2" />
-
-      {/* Q2 实际数据详情 Tab 面板 */}
-      <Q2DataTabs 
-        evidence={evidence as any} 
-        inference={inference as any} 
-      />
+      {hasStructuredSnapshot ? (
+        <>
+          <NineQuestionIntroCard questionId="q2" />
+          <Q2DataTabs
+            evidence={evidence as any}
+            inference={inference as any}
+          />
+        </>
+      ) : (
+        <NineQuestionIncompleteResultAlert
+          questionId={qId}
+          result={question.result}
+          contextUpdates={question.context_updates}
+        />
+      )}
 
 
       <Card variant="outlined" sx={{ mb: 3 }}>
@@ -132,7 +145,7 @@ export default function Q2Detail() {
           <MountedPluginsZone plugins={question.mounted_plugins || []} />
 
           <Typography variant="h6" gutterBottom sx={{ mt: 2 }}>身份内核与使命连续性证明 (Evidence)</Typography>
-          {evidence ? (
+          {hasStructuredSnapshot ? (
             <Q2EvidencePanel
               evidence={evidence}
               inference={inference}

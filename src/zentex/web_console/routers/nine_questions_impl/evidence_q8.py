@@ -21,7 +21,12 @@ from .helpers import _coerce_string_list
 
 
 def _extract_q8_snapshot_dict(context_payload: dict[str, Any]) -> dict[str, Any]:
-    snapshot = context_payload.get("q1_q7_snapshot") or context_payload.get("nine_questions") or {}
+    snapshot = (
+        context_payload.get("q8_q1_q7_snapshot")
+        or context_payload.get("q1_q7_snapshot")
+        or context_payload.get("nine_questions")
+        or {}
+    )
     if isinstance(snapshot, dict):
         return {str(k): v for k, v in snapshot.items() if str(k).strip()}
     return {}
@@ -104,7 +109,9 @@ def _coerce_q8_agenda_items(raw: object) -> list[Q8AgendaItem]:
 
 def _build_q8_preprocessed_evidence(context_payload: dict[str, Any]) -> Q8PreprocessedEvidence | None:
     snapshot = _extract_q8_snapshot_dict(context_payload)
-    task_state = _coerce_q8_persistent_items(context_payload.get("persistent_task_state"))
+    task_state = _coerce_q8_persistent_items(
+        context_payload.get("q8_persistent_task_state") or context_payload.get("persistent_task_state")
+    )
     agenda_items = _coerce_q8_agenda_items(context_payload.get("cognitive_agenda"))
     if not snapshot and not task_state and not agenda_items:
         return None
@@ -125,7 +132,10 @@ def _build_q8_preprocessed_evidence(context_payload: dict[str, Any]) -> Q8Prepro
 def _extract_q8_preprocessed_evidence(context_payload: object) -> Q8PreprocessedEvidence | None:
     if not isinstance(context_payload, dict):
         return None
-    if not any(key in context_payload for key in ("q1_q7_snapshot", "nine_questions", "persistent_task_state", "cognitive_agenda")):
+    if not any(
+        key in context_payload
+        for key in ("q8_q1_q7_snapshot", "q1_q7_snapshot", "nine_questions", "q8_persistent_task_state", "persistent_task_state", "cognitive_agenda")
+    ):
         return None
     return _build_q8_preprocessed_evidence(context_payload)
 
@@ -139,11 +149,13 @@ def _extract_q8_inference_result(result_payload: object) -> Q8WhatShouldIDoNowIn
         result_payload.get("objective_profile")
         or result_payload.get("objective")
         or result_payload.get("q8_objective_profile")
+        or (aggregate_raw.get("q8_objective_profile") if isinstance(aggregate_raw, dict) else None)
         or (aggregate_raw.get("objective") if isinstance(aggregate_raw, dict) else None)
     )
     queue_raw = (
         result_payload.get("task_queue")
         or result_payload.get("q8_task_queue")
+        or (aggregate_raw.get("q8_task_queue") if isinstance(aggregate_raw, dict) else None)
         or (aggregate_raw.get("task_queue") if isinstance(aggregate_raw, dict) else None)
     )
     if not isinstance(objective_raw, dict) or not isinstance(queue_raw, dict):
@@ -151,7 +163,7 @@ def _extract_q8_inference_result(result_payload: object) -> Q8WhatShouldIDoNowIn
 
     return Q8WhatShouldIDoNowInferenceView(
         objective_profile=Q8ObjectiveProfileView(
-            current_primary_objective=str(objective_raw.get("current_primary_objective") or ""),
+            current_primary_objective=str(objective_raw.get("current_mission") or objective_raw.get("current_primary_objective") or ""),
             current_phase_tasks=_coerce_string_list(objective_raw.get("current_phase_tasks")),
             priority_order=_coerce_string_list(objective_raw.get("priority_order")),
         ),
@@ -161,6 +173,5 @@ def _extract_q8_inference_result(result_payload: object) -> Q8WhatShouldIDoNowIn
             proactive_actions=queue_raw.get("proactive_actions") or [],
         ),
     )
-
 
 

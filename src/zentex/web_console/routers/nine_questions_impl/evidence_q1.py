@@ -284,11 +284,23 @@ def _extract_q1_inference_result(result_payload: object) -> WorkspaceDomainInfer
         "reasoning_summary",
         "uncertainties",
         "suggested_first_step",
+        "host_runtime_type",
+        "host_runtime_reason",
     ]
-    if not set(ordered_keys).issubset(data.keys()):
+    required_keys = ordered_keys[:6]
+    if not set(required_keys).issubset(data.keys()):
         return None
 
-    return WorkspaceDomainInferenceView.model_validate({key: data.get(key) for key in ordered_keys})
+    raw_dict = {key: data.get(key) for key in ordered_keys}
+    # Coerce uncertainties to List[str] — LLM may return list of dicts
+    raw_uncertainties = raw_dict.get("uncertainties")
+    if isinstance(raw_uncertainties, list):
+        raw_dict["uncertainties"] = [
+            item if isinstance(item, str)
+            else str(item.get("description") or item.get("text") or item)
+            for item in raw_uncertainties
+        ]
+    return WorkspaceDomainInferenceView.model_validate(raw_dict)
 
 
 def _extract_q1_llm_upgrade(context_payload: object) -> Q1LLMUpgradeView | None:

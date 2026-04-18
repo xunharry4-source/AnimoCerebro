@@ -1,9 +1,23 @@
+"""
+G16 Tool Self-Study Pipeline — zentex.learning.g16_pipeline
+
+RESPONSIBILITY:
+  Orchestrates the Voyager-style iterative loop for G16 tool distillation.
+  Input preprocessing and prompt construction are fully delegated to
+  zentex.learning.llm_prompt — this module MUST NOT build or inline any
+  prompt string sent to the LLM.
+
+DOES NOT:
+  - Build prompt strings (see llm_prompt.py).
+  - Preprocess doc_url or feedback_history directly (see llm_prompt.py).
+  - Own service lifecycle.
+"""
+
 from __future__ import annotations
 
 import uuid
 import json
 from typing import Any, Dict, List, Optional
-from typing_extensions import Self
 
 import dspy
 
@@ -14,6 +28,11 @@ from zentex.learning.g16_models import SandboxValidationResult, ToolKnowledgeRec
 from zentex.learning.sandbox import ThoughtSandbox
 from zentex.kernel import BrainTranscriptEntryType, BrainTranscriptStore
 from zentex.llm.service import LLMService
+from zentex.learning.llm_prompt import (
+    build_g16_distillation_inputs,
+    build_g16_critic_inputs,
+    summarise_feedback_for_next_attempt,
+)
 
 from zentex.learning.dspy_adapter import ZentexDSPyLM
 from zentex.learning.g16_dspy_signatures import ToolDistillationModule, ToolCriticModule
@@ -71,7 +90,12 @@ async def run_g16_dynamic_tool_self_study(
         )
 
         try:
-            prediction = distiller(doc_url=doc_url, feedback_history=feedback_history)
+            # All input preprocessing delegated to llm_prompt.py
+            distillation_inputs = build_g16_distillation_inputs(
+                doc_url=doc_url,
+                feedback_history=feedback_history,
+            )
+            prediction = distiller(**distillation_inputs.to_dspy_kwargs())
             
             # DSPy OutputField returns strings by default; parse them if they are strings
             input_schema = json.loads(prediction.input_schema) if isinstance(prediction.input_schema, str) else prediction.input_schema
@@ -95,20 +119,29 @@ async def run_g16_dynamic_tool_self_study(
                 source="zentex.learning.g16_pipeline",
                 trace_id=trace_id,
             )
-            feedback_history = f"Error generating or parsing JSON schemas: {str(exc)}. Please fix JSON formatting."
+            feedback_history = summarise_feedback_for_next_attempt(
+                previous_feedback_history=feedback_history,
+                new_critique=f"Error generating or parsing JSON schemas: {str(exc)}. Please fix JSON formatting.",
+                attempt_number=attempt + 1,
+            )
             continue
 
-        # 2a. Pre-Sandbox Critic Review
-        critique_res = critic(
+        # 2a. Pre-Sandbox Critic Review — inputs preprocessed via llm_prompt.py
+        critic_inputs = build_g16_critic_inputs(
             doc_url=doc_url,
             proposed_tool_name=record.tool_name,
             proposed_code_schema=json.dumps(record.input_schema),
-            proposed_test_cases=json.dumps(test_cases)
+            proposed_test_cases=json.dumps(test_cases),
         )
-        
+        critique_res = critic(**critic_inputs.to_dspy_kwargs())
+
         is_approved_str = str(critique_res.is_approved).strip().lower()
         if is_approved_str not in ["true", "1", "yes"]:
-            feedback_history = f"Pre-sandbox Critic rejected the code: {critique_res.critique_feedback}. Please fix."
+            feedback_history = summarise_feedback_for_next_attempt(
+                previous_feedback_history=feedback_history,
+                new_critique=f"Pre-sandbox Critic rejected the code: {critique_res.critique_feedback}. Please fix.",
+                attempt_number=attempt + 1,
+            )
             store.write_entry(
                 session_id="learning_engine",
                 turn_id=f"g16_learning_attempt_{attempt + 1}",
@@ -149,7 +182,11 @@ async def run_g16_dynamic_tool_self_study(
             mem = validation.performance_metrics.get("mem_mb", 0.0)
             
             if cpu > MAX_CPU_SEC or mem > MAX_MEM_MB:
-                feedback_history = f"Code functional but failed optimization targets! CPU: {cpu}s (Max {MAX_CPU_SEC}s), Mem: {mem}MB (Max {MAX_MEM_MB}MB). Rewrite code to perfectly meet resource constraints."
+                feedback_history = summarise_feedback_for_next_attempt(
+                    previous_feedback_history=feedback_history,
+                    new_critique=f"Code functional but failed optimization targets! CPU: {cpu}s (Max {MAX_CPU_SEC}s), Mem: {mem}MB (Max {MAX_MEM_MB}MB). Rewrite code to perfectly meet resource constraints.",
+                    attempt_number=attempt + 1,
+                )
                 store.write_entry(
                     session_id="learning_engine",
                     turn_id=f"g16_learning_attempt_{attempt + 1}",
@@ -170,7 +207,11 @@ async def run_g16_dynamic_tool_self_study(
             )
             return record
         else:
-            feedback_history = f"Attempt {attempt + 1} Sandbox validation failed: {validation.security_events}. Please fix the logical errors."
+            feedback_history = summarise_feedback_for_next_attempt(
+                previous_feedback_history=feedback_history,
+                new_critique=f"Sandbox validation failed: {validation.security_events}. Please fix the logical errors.",
+                attempt_number=attempt + 1,
+            )
             store.write_entry(
                 session_id="learning_engine",
                 turn_id=f"g16_learning_attempt_{attempt + 1}",

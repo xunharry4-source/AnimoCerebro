@@ -10,6 +10,10 @@ from zentex.plugins.contracts import FunctionalPluginSpec, PluginHealthStatus
 from zentex.tasks.models import TaskType, CoordinationMode, DecompositionContext
 from zentex.llm.gateway import LLMGateway
 from zentex.foundation.specs.model_provider import ModelProviderCallerContext
+from zentex.tasks.core.semantic_kernel_llm_prompt import (
+    build_semantic_analysis_request,
+    build_semantic_kernel_request,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -118,7 +122,12 @@ class SemanticKernelTaskDecompositionPlugin:
         
         logger.info(f"SemanticKernelTaskDecompositionPlugin initialized with strategy: {self.strategy}")
     
-    def _call_semantic_kernel(self, prompt: str, use_reasoning: bool = True) -> str:
+    def _call_semantic_kernel(
+        self,
+        prompt: str,
+        system_prompt: str,
+        use_reasoning: bool = True,
+    ) -> str:
         """
         调用Semantic Kernel进行语义推理
         
@@ -132,20 +141,6 @@ class SemanticKernelTaskDecompositionPlugin:
         try:
             # 选择模型
             model = self.reasoning_model if use_reasoning else self.semantic_model
-            
-            # 构建系统提示词
-            system_message = f"""你是Semantic Kernel任务拆解专家，具备以下能力：
-
-{json.dumps(self.kernel_config, indent=2, ensure_ascii=False)}
-
-你的任务是将复杂任务拆解为可执行的子任务序列。你需要：
-1. 深度理解任务的语义和上下文
-2. 分析任务的技术复杂度和依赖关系
-3. 应用项目管理和领域专业知识
-4. 生成最优的任务拆分方案
-5. 确保拆分结果符合指定的策略要求
-
-请始终以JSON格式返回结果，包含完整的任务拆分信息。"""
             
             # 构建上下文
             context = {
@@ -163,7 +158,7 @@ class SemanticKernelTaskDecompositionPlugin:
                 context=context,
                 caller_context=self.caller_context,
                 model=model,
-                system_prompt=system_message,
+                system_prompt=system_prompt,
                 temperature=0.3,  # 较低温度以获得更一致的结果
                 max_output_tokens=3000,
                 metadata={
@@ -193,113 +188,15 @@ class SemanticKernelTaskDecompositionPlugin:
         Returns:
             Semantic Kernel提示词
         """
-        # 策略特定的语义提示
-        strategy_prompts = {
-            TaskDecompositionStrategy.SEQUENTIAL: """
-使用你的语义理解能力，将任务拆分为严格的顺序执行阶段。
-请分析任务的逻辑流程，识别必须的前置条件，并按照项目管理的最佳实践生成阶段序列。
-每个阶段都应该有明确的入口条件和出口标准。
-""",
-            TaskDecompositionStrategy.PARALLEL: """
-使用你的语义分析能力，识别任务中可以并行执行的部分。
-请分析任务的内在结构，识别相互独立的工作包，并设计并行执行方案以最大化效率。
-考虑资源约束和协调成本。
-""",
-            TaskDecompositionStrategy.HYBRID: """
-结合你的语义推理和规划能力，设计混合拆分策略。
-前期使用顺序模式进行深度分析和规划，后期使用并行模式加速执行。
-请平衡风险控制和执行效率。
-""",
-            TaskDecompositionStrategy.DEPENDENCY_DRIVEN: """
-使用你的依赖分析能力，构建基于依赖关系的任务图。
-请识别任务的关键路径，分析依赖关系的类型和强度，并生成最优的执行顺序。
-考虑依赖的可并行性和资源冲突。
-"""
-        }
-        
-        strategy_prompt = strategy_prompts.get(self.strategy, strategy_prompts[TaskDecompositionStrategy.HYBRID])
-        
-        # 上下文信息
-        context_info = ""
-        if context:
-            if "max_subtasks" in context:
-                context_info += f"\\n- 最大子任务数限制: {context['max_subtasks']}"
-            if "estimated_duration_per_subtask" in context:
-                context_info += f"\\n- 每个子任务预估时长: {context['estimated_duration_per_subtask']}分钟"
-            if "team_size" in context:
-                context_info += f"\\n- 团队规模: {context['team_size']}人"
-            if "complexity" in context:
-                context_info += f"\\n- 任务复杂度: {context['complexity']}"
-            if "domain" in context:
-                context_info += f"\\n- 领域类型: {context['domain']}"
-            if "risk_level" in context:
-                context_info += f"\\n- 风险等级: {context['risk_level']}"
-        
-        # 语义分析提示
-        semantic_analysis_prompt = f"""
-请首先进行深度语义分析：
-
-1. **任务理解**: 解析任务标题和内容，识别核心目标和约束条件
-2. **领域识别**: 判断任务所属的领域（软件开发、业务分析、系统架构等）
-3. **复杂度评估**: 评估技术复杂度、协调难度、风险等级
-4. **依赖分析**: 识别隐含的依赖关系和约束条件
-5. **资源需求**: 分析所需的人力、时间、技术资源
-
-任务标题: {mission_title}
-任务内容: {mission_content}
-{context_info}
-
-拆分策略: {self.strategy.value}
-
-{strategy_prompt}
-
-请按照以下JSON格式返回详细分析结果：
-{{
-    "semantic_analysis": {{
-        "core_objective": "任务的核心目标",
-        "domain": "所属领域",
-        "complexity_level": "low|medium|high|critical",
-        "key_dependencies": ["依赖1", "依赖2"],
-        "resource_requirements": {{
-            "team_size_min": 2,
-            "estimated_total_hours": 40,
-            "technical_skills": ["技能1", "技能2"]
-        }},
-        "risk_factors": ["风险1", "风险2"],
-        "success_criteria": ["成功标准1", "成功标准2"]
-    }},
-    "subtasks": [
-        {{
-            "local_id": "unique-id",
-            "title": "子任务标题",
-            "task_type": "cognitive_step|agent_delegation|system_action|intervention",
-            "content": "子任务详细描述",
-            "objective": "子任务目标",
-            "requirements": ["需求1", "需求2", "需求3"],
-            "depends_on": ["id1", "id2"],
-            "coordination_mode": "sequential|parallel|bundle",
-            "estimated_duration": 60,
-            "priority": "high|medium|low",
-            "semantic_tags": ["标签1", "标签2"],
-            "risk_level": "low|medium|high",
-            "resource_impact": "low|medium|high",
-            "success_metrics": ["指标1", "指标2"]
-        }}
-    ]
-}}
-
-要求：
-1. 深度语义理解，不要仅基于关键词匹配
-2. 考虑任务的实际业务含义和技术背景
-3. 应用相关领域的专业知识和最佳实践
-4. 生成合理的依赖关系和协调模式
-5. 评估每个子任务的风险和资源影响
-6. 确保拆分结果符合指定的策略要求
-7. 每个子任务都应该有明确的成功标准
-
-请只返回JSON格式的结果，不要包含其他解释。"""
-
-        return semantic_analysis_prompt
+        model = self.reasoning_model if self.enable_planning else self.semantic_model
+        return build_semantic_kernel_request(
+            kernel_config=self.kernel_config,
+            strategy=self.strategy.value,
+            model=model,
+            context=context,
+            mission_title=mission_title,
+            mission_content=mission_content,
+        )["prompt"]
     
     def _parse_semantic_response(self, semantic_response: str) -> List[Dict[str, Any]]:
         """
@@ -444,11 +341,21 @@ class SemanticKernelTaskDecompositionPlugin:
                     "historical_success_rate": context.historical_success_rate,
                 }
             
-            # 构建Semantic Kernel提示词
-            prompt = self._build_semantic_prompt(mission_title, mission_content, context_dict)
+            prompt_request = build_semantic_kernel_request(
+                kernel_config=self.kernel_config,
+                strategy=self.strategy.value,
+                model=self.reasoning_model,
+                context=context_dict,
+                mission_title=mission_title,
+                mission_content=mission_content,
+            )
             
             # 调用Semantic Kernel
-            semantic_response = self._call_semantic_kernel(prompt, use_reasoning=True)
+            semantic_response = self._call_semantic_kernel(
+                prompt_request["prompt"],
+                prompt_request["system_prompt"],
+                use_reasoning=True,
+            )
             
             if not semantic_response:
                 logger.error("Semantic Kernel call failed, using fallback decomposition")
@@ -550,38 +457,19 @@ class SemanticKernelTaskDecompositionPlugin:
         """
         try:
             # 构建语义分析提示
-            analysis_prompt = f"""
-请对以下任务进行深度语义分析：
-
-任务标题: {mission_title}
-任务内容: {mission_content}
-
-请分析并返回以下信息：
-1. 核心目标和意图
-2. 领域分类（软件开发、业务分析、系统架构等）
-3. 技术复杂度评估
-4. 关键依赖和约束
-5. 风险因素识别
-6. 资源需求分析
-
-请按照JSON格式返回：
-{{
-    "core_objective": "任务的核心目标",
-    "domain": "所属领域",
-    "complexity_level": "low|medium|high|critical",
-    "key_dependencies": ["依赖1", "依赖2"],
-    "resource_requirements": {{
-        "team_size_min": 2,
-        "estimated_total_hours": 40,
-        "technical_skills": ["技能1", "技能2"]
-    }},
-    "risk_factors": ["风险1", "风险2"],
-    "success_criteria": ["成功标准1", "成功标准2"]
-}}
-"""
+            analysis_request = build_semantic_analysis_request(
+                kernel_config=self.kernel_config,
+                model=self.reasoning_model,
+                mission_title=mission_title,
+                mission_content=mission_content,
+            )
             
             # 调用Semantic Kernel进行分析
-            analysis_response = self._call_semantic_kernel(analysis_prompt, use_reasoning=True)
+            analysis_response = self._call_semantic_kernel(
+                analysis_request["prompt"],
+                analysis_request["system_prompt"],
+                use_reasoning=True,
+            )
             
             if analysis_response:
                 try:

@@ -3,7 +3,6 @@ from __future__ import annotations
 from datetime import timezone
 from typing import Any, Dict, List, Optional, Protocol
 
-from zentex.kernel import BrainTranscriptEntryType
 from zentex.web_console.contracts.replay import (
     TranscriptReplayPayload,
     TurnReplayPayload,
@@ -18,6 +17,15 @@ class _TranscriptStoreLike(Protocol):
     def read_by_trace_id(self, trace_id: str) -> list[Any]: ...
 
     def read_by_turn_id(self, turn_id: str) -> list[Any]: ...
+
+
+class _TranscriptEntryLike(Protocol):
+    entry_type: Any
+
+
+def _entry_type_value(entry: _TranscriptEntryLike) -> str:
+    entry_type = getattr(entry, "entry_type", None)
+    return str(getattr(entry_type, "value", entry_type) or "")
 
 
 def _resolve_transcript_store(source: Any) -> _TranscriptStoreLike:
@@ -65,6 +73,7 @@ def build_replay_payload(
         payload = entry.payload if isinstance(entry.payload, dict) else {}
         caller_context = payload.get("caller_context") if isinstance(payload, dict) else None
         trace_chain = payload.get("trace_chain") if isinstance(payload, dict) else None
+        entry_type = _entry_type_value(entry)
         if isinstance(caller_context, dict):
             source_module = str(caller_context.get("source_module") or source_module or "")
             invocation_phase = str(caller_context.get("invocation_phase") or invocation_phase or "")
@@ -74,7 +83,7 @@ def build_replay_payload(
         if isinstance(trace_chain, dict):
             source_module = str(trace_chain.get("source_module") or source_module or "")
             invocation_phase = str(trace_chain.get("phase_name") or invocation_phase or "")
-        if entry.entry_type == BrainTranscriptEntryType.HUMAN_INTERVENTION_APPLIED:
+        if entry_type == "human_intervention_applied":
             action = str(payload.get("action") or "manual_action")
             reason = str(payload.get("reason") or "human intervention")
             question_driver_refs = [
@@ -87,7 +96,7 @@ def build_replay_payload(
             summary = f"因为您的干预（{action} / {reason}），系统触发了九问重校验与状态回写。"
             continue
         if (
-            entry.entry_type == BrainTranscriptEntryType.CONTEXT_SNAPSHOT_WRITTEN
+            entry_type == "context_snapshot_written"
             and isinstance(payload.get("nine_question_state"), dict)
         ):
             nine_question_state = payload["nine_question_state"]
@@ -100,7 +109,7 @@ def build_replay_payload(
                     if isinstance(refs, list):
                         question_driver_refs = [str(item) for item in refs]
                 summary = "因为您的干预，系统触发了九问重校验并刷新了目标框架。"
-        if entry.entry_type == BrainTranscriptEntryType.MODEL_PROVIDER_INVOKED:
+        if entry_type == "model_provider_invoked":
             summary = f"{source_module or '主脑回路'} 在 {invocation_phase or '关键推理阶段'} 发起了一次模型调用。"
             break
 
@@ -138,7 +147,7 @@ def build_turn_replay_payload(
         (
             entry.trace_id
             for entry in turn_entries
-            if entry.entry_type == BrainTranscriptEntryType.TURN_STARTED
+            if _entry_type_value(entry) == "turn_started"
         ),
         first.trace_id,
     )

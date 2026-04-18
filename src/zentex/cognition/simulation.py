@@ -21,6 +21,7 @@ from zentex.llm.service import LLMService
 from zentex.plugins.contracts import PluginLifecycleStatus
 from zentex.plugins.simulation import SimulationDomainPlugin, SimulationIntent
 from pydantic import BaseModel, ConfigDict, Field
+from zentex.cognition.llm_prompt import build_simulation_comparison_prompt
 
 
 class StaleSimulationResultError(RuntimeError):
@@ -292,10 +293,10 @@ class CounterfactualSimulationEngine:
             question_driver_refs=["这样做会带来什么后果", "我现在应该做什么"],
             decision_id=goal_id,
         )
-        prompt = (
-            "Compare the simulation branches and return JSON with keys "
-            "summary, risk_ranking, recommended_branch_id."
-        )
+        prompt = build_simulation_comparison_prompt(
+            goal_id=goal_id,
+            branch_count=len(branches),
+        )["prompt"]
         if self._llm_service is not None:
             payload = self._llm_service.generate_json(
                 prompt=prompt,

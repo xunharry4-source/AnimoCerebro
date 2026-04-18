@@ -34,7 +34,45 @@ from zentex.web_console.contracts.upgrades import (
 )
 
 
+def _extract_prompt_upgrade_view(payload: dict[str, object]) -> tuple[str | None, list[str], list[str], str | None]:
+    modified_files = payload.get("modified_files")
+    prompt_target_file = (
+        str(modified_files[0]).strip()
+        if isinstance(modified_files, list) and modified_files and str(modified_files[0]).strip()
+        else None
+    )
+
+    bundle = payload.get("candidate_prompt_bundle")
+    bundle = bundle if isinstance(bundle, dict) else {}
+
+    edited_sections = [
+        str(item).strip()
+        for item in bundle.get("edited_section_keys", [])
+        if str(item).strip()
+    ] if isinstance(bundle.get("edited_section_keys"), list) else []
+    notes = [
+        str(item).strip()
+        for item in bundle.get("notes", [])
+        if str(item).strip()
+    ] if isinstance(bundle.get("notes"), list) else []
+
+    summary_parts: list[str] = []
+    if edited_sections:
+        summary_parts.append(f"已优化段落: {', '.join(edited_sections)}")
+    if prompt_target_file:
+        summary_parts.append(f"目标文件: {prompt_target_file}")
+    summary = " | ".join(summary_parts) if summary_parts else None
+    return prompt_target_file, edited_sections, notes, summary
+
+
 def build_upgrade_record_item(record: UpgradeManagementRecord) -> UpgradeRecordItem:
+    payload = dict(record.payload)
+    (
+        prompt_target_file,
+        prompt_upgrade_sections,
+        prompt_upgrade_notes,
+        prompt_upgrade_summary,
+    ) = _extract_prompt_upgrade_view(payload)
     return UpgradeRecordItem(
         record_id=record.record_id,
         target_kind=record.target_kind.value,
@@ -86,6 +124,11 @@ def build_upgrade_record_item(record: UpgradeManagementRecord) -> UpgradeRecordI
         updated_at=record.updated_at,
         started_at=record.started_at,
         finished_at=record.finished_at,
+        payload=payload,
+        prompt_target_file=prompt_target_file,
+        prompt_upgrade_sections=prompt_upgrade_sections,
+        prompt_upgrade_notes=prompt_upgrade_notes,
+        prompt_upgrade_summary=prompt_upgrade_summary,
         can_cancel=record.current_status in WAITING_STATUSES | ONGOING_STATUSES,
         can_cleanup_failed_candidate=(
             record.target_kind is UpgradeTargetKind.PLUGIN

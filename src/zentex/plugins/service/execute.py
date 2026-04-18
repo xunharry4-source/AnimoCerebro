@@ -20,6 +20,7 @@ from zentex.foundation.contracts import ActionIntent
 
 from zentex.plugins.models import PluginLifecycleStatus
 from zentex.common.protocol import TaskFeedback
+from zentex.plugins.service.manage import _is_always_active
 
 logger = logging.getLogger(__name__)
 
@@ -529,9 +530,15 @@ class ExecutionService:
         stats = self._execution_stats[plugin_id]
         stats['failure_count'] += 1
         stats['last_executed_at'] = datetime.now(timezone.utc).isoformat()
-        
+
+        if _is_always_active(plugin_id):
+            logger.warning(
+                "[Plugins] Skipping auto-degrade for always-active cognitive plugin %s after %s failures",
+                plugin_id,
+                stats['failure_count'],
+            )
         # Auto-degrade after 3 consecutive failures
-        if stats['failure_count'] >= 3 and self._promote_plugin:
+        elif stats['failure_count'] >= 3 and self._promote_plugin:
             logger.warning(f"[Plugins] Auto-degrading {plugin_id} after 3 failures")
             try:
                 self._promote_plugin(

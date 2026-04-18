@@ -333,12 +333,12 @@ export const AgentAssetManager: React.FC = () => {
               onChange={(e) => setFilterStatus(e.target.value as AgentStatus | 'all')}
             >
               <MenuItem value="all">{t('agents.allStatuses')}</MenuItem>
-              <MenuItem value="idle">空闲 (Idle)</MenuItem>
-              <MenuItem value="active">活跃 (Active)</MenuItem>
-              <MenuItem value="busy">忙碌 (Busy)</MenuItem>
-              <MenuItem value="offline">离线 (Offline)</MenuItem>
-              <MenuItem value="handshake_failed">握手失败</MenuItem>
-              <MenuItem value="audit_failed">审计失败</MenuItem>
+              <MenuItem value="idle">{t('agents.status.idle')}</MenuItem>
+              <MenuItem value="active">{t('agents.status.active')}</MenuItem>
+              <MenuItem value="busy">{t('agents.status.busy')}</MenuItem>
+              <MenuItem value="offline">{t('agents.status.offline')}</MenuItem>
+              <MenuItem value="handshake_failed">{t('agents.status.handshakeFailed')}</MenuItem>
+              <MenuItem value="audit_failed">{t('agents.status.auditFailed')}</MenuItem>
             </Select>
           </FormControl>
           <FormControl sx={{ minWidth: { xs: "100%", md: 200 } }} size="small">
@@ -432,16 +432,16 @@ export const AgentAssetManager: React.FC = () => {
                     {agent.function_description}
                   </Typography>
                   <Typography variant="body2" color="primary" sx={{ fontSize: '0.8rem', mb: 1 }}>
-                    Assigned Goal: {agent.assigned_goal || t('agents.none')}
+                    {t('agents.assignedGoal')}: {agent.assigned_goal || t('agents.none')}
                   </Typography>
                   <Typography variant="caption" display="block" color="text.secondary">
-                    Inbox: {agent.inbox.length} | Receipts: {agent.receipts.length}
+                    {t('agents.inbox')}: {agent.inbox.length} | {t('agents.receipts')}: {agent.receipts.length}
                   </Typography>
                   <Divider sx={{ my: 2 }} />
                   <Box sx={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 2 }}>
                      <Box>
-                       <Typography variant="caption" display="block" color="text.secondary">Status</Typography>
-                       <Typography variant="body2">{agent.status}</Typography>
+                       <Typography variant="caption" display="block" color="text.secondary">{t('common.status')}</Typography>
+                       <Typography variant="body2">{t(`agents.status.${agent.status === 'handshake_failed' ? 'handshakeFailed' : agent.status === 'audit_failed' ? 'auditFailed' : agent.status}`)}</Typography>
                      </Box>
                      <Box>
                        <Typography variant="caption" display="block" color="text.secondary">{t('agents.registeredAt')}</Typography>

@@ -17,13 +17,17 @@ from zentex.web_console.contracts.memory import (
     EnhancedMemoryRecordItem,
     UpdateEnhancedMemoryRequest,
 )
-from zentex.web_console.dependencies import (
-    get_enhanced_memory_service,
-    get_consolidation_engine,
-)
 from zentex.web_console.services.memory import build_enhanced_memory_record_item
 
 logger = logging.getLogger(__name__)
+
+
+def _get_enhanced_memory_service(request: Request) -> object | None:
+    return getattr(request.app.state, "enhanced_memory_service", None)
+
+
+def _get_consolidation_engine(request: Request) -> object | None:
+    return getattr(request.app.state, "consolidation_engine", None)
 
 
 async def update_memory_record_management(
@@ -55,7 +59,7 @@ async def update_memory_record_management(
         HTTPException (500): If update operation fails
     """
     try:
-        service = get_enhanced_memory_service(request)
+        service = _get_enhanced_memory_service(request)
         if service is None:
             raise HTTPException(
                 status_code=503,
@@ -136,8 +140,7 @@ async def trigger_consolidation_cycle(request: Request) -> dict[str, str]:
         HTTPException (503): If consolidation engine unavailable
     """
     try:
-        from zentex.web_console.dependencies import get_consolidation_engine
-        consolidation_engine = get_consolidation_engine(request)
+        consolidation_engine = _get_consolidation_engine(request)
         if consolidation_engine is None:
             raise HTTPException(
                 status_code=503,
@@ -184,7 +187,7 @@ async def clear_memory_verification_flag(
         HTTPException (500): If operation fails
     """
     try:
-        service = get_enhanced_memory_service(request)
+        service = _get_enhanced_memory_service(request)
         if service is None:
             raise HTTPException(
                 status_code=503,

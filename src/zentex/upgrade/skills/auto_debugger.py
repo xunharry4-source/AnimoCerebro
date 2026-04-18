@@ -18,6 +18,7 @@ from typing import List, Optional
 from datetime import datetime
 
 from pydantic import BaseModel, Field
+from zentex.upgrade.skills.auto_debugger_llm_prompt import build_root_cause_prompt
 
 
 class RootCauseAnalysis(BaseModel):
@@ -356,31 +357,14 @@ class AutomatedRootCauseAnalyzer:
         failure_stage = getattr(failed_record, 'failure_stage', '')
         payload = getattr(failed_record, 'payload', {})
         
-        prompt = f"""
-Analyze the following upgrade failure and identify the root cause.
-
-FAILURE DETAILS:
-- Stage: {failure_stage}
-- Error: {failure_reason}
-- Isolated Scope: {', '.join(isolated_scope)}
-- Payload: {payload}
-
-Please provide:
-1. Immediate cause (what directly caused the failure)
-2. Root cause (underlying reason)
-3. Triggering condition (what triggered it)
-4. Confidence level (0.0-1.0)
-
-Output as JSON:
-{{
-    "immediate_cause": "...",
-    "root_cause": "...",
-    "triggering_condition": "...",
-    "confidence": 0.85
-}}
-"""
+        prompt_request = build_root_cause_prompt(
+            failure_stage=failure_stage,
+            failure_reason=failure_reason,
+            isolated_scope=isolated_scope,
+            payload=payload,
+        )
         
-        response = self._llm_service.generate(prompt)
+        response = self._llm_service.generate(prompt_request["prompt"])
         
         # Parse response (simplified)
         import json

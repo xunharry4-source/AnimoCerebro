@@ -1,5 +1,6 @@
 """NineQuestionExecutor — runs individual nine-questions via the bridge."""
 
+import copy
 import time
 from typing import Any
 
@@ -55,6 +56,9 @@ class NineQuestionExecutor:
         """
         responses: list[NineQuestionResponse] = []
         session_id = state_manager.get_state().session_id
+        rolling_context = dict(context)
+        rolling_context.setdefault("context_snapshot", {})
+        rolling_context.setdefault("nine_questions", {})
 
         for question in questions:
             # Step 1 — write cognitive-plugin inference transcript entry
@@ -77,7 +81,7 @@ class NineQuestionExecutor:
             start = time.perf_counter()
             try:
                 response: NineQuestionResponse = self._bridge.answer_nine_question(
-                    question, context
+                    question, rolling_context
                 )
                 duration_ms = (time.perf_counter() - start) * 1000.0
                 # Ensure duration is set (bridge may not fill it)
@@ -86,6 +90,7 @@ class NineQuestionExecutor:
 
                 # Step 3a — update state
                 state_manager.update_response(response)
+                self._merge_response_into_context(rolling_context, response)
 
                 # Step 3b — write state_write transcript entry
                 transcript.append(
@@ -129,3 +134,29 @@ class NineQuestionExecutor:
             responses.append(response)
 
         return responses
+
+    @staticmethod
+    def _merge_response_into_context(context: dict[str, Any], response: NineQuestionResponse) -> None:
+        """Propagate one question's durable outputs into later question inputs."""
+
+        def _deep_merge(target: dict[str, Any], updates: dict[str, Any]) -> None:
+            for key, value in updates.items():
+                if isinstance(value, dict) and isinstance(target.get(key), dict):
+                    _deep_merge(target[key], value)
+                else:
+                    target[key] = copy.deepcopy(value)
+
+        updates = dict(response.context_updates or {})
+        if not updates:
+            return
+
+        snapshot = context.setdefault("context_snapshot", {})
+        if isinstance(snapshot, dict):
+            snapshot_updates = {key: value for key, value in updates.items() if key != "nine_questions"}
+            _deep_merge(snapshot, snapshot_updates)
+
+        summaries = context.setdefault("nine_questions", {})
+        if isinstance(summaries, dict):
+            question_summaries = updates.get("nine_questions")
+            if isinstance(question_summaries, dict):
+                _deep_merge(summaries, question_summaries)

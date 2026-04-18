@@ -9,15 +9,22 @@ from __future__ import annotations
 import logging
 from typing import Any, Dict, List, Optional
 
-from fastapi import APIRouter, Depends, HTTPException, Query
+from fastapi import APIRouter, HTTPException, Query
 from pydantic import BaseModel, Field
-
-from zentex.learning.directions import LearningDirection
-from zentex.background_tasks import TaskStatus, TaskPriority
 
 logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/api/learning", tags=["learning"])
+
+
+def _web_console_async_learning_removed() -> HTTPException:
+    return HTTPException(
+        status_code=410,
+        detail={
+            "error": "web_console_async_learning_removed",
+            "message": "web-console 不再承接 learning async 调度；请从后台学习服务直接调用。",
+        },
+    )
 
 
 # ──────────────────────────────────────────────
@@ -90,22 +97,6 @@ class AvailableDirectionsResponse(BaseModel):
 
 
 # ──────────────────────────────────────────────
-# Dependency Injection
-# ──────────────────────────────────────────────
-
-def get_learning_async_service():
-    """
-    获取异步学习服务实例
-    
-    TODO: 实现完整的学习异步服务（类似反思的AsyncReflectionService）
-    这里先提供基础框架
-    """
-    # 目前学习系统还没有完整的异步服务实现
-    # 返回一个占位符，后续需要实现
-    return None
-
-
-# ──────────────────────────────────────────────
 # API Endpoints
 # ──────────────────────────────────────────────
 
@@ -118,52 +109,7 @@ async def start_learning_task(
     
     立即返回task_id，任务在后台执行。
     """
-    try:
-        # 验证direction
-        try:
-            direction = LearningDirection(request.direction)
-        except ValueError:
-            raise HTTPException(
-                status_code=400,
-                detail=f"Invalid direction: {request.direction}. "
-                       f"Valid values: {[d.value for d in LearningDirection]}"
-            )
-        
-        # 验证priority
-        try:
-            priority = TaskPriority[request.priority.upper()]
-        except KeyError:
-            raise HTTPException(
-                status_code=400,
-                detail=f"Invalid priority: {request.priority}. "
-                       f"Valid values: {[p.name for p in TaskPriority]}"
-            )
-        
-        # G16方向需要doc_url
-        if direction == LearningDirection.G16_TOOL_SELF_STUDY and not request.doc_url:
-            raise HTTPException(
-                status_code=400,
-                detail="G16_TOOL_SELF_STUDY direction requires doc_url"
-            )
-        
-        # TODO: 调用实际的学习异步服务
-        # 这里返回占位符响应
-        import uuid
-        task_id = str(uuid.uuid4())
-        
-        logger.info(f"Learning task started: {task_id} (direction={direction.value})")
-        
-        return StartLearningResponse(
-            task_id=task_id,
-            status="ACCEPTED",
-            message="Learning task started. Note: Full async implementation pending.",
-        )
-    
-    except HTTPException:
-        raise
-    except Exception as e:
-        logger.error(f"Failed to start learning task: {e}", exc_info=True)
-        raise HTTPException(status_code=500, detail=str(e))
+    raise _web_console_async_learning_removed()
 
 
 @router.get("/tasks/{task_id}/status", response_model=LearningTaskStatusResponse)
@@ -174,10 +120,7 @@ async def get_learning_task_status(task_id: str):
     TODO: 实现完整的状态查询
     """
     # Placeholder implementation: check if ID exists (it doesn't in this sandbox)
-    raise HTTPException(
-        status_code=404, 
-        detail=f"未找到学习任务: {task_id}，请检查任务 ID 是否正确。"
-    )
+    raise _web_console_async_learning_removed()
 
 
 @router.delete("/tasks/{task_id}")
@@ -188,10 +131,7 @@ async def cancel_learning_task(task_id: str):
     TODO: 实现任务取消
     """
     # Placeholder implementation: check if ID exists
-    raise HTTPException(
-        status_code=404, 
-        detail=f"无法取消任务：未找到学习任务 {task_id}"
-    )
+    raise _web_console_async_learning_removed()
 
 
 @router.get("/tasks", response_model=ListLearningTasksResponse)
@@ -205,13 +145,7 @@ async def list_learning_tasks(
     
     TODO: 实现任务列表
     """
-    # Stable placeholder: return empty list instead of 501
-    return ListLearningTasksResponse(
-        tasks=[],
-        total=0,
-        page=0,
-        page_size=limit
-    )
+    raise _web_console_async_learning_removed()
 
 
 @router.get("/stats", response_model=LearningServiceStatsResponse)
@@ -221,11 +155,7 @@ async def get_learning_service_stats():
     
     TODO: 实现统计信息
     """
-    # Stable placeholder: 503 if monitoring not initialized
-    raise HTTPException(
-        status_code=503,
-        detail="学习统计监控服务暂未上线，请稍后刷新"
-    )
+    raise _web_console_async_learning_removed()
 
 
 @router.get("/directions", response_model=AvailableDirectionsResponse)
@@ -235,13 +165,4 @@ async def get_available_directions():
     
     返回所有支持的学习方向及其描述。
     """
-    try:
-        from zentex.learning.engine import list_available_directions
-        
-        directions = list_available_directions()
-        
-        return AvailableDirectionsResponse(directions=directions)
-    
-    except Exception as e:
-        logger.error(f"Failed to get available directions: {e}", exc_info=True)
-        raise HTTPException(status_code=500, detail=str(e))
+    raise _web_console_async_learning_removed()

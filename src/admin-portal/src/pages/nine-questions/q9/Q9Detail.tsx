@@ -26,6 +26,8 @@ import Q9EvidencePanel from "../../../components/Q9EvidencePanel";
 import LLMTracePanel from "../../../components/LLMTracePanel";
 import NineQuestionIntroCard from "../../../components/NineQuestionIntroCard";
 import Q9DataTabs from "../../../components/Q9DataTabs";
+import NineQuestionIncompleteResultAlert from "../../../components/NineQuestionIncompleteResultAlert";
+import NineQuestionRerunButton from "../../../components/NineQuestionRerunButton";
 
 function resolveErrorGuidance(errMsg: string): { title: string; action: string } {
   if (errMsg.includes("No active session") || errMsg.includes("没有活动 session")) {
@@ -101,6 +103,7 @@ export default function Q9Detail() {
   const evidence = question.preprocessed_evidence as Q9PreprocessedEvidence;
   const inference = question.inference_result as Q9ActionPostureInferenceView;
   const llmTrace = question.llm_trace_payload;
+  const hasStructuredSnapshot = Boolean(evidence && inference);
 
   return (
     <Box data-testid="q9-detail-root" sx={{ display: "flex", flexDirection: "column", gap: 3 }}>
@@ -109,26 +112,36 @@ export default function Q9Detail() {
           <Typography variant="h4" fontWeight="bold" gutterBottom>{getQuestionDisplayLabel(qId)} 正式审计页</Typography>
           <Typography variant="body2" color="text.secondary">Self-Model Pressure & Action Posture Audit (Independent API GET /nine-questions/q9)</Typography>
         </Box>
-        <Button
-          component={RouterLink}
-          to={`/console/nine-questions/${qId}/test`}
-          variant="contained"
-          color="warning"
-          data-testid="q9-sandbox-nav-button"
-        >
-          进入独立沙箱测试
-        </Button>
+        <Stack direction="row" spacing={1}>
+          <NineQuestionRerunButton qId={qId} onCompleted={loadDetail} />
+          <Button
+            component={RouterLink}
+            to={`/console/nine-questions/${qId}/test`}
+            variant="contained"
+            color="warning"
+            data-testid="q9-sandbox-nav-button"
+          >
+            进入独立沙箱测试
+          </Button>
+        </Stack>
       </Stack>
 
 
-      {/* 问题介绍栏目 */}
-      <NineQuestionIntroCard questionId="q9" />
-
-      {/* Q9 实际数据详情 Tab 面板 */}
-      <Q9DataTabs 
-        evidence={evidence as any} 
-        inference={inference as any} 
-      />
+      {hasStructuredSnapshot ? (
+        <>
+          <NineQuestionIntroCard questionId="q9" />
+          <Q9DataTabs
+            evidence={evidence as any}
+            inference={inference as any}
+          />
+        </>
+      ) : (
+        <NineQuestionIncompleteResultAlert
+          questionId={qId}
+          result={question.result}
+          contextUpdates={question.context_updates}
+        />
+      )}
       <Card variant="outlined">
         <CardContent>
           <Stack direction="row" spacing={1} sx={{ mb: 2 }} useFlexGap flexWrap="wrap">
@@ -142,16 +155,14 @@ export default function Q9Detail() {
             结构化行动姿态证据 (Self-Model & Posture)
           </Typography>
 
-          {evidence ? (
+          {hasStructuredSnapshot ? (
             <Q9EvidencePanel
               evidence={evidence}
               inference={inference}
               providerName={question.provider_name || null}
               elapsedMs={llmTrace?.elapsed_ms || 0}
             />
-          ) : (
-            <Alert severity="warning">暂无结构化行动姿态证据。</Alert>
-          )}
+          ) : <Alert severity="warning">暂无结构化行动姿态证据。</Alert>}
         </CardContent>
       </Card>
       

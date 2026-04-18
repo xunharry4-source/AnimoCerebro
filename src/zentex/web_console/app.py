@@ -23,7 +23,6 @@ from zentex.foundation.specs.model_provider import (
     ModelProviderAuthError,
     ModelProviderConfigError,
     ModelProviderError,
-    ModelProviderSpec,
     ModelProviderParseError,
     ModelProviderRateLimitError,
     ModelProviderTimeoutError,
@@ -31,8 +30,6 @@ from zentex.foundation.specs.model_provider import (
 from zentex.plugins.contracts import BasePluginSpec, PluginHealthStatus, PluginLifecycleStatus
 from zentex.plugins.service import CognitiveToolRegistry
 from zentex.tasks.service import TaskManagementService, TaskAutoLoopScheduler
-from zentex.memory import EnhancedMemoryService, EpisodeGraphMemoryAdapter
-from zentex.memory import KuzuGraphMemoryClient
 from zentex.upgrade.service import (
     UpgradeAuditStore,
     UpgradeEvidenceService,
@@ -42,8 +39,6 @@ from zentex.upgrade.service import (
     UpgradeMemoryStore,
     PluginEvolutionRuntime,
 )
-from zentex.reflection.nine_question_scheduler import NineQuestionReflectionScheduler
-from zentex.reflection.service_facade import get_reflection_service
 from zentex.web_console.contracts.plugins import ManagedPluginRecord
 from zentex.web_console.router import api_router
 from zentex.web_console.routers.environment import router as environment_router
@@ -52,7 +47,6 @@ from zentex.web_console.routers.reflection_async import router as reflection_asy
 from zentex.web_console.routers.supervision import router as supervision_router
 from zentex.web_console.services.llm import compute_llm_status
 from zentex.plugins.service.utils import build_managed_plugin_record
-from zentex.plugins.boot_exports import build_default_provider_tools_model_provider
 
 
 logger = logging.getLogger(__name__)
@@ -120,8 +114,86 @@ def _normalize_503_detail(detail: object, request: Request) -> dict[str, object]
     }
 
 
+def _is_active_model_provider_record(record: object) -> bool:
+    lifecycle = getattr(record, "lifecycle_status", None)
+    if lifecycle is None and isinstance(record, dict):
+        lifecycle = record.get("lifecycle_status")
+    lifecycle_value = str(getattr(lifecycle, "value", lifecycle) or "").strip().lower()
+    if lifecycle_value != PluginLifecycleStatus.ACTIVE.value:
+        return False
+
+    feature_code = getattr(record, "feature_code", None)
+    if feature_code is None and isinstance(record, dict):
+        feature_code = record.get("feature_code")
+    feature_code_value = str(feature_code or "").strip().lower()
+    if feature_code_value.startswith("model_provider."):
+        return True
+
+    plugin = getattr(record, "plugin", None)
+    if plugin is None and isinstance(record, dict):
+        plugin = record.get("plugin")
+    return bool(
+        getattr(plugin, "provider_name", None)
+        and getattr(plugin, "api_base", None)
+        and getattr(plugin, "default_model", None)
+    )
+
+
 def _format_traceback(exc: BaseException) -> str:
     return "".join(traceback.format_exception(type(exc), exc, exc.__traceback__))
+
+
+def _looks_like_enhanced_memory_service(candidate: object) -> bool:
+    return all(
+        hasattr(candidate, attr)
+        for attr in (
+            "append_episode",
+            "append_audit_event",
+            "initialize_background",
+        )
+    )
+
+
+def _set_app_state_if_present(app: FastAPI, **services: object) -> None:
+    for key, value in services.items():
+        if value is not None:
+            setattr(app.state, key, value)
+
+
+def _resolve_enhanced_memory_service(
+    *,
+    enhanced_memory_service: Any,
+    runtime: Any,
+    default_runtime_root: Path,
+) -> Any:
+    if _looks_like_enhanced_memory_service(enhanced_memory_service):
+        return enhanced_memory_service
+    runtime_memory_store = getattr(runtime, "runtime_memory_store", None) if runtime is not None else None
+    if _looks_like_enhanced_memory_service(runtime_memory_store):
+        return runtime_memory_store
+    return __import__("zentex.memory", fromlist=["EnhancedMemoryService"]).EnhancedMemoryService(
+        semantic_store_path=default_runtime_root / "enhanced_semantic.jsonl",
+        procedural_store_path=default_runtime_root / "enhanced_procedural.jsonl",
+        episodic_store_path=default_runtime_root / "enhanced_episodic.jsonl",
+        management_store_path=default_runtime_root / "enhanced_management.json",
+        audit_store_path=default_runtime_root / "enhanced_memory_audit.jsonl",
+        episodic_sink=None,
+        episodic_recall_client=None,
+    )
+
+
+def _resolve_reflection_service(app: FastAPI) -> Any:
+    return getattr(app.state, "reflection_service", None)
+
+
+def _initialize_workspace_store(app: FastAPI) -> None:
+    try:
+        from zentex.web_console.storage.workspace import WorkspaceStore
+
+        workspace_db_path = Path(".zentex/workspaces.db")
+        app.state.workspace_store = WorkspaceStore(workspace_db_path)
+    except Exception as exc:
+        logger.warning("Failed to initialize workspace store: %s", exc)
 
 
 def _map_llm_exception(exc: ModelProviderError) -> tuple[int, dict[str, object]]:
@@ -188,7 +260,7 @@ def create_app(
     upgrade_memory_store: UpgradeMemoryStore | None = None,
     upgrade_evidence_service: UpgradeEvidenceService | None = None,
     upgrade_execution_service: UpgradeExecutionService | None = None,
-    enhanced_memory_service: EnhancedMemoryService | None = None,
+    enhanced_memory_service: Any | None = None,
     cli_service: Any | None = None,
     mcp_service: object | None = None,
     execution_registry: object | None = None,
@@ -308,25 +380,25 @@ def create_app(
         allow_methods=["*"],
         allow_headers=["*"],
     )
-    if cognitive_tool_registry is not None:
-        app.state.cognitive_tool_registry = cognitive_tool_registry
-    if plugin_registry is not None:
-        app.state.plugin_registry = plugin_registry
-    if weight_assembler is not None:
-        app.state.weight_assembler = weight_assembler
-    if plugin_service is not None:
-        app.state.plugin_service = plugin_service
+    _set_app_state_if_present(
+        app,
+        cognitive_tool_registry=cognitive_tool_registry,
+        plugin_registry=plugin_registry,
+        weight_assembler=weight_assembler,
+        plugin_service=plugin_service,
+    )
 
     # managed_plugin_records and plugin_feature_catalog MUST be provided by caller (fail-closed per Phase 6)
     # No auto-normalization or fallback allowed
     resolved_managed_plugin_records = dict(managed_plugin_records)
     has_active_model_provider = any(
-        isinstance(getattr(record, "plugin", None), ModelProviderSpec)
-        and getattr(getattr(record, "plugin", None), "lifecycle_status", None) == PluginLifecycleStatus.ACTIVE
+        _is_active_model_provider_record(record)
         for record in resolved_managed_plugin_records.values()
     )
     if not has_active_model_provider:
         try:
+            from zentex.plugins.boot_exports import build_default_provider_tools_model_provider
+
             default_model_provider = build_default_provider_tools_model_provider()
             resolved_managed_plugin_records[default_model_provider.plugin_id] = build_managed_plugin_record(
                 default_model_provider,
@@ -338,10 +410,7 @@ def create_app(
     else:
         for record in resolved_managed_plugin_records.values():
             plugin = getattr(record, "plugin", None)
-            if (
-                isinstance(plugin, ModelProviderSpec)
-                and getattr(plugin, "lifecycle_status", None) == PluginLifecycleStatus.ACTIVE
-            ):
+            if _is_active_model_provider_record(record):
                 app.state.active_model_provider = plugin
                 break
 
@@ -355,33 +424,19 @@ def create_app(
     # KuzuDB initialization moved to startup event for better performance
     app.state.kuzu_adapter = None 
 
-
-    resolved_enhanced_memory_service = (
-        enhanced_memory_service
-        if isinstance(enhanced_memory_service, EnhancedMemoryService)
-        else (
-            runtime.runtime_memory_store
-            if runtime is not None and isinstance(runtime.runtime_memory_store, EnhancedMemoryService)
-            else EnhancedMemoryService(
-                semantic_store_path=default_runtime_root / "enhanced_semantic.jsonl",
-                procedural_store_path=default_runtime_root / "enhanced_procedural.jsonl",
-                episodic_store_path=default_runtime_root / "enhanced_episodic.jsonl",
-                management_store_path=default_runtime_root / "enhanced_management.json",
-                audit_store_path=default_runtime_root / "enhanced_memory_audit.jsonl",
-                episodic_sink=None, # Will be attached during startup
-                episodic_recall_client=None,
-            )
-        )
+    resolved_enhanced_memory_service = _resolve_enhanced_memory_service(
+        enhanced_memory_service=enhanced_memory_service,
+        runtime=runtime,
+        default_runtime_root=default_runtime_root,
     )
     app.state.enhanced_memory_service = resolved_enhanced_memory_service
-    if session is not None:
-        app.state.session = session
-    if agent_manager is not None:
-        app.state.agent_manager = agent_manager
-    if agent_coordination_service is not None:
-        app.state.agent_coordination_service = agent_coordination_service
-    if task_service is not None:
-        app.state.task_service = task_service
+    _set_app_state_if_present(
+        app,
+        session=session,
+        agent_manager=agent_manager,
+        agent_coordination_service=agent_coordination_service,
+        task_service=task_service,
+    )
     if isinstance(upgrade_execution_service, UpgradeExecutionService):
         app.state.upgrade_execution_service = upgrade_execution_service
         app.state.upgrade_management_store = (
@@ -422,7 +477,7 @@ def create_app(
             upgrade_management_store
             if isinstance(upgrade_management_store, UpgradeManagementStore)
             else UpgradeManagementStore(
-                file_path=default_runtime_root / "upgrade_management.json",
+                file_path=default_runtime_root / "upgrade_management.sqlite3",
             )
         )
         app.state.plugin_evolution_runtime = (
@@ -489,22 +544,17 @@ def create_app(
             name="app-upgrade-backfill",
             daemon=True,
         ).start()
-    if cli_service is not None:
-        app.state.cli_service = cli_service
-    if mcp_service is not None:
-        app.state.mcp_service = mcp_service
-    if execution_registry is not None:
-        app.state.execution_registry = execution_registry
-    if simulation_engine is not None:
-        app.state.simulation_engine = simulation_engine
-    if interaction_mind_engine is not None:
-        app.state.interaction_mind_engine = interaction_mind_engine
-    if consolidation_engine is not None:
-        app.state.consolidation_engine = consolidation_engine
-    if reflection_service is not None:
-        app.state.reflection_service = reflection_service
-    if learning_service is not None:
-        app.state.learning_service = learning_service
+    _set_app_state_if_present(
+        app,
+        cli_service=cli_service,
+        mcp_service=mcp_service,
+        execution_registry=execution_registry,
+        simulation_engine=simulation_engine,
+        interaction_mind_engine=interaction_mind_engine,
+        consolidation_engine=consolidation_engine,
+        reflection_service=reflection_service,
+        learning_service=learning_service,
+    )
 
     if task_service is not None:
         task_auto_loop_enabled = str(os.getenv("ZENTEX_TASK_AUTO_LOOP_ENABLED", "1")).strip().lower() in {
@@ -535,6 +585,8 @@ def create_app(
             cluster_mode = os.environ.get("ZENTEX_CLUSTER_MODE", "false").lower() == "true"
             if not cluster_mode:
                 try:
+                    from zentex.memory import EpisodeGraphMemoryAdapter, KuzuGraphMemoryClient
+
                     logger.info("Initializing KuzuDB graph client...")
                     kuzu_db_path = default_runtime_root / "kuzu_db"
                     kuzu_db_path.parent.mkdir(parents=True, exist_ok=True)
@@ -562,36 +614,35 @@ def create_app(
                 logger.warning(f"Failed to stop task auto loop scheduler: {exc}")
 
     if runtime is not None:
-        scheduler = NineQuestionReflectionScheduler(
-            runtime=runtime,
-            reflection_service=get_reflection_service(),
-            upgrade_execution_service=getattr(app.state, "upgrade_execution_service", None),
-            interval_seconds=3600,
-        )
-        app.state.nine_question_reflection_scheduler = scheduler
+        from zentex.reflection.nine_question_scheduler import NineQuestionReflectionScheduler
 
-        @app.on_event("startup")
-        async def _start_nine_question_reflection_scheduler() -> None:
-            try:
-                scheduler.start()
-            except Exception as exc:
-                logger.warning(f"Failed to start nine-question reflection scheduler: {exc}")
+        resolved_reflection_service = _resolve_reflection_service(app)
+        if resolved_reflection_service is not None:
+            scheduler = NineQuestionReflectionScheduler(
+                runtime=runtime,
+                reflection_service=resolved_reflection_service,
+                upgrade_execution_service=getattr(app.state, "upgrade_execution_service", None),
+                interval_seconds=3600,
+            )
+            app.state.nine_question_reflection_scheduler = scheduler
 
-        @app.on_event("shutdown")
-        async def _stop_nine_question_reflection_scheduler() -> None:
-            try:
-                scheduler.stop()
-            except Exception as exc:
-                logger.warning(f"Failed to stop nine-question reflection scheduler: {exc}")
+            @app.on_event("startup")
+            async def _start_nine_question_reflection_scheduler() -> None:
+                try:
+                    scheduler.start()
+                except Exception as exc:
+                    logger.warning(f"Failed to start nine-question reflection scheduler: {exc}")
 
-    # Initialize workspace store
-    try:
-        from zentex.web_console.storage.workspace import WorkspaceStore
-        workspace_db_path = Path(".zentex/workspaces.db")
-        workspace_store = WorkspaceStore(workspace_db_path)
-        app.state.workspace_store = workspace_store
-    except Exception as e:
-        logger.warning(f"Failed to initialize workspace store: {e}")
+            @app.on_event("shutdown")
+            async def _stop_nine_question_reflection_scheduler() -> None:
+                try:
+                    scheduler.stop()
+                except Exception as exc:
+                    logger.warning(f"Failed to stop nine-question reflection scheduler: {exc}")
+        else:
+            logger.info("Skipping nine-question reflection scheduler: reflection_service not provided")
+
+    _initialize_workspace_store(app)
 
     # Paths that are LLM-guarded but have specific sub-paths excluded from the guard
     # (operational actions that don't require LLM — cancel, cleanup, etc.)

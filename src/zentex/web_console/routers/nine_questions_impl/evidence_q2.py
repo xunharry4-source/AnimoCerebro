@@ -149,6 +149,29 @@ def _extract_q2_inference_result(result_payload: object) -> Q2WhoAmIInferenceVie
     mission_boundary_raw = result_payload.get("mission_boundary")
 
     if not isinstance(role_profile_raw, dict) or not isinstance(mission_boundary_raw, dict):
+        role_profile_raw = result_payload.get("q2_role_profile")
+        mission_boundary_raw = result_payload.get("q2_mission_boundary")
+
+    if (not isinstance(role_profile_raw, dict) or not isinstance(mission_boundary_raw, dict)) and isinstance(
+        result_payload.get("context_updates"), dict
+    ):
+        context_updates = result_payload.get("context_updates") or {}
+        role_profile_raw = context_updates.get("q2_role_profile")
+        mission_boundary_raw = context_updates.get("q2_mission_boundary")
+
+    if (not isinstance(role_profile_raw, dict) or not isinstance(mission_boundary_raw, dict)) and isinstance(
+        result_payload.get("proposals"), list
+    ):
+        for proposal in result_payload.get("proposals") or []:
+            if not isinstance(proposal, dict):
+                continue
+            kind = str(proposal.get("kind") or "").strip()
+            if kind == "role_profile":
+                role_profile_raw = proposal
+            elif kind == "mission_continuity_boundary":
+                mission_boundary_raw = proposal
+
+    if not isinstance(role_profile_raw, dict) or not isinstance(mission_boundary_raw, dict):
         return None
 
     return Q2WhoAmIInferenceView(

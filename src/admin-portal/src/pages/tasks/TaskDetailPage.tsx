@@ -289,6 +289,30 @@ const TaskDetailPage: React.FC = () => {
             </CardContent>
           </Card>
         )}
+
+        {task.metadata && Object.keys(task.metadata).length > 0 && (
+          <Card>
+            <CardContent>
+              <Typography variant="h6" gutterBottom>
+                {t('tasks.workflowMetadata')}
+              </Typography>
+              <Stack spacing={1}>
+                <Typography variant="body2">
+                  <strong>{t('tasks.sourceModule')}:</strong> {String(task.metadata.source_module || '--')}
+                </Typography>
+                <Typography variant="body2">
+                  <strong>{t('tasks.workflowStatus')}:</strong> {String(task.metadata.workflow_status || '--')}
+                </Typography>
+                <Typography variant="body2">
+                  <strong>{t('tasks.workflowProgress')}:</strong> {String(task.metadata.workflow_progress ?? '--')}
+                </Typography>
+                <Typography variant="body2" sx={{ whiteSpace: 'pre-wrap', wordBreak: 'break-word' }}>
+                  <strong>{t('tasks.rawMetadata')}:</strong> {JSON.stringify(task.metadata, null, 2)}
+                </Typography>
+              </Stack>
+            </CardContent>
+          </Card>
+        )}
       </Stack>
     </Box>
   );

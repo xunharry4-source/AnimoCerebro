@@ -41,10 +41,6 @@ from zentex.web_console.contracts.plugins import (
 )
 from zentex.web_console.dependencies import (
     get_cognitive_tool_registry,
-    get_plugin_registry,
-    get_managed_plugin_records,
-    get_plugin_feature_catalog,
-    get_plugin_service,
 )
 from zentex.web_console.services.plugins import (
     build_cognitive_plugin_list,
@@ -55,6 +51,22 @@ from zentex.web_console.services.plugins import (
 )
 
 logger = logging.getLogger(__name__)
+
+
+def _get_plugin_service(request: Request) -> Any:
+    return getattr(request.app.state, "plugin_service", None)
+
+
+def _get_plugin_registry(request: Request) -> Any:
+    return getattr(request.app.state, "plugin_registry", None)
+
+
+def _get_managed_plugin_records(request: Request) -> Any:
+    return getattr(request.app.state, "managed_plugin_records", {}) or {}
+
+
+def _get_plugin_feature_catalog(request: Request) -> Any:
+    return getattr(request.app.state, "plugin_feature_catalog", None)
 
 
 # ========== Plugin State & Session Management ==========
@@ -106,10 +118,10 @@ async def get_or_create_plugin_session(request: Request) -> PluginSession:
             extra={"location": "web_console.plugin_commons", "action": "get_or_create_plugin_session"},
         )
         cognitive_registry = None
-    plugin_registry = get_plugin_registry(request)
-    managed_records = get_managed_plugin_records(request)
-    plugin_service = get_plugin_service(request)
-    feature_catalog = get_plugin_feature_catalog(request)
+    plugin_registry = _get_plugin_registry(request)
+    managed_records = _get_managed_plugin_records(request)
+    plugin_service = _get_plugin_service(request)
+    feature_catalog = _get_plugin_feature_catalog(request)
     
     if not plugin_service:
         raise HTTPException(
@@ -261,7 +273,21 @@ async def get_cognitive_plugin_detail(
     try:
         session = await get_or_create_plugin_session(request)
 
-        # cognitive_registry may be None (deprecated), but plugin_service should handle it
+        # cognitive_registry is None when get_cognitive_tool_registry raised
+        # NotImplementedError (deprecated).  Without a registry we cannot look up
+        # cognitive plugin detail — treat as not-found rather than crashing into 500.
+        if session.cognitive_registry is None:
+            logger.warning(
+                "plugin_commons.get_cognitive_plugin_detail: cognitive_registry is None "
+                "— cannot look up plugin '%s'; returning 404.",
+                plugin_id,
+                extra={"module": "web_console.plugin_commons", "action": "get_cognitive_plugin_detail"},
+            )
+            raise HTTPException(
+                status_code=404,
+                detail=f"Cognitive plugin not found: {plugin_id} (cognitive registry unavailable)",
+            )
+
         return build_cognitive_plugin_detail(
             session.cognitive_registry,
             session.plugin_registry,

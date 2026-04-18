@@ -36,6 +36,7 @@ from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional
 
 from zentex.common.database import BaseDAO, DatabaseConnection, LRUCache
+from zentex.tasks.schema import ensure_task_database_schema
 
 logger = logging.getLogger(__name__)
 
@@ -45,6 +46,7 @@ class TaskDAO(BaseDAO):
     
     def __init__(self, db: DatabaseConnection, cache: Optional[LRUCache] = None):
         super().__init__(db, cache)
+        ensure_task_database_schema(db)
         self.table_name = "tasks"
     
     def _get_id_column(self) -> str:

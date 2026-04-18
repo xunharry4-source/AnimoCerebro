@@ -2,79 +2,147 @@
 
 ## Overview / 概述
 
-This module implements metacognitive reflection capabilities for the Zentex system. It provides interfaces, models, persistence, and service layers for self-reflection, error analysis, and cognitive improvement.
+`zentex.reflection` 负责系统的反思、异步反思调度、反思质量评估，以及由反思触发的 prompt 升级建议。
 
-本模块为Zentex系统实现元认知反思能力。它为自我反思、错误分析和认知改进提供接口、模型、持久化和服务层。
+当前模块已经不只是“生成反思文本”，还承担：
 
-## Module Independence / 模块独立性
+- 异步任务化反思执行
+- 反思任务监控与重试
+- 9 问有效性反思
+- prompt 升级合同注册与发现
+- 与统一任务管理的桥接
 
-**This is an independent functional module.** / **这是一个独立的功能模块。**
+关键文件：
 
-- Modules should NOT directly access internal implementation files / 其他模块不应直接访问内部实现文件
-- All interactions must go through the unified public interface defined in `__init__.py` / 所有交互必须通过 `__init__.py` 中定义的统一公共接口进行
-- Internal files are implementation details / 内部文件是实现细节
+- [service.py](/Users/harry/Documents/git/AnimoCerebro-V2/src/zentex/reflection/service.py)
+- [async_service.py](/Users/harry/Documents/git/AnimoCerebro-V2/src/zentex/reflection/async_service.py)
+- [llm_generator.py](/Users/harry/Documents/git/AnimoCerebro-V2/src/zentex/reflection/llm_generator.py)
+- [prompt_upgrade_registry.py](/Users/harry/Documents/git/AnimoCerebro-V2/src/zentex/reflection/prompt_upgrade_registry.py)
+- [nine_question_effectiveness.py](/Users/harry/Documents/git/AnimoCerebro-V2/src/zentex/reflection/nine_question_effectiveness.py)
 
-## Public Interface / 公共接口
+## Current Runtime Structure / 当前运行结构
 
-The unified public interface is exposed through `__init__.py`:
+### 1. Synchronous Reflection / 同步反思
 
-通过 `__init__.py` 暴露的统一公共接口：
+同步反思由：
 
-```python
-from zentex.reflection import (
-    # Core interface / 核心接口
-    ReflectionInterface,
-    
-    # Models / 模型
-    ReflectionRequest,
-    ReflectionResponse,
-    ReflectionError,
-    ReflectionType,
-    
-    # Service / 服务
-    ReflectionService,
-    
-    # Persistence / 持久化
-    ReflectionPersistence,
-    
-    # Errors / 错误
-    ReflectionError,
-    ReflectionValidationError,
-)
-```
+- `ReflectionService`
+- `ReflectionInterface`
+- `ReflectionManager`
 
-## Core Components / 核心组件
+这一层负责：
 
-### Interface Layer / 接口层
+- 反思对象构建
+- 持久化
+- 查询与治理
 
-- **ReflectionInterface** (`interface.py`): Main reflection interface definition / 主反思接口定义
+### 2. Async Reflection / 异步反思
 
-### Service Layer / 服务层
+[async_service.py](/Users/harry/Documents/git/AnimoCerebro-V2/src/zentex/reflection/async_service.py) 是当前异步执行主入口。
 
-- **ReflectionService** (`service.py`): Implements reflection service logic / 实现反思服务逻辑
+它负责：
 
-### Models / 模型
+- 提交反思任务
+- worker 执行
+- 重试和超时
+- monitor / queue 监控
+- 状态查询与取消
 
-- **ReflectionRequest** (`models.py`): Reflection request model / 反思请求模型
-- **ReflectionResponse** (`models.py`): Reflection response model / 反思响应模型
-- **ReflectionType** (`models.py`): Types of reflection / 反思类型枚举
+并且现在已经会自动同步到统一任务管理：
 
-### Persistence / 持久化
+- 提交时同步统一任务
+- 运行中同步状态
+- 完成/失败/取消时同步状态
 
-- **ReflectionPersistence** (`persistence.py`): Handles reflection data persistence / 处理反思数据持久化
+桥接点是：
 
-## Usage Example / 使用示例
+- [tasks/integration/workflow_bridge.py](/Users/harry/Documents/git/AnimoCerebro-V2/src/zentex/tasks/integration/workflow_bridge.py)
 
-```python
-from zentex.reflection import ReflectionService, ReflectionInterface
+## LLM Prompt Layer / LLM 提问层
 
-# Use only the public interface / 仅使用公共接口
-service = ReflectionService()
-result = await service.reflect(query="What went wrong?")
-```
+反思模块的 LLM 提问统一在：
 
-## Design Principle / 设计原则
+- [llm_prompt.py](/Users/harry/Documents/git/AnimoCerebro-V2/src/zentex/reflection/llm_prompt.py)
 
-⚠️ **IMPORTANT**: Other modules must import from `zentex.reflection` only, never from `zentex.reflection.interface` or other internal paths.
+执行编排在：
 
-⚠️ **重要提示**：其他模块只能从 `zentex.reflection` 导入，绝不能从 `zentex.reflection.interface` 或其他内部路径导入。
+- [llm_generator.py](/Users/harry/Documents/git/AnimoCerebro-V2/src/zentex/reflection/llm_generator.py)
+
+约束如下：
+
+- prompt 内容只能在 `llm_prompt.py` 维护
+- `llm_generator.py` 只负责调用、解析、校验
+- `service.py` 不直接内联 prompt
+
+## Prompt Upgrade Integration / Prompt 升级接入
+
+这是近期最重要的变化之一。
+
+### 1. Unified Prompt Contract Registry / 统一 prompt 合同注册表
+
+[prompt_upgrade_registry.py](/Users/harry/Documents/git/AnimoCerebro-V2/src/zentex/reflection/prompt_upgrade_registry.py) 现在统一发现两类合同：
+
+- 9 问 prompt 合同
+- 非 9 问模块 prompt 合同
+
+当前 registry 可统一发现：
+
+- `q1` 到 `q9`
+- `tasks.*`
+- `upgrade.*`
+- `cognition.*`
+- `memory.consolidation.*`
+
+### 2. Nine Question Effectiveness / 9 问有效性反思
+
+[nine_question_effectiveness.py](/Users/harry/Documents/git/AnimoCerebro-V2/src/zentex/reflection/nine_question_effectiveness.py) 现在不再只依赖 9 问专用入口，而是走统一 registry 取 prompt upgrade contract。
+
+这意味着：
+
+- 反思层不再硬编码每问合同
+- 同一套机制后续可以复用到非 9 问模块
+
+## 9 问 Prompt 升级链路 / Nine-Question Prompt Upgrade Flow
+
+当前链路是：
+
+1. 反思发现某一问提示词有效性不足
+2. 通过 registry 取到对应 `service.py` 提供的合同
+3. 生成 `prompt_optimization` 类型升级请求
+4. 下游 upgrade 模块只允许改目标 `llm_prompt.py`
+5. 仅允许改 editable sections
+6. 必须通过 guardrail 校验，不能偏离原本题意
+
+## Persistence / 持久化
+
+反思模块包含普通持久化与异步任务跟踪两部分。
+
+普通反思数据：
+
+- 由反思持久化层负责
+
+异步任务状态：
+
+- 由 async service 的 monitor / queue 管理
+- 同时同步进 `zentex.tasks`
+
+## Integration Contract / 集成边界
+
+其他模块接入 reflection 时应遵守：
+
+- 普通反思走 `ReflectionService` / `ReflectionInterface`
+- 后台任务化反思走 `AsyncReflectionService`
+- 不直接改内部 monitor / queue
+- 不绕过 registry 手工构造 prompt 升级合同
+
+## What Changed Recently / 最近更新
+
+- `reflection` 异步任务已接入统一任务管理
+- 状态同步覆盖提交、运行、完成、失败、取消
+- 9 问反思触发的 prompt 升级已走统一 registry
+- registry 已统一覆盖 9 问与非 9 问模块 prompt 合同
+
+## Limitations / 当前限制
+
+- `reflection` 目前接入统一任务管理的是“任务级状态”，不是把所有内部子过程都拆成独立任务
+- prompt 升级触发主要完善在 9 问场景；非 9 问模块虽然已有合同，但还未全部接入自动触发策略

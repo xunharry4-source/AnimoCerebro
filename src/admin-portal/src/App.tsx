@@ -11,6 +11,7 @@ import {
 } from "@mui/material";
 import { Link as RouterLink, Navigate, Route, Routes, useLocation } from "react-router-dom";
 
+import ErrorBoundary from "./components/ErrorBoundary";
 import RealtimeDashboard from "./pages/dashboard/RealtimeDashboard";
 import MemoryReasoning from "./pages/dashboard/MemoryReasoning";
 import SimulationExplorer from "./pages/dashboard/SimulationExplorer";
@@ -158,7 +159,9 @@ export default function App() {
   useEffect(() => {
     const loadLlmStatus = async () => {
       try {
-        const status = await fetchLlmStatus(true);
+        // Startup should only verify baseline provider availability/configuration.
+        // Live probes are better triggered explicitly in diagnostic pages.
+        const status = await fetchLlmStatus(false);
         setLlmStatus(status);
         setLlmStatusError(null);
       } catch (err) {
@@ -217,7 +220,8 @@ export default function App() {
             {llmStatus.hint ? ` ${llmStatus.hint}` : ""}
           </Alert>
         ) : null}
-        <Routes>
+        <ErrorBoundary>
+          <Routes>
           <Route path="/" element={<Navigate to="/console/dashboard" replace />} />
           <Route path="/console/dashboard" element={<RealtimeDashboard />} />
           <Route path="/console/nine-questions" element={<NineQuestionsReport />} />
@@ -273,6 +277,7 @@ export default function App() {
           <Route path="/console/workspaces" element={<WorkspacesPage />} />
           <Route path="*" element={<Navigate to="/console/dashboard" replace />} />
         </Routes>
+        </ErrorBoundary>
       </Box>
     </Box>
   );

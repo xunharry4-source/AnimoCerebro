@@ -68,6 +68,11 @@ class UpgradeRecordItem(BaseModel):
     updated_at: datetime
     started_at: datetime | None = None
     finished_at: datetime | None = None
+    payload: dict[str, object] = Field(default_factory=dict)
+    prompt_target_file: str | None = None
+    prompt_upgrade_sections: list[str] = Field(default_factory=list)
+    prompt_upgrade_notes: list[str] = Field(default_factory=list)
+    prompt_upgrade_summary: str | None = None
     can_cancel: bool = False
     can_cleanup_failed_candidate: bool = False
 

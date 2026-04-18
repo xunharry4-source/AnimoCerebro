@@ -5,8 +5,12 @@ from typing import Any, Dict
 
 from fastapi import HTTPException, Request
 
-from zentex.kernel import BrainTranscriptEntryType
 from zentex.web_console.contracts.interventions import InterventionRequest
+
+
+def _entry_type_value(entry: Any) -> str:
+    entry_type = getattr(entry, "entry_type", None)
+    return str(getattr(entry_type, "value", entry_type) or "")
 
 
 def _serialize_nine_question_state(runtime_source: Any) -> Dict[str, Any]:
@@ -49,7 +53,7 @@ async def post_intervention(
         (
             entry
             for entry in reversed(transcript_store.get_entries_snapshot())
-            if entry.entry_type == BrainTranscriptEntryType.HUMAN_INTERVENTION_APPLIED
+            if _entry_type_value(entry) == "human_intervention_applied"
             and isinstance(entry.payload, dict)
             and entry.payload.get("idempotency_key") == payload.idempotency_key
         ),

@@ -61,9 +61,14 @@ from zentex.learning.directions import LearningDirection, DirectionManager
 ## Core Components / 核心组件
 
 - **LearningEngine** (`engine.py`): Main learning engine / 主学习引擎
-- **G16Pipeline** (`g16_pipeline.py`): G16 learning pipeline / G16学习管道
+- **G16Pipeline** (`g16_pipeline.py`): G16 learning pipeline — delegates ALL input preprocessing to `llm_prompt.py` / G16学习管道 — 所有输入预处理委托给 `llm_prompt.py`
 - **DspyAdapter** (`dspy_adapter.py`): DSPy framework adapter / DSPy框架适配器
 - **LearningSandbox** (`sandbox.py`): Sandboxed learning environment / 沙盒学习环境
+- **llm_prompt.py**: **唯一负责组装 LLM / DSPy 输入和内容预处理的文件。**
+  - `build_g16_distillation_inputs()` — 预处理 `doc_url` + `feedback_history`，输出直接传入 `ToolDistillationModule`。
+  - `build_g16_critic_inputs()` — 预处理 critic 的四个输入字段，截断过长 schema / test_cases。
+  - `summarise_feedback_for_next_attempt()` — 将多轮沙箱反馈合并为精简的历史记录，防止 feedback 无限累积膨胀。
+  - 所有字符截断规则（doc_url 上限 2048、feedback 保留最近 5 条、schema 上限 2000）集中在此文件维护。
 
 ## Usage Example / 使用示例
 
@@ -81,3 +86,15 @@ pipeline = G16Pipeline()
 ⚠️ **IMPORTANT**: Other modules should import from specific learning submodules, not directly from file paths when possible.
 
 ⚠️ **重要提示**：其他模块应从特定的学习子模块导入，尽可能不直接从文件路径导入。
+
+## LLM Prompt 分离约定 / LLM Prompt Separation Contract
+
+本模块采用"提问与执行分离"原则：
+
+| 文件 | 职责 | 禁止事项 |
+|------|------|---------|
+| `llm_prompt.py` | 预处理 doc_url / feedback / schema / test_cases，生成 DSPy 输入 dict | 禁止调用 LLM 或 DSPy |
+| `g16_pipeline.py` | 编排 Voyager 循环、调用 DSPy module、写 transcript | 禁止内联字符串截断或 prompt 拼接 |
+| `engine.py` | 学习方向路由、预算检查 | 禁止直接构建 LLM 输入 |
+
+**任何需要修改发给 LLM/DSPy 的输入内容、截断上限、feedback 保留策略，只改 `llm_prompt.py`，不改其他文件。**

@@ -19,6 +19,7 @@ from zentex.foundation.specs.model_provider import (
     ModelProviderSpec,
 )
 from zentex.llm.service import LLMService
+from zentex.cognition.llm_prompt import build_interaction_mind_prompt
 
 
 class StaleWriteError(RuntimeError):
@@ -181,11 +182,7 @@ class InteractionMindEngine:
         )
 
         try:
-            prompt = (
-                "Infer the other party's intent, knowledge gaps, communication fit, "
-                "and misunderstanding signals. Return JSON with keys model, "
-                "knowledge_gap, communication_fit, misunderstanding_signals."
-            )
+            prompt = build_interaction_mind_prompt()["prompt"]
             translated_context = self._translate_context(context)
             if self._llm_service is not None:
                 payload = self._llm_service.generate_json(

@@ -12,8 +12,6 @@ from zentex.learning.service import (
     describe_direction,
     run_learning_cycle,
 )
-from zentex.kernel import BrainTranscriptEntryType
-from zentex.llm import get_llm_service
 from zentex.web_console.contracts.learning import (
     LearningDirectionPlanItem,
     LearningHistoryRow,
@@ -21,7 +19,12 @@ from zentex.web_console.contracts.learning import (
     LearningRedlinesSummary,
     LearningRunCycleResponse,
 )
-from zentex.web_console.dependencies import get_active_model_provider, get_transcript_store
+from zentex.web_console.dependencies import get_transcript_store
+
+
+def _entry_type_value(entry: Any) -> str:
+    entry_type = getattr(entry, "entry_type", None)
+    return str(getattr(entry_type, "value", entry_type) or "")
 
 
 def build_learning_plan() -> LearningPlanResponse:
@@ -68,7 +71,7 @@ def build_learning_history(store: Any, *, limit: int = 200) -> List[LearningHist
     for entry in reversed(store.get_entries_snapshot()):
         if entry.session_id != LEARNING_SESSION_ID:
             continue
-        if entry.entry_type != BrainTranscriptEntryType.LEARNING_ENGINE_EVENT:
+        if _entry_type_value(entry) != "learning_engine_event":
             continue
         if not isinstance(entry.payload, dict):
             continue
@@ -103,14 +106,6 @@ async def execute_learning_cycle(
     extra_context: Optional[Dict[str, Any]] = None,
 ) -> LearningRunCycleResponse:
     store = get_transcript_store(request)
-    provider = None
-    llm_service = None
-    model_provider_key = None
-    if not dry_run:
-        llm_service = get_llm_service()
-        provider = get_active_model_provider(request)
-        if isinstance(provider, str) and provider.strip():
-            model_provider_key = provider.strip()
 
     default_budget = int(os.environ.get("ZENTEX_LEARNING_BUDGET_TOKENS", "32000"))
     budget = ReasoningBudget(remaining_tokens=default_budget)
@@ -118,9 +113,9 @@ async def execute_learning_cycle(
     outcome = await run_learning_cycle(
         store=store,
         direction=direction,
-        provider=provider,
-        llm_service=llm_service,
-        model_provider_key=model_provider_key,
+        provider=None,
+        llm_service=None,
+        model_provider_key=None,
         budget=budget,
         load_factor=load_factor,
         dry_run=dry_run,

@@ -39,7 +39,7 @@ import {
 type InterventionAction = "pause" | "resume";
 
 type OverviewPayload = {
-  runtime: {
+  runtime?: {
     runtime_id: string;
     active_session_ids: string[];
     transcript_store_status: string;
@@ -47,7 +47,7 @@ type OverviewPayload = {
     degraded_mode: boolean;
     manual_confirmation_required: boolean;
   };
-  session: {
+  session?: {
     session_id: string;
     turn_count: number;
     active_goal_titles: string[];
@@ -55,19 +55,19 @@ type OverviewPayload = {
     current_reasoning_mode: string | null;
     degraded_flags: string[];
   } | null;
-  working_memory: {
+  working_memory?: {
     active_focus_titles?: string[];
     current_focus_summary?: string | null;
   };
-  metacognition: {
+  metacognition?: {
     scheduler_status?: string;
     current_reasoning_mode?: string;
   };
-  living_self_model: {
+  living_self_model?: {
     load_level?: string;
     reasoning_posture?: string;
   };
-  temporal_agenda: {
+  temporal_agenda?: {
     review_now_item_titles?: string[];
     overdue_item_titles?: string[];
   };
@@ -112,7 +112,7 @@ type InteractionMindState = {
   brain_scope: string;
   snapshot_version: number;
   clarification_mode: boolean;
-  model: {
+  model?: {
     entity_id: string;
     role_hint: string;
     current_goal_hypothesis: string;
@@ -122,21 +122,21 @@ type InteractionMindState = {
     trust_estimate: number;
     last_updated_at: string;
   };
-  knowledge_gap: {
+  knowledge_gap?: {
     entity_id: string;
     known_topics: string[];
     uncertain_topics: string[];
     likely_missing_topics: string[];
     confidence: number;
   };
-  communication_fit: {
+  communication_fit?: {
     entity_id: string;
     preferred_style: "brief" | "structured" | "evidence_first" | "conclusion_first";
     detail_level: "low" | "medium" | "high";
     clarification_bias: number;
     risk_of_misunderstanding: number;
   };
-  misunderstanding_signals: Array<{
+  misunderstanding_signals?: Array<{
     signal_id: string;
     entity_id: string;
     signal_type: string;
@@ -284,7 +284,9 @@ export default function RealtimeDashboard() {
       throw new Error("interaction_mind_failed");
     }
     const payload = (await response.json()) as { state: InteractionMindState };
-    setInteractionMind(payload.state);
+    // 如果 state 是空对象或没有 entity_id，视为无效数据
+    const stateData = payload.state && payload.state.entity_id ? payload.state : null;
+    setInteractionMind(stateData);
   };
 
   const refreshDashboard = async (): Promise<void> => {
@@ -429,7 +431,7 @@ export default function RealtimeDashboard() {
     if (overview === null) {
       return null;
     }
-    if (overview.runtime.degraded_mode) {
+    if (overview.runtime?.degraded_mode) {
       return text.runtimeDegraded;
     }
     if ((overview.session?.degraded_flags || []).length > 0) {
@@ -440,9 +442,9 @@ export default function RealtimeDashboard() {
     return null;
   }, [overview, text, inlineSeparator, locale]);
 
-  const activeFocusTitles = overview?.working_memory.active_focus_titles || [];
-  const overdueItemTitles = overview?.temporal_agenda.overdue_item_titles || [];
-  const reviewNowItemTitles = overview?.temporal_agenda.review_now_item_titles || [];
+  const activeFocusTitles = overview?.working_memory?.active_focus_titles || [];
+  const overdueItemTitles = overview?.temporal_agenda?.overdue_item_titles || [];
+  const reviewNowItemTitles = overview?.temporal_agenda?.review_now_item_titles || [];
   const weightProfile = overview?.weight_profile;
   const criticalConflicts = conflicts.filter((conflict) => conflict.severity === "critical");
   const severeMisunderstandingSignals = (interactionMind?.misunderstanding_signals || []).filter(
@@ -626,7 +628,7 @@ export default function RealtimeDashboard() {
                 {t("dashboard.focusSummary")}
               </Typography>
               <Typography variant="body1" data-testid="focus-summary">
-                {overview?.working_memory.current_focus_summary
+                {overview?.working_memory?.current_focus_summary
                   ? formatLocalizedToken(overview.working_memory.current_focus_summary, locale)
                   : t("dashboard.focusFallback")}
               </Typography>
@@ -649,15 +651,15 @@ export default function RealtimeDashboard() {
               </Typography>
               <Stack direction="row" spacing={1} flexWrap="wrap" useFlexGap sx={{ mb: 2 }}>
                 <Chip
-                  label={`${t("dashboard.loadLevel")}: ${formatLocalizedToken(overview?.living_self_model.load_level, locale)}`}
-                  color={getLoadChipColor(overview?.living_self_model.load_level)}
+                  label={`${t("dashboard.loadLevel")}: ${formatLocalizedToken(overview?.living_self_model?.load_level, locale)}`}
+                  color={getLoadChipColor(overview?.living_self_model?.load_level)}
                 />
                 <Chip
-                  label={`${t("dashboard.reasoningPosture")}: ${formatLocalizedToken(overview?.living_self_model.reasoning_posture, locale)}`}
+                  label={`${t("dashboard.reasoningPosture")}: ${formatLocalizedToken(overview?.living_self_model?.reasoning_posture, locale)}`}
                   variant="outlined"
                 />
                 <Chip
-                  label={`${t("dashboard.schedulerStatus")}: ${formatLocalizedToken(overview?.metacognition.scheduler_status, locale)}`}
+                  label={`${t("dashboard.schedulerStatus")}: ${formatLocalizedToken(overview?.metacognition?.scheduler_status, locale)}`}
                   color="info"
                   variant="outlined"
                 />
@@ -666,7 +668,7 @@ export default function RealtimeDashboard() {
                 {t("dashboard.reasoningMode")}: {formatLocalizedToken(overview?.session?.current_reasoning_mode, locale)}
               </Typography>
               <Typography variant="body2" color="text.secondary">
-                {t("dashboard.runtime")}: {overview?.runtime.runtime_id || "--"}
+                {t("dashboard.runtime")}: {overview?.runtime?.runtime_id || "--"}
               </Typography>
             </CardContent>
           </Card>
@@ -722,27 +724,27 @@ export default function RealtimeDashboard() {
             ) : (
               <Stack spacing={1.5}>
                 <Typography variant="body2">
-                  {t("dashboard.interactionRole")}: {interactionMind.model.role_hint}
+                  {t("dashboard.interactionRole")}: {interactionMind.model ? interactionMind.model.role_hint : "--"}
                 </Typography>
                 <Typography variant="body2">
-                  {t("dashboard.interactionGoal")}: {interactionMind.model.current_goal_hypothesis}
+                  {t("dashboard.interactionGoal")}: {interactionMind.model ? interactionMind.model.current_goal_hypothesis : "--"}
                 </Typography>
                 <Stack direction="row" spacing={1} alignItems="center" flexWrap="wrap" useFlexGap>
                   <Typography variant="body2">{t("dashboard.communicationStyle")}:</Typography>
                   <Chip
                     size="small"
                     color={interactionMind.clarification_mode ? "warning" : "info"}
-                    label={formatLocalizedToken(interactionMind.communication_fit.preferred_style, locale)}
+                    label={formatLocalizedToken(interactionMind.communication_fit ? interactionMind.communication_fit.preferred_style : "unknown", locale)}
                   />
                 </Stack>
                 <Typography variant="body2">
-                  {t("dashboard.knowledgeDepth")}: {formatLocalizedToken(interactionMind.model.knowledge_depth, locale)}
+                  {t("dashboard.knowledgeDepth")}: {formatLocalizedToken(interactionMind.model ? interactionMind.model.knowledge_depth : "unknown", locale)}
                 </Typography>
                 <Typography variant="body2">
-                  {t("dashboard.misunderstandingRisk")}: {Math.round(interactionMind.communication_fit.risk_of_misunderstanding * 100)}%
+                  {t("dashboard.misunderstandingRisk")}: {Math.round((interactionMind.communication_fit ? interactionMind.communication_fit.risk_of_misunderstanding : 0) * 100)}%
                 </Typography>
                 <Stack direction="row" spacing={1} flexWrap="wrap" useFlexGap>
-                  {interactionMind.misunderstanding_signals.map((signal) => (
+                  {(interactionMind.misunderstanding_signals || []).map((signal) => (
                     <Chip
                       key={signal.signal_id}
                       size="small"

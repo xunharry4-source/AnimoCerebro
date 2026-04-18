@@ -19,7 +19,13 @@ from .helpers import _coerce_string_list, _normalize_ratio
 
 
 def _extract_q9_snapshot_dict(context_payload: dict[str, Any]) -> dict[str, Any]:
-    raw = context_payload.get("q1_q8") or context_payload.get("q1_q8_snapshot") or {}
+    raw = (
+        context_payload.get("q9_q1_q8_snapshot")
+        or context_payload.get("q1_q8")
+        or context_payload.get("q1_q8_snapshot")
+        or context_payload.get("nine_questions")  # 实际写入的 key
+        or {}
+    )
     if isinstance(raw, dict):
         return {str(k): v for k, v in raw.items() if str(k).strip()}
     return {}
@@ -50,8 +56,18 @@ def _normalize_ratio(value: object) -> float:
 
 def _build_q9_preprocessed_evidence(context_payload: dict[str, Any]) -> Q9PreprocessedEvidence | None:
     snapshot = _extract_q9_snapshot_dict(context_payload)
-    self_model_raw = context_payload.get("living_self_model") or context_payload.get("self_model") or {}
-    budget_raw = context_payload.get("reasoning_budget") or context_payload.get("budget") or {}
+    self_model_raw = (
+        context_payload.get("q9_self_model")
+        or context_payload.get("living_self_model")
+        or context_payload.get("self_model")
+        or {}
+    )
+    budget_raw = (
+        context_payload.get("q9_reasoning_budget")
+        or context_payload.get("reasoning_budget")
+        or context_payload.get("budget")
+        or {}
+    )
     drift_raw = context_payload.get("confidence_drift_indicator") or {}
     if not isinstance(self_model_raw, dict):
         self_model_raw = {}
@@ -59,6 +75,13 @@ def _build_q9_preprocessed_evidence(context_payload: dict[str, Any]) -> Q9Prepro
         budget_raw = {}
     if not isinstance(drift_raw, dict):
         drift_raw = {}
+
+    if isinstance(self_model_raw, dict) and "cognitive_load" in self_model_raw and "current_cognitive_load" not in self_model_raw:
+        self_model_raw = {
+            "current_cognitive_load": self_model_raw.get("cognitive_load"),
+            "current_state": {"stability_level": self_model_raw.get("stability_level")},
+            "recent_weaknesses": self_model_raw.get("recent_weaknesses"),
+        }
 
     recent_weaknesses_raw = self_model_raw.get("recent_weaknesses") or []
     recent_weaknesses: list[Q9RecentWeaknessView] = []
@@ -123,7 +146,11 @@ def _build_q9_preprocessed_evidence(context_payload: dict[str, Any]) -> Q9Prepro
 def _extract_q9_preprocessed_evidence(context_payload: object) -> Q9PreprocessedEvidence | None:
     if not isinstance(context_payload, dict):
         return None
-    if not any(key in context_payload for key in ("q1_q8", "q1_q8_snapshot", "living_self_model", "self_model", "reasoning_budget", "budget")):
+    if not any(key in context_payload for key in (
+        "q8_objective_profile", "q8_objective_and_queue", "nine_questions",
+        "living_self_model", "self_model", "reasoning_budget", "budget",
+        "q1_q8", "q1_q8_snapshot", "q9_q1_q8_snapshot", "q9_self_model", "q9_reasoning_budget",
+    )):
         return None
     return _build_q9_preprocessed_evidence(context_payload)
 
@@ -131,17 +158,59 @@ def _extract_q9_preprocessed_evidence(context_payload: object) -> Q9Preprocessed
 def _extract_q9_inference_result(result_payload: object) -> Q9ActionPostureInferenceView | None:
     if not isinstance(result_payload, dict):
         return None
-    payload = result_payload.get("q9_action_posture_profile") if isinstance(result_payload.get("q9_action_posture_profile"), dict) else result_payload
-    required = {"evaluation_style", "risk_tolerance", "action_rhythm", "confirmation_strategy", "evolution_direction"}
-    if not isinstance(payload, dict) or not required.issubset(payload.keys()):
-        return None
-    return Q9ActionPostureInferenceView(
-        evaluation_style=str(payload.get("evaluation_style") or ""),
-        risk_tolerance=str(payload.get("risk_tolerance") or ""),
-        action_rhythm=str(payload.get("action_rhythm") or ""),
-        confirmation_strategy=str(payload.get("confirmation_strategy") or ""),
-        evolution_direction=str(payload.get("evolution_direction") or ""),
+    aggregate_raw = result_payload.get("q9_action_posture_profile") or {}
+    # Q9 plugin 写入的是三个嵌套对象
+    eval_prof = (
+        result_payload.get("evaluation_profile")
+        or result_payload.get("q9_evaluation_profile")
+        or (aggregate_raw.get("evaluation_profile") if isinstance(aggregate_raw, dict) else None)
+        or {}
     )
+    evol_prof = (
+        result_payload.get("evolution_profile")
+        or result_payload.get("q9_evolution_profile")
+        or (aggregate_raw.get("evolution_profile") if isinstance(aggregate_raw, dict) else None)
+        or {}
+    )
+    esc_prof = (
+        result_payload.get("escalation_profile")
+        or result_payload.get("q9_escalation_profile")
+        or (aggregate_raw.get("escalation_profile") if isinstance(aggregate_raw, dict) else None)
+        or {}
+    )
+    if not isinstance(eval_prof, dict):
+        eval_prof = {}
+    if not isinstance(evol_prof, dict):
+        evol_prof = {}
+    if not isinstance(esc_prof, dict):
+        esc_prof = {}
 
+    # 若三个 profile 都为空，返回 None
+    if not eval_prof and not evol_prof and not esc_prof:
+        return None
 
+    # 将嵌套结构映射到 Q9ActionPostureInferenceView 的扁平字段
+    evaluation_style = str(eval_prof.get("evaluation_style") or "")
+    risk_tolerance = str(eval_prof.get("risk_level") or evol_prof.get("risk_threshold") or "")
+    action_rhythm = str(
+        eval_prof.get("action_rhythm_hint")
+        or (result_payload.get("q9_posture_baseline") or {}).get("evaluation_profile", {}).get("action_rhythm_hint")
+        or eval_prof.get("conservative_mode_triggered", "")
+    )
+    # confirmation_strategy: 从 escalation_profile 提取
+    confirm_conds = esc_prof.get("confirmation_required_conditions") or []
+    confirmation_strategy = "; ".join(_coerce_string_list(confirm_conds)) if confirm_conds else ""
+    # evolution_direction: 从 evolution_profile 提取
+    allowed_dirs = evol_prof.get("allowed_directions") or []
+    evolution_direction = "; ".join(_coerce_string_list(allowed_dirs)) if allowed_dirs else ""
 
+    if not any((evaluation_style, risk_tolerance, confirmation_strategy, evolution_direction)):
+        return None
+
+    return Q9ActionPostureInferenceView(
+        evaluation_style=evaluation_style,
+        risk_tolerance=risk_tolerance,
+        action_rhythm=action_rhythm,
+        confirmation_strategy=confirmation_strategy,
+        evolution_direction=evolution_direction,
+    )

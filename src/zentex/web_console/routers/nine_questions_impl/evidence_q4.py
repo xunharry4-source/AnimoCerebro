@@ -17,6 +17,12 @@ from .helpers import _coerce_string_list
 def _extract_q4_preprocessed_evidence(context_payload: object) -> Q4PreprocessedEvidence | None:
     if not isinstance(context_payload, dict):
         return None
+    permission_profile = context_payload.get("q4_permission_profile")
+    permission_profile = permission_profile if isinstance(permission_profile, dict) else {}
+    active_execution_domains = _coerce_string_list(context_payload.get("q4_active_execution_domains"))
+    capability_baseline = context_payload.get("q4_capability_baseline")
+    capability_baseline = capability_baseline if isinstance(capability_baseline, dict) else {}
+
     q1_context = {
         "scene_model": context_payload.get("q1_scene_model") if isinstance(context_payload.get("q1_scene_model"), dict) else {},
         "uncertainty_profile": context_payload.get("q1_uncertainty_profile")
@@ -55,6 +61,9 @@ def _extract_q4_preprocessed_evidence(context_payload: object) -> Q4Preprocessed
             if isinstance(context_payload.get("q3_unified_asset_inventory"), dict)
             else None
         ),
+        "permission_profile": permission_profile,
+        "active_execution_domains": active_execution_domains,
+        "capability_baseline": capability_baseline,
         "resource_evaluation": context_payload.get("q3_resource_evaluation")
         if isinstance(context_payload.get("q3_resource_evaluation"), dict)
         else {},
@@ -70,6 +79,9 @@ def _extract_q4_preprocessed_evidence(context_payload: object) -> Q4Preprocessed
             q3_inventory["connected_agents"],
             q3_inventory["activated_strategy_patches"],
             q3_inventory["accessible_workspace_zones"],
+            q3_inventory["permission_profile"],
+            q3_inventory["active_execution_domains"],
+            q3_inventory["capability_baseline"],
             q3_inventory["resource_evaluation"],
         )
     ):
@@ -96,6 +108,5 @@ def _extract_q4_inference_result(result_payload: object) -> Q4WhatCanIDoInferenc
         actionable_space=_coerce_string_list(payload.get("actionable_space")),
         executable_strategies=_coerce_string_list(payload.get("executable_strategies")),
     )
-
 
 

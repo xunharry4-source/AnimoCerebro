@@ -186,8 +186,13 @@ const CreditScoreGauge = ({ score }: { score: number }) => {
   );
 };
 
-const TASK_COLUMNS: (handleCancel: (id: string, title: string) => void, handleRetry: (id: string, title: string) => void, t: (key: string) => string) => GridColDef[] = 
-  (handleCancel, handleRetry, t) => [
+const TASK_COLUMNS: (
+  handleCancel: (id: string, title: string) => void,
+  handleRetry: (id: string, title: string) => void,
+  t: (key: string) => string,
+  locale: string,
+) => GridColDef[] =
+  (handleCancel, handleRetry, t, locale) => [
   { field: 'task_id', headerName: t("agents.tasks.taskId"), width: 120 },
   { field: 'title', headerName: t("agents.tasks.taskName"), width: 200, flex: 1 },
   { 
@@ -236,13 +241,13 @@ const TASK_COLUMNS: (handleCancel: (id: string, title: string) => void, handleRe
     field: 'started_at', 
     headerName: t("agents.tasks.startTime"), 
     width: 180,
-    valueFormatter: (params: any) => params.value ? new Date(params.value).toLocaleString('zh-CN') : '-'
+    valueFormatter: (params: any) => params.value ? new Date(params.value).toLocaleString(locale) : '-'
   },
   { 
     field: 'completed_at', 
     headerName: t("agents.tasks.completionTime"), 
     width: 180,
-    valueFormatter: (params: any) => params.value ? new Date(params.value).toLocaleString('zh-CN') : '-'
+    valueFormatter: (params: any) => params.value ? new Date(params.value).toLocaleString(locale) : '-'
   },
   {
     field: 'actions',
@@ -284,9 +289,10 @@ const TASK_COLUMNS: (handleCancel: (id: string, title: string) => void, handleRe
 ];
 
 export default function AgentDetail() {
-  const { t } = useTranslation();
+  const { t, i18n } = useTranslation();
   const { agentId } = useParams<{ agentId: string }>();
   const navigate = useNavigate();
+  const locale = i18n.language || "zh-CN";
   
   const [agent, setAgent] = useState<AgentDetail | null>(null);
   const [loading, setLoading] = useState(true);
@@ -555,13 +561,13 @@ export default function AgentDetail() {
             <Grid size={{ xs: 12, sm: 6, md: 3 }}>
               <Typography variant="caption" color="text.secondary">{t("agents.registeredAt")}</Typography>
               <Typography variant="body2">
-                {new Date(agent.registered_at).toLocaleString('zh-CN')}
+                {new Date(agent.registered_at).toLocaleString(locale)}
               </Typography>
             </Grid>
             <Grid size={{ xs: 12, sm: 6, md: 3 }}>
               <Typography variant="caption" color="text.secondary">{t("agents.lastActive")}</Typography>
               <Typography variant="body2">
-                {agent.last_ping_at ? new Date(agent.last_ping_at).toLocaleString('zh-CN') : t("agents.unknown")}
+                {agent.last_ping_at ? new Date(agent.last_ping_at).toLocaleString(locale) : t("agents.unknown")}
               </Typography>
             </Grid>
             <Grid size={{ xs: 12, sm: 6, md: 3 }}>
@@ -777,7 +783,7 @@ export default function AgentDetail() {
                   tabValue === 2 ? failedTasks :
                   historyTasks
                 }
-                columns={TASK_COLUMNS(handleCancelTask, handleRetryTask, t)}
+                columns={TASK_COLUMNS(handleCancelTask, handleRetryTask, t, locale)}
                 pageSizeOptions={[10, 20, 50]}
                 initialState={{
                   pagination: { paginationModel: { pageSize: 10 } },

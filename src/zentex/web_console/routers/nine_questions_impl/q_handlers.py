@@ -18,7 +18,6 @@ from uuid import uuid4
 
 from fastapi import HTTPException, Request
 
-from zentex.kernel import NineQuestionState
 from zentex.web_console.contracts.nine_questions import (
     NineQuestionsRunResponse,
     NineQuestionReportItem,
@@ -255,84 +254,83 @@ async def execute_all_nine_questions(
     session_id: str,
     state: NineQuestionState,
 ) -> NineQuestionsRunResponse:
+    """Execute all nine questions Q1→Q9 via the kernel bootstrap.
+
+    Delegates to ``facade.ensure_nine_questions_bootstrap(force=True)`` which
+    runs in a thread-pool executor so the event loop is never blocked.  After
+    execution the state is persisted and Q8 tasks are synced to task_service.
     """
-    Execute all nine questions end-to-end
-    
-    Orchestrates the complete nine-question reasoning chain:
-    Q1 → Q2 → ... → Q9
-    
-    Args:
-        request: FastAPI request
-        session_id: Session ID
-        state: Current nine-question state
-    
-    Returns:
-        Execution result with status and trace IDs
-    """
+    import asyncio
+
+    from .q_commons import (
+        get_nine_question_state,
+        get_question_snapshot_map,
+        _persist_kernel_nine_question_state,
+    )
+
     facade = get_kernel_service_facade(request)
-    event_bus = facade.get_event_bus()
     main_trace_id = str(uuid4())
-    
+
     try:
-        trace_ids = {}
-        question_results = {}
-        
-        # Execute each question in sequence
-        for question_id in ["q1", "q2", "q3", "q4", "q5", "q6", "q7", "q8", "q9"]:
-            try:
-                logger.info(f"Executing {question_id}...")
-                
-                # Prepare test payload with empty context/result for now
-                # In production, this would be populated from kernel state
-                test_payload = {
-                    "context": {},
-                    "result": {},
-                }
-                
-                # Run question test
-                result = await run_question_test(
-                    request=request,
-                    question_id=question_id,
-                    session_id=session_id,
-                    state=state,
-                    test_payload=test_payload,
-                )
-                
-                trace_id = result.get("trace_id", str(uuid4()))
-                trace_ids[question_id] = trace_id
-                question_results[question_id] = {
-                    "status": result.get("status", "success"),
-                    "trace_id": trace_id,
-                }
-                
-            except Exception as e:
-                logger.error(f"Error executing {question_id}: {e}", exc_info=True)
-                trace_id = str(uuid4())
-                trace_ids[question_id] = trace_id
-                question_results[question_id] = {
-                    "status": "error",
-                    "trace_id": trace_id,
-                    "error": str(e),
-                }
-        
-        # Publish completion event
-        await event_bus.publish(
-            event_type="nine_questions_execution_completed",
-            payload={
-                "session_id": session_id,
-                "trace_id": main_trace_id,
-                "question_results": question_results,
-            }
+        # Run the blocking bootstrap off the event loop with a hard 90-second cap.
+        # force=True so that an already-completed session can be fully re-run.
+        await asyncio.wait_for(
+            asyncio.to_thread(
+                facade.ensure_nine_questions_bootstrap, session_id, force=True
+            ),
+            timeout=90.0,
         )
-        
-        return NineQuestionsRunResponse(
-            started=True,
-            trace_id=main_trace_id,
-            refresh_reason="all_nine_questions_executed",
-            snapshot_version=1,
-            revision=state.revision if state else 0,
+    except asyncio.TimeoutError:
+        raise HTTPException(
+            status_code=503,
+            detail={
+                "error": "nine_question_bootstrap_timeout",
+                "message": "九问引导超时（90s），请稍后重试。",
+            },
         )
-    
-    except Exception as e:
-        logger.error(f"Nine questions execution failed: {e}", exc_info=True)
+    except ValueError as exc:
+        raise HTTPException(
+            status_code=503,
+            detail=f"Kernel session unavailable for nine-question bootstrap: {exc}",
+        ) from exc
+    except Exception as exc:
+        logger.error("Nine questions bootstrap failed: %s", exc, exc_info=True)
         raise HTTPException(status_code=500, detail="Nine questions execution failed")
+
+    # Force-sync kernel's fresh in-memory state into the persistent store.
+    fresh_kernel_state = facade.get_nine_question_state(session_id)
+    if fresh_kernel_state and get_question_snapshot_map(fresh_kernel_state):
+        await _persist_kernel_nine_question_state(request, session_id, fresh_kernel_state)
+
+    updated_state = await get_nine_question_state(request, session_id)
+    snapshot_map = get_question_snapshot_map(updated_state)
+
+    # Sync Q8 results to task_service (same as the HTTP route handler does).
+    try:
+        from .route_handlers import _sync_q8_tasks_to_task_service
+        await _sync_q8_tasks_to_task_service(request, session_id, snapshot_map)
+    except Exception as exc:
+        logger.error(
+            "Q8 task sync failed after execute_all_nine_questions for session %s: %s",
+            session_id,
+            exc,
+            exc_info=True,
+        )
+
+    snapshot_version = int(
+        updated_state.get("snapshot_version", len(snapshot_map))
+        if isinstance(updated_state, dict)
+        else getattr(updated_state, "snapshot_version", len(snapshot_map))
+    )
+    revision = int(
+        updated_state.get("revision", 0)
+        if isinstance(updated_state, dict)
+        else getattr(updated_state, "revision", 0)
+    )
+    return NineQuestionsRunResponse(
+        started=bool(snapshot_map),
+        trace_id=main_trace_id,
+        refresh_reason="all_nine_questions_executed",
+        snapshot_version=snapshot_version,
+        revision=revision,
+    )

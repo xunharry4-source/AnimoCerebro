@@ -1,5 +1,0 @@
-{
-  "plugin_id": "weight_conservative",
-  "name": "Conservative Weight",
-  "description": "Apply conservative weighting strategy."
-}

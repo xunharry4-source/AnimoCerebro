@@ -63,11 +63,6 @@ class NineQuestionStateManager(ABC):
         pass
 
     @abstractmethod
-    async def get_latest_populated_state(self) -> NineQuestionStateSnapshot | None:
-        """Get the most recently updated state that already contains snapshots."""
-        pass
-
-    @abstractmethod
     async def update_state(
         self,
         session_id: str,

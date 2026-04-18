@@ -12,6 +12,35 @@ from zentex.kernel.cognition_flow.models import (
 )
 
 UTC = timezone.utc
+QUESTION_SUMMARY_KEYS = {
+    "q1": "我在哪",
+    "q2": "我是谁",
+    "q3": "我有什么",
+    "q4": "我能做什么",
+    "q5": "我被允许做什么",
+    "q6": "我即使能做也不该做什么",
+    "q7": "我还可以做什么",
+    "q8": "我现在应该做什么",
+    "q9": "我应该如何行动",
+}
+
+
+def _isolate_question_payload(question_id: str, payload: dict) -> dict:
+    isolated = copy.deepcopy(payload)
+    own_summary_key = QUESTION_SUMMARY_KEYS.get(question_id)
+
+    if own_summary_key and isinstance(isolated.get("nine_questions"), dict):
+        own_value = isolated["nine_questions"].get(own_summary_key)
+        isolated["nine_questions"] = {own_summary_key: own_value} if own_value is not None else {}
+
+    nested_context_updates = isolated.get("context_updates")
+    if own_summary_key and isinstance(nested_context_updates, dict):
+        nested_summaries = nested_context_updates.get("nine_questions")
+        if isinstance(nested_summaries, dict):
+            own_value = nested_summaries.get(own_summary_key)
+            nested_context_updates["nine_questions"] = {own_summary_key: own_value} if own_value is not None else {}
+
+    return isolated
 
 
 class NineQuestionStateManager:
@@ -80,9 +109,25 @@ class NineQuestionStateManager:
                 }
                 for qid, r in self._state.responses.items()
             }
+            question_snapshots = {
+                qid: {
+                    "tool_id": r.tool_id or f"nine_questions.{qid}",
+                    "summary": r.answer,
+                    "confidence": r.confidence,
+                    "result": _isolate_question_payload(qid, r.result_payload) if r.result_payload else responses_dict[qid],
+                    "context_updates": _isolate_question_payload(qid, r.context_updates) if r.context_updates else {},
+                    "execution_context": copy.deepcopy(r.execution_context) if r.execution_context else {},
+                    "execution_result": copy.deepcopy(r.execution_result) if r.execution_result else {},
+                    "llm_trace_payload": copy.deepcopy(r.llm_trace_payload) if r.llm_trace_payload else {},
+                    "trace_id": r.trace_id or f"{qid}:no-trace",
+                    "timestamp": r.timestamp or self._state.last_updated_at,
+                }
+                for qid, r in self._state.responses.items()
+            }
             return {
                 "session_id": self._state.session_id,
                 "bootstrap_status": str(self._state.bootstrap_status),
                 "last_updated_at": self._state.last_updated_at,
                 "responses": responses_dict,
+                "question_snapshots": question_snapshots,
             }

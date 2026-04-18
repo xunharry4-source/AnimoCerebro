@@ -9,9 +9,6 @@ from fastapi import Depends
 
 logger = logging.getLogger(__name__)
 
-from zentex.cognition.simulation import CounterfactualSimulationEngine
-from zentex.cognition.social_mind import InteractionMindEngine
-from zentex.memory import ConsolidationEngine
 from zentex.safety.service import CognitiveConflictEngine
 from zentex.web_console.contracts.runtime import (
     CognitiveAgendaPayload,
@@ -109,7 +106,7 @@ def get_cognitive_conflicts(
 @router.get("/simulations/{goal_id}", response_model=SimulationBundlePayload)
 def get_simulation_bundle(
     goal_id: str,
-    simulation_engine: Annotated[CounterfactualSimulationEngine, Depends(get_simulation_engine)],
+    simulation_engine: Annotated[Any, Depends(get_simulation_engine)],
 ) -> SimulationBundlePayload:
     if simulation_engine is None:
         raise HTTPException(
@@ -137,7 +134,7 @@ def get_simulation_bundle(
 @router.get("/interaction-mind/{entity_id}", response_model=InteractionMindPayload)
 def get_interaction_mind(
     entity_id: str,
-    interaction_mind_engine: Annotated[InteractionMindEngine, Depends(get_interaction_mind_engine)],
+    interaction_mind_engine: Annotated[Any, Depends(get_interaction_mind_engine)],
 ) -> InteractionMindPayload:
     if interaction_mind_engine is None:
         error_msg = "Interaction mind engine 未初始化。"
@@ -155,7 +152,7 @@ def get_interaction_mind(
 
 @router.get("/memory/consolidation-cycles", response_model=ConsolidationCyclesPayload)
 def get_consolidation_cycles(
-    consolidation_engine: Annotated[ConsolidationEngine, Depends(get_consolidation_engine)],
+    consolidation_engine: Annotated[Any, Depends(get_consolidation_engine)],
 ) -> ConsolidationCyclesPayload:
     cycles = consolidation_engine.get_recent_cycles()
     return ConsolidationCyclesPayload(
@@ -165,7 +162,7 @@ def get_consolidation_cycles(
 
 @router.post("/memory/consolidation/trigger")
 def trigger_consolidation(
-    consolidation_engine: Annotated[ConsolidationEngine, Depends(get_consolidation_engine)],
+    consolidation_engine: Annotated[Any, Depends(get_consolidation_engine)],
 ) -> dict[str, str]:
     """Manual trigger for memory consolidation via Web Console (Sub-function 59 gap)."""
     cycle_id = consolidation_engine.submit_cycle(trigger_reason="manual_web_console")

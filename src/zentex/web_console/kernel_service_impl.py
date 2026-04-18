@@ -105,6 +105,20 @@ class DefaultKernelServiceFacade(KernelServiceFacade):
             return kernel_service.get_transcript_store()
         raise RuntimeError("Kernel service not available - transcript store cannot be accessed")
 
+    def get_session_transcript_store(self, session_id: str) -> Any:
+        """Get transcript storage for a specific kernel session."""
+        kernel_service = self._get_kernel_service()
+        if kernel_service and hasattr(kernel_service, "get_session_transcript_store"):
+            return kernel_service.get_session_transcript_store(session_id)
+        return None
+
+    def get_nine_question_audit_store(self, session_id: str) -> Any:
+        """Get the session-scoped nine-question audit transcript store."""
+        kernel_service = self._get_kernel_service()
+        if kernel_service and hasattr(kernel_service, "get_nine_question_audit_store"):
+            return kernel_service.get_nine_question_audit_store(session_id)
+        return None
+
     def get_plugin_registry(self) -> Any:
         """Get plugin registry from plugins.service"""
         # Plugin registry is now managed by plugins.service, not kernel
@@ -146,6 +160,34 @@ class DefaultKernelServiceFacade(KernelServiceFacade):
         if kernel:
             return kernel.list_active_sessions()
         return []
+
+    def get_session_meta(self, session_id: str) -> dict | None:
+        """Get kernel session metadata."""
+        kernel = self._get_kernel_service()
+        if kernel and hasattr(kernel, "get_session_meta"):
+            return kernel.get_session_meta(session_id)
+        return None
+
+    def create_kernel_session(self, user_id: str = "") -> str:
+        """Create a kernel-backed session."""
+        kernel = self._get_kernel_service()
+        if kernel and hasattr(kernel, "create_session"):
+            return str(kernel.create_session(user_id=user_id))
+        raise RuntimeError("Kernel service not available - cannot create kernel session")
+
+    def ensure_nine_questions_bootstrap(self, session_id: str, *, force: bool = False) -> Any:
+        """Run kernel nine-question bootstrap."""
+        kernel = self._get_kernel_service()
+        if kernel and hasattr(kernel, "ensure_nine_questions_bootstrap"):
+            return kernel.ensure_nine_questions_bootstrap(session_id, force=force)
+        raise RuntimeError("Kernel service not available - cannot bootstrap nine questions")
+
+    def rerun_nine_questions_from(self, session_id: str, question_id: str) -> Any:
+        """Re-run a single nine-question and its downstream chain."""
+        kernel = self._get_kernel_service()
+        if kernel and hasattr(kernel, "rerun_nine_questions_from"):
+            return kernel.rerun_nine_questions_from(session_id, question_id)
+        raise RuntimeError("Kernel service not available - cannot rerun single nine question")
 
     def get_session_state(self, session_id: str) -> dict | None:
         """Get comprehensive session state"""

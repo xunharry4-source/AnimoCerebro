@@ -8,8 +8,6 @@ from uuid import uuid4
 
 from fastapi import HTTPException, Request
 
-from zentex.foundation.specs.model_provider import ModelProviderCallerContext, ModelProviderSpec
-from zentex.plugins.contracts import PluginLifecycleStatus
 from typing import Any, Dict, List, Optional, Tuple
 from zentex.web_console.contracts.model_feature_tests import (
     ModelFeatureHistoryItem,
@@ -19,11 +17,7 @@ from zentex.web_console.contracts.model_feature_tests import (
     ModelFeatureStatsResponse,
     ModelFeatureTestCatalogItem,
 )
-from zentex.web_console.dependencies import get_active_session, get_runtime, get_transcript_store, get_task_service
-from zentex.web_console.services.llm import (
-    enforce_llm_available,
-    resolve_active_model_provider_from_records,
-)
+from zentex.web_console.dependencies import get_active_session, get_runtime
 
 
 MODEL_FEATURE_TEST_LOG_PATH = Path(".zentex/runtime/model_feature_test_logs.jsonl")
@@ -77,33 +71,7 @@ def _iter_log() -> List[Dict[str, Any]]:
 
 
 def list_model_feature_tests() -> List[ModelFeatureTestCatalogItem]:
-    return [
-        ModelFeatureTestCatalogItem(
-            feature_id="model_provider.generate_json",
-            display_name="ModelProvider JSON",
-            description="Calls the active model provider and expects STRICT JSON output.",
-            group="provider",
-            supports_simulation=False,
-            enabled=True,
-        ),
-        ModelFeatureTestCatalogItem(
-            feature_id="tasks.decompose_mission",
-            display_name="Task Decompose",
-            description="Runs LLMTaskDecomposerPlugin.decompose_mission() using the active model provider.",
-            group="tasks",
-            supports_simulation=False,
-            enabled=True,
-        ),
-    ]
-
-
-def _resolve_active_model_provider(request: Request) -> ModelProviderSpec:
-    records = getattr(request.app.state, "managed_plugin_records", None)
-    if isinstance(records, dict):
-        provider = resolve_active_model_provider_from_records(records)
-        if provider is not None:
-            return provider
-    raise HTTPException(status_code=503, detail="No active model provider plugin is bound.")
+    return []
 
 
 def _ensure_session(request: Request, runtime: Any) -> Any:
@@ -121,89 +89,46 @@ def _ensure_session(request: Request, runtime: Any) -> Any:
 
 
 def invoke_model_feature_test(request: Request, payload: ModelFeatureInvokeRequest) -> ModelFeatureInvokeResponse:
-    enforce_llm_available(request)
     runtime = getattr(request.app.state, "runtime", None)
     session = _ensure_session(request, runtime)
     if session is not None and not hasattr(session, "advance_turn"):
         session = None
-    provider = _resolve_active_model_provider(request)
-    transcript_store = get_transcript_store(request)
 
     started_at = datetime.now(timezone.utc)
     test_run_id = uuid4().hex
     trace_id = str(payload.caller_context.get("trace_id") or f"model-feature:{test_run_id}")
-
-    ok = False
-    result: Dict[str, Any] = {}
-    summary = ""
-
-    try:
-        if payload.feature_id == "model_provider.generate_json":
-            caller_context = ModelProviderCallerContext(
-                source_module=str(payload.caller_context.get("source_module") or "zentex.web_console.tests"),
-                invocation_phase=str(payload.caller_context.get("invocation_phase") or "model_feature_test"),
-                question_driver_refs=list(payload.caller_context.get("question_driver_refs") or []),
-                decision_id=str(payload.caller_context.get("decision_id") or "") or None,
-                trace_id=trace_id,
-            )
-            result = provider.generate_json(
-                prompt=payload.prompt,
-                context=payload.context,
-                caller_context=caller_context,
-            )
-        elif payload.feature_id == "tasks.decompose_mission":
-            mission_title = str(payload.context.get("mission_title") or "Manual Mission")
-            mission_content = str(payload.context.get("mission_content") or payload.prompt)
-            task_service = get_task_service(request)
-            if task_service and hasattr(task_service, 'decomposer') and task_service.decomposer:
-                subtasks = task_service.decomposer.decompose_mission(mission_title, mission_content)
-                result = {"subtasks": subtasks}
-            else:
-                raise HTTPException(status_code=503, detail="Task decomposer service not available")
-        else:
-            raise HTTPException(status_code=404, detail=f"Unknown model feature test: {payload.feature_id}")
-        ok = True
-        summary = "ok"
-    except HTTPException:
-        raise
-    except Exception as exc:
-        ok = False
-        summary = f"error: {exc}"
-        result = {"error": str(exc)}
-    finally:
-        finished_at = datetime.now(timezone.utc)
-        usage_in, usage_out = _extract_usage_tokens(result)
-        if usage_in == 0 and usage_out == 0:
-            usage_in = _estimate_token_count(payload.prompt)
-        record = {
-            "test_run_id": test_run_id,
-            "feature_id": payload.feature_id,
-            "started_at": started_at.astimezone(timezone.utc).isoformat(),
-            "finished_at": finished_at.astimezone(timezone.utc).isoformat(),
-            "ok": ok,
-            "summary": summary,
-            "trace_id": trace_id,
-            "prompt": payload.prompt,
-            "context": payload.context,
-            "caller_context": payload.caller_context,
-            "input_tokens": usage_in,
-            "output_tokens": usage_out,
-            "total_tokens": usage_in + usage_out,
-            "result": result,
-        }
-        _append_log(record)
-        if session is not None:
-            session.advance_turn(
-                {
-                    "turn_id": f"model-feature-test-{test_run_id}",
-                    "trace_id": trace_id,
-                    "timestamp": finished_at,
-                    "status": "completed" if ok else "failed",
-                    "model_feature_test": record,
-                }
-            )
-
-    return ModelFeatureInvokeResponse(ok=ok, test_run_id=test_run_id, result=result)
+    result = {
+        "error": "web_console_llm_invocation_removed",
+        "message": "web-console 不再承接任何 LLM 或间接 LLM 功能测试调用。",
+    }
+    record = {
+        "test_run_id": test_run_id,
+        "feature_id": payload.feature_id,
+        "started_at": started_at.astimezone(timezone.utc).isoformat(),
+        "finished_at": datetime.now(timezone.utc).astimezone(timezone.utc).isoformat(),
+        "ok": False,
+        "summary": result["error"],
+        "trace_id": trace_id,
+        "prompt": payload.prompt,
+        "context": payload.context,
+        "caller_context": payload.caller_context,
+        "input_tokens": 0,
+        "output_tokens": 0,
+        "total_tokens": 0,
+        "result": result,
+    }
+    _append_log(record)
+    if session is not None:
+        session.advance_turn(
+            {
+                "turn_id": f"model-feature-test-{test_run_id}",
+                "trace_id": trace_id,
+                "timestamp": datetime.now(timezone.utc),
+                "status": "rejected",
+                "model_feature_test": record,
+            }
+        )
+    raise HTTPException(status_code=410, detail=result)
 
 
 def get_model_feature_history(feature_id: str, *, limit: int = 20) -> List[ModelFeatureHistoryItem]:

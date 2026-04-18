@@ -24,6 +24,8 @@ import Q8EvidencePanel from "../../../components/Q8EvidencePanel";
 import LLMTracePanel from "../../../components/LLMTracePanel";
 import NineQuestionIntroCard from "../../../components/NineQuestionIntroCard";
 import Q8DataTabs from "../../../components/Q8DataTabs";
+import NineQuestionIncompleteResultAlert from "../../../components/NineQuestionIncompleteResultAlert";
+import NineQuestionRerunButton from "../../../components/NineQuestionRerunButton";
 
 function resolveErrorGuidance(errMsg: string): { title: string; action: string } {
   if (errMsg.includes("No active session") || errMsg.includes("没有活动 session")) {
@@ -123,6 +125,7 @@ export const Q8Detail: React.FC = () => {
   const evidence = question.preprocessed_evidence as Q8PreprocessedEvidence;
   const inference = question.inference_result as Q8WhatShouldIDoNowInferenceView;
   const llmTrace = question.llm_trace_payload;
+  const hasStructuredSnapshot = Boolean(evidence && inference);
 
   return (
     <Box data-testid="q8-detail-root" sx={{ display: "flex", flexDirection: "column", gap: 3 }}>
@@ -135,25 +138,35 @@ export const Q8Detail: React.FC = () => {
             Final Objective Arbitration & Task Orchestration (Independent API GET /nine-questions/q8)
           </Typography>
         </Box>
-        <Button
-          component={RouterLink}
-          to={`/console/nine-questions/${qId}/test`}
-          variant="contained"
-          color="warning"
-          data-testid="q8-sandbox-nav-button"
-        >
-          进入独立沙箱测试
-        </Button>
+        <Stack direction="row" spacing={1}>
+          <NineQuestionRerunButton qId={qId} onCompleted={loadDetail} />
+          <Button
+            component={RouterLink}
+            to={`/console/nine-questions/${qId}/test`}
+            variant="contained"
+            color="warning"
+            data-testid="q8-sandbox-nav-button"
+          >
+            进入独立沙箱测试
+          </Button>
+        </Stack>
       </Stack>
 
-      {/* 问题介绍栏目 */}
-      <NineQuestionIntroCard questionId={qId} />
-
-      {/* Q8 实际数据详情 Tab 面板 */}
-      <Q8DataTabs 
-        evidence={evidence as any} 
-        inference={inference as any} 
-      />
+      {hasStructuredSnapshot ? (
+        <>
+          <NineQuestionIntroCard questionId={qId} />
+          <Q8DataTabs
+            evidence={evidence as any}
+            inference={inference as any}
+          />
+        </>
+      ) : (
+        <NineQuestionIncompleteResultAlert
+          questionId={qId}
+          result={question.result}
+          contextUpdates={question.context_updates}
+        />
+      )}
       {/* Workspace Task Goals */}
       {workspaceTaskGoals.length > 0 && (
         <Alert severity="info" variant="outlined" sx={{ backgroundColor: "#e3f2fd" }}>
@@ -179,14 +192,14 @@ export const Q8Detail: React.FC = () => {
         </Stack>
       </Box>
 
-      {evidence && (
+      {hasStructuredSnapshot ? (
         <Q8EvidencePanel
           evidence={evidence}
           inference={inference}
           providerName={question.provider_name || null}
           elapsedMs={llmTrace?.elapsed_ms || 0}
         />
-      )}
+      ) : null}
 
       <LLMTracePanel trace={llmTrace as LLMTracePayloadView} />
     </Box>

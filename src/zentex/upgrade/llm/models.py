@@ -31,6 +31,14 @@ class LLMUpgradeRequest(BaseModel):
     dspy_signature: str | None = None
     dspy_module: str | None = None
     dspy_metric: str | None = None
+    # Prompt optimization metadata
+    upgrade_kind: str | None = None
+    prompt_file_path: str | None = None
+    prompt_builder_symbol: str | None = None
+    prompt_contract: dict[str, object] = Field(default_factory=dict)
+    immutable_intent: str | None = None
+    forbidden_prompt_changes: list[str] = Field(default_factory=list)
+    allowed_prompt_change_scope: list[str] = Field(default_factory=list)
 
 
 class LLMUpgradeExecutionPlan(BaseModel):
@@ -47,6 +55,7 @@ class LLMUpgradeExecutionPlan(BaseModel):
     # DSPy runtime options
     dspy_signature: str | None = None
     dspy_metric: str | None = None
+    metadata: dict[str, object] = Field(default_factory=dict)
 
 
 class LLMUpgradeCandidate(BaseModel):
@@ -64,3 +73,4 @@ class LLMUpgradeCandidate(BaseModel):
     # Metadata for registry (Function 59 gap)
     dspy_signature: str | None = None
     dspy_module: str | None = None
+    metadata: dict[str, object] = Field(default_factory=dict)

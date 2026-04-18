@@ -12,6 +12,10 @@ import {
   Alert,
   Card,
   CardContent,
+  FormControl,
+  InputLabel,
+  Select,
+  MenuItem,
 } from '@mui/material';
 import {
   Assignment as TaskIcon,
@@ -37,7 +41,9 @@ const ZentexTaskManager: React.FC = () => {
     loadTestTasks, // Add test data loader
     currentTasks,
     tabValue,
-    setTabValue
+    setTabValue,
+    sourceModuleFilter,
+    setSourceModuleFilter,
   } = useTaskManagement();
 
   const TABS = [
@@ -60,6 +66,18 @@ const ZentexTaskManager: React.FC = () => {
     { field: 'task_id', headerName: t('tasks.taskId'), width: 100 },
     { field: 'title', headerName: t('tasks.title'), width: 250 },
     { field: 'task_type', headerName: t('tasks.type'), width: 150 },
+    {
+      field: 'source_module',
+      headerName: t('tasks.sourceModule'),
+      width: 140,
+      valueGetter: (params: any) => params.row.metadata?.source_module || 'core',
+    },
+    {
+      field: 'workflow_status',
+      headerName: t('tasks.workflowStatus'),
+      width: 150,
+      valueGetter: (params: any) => params.row.metadata?.workflow_status || '--',
+    },
     {
       field: 'status',
       headerName: t('tasks.status'),
@@ -163,6 +181,21 @@ const ZentexTaskManager: React.FC = () => {
         <Alert severity="info" sx={{ bgcolor: 'info.50', border: '1px solid', borderColor: 'info.200' }}>
           {t('tasks.tabInfo')}
         </Alert>
+
+        <FormControl sx={{ width: { xs: '100%', sm: 260 } }}>
+          <InputLabel id="task-source-module-filter-label">{t('tasks.sourceModuleFilter')}</InputLabel>
+          <Select
+            labelId="task-source-module-filter-label"
+            aria-label={t('tasks.sourceModuleFilter')}
+            value={sourceModuleFilter}
+            label={t('tasks.sourceModuleFilter')}
+            onChange={(event) => setSourceModuleFilter(String(event.target.value))}
+          >
+            <MenuItem value="all">{t('tasks.allSourceModules')}</MenuItem>
+            <MenuItem value="reflection">{t('tasks.sourceModules.reflection')}</MenuItem>
+            <MenuItem value="upgrade">{t('tasks.sourceModules.upgrade')}</MenuItem>
+          </Select>
+        </FormControl>
 
         {/* Error Alert */}
         {error && (

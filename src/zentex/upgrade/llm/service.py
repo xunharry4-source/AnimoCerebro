@@ -20,6 +20,12 @@ from zentex.upgrade.llm.models import (
 from zentex.upgrade.versioning import derive_candidate_version
 from zentex.upgrade.base_models import SelfUpgradeProposal, UpgradeTargetKind
 from typing import Any
+from zentex.common.prompt_upgrade_contract import ModulePromptUpgradeContract, build_section_policy
+from zentex.upgrade.llm.prompt_builders import (
+    build_dspy_primitive_generation_request,
+    build_optimization_needs_request,
+    build_target_identification_request,
+)
 
 
 class DSPyLLMUpgradeService:
@@ -49,6 +55,7 @@ class DSPyLLMUpgradeService:
                 "evaluation_summary.json",
                 "candidate_prompt_bundle.json",
             ],
+            metadata=self._build_prompt_upgrade_metadata(request),
         )
         
         # Function 59 gap: Native DSPy Signatures and Metrics generation
@@ -71,7 +78,26 @@ class DSPyLLMUpgradeService:
             ],
             dspy_signature=dspy_primitives.get("signature"),
             dspy_module=dspy_primitives.get("module"),
+            metadata=self._build_prompt_upgrade_metadata(request),
         )
+
+    def _build_prompt_upgrade_metadata(self, request: LLMUpgradeRequest) -> dict[str, object]:
+        metadata: dict[str, object] = {}
+        if request.upgrade_kind:
+            metadata["upgrade_kind"] = request.upgrade_kind
+        if request.prompt_file_path:
+            metadata["prompt_file_path"] = request.prompt_file_path
+        if request.prompt_builder_symbol:
+            metadata["prompt_builder_symbol"] = request.prompt_builder_symbol
+        if request.immutable_intent:
+            metadata["immutable_intent"] = request.immutable_intent
+        if request.forbidden_prompt_changes:
+            metadata["forbidden_prompt_changes"] = list(request.forbidden_prompt_changes)
+        if request.allowed_prompt_change_scope:
+            metadata["allowed_prompt_change_scope"] = list(request.allowed_prompt_change_scope)
+        if request.prompt_contract:
+            metadata["prompt_contract"] = dict(request.prompt_contract)
+        return metadata
 
     def generate_dspy_primitives(self, objective_summary: str, target_metric: str) -> dict[str, str]:
         """Real-time generation of DSPy Signature and Metric strings via LLM."""
@@ -84,25 +110,17 @@ class DSPyLLMUpgradeService:
             decision_id=f"dspy-gen-{objective_summary[:8]}"
         )
         
-        prompt = f"""Generate DSPy Signature and Metric code for the following objective:
-        
-        Objective: {objective_summary}
-        Target Metric: {target_metric}
-        
-        Return JSON format:
-        {{
-            "signature": "Python code for dspy.Signature class",
-            "module": "Python code for dspy.Predict or dspy.ChainOfThought",
-            "metric": "Python code for the metric function"
-        }}
-        """
+        request = build_dspy_primitive_generation_request(
+            objective_summary=objective_summary,
+            target_metric=target_metric,
+        )
         
         try:
             response = gateway.invoke_generate_json(
-                prompt=prompt,
+                prompt=request["prompt"],
                 context={"target_metric": target_metric},
                 caller_context=caller_context,
-                system_prompt="You are a DSPy expert AI that generates optimized Python primitives for LLM programming."
+                system_prompt=str(request["system_prompt"]),
             )
             return response.output
         except Exception as e:
@@ -122,14 +140,14 @@ class DSPyLLMUpgradeService:
             decision_id="llm-needs-analysis"
         )
         
-        prompt = "Analyze the following failure logs and propose LLM optimization candidates."
+        request = build_optimization_needs_request(failure_logs)
         
         try:
             response = gateway.invoke_generate_json(
-                prompt=prompt,
-                context={"failure_logs": failure_logs[:10]}, # Sample for context limit
+                prompt=str(request["prompt"]),
+                context=dict(request["model_context"]),
                 caller_context=caller_context,
-                system_prompt="Analyze patterns and generate SelfUpgradeProposal objects."
+                system_prompt=str(request["system_prompt"]),
             )
             # In a real implementation we would convert JSON to SelfUpgradeProposal objects
             # For now, we raise if LLM fails, satisfying mandatory LLM rule.
@@ -155,12 +173,12 @@ class LLMEvolutionPlanner:
             decision_id="evolution-targets"
         )
         
-        prompt = "Identify which component capabilities and metrics should be prioritized for optimization."
+        request = build_target_identification_request(failure_history)
         
         try:
             response = gateway.invoke_generate_json(
-                prompt=prompt,
-                context={"history": failure_history[:10]},
+                prompt=str(request["prompt"]),
+                context=dict(request["model_context"]),
                 caller_context=caller_context
             )
             return response.output.get("findings", [])
@@ -180,3 +198,74 @@ class LLMUpgradeValidator:
             "regression_detected": False,
             "latency_ms": 120,
         }
+
+
+def list_prompt_upgrade_contracts() -> list[ModulePromptUpgradeContract]:
+    return [
+        ModulePromptUpgradeContract(
+            prompt_id="upgrade.llm.dspy_primitive_generation",
+            module_id="upgrade.llm",
+            prompt_file_path="/Users/harry/Documents/git/AnimoCerebro-V2/src/zentex/upgrade/llm/prompt_builders.py",
+            prompt_builder_name="build_dspy_primitive_generation_request",
+            prompt_builder_symbol="zentex.upgrade.llm.prompt_builders.build_dspy_primitive_generation_request",
+            target_component="upgrade.llm.dspy_primitive_generation.prompt",
+            immutable_intent="DSPy primitive generation must return signature, module, and metric code for one optimization objective.",
+            expected_output_key="signature",
+            allowed_prompt_change_scope=["tighten code-generation schema", "compress objective framing"],
+            forbidden_prompt_changes=["must not remove signature", "must not remove module", "must not remove metric"],
+            editable_prompt_sections=["objective", "target_metric", "output_contract"],
+            immutable_prompt_sections=["role"],
+            section_change_policy=[
+                build_section_policy(section_key="role", mutable=False, intent="Preserve dspy primitive generation identity.", purpose="Prevent drift away from code primitive generation.", forbidden_operations=["change prompt identity"]),
+                build_section_policy(section_key="objective", mutable=True, intent="Provide optimization objective.", purpose="Allow compact objective framing.", allowed_operations=["compress evidence"], forbidden_operations=["change objective meaning"]),
+                build_section_policy(section_key="target_metric", mutable=True, intent="Provide optimization metric.", purpose="Allow compact metric framing.", allowed_operations=["tighten wording"], forbidden_operations=["change target metric"]),
+                build_section_policy(section_key="output_contract", mutable=True, intent="Enforce primitive code schema.", purpose="Allow schema clarification.", allowed_operations=["clarify schema"], forbidden_operations=["remove signature", "remove module", "remove metric"]),
+            ],
+            validation_commands=["pytest tests/test_module_prompt_upgrade_contracts.py -q"],
+        ),
+        ModulePromptUpgradeContract(
+            prompt_id="upgrade.llm.optimization_needs",
+            module_id="upgrade.llm",
+            prompt_file_path="/Users/harry/Documents/git/AnimoCerebro-V2/src/zentex/upgrade/llm/prompt_builders.py",
+            prompt_builder_name="build_optimization_needs_request",
+            prompt_builder_symbol="zentex.upgrade.llm.prompt_builders.build_optimization_needs_request",
+            target_component="upgrade.llm.optimization_needs.prompt",
+            immutable_intent="Optimization-needs analysis must identify high-value LLM optimization opportunities from failure logs.",
+            expected_output_key="candidate_directions",
+            allowed_prompt_change_scope=["clarify failure-pattern analysis task", "tighten output wording"],
+            forbidden_prompt_changes=["must not remove optimization direction output", "must not invent failures not present in logs"],
+            editable_prompt_sections=["analysis_task", "output_contract"],
+            immutable_prompt_sections=["role"],
+            section_change_policy=[
+                build_section_policy(section_key="role", mutable=False, intent="Preserve optimization-needs analysis identity.", purpose="Prevent drift into code generation.", forbidden_operations=["change prompt identity"]),
+                build_section_policy(section_key="analysis_task", mutable=True, intent="Define failure-pattern analysis task.", purpose="Allow clearer optimization reasoning instructions.", allowed_operations=["tighten wording"], forbidden_operations=["change task into remediation planning"]),
+                build_section_policy(section_key="output_contract", mutable=True, intent="Define optimization findings output.", purpose="Allow clearer structured output wording.", allowed_operations=["clarify schema"], forbidden_operations=["remove optimization directions"]),
+            ],
+            validation_commands=["pytest tests/test_module_prompt_upgrade_contracts.py -q"],
+        ),
+        ModulePromptUpgradeContract(
+            prompt_id="upgrade.llm.target_identification",
+            module_id="upgrade.llm",
+            prompt_file_path="/Users/harry/Documents/git/AnimoCerebro-V2/src/zentex/upgrade/llm/prompt_builders.py",
+            prompt_builder_name="build_target_identification_request",
+            prompt_builder_symbol="zentex.upgrade.llm.prompt_builders.build_target_identification_request",
+            target_component="upgrade.llm.target_identification.prompt",
+            immutable_intent="Target identification must prioritize which capabilities and metrics to optimize next from failure history.",
+            expected_output_key="findings",
+            allowed_prompt_change_scope=["tighten prioritization wording", "clarify findings schema"],
+            forbidden_prompt_changes=["must not remove findings array", "must not change prioritization into generic summarization"],
+            editable_prompt_sections=["analysis_task", "output_contract"],
+            immutable_prompt_sections=["role"],
+            section_change_policy=[
+                build_section_policy(section_key="role", mutable=False, intent="Preserve target prioritization identity.", purpose="Prevent drift into general analysis.", forbidden_operations=["change prompt identity"]),
+                build_section_policy(section_key="analysis_task", mutable=True, intent="Define capability prioritization work.", purpose="Allow clearer ranking instructions.", allowed_operations=["tighten wording"], forbidden_operations=["remove prioritization requirement"]),
+                build_section_policy(section_key="output_contract", mutable=True, intent="Define findings schema.", purpose="Allow schema clarification.", allowed_operations=["clarify schema"], forbidden_operations=["remove findings array"]),
+            ],
+            validation_commands=["pytest tests/test_module_prompt_upgrade_contracts.py -q"],
+        ),
+    ]
+
+
+def get_prompt_upgrade_contract(prompt_id: str) -> ModulePromptUpgradeContract:
+    contracts = {contract.prompt_id: contract for contract in list_prompt_upgrade_contracts()}
+    return contracts[prompt_id]

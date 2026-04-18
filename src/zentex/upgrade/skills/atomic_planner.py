@@ -17,6 +17,7 @@ from uuid import uuid4
 from pydantic import BaseModel, Field
 
 from zentex.upgrade.base_models import SelfUpgradeProposal
+from zentex.upgrade.skills.atomic_planner_llm_prompt import build_atomic_planner_prompt
 
 
 class AtomicTask(BaseModel):
@@ -219,50 +220,7 @@ class AtomicUpgradePlanner:
     ) -> str:
         """Build the prompt for LLM task generation."""
         
-        patterns_text = "\n".join([
-            f"- Pattern {i+1}: {p['description']}"
-            for i, p in enumerate(patterns[:3])
-        ])
-        
-        prompt = f"""
-You are an expert upgrade planner. Decompose the following upgrade proposal into atomic tasks.
-
-UPGRADE PROPOSAL:
-- Program ID: {proposal.program_id}
-- Target Metric: {proposal.target_metric}
-- Description: {proposal.description}
-- Risk Score: {getattr(proposal, 'risk_score', 0.5)}
-- Impact Score: {getattr(proposal, 'impact_score', 0.5)}
-
-HISTORICAL SUCCESS PATTERNS:
-{patterns_text}
-
-REQUIREMENTS:
-1. Each task must complete in 2-5 minutes
-2. Specify exact file paths to modify
-3. Provide executable validation commands for each task
-4. Order tasks by dependencies
-5. Include rollback instructions for each task
-
-OUTPUT FORMAT (JSON):
-{{
-    "tasks": [
-        {{
-            "task_id": "task-001",
-            "description": "Copy plugin to candidate directory",
-            "file_paths": ["src/plugins/example/", "candidates/example-v1.1.0/"],
-            "code_changes": {{"action": "copy", "source": "...", "dest": "..."}},
-            "validation_commands": ["ls candidates/example-v1.1.0/__init__.py"],
-            "estimated_time_minutes": 2,
-            "dependencies": [],
-            "rollback_instructions": "Remove candidates/example-v1.1.0/"
-        }}
-    ]
-}}
-
-Generate the atomic tasks now:
-"""
-        return prompt
+        return build_atomic_planner_prompt(proposal=proposal, patterns=patterns)["prompt"]
     
     def _parse_llm_response(self, response: str) -> List[dict]:
         """Parse LLM response to extract task data."""

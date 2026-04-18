@@ -137,7 +137,10 @@ class TaskServiceInterface:
                 priority=filters.get("priority"),
                 tags=filters.get("tags"),
                 parent_task_id=filters.get("parent_task_id"),
-                overdue_only=filters.get("overdue_only", False)
+                target_id=filters.get("target_id"),
+                overdue_only=filters.get("overdue_only", False),
+                source_module=filters.get("source_module"),
+                metadata_filters=filters.get("metadata_filters"),
             )
             
             return {

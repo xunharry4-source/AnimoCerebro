@@ -222,6 +222,11 @@ class RetryHandler:
             '503',
             '502',
             '429',
+            'capacity',
+            'unavailable',
+            'overload',
+            'model_capacity_exhausted',
+            '500',  # Local gateways return 500 for upstream capacity exhaustion
         ]
         
         for pattern in retryable_patterns:

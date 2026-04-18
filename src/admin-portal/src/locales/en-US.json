@@ -279,7 +279,87 @@
     "back": "Back",
     "continue": "Continue",
     "finalize": "Finalize Registration",
-    "validationError": "Validation Failed: Name, version, and description are required."
+    "validationError": "Validation Failed: Name, version, and description are required.",
+    "fetchFailed": "Failed to fetch agent list (HTTP {{status}})",
+    "fetchFailedGeneric": "Failed to fetch agent list",
+    "backToList": "Back to Agent List",
+    "functionDescription": "Function Description",
+    "lastActive": "Last Active",
+    "unknown": "Unknown",
+    "successRate": "Success Rate",
+    "creditScore": {
+      "title": "Credit Score",
+      "total": "Credit Score Total (0-100)",
+      "weight": "Weight"
+    },
+    "statistics": {
+      "title": "Task Statistics",
+      "totalTasks": "Total Tasks",
+      "completed": "Completed",
+      "inProgress": "In Progress",
+      "pending": "Pending",
+      "failed": "Failed",
+      "avgTime": "Average Time"
+    },
+    "tasks": {
+      "management": "Task Management",
+      "hideFilters": "Hide Filters",
+      "advancedFilters": "Advanced Filters",
+      "searchTask": "Search Task",
+      "searchPlaceholder": "Enter task title or ID",
+      "taskType": "Task Type",
+      "originator": "Originator",
+      "startDate": "Start Date",
+      "endDate": "End Date",
+      "clearFilters": "Clear Filters",
+      "taskId": "Task ID",
+      "taskName": "Task Name",
+      "taskStatus": "Task Status",
+      "progress": "Progress",
+      "startTime": "Start Time",
+      "completionTime": "Completion Time",
+      "cancelTask": "Cancel Task",
+      "retryTask": "Retry Task",
+      "noData": "No task data",
+      "cancelSuccess": "Task \"{{title}}\" cancelled",
+      "retrySuccess": "Task \"{{title}}\" reset to todo",
+      "types": {
+        "dataProcessing": "Data Processing",
+        "analysis": "Analysis",
+        "generation": "Generation",
+        "validation": "Validation"
+      }
+    },
+    "tabs": {
+      "inProgress": "In Progress",
+      "pending": "Pending",
+      "failed": "Failed",
+      "history": "History"
+    },
+    "dialogs": {
+      "confirmCancel": "Confirm Cancel Task",
+      "confirmRetry": "Confirm Retry Task",
+      "cancelMessage": "Cancel task \"{{title}}\"?",
+      "retryMessage": "Retry task \"{{title}}\"? It will be reset to todo.",
+      "cancelWarning": "Cancelled tasks cannot be restored automatically.",
+      "retryInfo": "Retry resets the task to todo for re-execution.",
+      "confirmCancelBtn": "Confirm Cancel",
+      "confirmRetryBtn": "Confirm Retry"
+    },
+    "errors": {
+      "fetchDetailFailed": "Failed to fetch agent detail (HTTP {{status}})",
+      "fetchTasksFailed": "Failed to fetch task list",
+      "actionFailed": "Action failed",
+      "agentNotFound": "Agent not found"
+    },
+    "status": {
+      "idle": "Idle",
+      "active": "Active",
+      "busy": "Busy",
+      "offline": "Offline",
+      "handshakeFailed": "Handshake Failed",
+      "auditFailed": "Audit Failed"
+    }
   },
   "nineQuestions": {
     "subtitle": "9-Question overview list, supporting drill-down from real brain cache to details and independent sandbox testing.",
@@ -738,10 +818,21 @@
     "pending": "Pending",
     "priority": "Priority",
     "progress": "Progress",
+    "sourceModule": "Source",
+    "sourceModuleFilter": "Source Module",
+    "allSourceModules": "All Sources",
+    "sourceModules": {
+      "reflection": "Reflection",
+      "upgrade": "Upgrade"
+    },
     "status": "Status",
     "taskId": "Task ID",
     "title": "Title",
-    "waitingConfirmation": "Waiting Confirmation"
+    "waitingConfirmation": "Waiting Confirmation",
+    "workflowStatus": "Workflow Status",
+    "workflowProgress": "Workflow Progress",
+    "workflowMetadata": "Workflow Metadata",
+    "rawMetadata": "Raw Metadata"
   },
   "mcp": {
     "mcpManagement": "MCP Management",

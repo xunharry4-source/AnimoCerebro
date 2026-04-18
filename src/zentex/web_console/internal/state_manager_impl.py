@@ -51,10 +51,6 @@ class NineQuestionStateManagerImpl(NineQuestionStateManager):
         state = await self.get_state(session_id)
         return state.last_refresh_reason
 
-    async def get_latest_populated_state(self) -> NineQuestionStateSnapshot | None:
-        """Get the latest persisted state that already has snapshots."""
-        return await self._store.get_latest_populated()
-
     async def update_state(
         self,
         session_id: str,

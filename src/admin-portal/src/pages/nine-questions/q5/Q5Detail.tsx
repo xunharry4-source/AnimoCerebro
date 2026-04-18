@@ -27,6 +27,8 @@ import MountedPluginsZone from "../../../components/MountedPluginsZone";
 import LLMTracePanel from "../../../components/LLMTracePanel";
 import NineQuestionIntroCard from "../../../components/NineQuestionIntroCard";
 import Q5DataTabs from "../../../components/Q5DataTabs";
+import NineQuestionIncompleteResultAlert from "../../../components/NineQuestionIncompleteResultAlert";
+import NineQuestionRerunButton from "../../../components/NineQuestionRerunButton";
 
 function resolveErrorGuidance(errMsg: string): { title: string; action: string } {
   if (errMsg.includes("No active session") || errMsg.includes("没有活动 session")) {
@@ -102,6 +104,7 @@ export default function Q5Detail() {
   const evidence = question.preprocessed_evidence as Q5PreprocessedEvidence;
   const inference = question.inference_result as Q5WhatAmIAllowedToDoInferenceView;
   const llmTrace = question.llm_trace_payload;
+  const hasStructuredSnapshot = Boolean(evidence && inference);
 
   return (
     <Box data-testid="q5-detail-root">
@@ -110,7 +113,10 @@ export default function Q5Detail() {
           <Typography variant="h4" gutterBottom>{getQuestionDisplayLabel(qId)} 正式审计页</Typography>
           <Typography variant="body2" color="text.secondary">Permission Boundary & Compliance Audit (Independent API GET /nine-questions/q5)</Typography>
         </Box>
-        <Button component={RouterLink} to="/console/nine-questions/q5/test" variant="contained" color="warning" data-testid="q5-sandbox-nav-button">进入独立沙箱测试</Button>
+        <Stack direction="row" spacing={1}>
+          <NineQuestionRerunButton qId={qId} onCompleted={loadDetail} />
+          <Button component={RouterLink} to="/console/nine-questions/q5/test" variant="contained" color="warning" data-testid="q5-sandbox-nav-button">进入独立沙箱测试</Button>
+        </Stack>
       </Stack>
 
       {/* 合规警戒提示保持不变 */}
@@ -118,13 +124,21 @@ export default function Q5Detail() {
         [合规警戒] Q5 审计已划定认知动作的终极禁区。任何越权推演均已被物理阻断，请核实 PermissionBoundaryProfile。
       </Alert>
 
-      <NineQuestionIntroCard questionId="q5" />
-
-      {/* Q5 实际数据详情 Tab 面板 */}
-      <Q5DataTabs 
-        evidence={evidence as any} 
-        inference={inference as any} 
-      />
+      {hasStructuredSnapshot ? (
+        <>
+          <NineQuestionIntroCard questionId="q5" />
+          <Q5DataTabs
+            evidence={evidence as any}
+            inference={inference as any}
+          />
+        </>
+      ) : (
+        <NineQuestionIncompleteResultAlert
+          questionId={qId}
+          result={question.result}
+          contextUpdates={question.context_updates}
+        />
+      )}
       <Card variant="outlined" sx={{ mb: 3 }}>
         <CardContent>
           <Stack direction="row" spacing={1} sx={{ mb: 2 }} useFlexGap flexWrap="wrap">
@@ -137,7 +151,7 @@ export default function Q5Detail() {
           <MountedPluginsZone plugins={question.mounted_plugins || []} />
 
           <Typography variant="h6" gutterBottom sx={{ mt: 2, fontWeight: "bold" }}>权限基线与越权审计证明 (Zentex G31A.Q5)</Typography>
-          {evidence ? (
+          {hasStructuredSnapshot ? (
             <Q5EvidencePanel
               evidence={evidence}
               inference={inference}

@@ -11,10 +11,13 @@ interface UseTaskManagementReturn {
   currentTasks: ZentexTask[];
   tabValue: number;
   setTabValue: (value: number) => void;
+  sourceModuleFilter: string;
+  setSourceModuleFilter: (value: string) => void;
 }
 
 const useTaskManagement = (): UseTaskManagementReturn => {
   const [tabValue, setTabValue] = useState(0);
+  const [sourceModuleFilter, setSourceModuleFilter] = useState("all");
   const [tasksByStatus, setTasksByStatus] = useState<TasksByStatus>({
     in_progress: [],
     pending: [],
@@ -32,7 +35,12 @@ const useTaskManagement = (): UseTaskManagementReturn => {
     setLoading(true);
     setError(null);
     try {
-      const res = await fetch("/api/web/tasks/by-status");
+      const params = new URLSearchParams();
+      if (sourceModuleFilter !== "all") {
+        params.set("source_module", sourceModuleFilter);
+      }
+      const url = params.size > 0 ? `/api/web/tasks/by-status?${params.toString()}` : "/api/web/tasks/by-status";
+      const res = await fetch(url);
       if (!res.ok) {
         throw new Error(`获取任务列表失败（HTTP ${res.status}）`);
       }
@@ -52,7 +60,7 @@ const useTaskManagement = (): UseTaskManagementReturn => {
     } finally {
       setLoading(false);
     }
-  }, []);
+  }, [sourceModuleFilter]);
 
   const connectWebSocket = useCallback(() => {
     if (wsRef.current) {
@@ -156,7 +164,9 @@ const useTaskManagement = (): UseTaskManagementReturn => {
     loadTestTasks, // Export test data loader
     currentTasks,
     tabValue,
-    setTabValue
+    setTabValue,
+    sourceModuleFilter,
+    setSourceModuleFilter,
   };
 };
 

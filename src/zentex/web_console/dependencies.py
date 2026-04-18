@@ -40,6 +40,46 @@ from fastapi import HTTPException, Request
 logger = logging.getLogger(__name__)
 
 
+def _get_app_state_service(request: Request, attr_name: str) -> Any:
+    return getattr(request.app.state, attr_name, None)
+
+
+def _get_legacy_kernel_attr(request: Request, attr_name: str) -> Any:
+    runtime = get_runtime(request)
+    return getattr(runtime, attr_name, None)
+
+
+def _get_state_or_kernel_service(request: Request, attr_name: str) -> Any:
+    svc = _get_app_state_service(request, attr_name)
+    if svc is not None:
+        return svc
+    return _get_legacy_kernel_attr(request, attr_name)
+
+
+def _require_state_or_kernel_service(
+    request: Request,
+    *,
+    attr_name: str,
+    error_code: str,
+    message: str,
+) -> Any:
+    svc = _get_state_or_kernel_service(request, attr_name)
+    if svc is not None:
+        return svc
+    logger.error(
+        "dependency: %s is None — checked app.state and kernel singleton fallback",
+        attr_name,
+        extra={"location": "web_console.dependencies", "action": attr_name},
+    )
+    raise HTTPException(
+        status_code=503,
+        detail={
+            "error": error_code,
+            "message": message,
+        },
+    )
+
+
 # ========== Phase 0: ONLY Facade-based getters ==========
 
 def get_kernel_service_facade(request: Request) -> Any:
@@ -117,8 +157,7 @@ def get_agent_manager(request: Request) -> Any:
     
     Compatibility shim during migration.
     """
-    runtime = get_runtime(request)
-    return getattr(runtime, "agent_manager", None)
+    return _get_state_or_kernel_service(request, "agent_manager")
 
 
 def get_agent_coordination_service(request: Request) -> Any:
@@ -126,26 +165,12 @@ def get_agent_coordination_service(request: Request) -> Any:
 
     Fail-closed (Zentex Codex §1): prioritizes modern app.state access.
     """
-    svc = getattr(request.app.state, "agent_coordination_service", None)
-    if svc is not None:
-        return svc
-        
-    runtime = get_runtime(request)
-    svc = getattr(runtime, "agent_coordination_service", None)
-    if svc is None:
-        logger.error(
-            "dependency: agent_coordination_service is None — "
-            "checked app.state and kernel singleton fallback",
-            extra={"location": "web_console.dependencies", "action": "get_agent_coordination_service"},
-        )
-        raise HTTPException(
-            status_code=503,
-            detail={
-                "error": "agent_coordination_service_unavailable",
-                "message": "智能体协调服务未初始化，请检查启动流程。",
-            },
-        )
-    return svc
+    return _require_state_or_kernel_service(
+        request,
+        attr_name="agent_coordination_service",
+        error_code="agent_coordination_service_unavailable",
+        message="智能体协调服务未初始化，请检查启动流程。",
+    )
 
 
 def get_task_service(request: Request) -> Any:
@@ -153,35 +178,21 @@ def get_task_service(request: Request) -> Any:
 
     Fail-closed (Zentex Codex §1): prioritizes modern app.state access.
     """
-    svc = getattr(request.app.state, "task_service", None)
-    if svc is not None:
-        return svc
-        
-    runtime = get_runtime(request)
-    svc = getattr(runtime, "task_service", None)
-    if svc is None:
-        logger.error(
-            "dependency: task_service is None — "
-            "checked app.state and kernel singleton fallback",
-            extra={"location": "web_console.dependencies", "action": "get_task_service"},
-        )
-        raise HTTPException(
-            status_code=503,
-            detail={
-                "error": "task_service_unavailable",
-                "message": "任务管理服务未初始化，任务功能暂不可用。请检查启动流程。",
-            },
-        )
-    return svc
+    return _require_state_or_kernel_service(
+        request,
+        attr_name="task_service",
+        error_code="task_service_unavailable",
+        message="任务管理服务未初始化，任务功能暂不可用。请检查启动流程。",
+    )
 
 
 def get_transcript_store(request: Request) -> Any:
     """⚠️ LEGACY - Use Facade instead"""
-    svc = getattr(request.app.state, "transcript_store", None)
+    svc = _get_app_state_service(request, "transcript_store")
     if svc is not None:
         return svc
-    from zentex.kernel.service import get_service as get_kernel_service
-    return get_kernel_service().get_transcript_store()
+    facade = get_kernel_service_facade(request)
+    return facade.get_transcript_store()
 
 
 def get_cognitive_tool_registry(request: Request) -> Any:
@@ -197,56 +208,32 @@ def get_cognitive_tool_registry(request: Request) -> Any:
 
 def get_plugin_registry(request: Request) -> Any:
     """Returns plugin_registry (modern first)."""
-    svc = getattr(request.app.state, "plugin_registry", None)
-    if svc is not None:
-        return svc
-    runtime = get_runtime(request)
-    return getattr(runtime, "plugin_registry", None)
+    return _get_state_or_kernel_service(request, "plugin_registry")
 
 
 def get_plugin_service(request: Request) -> Any:
     """Returns plugin_service (modern first)."""
-    svc = getattr(request.app.state, "plugin_service", None)
-    if svc is not None:
-        return svc
-    runtime = get_runtime(request)
-    return getattr(runtime, "plugin_service", None)
+    return _get_state_or_kernel_service(request, "plugin_service")
 
 
 def get_managed_plugins(request: Request) -> Any:
     """⚠️ LEGACY - Use Facade instead"""
-    runtime = get_runtime(request)
-    return getattr(runtime, "managed_plugins", [])
+    return _get_state_or_kernel_service(request, "managed_plugins") or []
 
 
 def get_managed_plugin_records(request: Request) -> Any:
     """Get managed plugin records from app.state or runtime"""
-    # Prefer app.state (modern approach)
-    records = getattr(request.app.state, "managed_plugin_records", None)
-    if records is not None:
-        return records
-        
-    # Fallback to runtime (legacy)
-    runtime = get_runtime(request)
-    return getattr(runtime, "managed_plugin_records", {})
+    return _get_state_or_kernel_service(request, "managed_plugin_records") or {}
 
 
 def get_cli_service(request: Request) -> Any:
     """Returns cli_service (modern first)."""
-    svc = getattr(request.app.state, "cli_service", None)
-    if svc is not None:
-        return svc
-    runtime = get_runtime(request)
-    return getattr(runtime, "cli_service", None)
+    return _get_state_or_kernel_service(request, "cli_service")
 
 
 def get_mcp_service(request: Request) -> Any:
     """Returns McpIntegrationService (modern first)."""
-    svc = getattr(request.app.state, "mcp_service", None)
-    if svc is not None:
-        return svc
-    runtime = get_runtime(request)
-    return getattr(runtime, "mcp_service", None)
+    return _get_state_or_kernel_service(request, "mcp_service")
 
 
 # ========== Additional Legacy Getters (All as Shim Wrappers) ==========
@@ -255,166 +242,92 @@ def get_mcp_service(request: Request) -> Any:
 
 def get_active_model_provider(request: Request) -> Any:
     """Returns active_model_provider (modern first)."""
-    svc = getattr(request.app.state, "active_model_provider", None)
-    if svc is not None:
-        return svc
-    runtime = get_runtime(request)
-    return getattr(runtime, "active_model_provider", None)
+    return _get_state_or_kernel_service(request, "active_model_provider")
 
 
 def get_temporal_engine(request: Request) -> Any:
     """Returns CognitiveTemporalEngine (modern first)."""
-    svc = getattr(request.app.state, "temporal_engine", None)
-    if svc is not None:
-        return svc
-    runtime = get_runtime(request)
-    return getattr(runtime, "temporal_engine", None)
+    return _get_state_or_kernel_service(request, "temporal_engine")
 
 
 def get_conflict_engine(request: Request) -> Any:
     """Returns CognitiveConflictEngine (modern first)."""
-    svc = getattr(request.app.state, "conflict_engine", None)
-    if svc is not None:
-        return svc
-    runtime = get_runtime(request)
-    return getattr(runtime, "conflict_engine", None)
+    return _get_state_or_kernel_service(request, "conflict_engine")
 
 
 def get_simulation_engine(request: Request) -> Any:
     """Returns CounterfactualSimulationEngine (modern first)."""
-    svc = getattr(request.app.state, "simulation_engine", None)
-    if svc is not None:
-        return svc
-    runtime = get_runtime(request)
-    return getattr(runtime, "simulation_engine", None)
+    return _get_state_or_kernel_service(request, "simulation_engine")
 
 
 def get_interaction_mind_engine(request: Request) -> Any:
     """Returns InteractionMindEngine (modern first)."""
-    svc = getattr(request.app.state, "interaction_mind_engine", None)
-    if svc is not None:
-        return svc
-    runtime = get_runtime(request)
-    return getattr(runtime, "interaction_mind_engine", None)
+    return _get_state_or_kernel_service(request, "interaction_mind_engine")
 
 
 def get_consolidation_engine(request: Request) -> Any:
     """Returns ConsolidationEngine (modern first)."""
-    svc = getattr(request.app.state, "consolidation_engine", None)
-    if svc is not None:
-        return svc
-    runtime = get_runtime(request)
-    return getattr(runtime, "consolidation_engine", None)
+    return _get_state_or_kernel_service(request, "consolidation_engine")
 
 
 def get_enhanced_memory_service(request: Request) -> Any:
     """⚠️ LEGACY"""
-    # create_app() stores the service directly on app.state; check there first.
-    svc = getattr(request.app.state, "enhanced_memory_service", None)
-    if svc is not None:
-        return svc
-    runtime = get_runtime(request)
-    return getattr(runtime, "enhanced_memory_service", None)
+    return _get_state_or_kernel_service(request, "enhanced_memory_service")
 
 
 def get_workspace_store(request: Request) -> Any:
     """⚠️ LEGACY — reads app.state first (set by create_app), falls back to runtime."""
-    # create_app() stores workspace_store directly on app.state.
-    svc = getattr(request.app.state, "workspace_store", None)
-    if svc is not None:
-        return svc
-    runtime = get_runtime(request)
-    return getattr(runtime, "workspace_store", None)
+    return _get_state_or_kernel_service(request, "workspace_store")
 
 
 def get_active_session(request: Request) -> Any:
     """Returns active_session (modern first)."""
-    svc = getattr(request.app.state, "active_session", None)
-    if svc is not None:
-        return svc
-    runtime = get_runtime(request)
-    return getattr(runtime, "active_session", None)
+    return _get_state_or_kernel_service(request, "active_session")
 
 
 def get_upgrade_management_store(request: Request) -> Any:
     """⚠️ LEGACY — reads app.state first (set by create_app), falls back to runtime."""
-    svc = getattr(request.app.state, "upgrade_management_store", None)
-    if svc is not None:
-        return svc
-    runtime = get_runtime(request)
-    return getattr(runtime, "upgrade_management_store", None)
+    return _get_state_or_kernel_service(request, "upgrade_management_store")
 
 
 def get_plugin_evolution_runtime(request: Request) -> Any:
     """⚠️ LEGACY — reads app.state first (set by create_app), falls back to runtime."""
-    svc = getattr(request.app.state, "plugin_evolution_runtime", None)
-    if svc is not None:
-        return svc
-    runtime = get_runtime(request)
-    return getattr(runtime, "plugin_evolution_runtime", None)
+    return _get_state_or_kernel_service(request, "plugin_evolution_runtime")
 
 
 def get_upgrade_execution_service(request: Request) -> Any:
     """⚠️ LEGACY — reads app.state first (set by create_app), falls back to runtime."""
-    svc = getattr(request.app.state, "upgrade_execution_service", None)
-    if svc is not None:
-        return svc
-    runtime = get_runtime(request)
-    return getattr(runtime, "upgrade_execution_service", None)
+    return _get_state_or_kernel_service(request, "upgrade_execution_service")
 
 
 def get_upgrade_audit_store(request: Request) -> Any:
     """⚠️ LEGACY — reads app.state first (set by create_app), falls back to runtime."""
-    svc = getattr(request.app.state, "upgrade_audit_store", None)
-    if svc is not None:
-        return svc
-    runtime = get_runtime(request)
-    return getattr(runtime, "upgrade_audit_store", None)
+    return _get_state_or_kernel_service(request, "upgrade_audit_store")
 
 
 def get_upgrade_memory_store(request: Request) -> Any:
     """⚠️ LEGACY — reads app.state first (set by create_app), falls back to runtime."""
-    svc = getattr(request.app.state, "upgrade_memory_store", None)
-    if svc is not None:
-        return svc
-    runtime = get_runtime(request)
-    return getattr(runtime, "upgrade_memory_store", None)
+    return _get_state_or_kernel_service(request, "upgrade_memory_store")
 
 
 def get_upgrade_evidence_service(request: Request) -> Any:
     """⚠️ LEGACY — reads app.state first (set by create_app), falls back to runtime."""
-    svc = getattr(request.app.state, "upgrade_evidence_service", None)
-    if svc is not None:
-        return svc
-    runtime = get_runtime(request)
-    return getattr(runtime, "upgrade_evidence_service", None)
+    return _get_state_or_kernel_service(request, "upgrade_evidence_service")
 
 
 def get_plugin_feature_catalog(request: Request) -> Any:
     """Returns plugin_feature_catalog (modern first)."""
-    svc = getattr(request.app.state, "plugin_feature_catalog", None)
-    if svc is not None:
-        return svc
-    runtime = get_runtime(request)
-    return getattr(runtime, "plugin_feature_catalog", None)
+    return _get_state_or_kernel_service(request, "plugin_feature_catalog")
 
 
 def get_reflection_service(request: Request) -> Any:
     """Returns reflection_service (modern first)."""
-    svc = getattr(request.app.state, "reflection_service", None)
-    if svc is not None:
-        return svc
-    from zentex.reflection.service_facade import get_reflection_service as get_legacy_reflection
-    return get_legacy_reflection()
+    return _get_state_or_kernel_service(request, "reflection_service")
 
 
 def get_learning_service(request: Request) -> Any:
     """Returns learning_service (modern first)."""
-    svc = getattr(request.app.state, "learning_service", None)
-    if svc is not None:
-        return svc
-    # There is no global learning service singleton yet, so we return None or raise
-    return None
+    return _get_state_or_kernel_service(request, "learning_service")
 
 
 def get_weight_assembler(scope_owner: Any) -> Any:

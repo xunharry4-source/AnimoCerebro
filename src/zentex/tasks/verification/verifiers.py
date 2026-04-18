@@ -13,6 +13,7 @@ from typing import Any, Dict
 
 from zentex.tasks.models import ZentexTask
 from zentex.tasks.verification.models import SingleVerifierResult, VerificationStatus
+from zentex.tasks.verification.llm_prompt import build_llm_evaluation_prompt
 
 logger = logging.getLogger(__name__)
 
@@ -285,37 +286,13 @@ class LLMEvaluationVerifier(BaseVerifier):
         self, task: ZentexTask, result: Dict[str, Any]
     ) -> str:
         """构建评估prompt"""
-        criteria = self.config.get("evaluation_criteria", [])
-        criteria_text = "\n".join(f"- {c}" for c in criteria) if criteria else "- 任务要求已满足"
-
-        prompt = f"""你是一个任务质量评估专家。请评估以下任务的完成质量。
-
-## 任务信息
-- **标题**: {task.title}
-- **类型**: {task.task_type.value}
-- **要求**: {task.remarks or "无详细说明"}
-
-## 提交的结果
-{result.get("output", str(result))}
-
-## 评估标准
-{criteria_text}
-
-## 输出格式
-请严格按照以下JSON格式返回评估结果：
-```json
-{{
-  "passed": true/false,
-  "confidence": 0.0-1.0,
-  "summary": "简短总结（50字以内）",
-  "reasoning": "详细推理过程",
-  "criteria_met": ["符合的标准列表"],
-  "criteria_failed": ["不符合的标准列表"]
-}}
-```
-
-请开始评估："""
-        return prompt
+        return build_llm_evaluation_prompt(
+            task_title=task.title,
+            task_type=task.task_type.value,
+            task_remarks=task.remarks,
+            result=result,
+            criteria=self.config.get("evaluation_criteria", []),
+        )["prompt"]
 
     def _parse_llm_response(self, response: str) -> Dict[str, Any]:
         """解析LLM响应"""

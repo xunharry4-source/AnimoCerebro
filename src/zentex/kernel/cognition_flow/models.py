@@ -2,6 +2,7 @@
 
 from dataclasses import dataclass, field
 from enum import StrEnum
+from typing import Any
 
 from zentex.common.plugin_ids import (
     NINE_QUESTION_Q1,
@@ -55,6 +56,14 @@ class NineQuestionResponse:
     confidence: float = 0.0
     duration_ms: float = 0.0
     error: str = ""
+    tool_id: str = ""
+    trace_id: str = ""
+    timestamp: str = ""
+    result_payload: dict[str, Any] = field(default_factory=dict)
+    context_updates: dict[str, Any] = field(default_factory=dict)
+    execution_context: dict[str, Any] = field(default_factory=dict)
+    execution_result: dict[str, Any] = field(default_factory=dict)
+    llm_trace_payload: dict[str, Any] = field(default_factory=dict)
 
 
 @dataclass

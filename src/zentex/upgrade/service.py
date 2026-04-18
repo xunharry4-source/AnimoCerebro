@@ -11,6 +11,7 @@ then delegates to the specialized upgrade planners.
 
 from typing import Any, Optional
 from zentex.memory import EnhancedMemoryService
+from zentex.common.prompt_upgrade_contract import ModulePromptUpgradeContract, build_section_policy
 from zentex.upgrade.llm.service import DSPyLLMUpgradeService
 from zentex.upgrade.models import (
     LLMUpgradeDecision,
@@ -294,6 +295,37 @@ class UpgradeFacade:
                 else "Managed memory recall returned context but no reusable pattern classification was derived."
             ),
         )
+
+
+def list_prompt_upgrade_contracts() -> list[ModulePromptUpgradeContract]:
+    return [
+        ModulePromptUpgradeContract(
+            prompt_id="upgrade.ai_executors.plugin_generation",
+            module_id="upgrade",
+            prompt_file_path="/Users/harry/Documents/git/AnimoCerebro-V2/src/zentex/upgrade/ai_executors_llm_prompt.py",
+            prompt_builder_name="build_plugin_generation_request",
+            prompt_builder_symbol="zentex.upgrade.ai_executors_llm_prompt.build_plugin_generation_request",
+            target_component="upgrade.ai_executors.plugin_generation.prompt",
+            immutable_intent="Plugin generation must return plugin.py, test_plugin.py, README.md, and a diff summary for one plugin goal.",
+            expected_output_key="plugin_py",
+            allowed_prompt_change_scope=["tighten artifact schema", "compress goal framing"],
+            forbidden_prompt_changes=["must not remove plugin_py", "must not remove test_plugin_py", "must not remove readme_md"],
+            editable_prompt_sections=["goal", "required_artifacts", "output_contract"],
+            immutable_prompt_sections=["role"],
+            section_change_policy=[
+                build_section_policy(section_key="role", mutable=False, intent="Preserve plugin generation identity.", purpose="Prevent drift into analysis or review.", forbidden_operations=["change prompt identity"]),
+                build_section_policy(section_key="goal", mutable=True, intent="Provide plugin objective.", purpose="Allow concise goal framing.", allowed_operations=["compress evidence"], forbidden_operations=["change plugin goal"]),
+                build_section_policy(section_key="required_artifacts", mutable=True, intent="Define required files.", purpose="Allow artifact wording clarification.", allowed_operations=["tighten wording"], forbidden_operations=["remove required artifact"]),
+                build_section_policy(section_key="output_contract", mutable=True, intent="Enforce artifact json schema.", purpose="Allow schema clarification.", allowed_operations=["clarify schema"], forbidden_operations=["remove plugin_py", "remove test_plugin_py", "remove readme_md"]),
+            ],
+            validation_commands=["pytest tests/test_module_prompt_upgrade_contracts.py -q"],
+        )
+    ]
+
+
+def get_prompt_upgrade_contract(prompt_id: str) -> ModulePromptUpgradeContract:
+    contracts = {contract.prompt_id: contract for contract in list_prompt_upgrade_contracts()}
+    return contracts[prompt_id]
 
 
 __all__ = [

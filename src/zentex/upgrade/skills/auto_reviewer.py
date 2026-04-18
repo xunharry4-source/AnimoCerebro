@@ -19,6 +19,7 @@ from typing import List, Optional
 from datetime import datetime
 
 from pydantic import BaseModel, Field
+from zentex.upgrade.skills.auto_reviewer_llm_prompt import build_code_review_prompt
 
 
 class ReviewIssue(BaseModel):
@@ -560,24 +561,7 @@ class AutomatedTwoStageReviewer:
             if not code_snippets:
                 return {"passed": True, "issues": [], "detail": "No code to review"}
             
-            prompt = f"""
-Review the following code changes for quality issues:
-
-{chr(10).join(code_snippets[:3])}  # Limit context
-
-Check for:
-1. Obvious logic errors
-2. Performance issues
-3. Security vulnerabilities (beyond forbidden calls)
-4. Code readability
-5. Error handling completeness
-
-Output JSON format:
-{{
-    "passed": true/false,
-    "issues": ["issue 1", "issue 2", ...]
-}}
-"""
+            prompt = build_code_review_prompt(code_snippets=code_snippets)["prompt"]
             
             response = self._llm_service.generate(prompt)
             

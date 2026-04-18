@@ -88,21 +88,19 @@ kill_port "${PORT_FRONTEND}"
 echo ">>> 清理残留的 uvicorn 和 node 进程..."
 pkill -f "uvicorn zentex.boot.web_dev:app" 2>/dev/null || true
 pkill -f "npm run dev" 2>/dev/null || true
-sleep 2
+sleep 0.5
 
 # 二次确认端口已释放
-echo ">>> 二次确认端口状态..."
 if is_port_listening "${PORT_BACKEND}"; then
   echo ">>> [WARN] 端口 ${PORT_BACKEND} 仍被占用，尝试强制清理..."
-  # Force kill all processes on this port (not just LISTEN)
   lsof -nP -i :${PORT_BACKEND} -t | xargs kill -9 2>/dev/null || true
-  sleep 3
+  sleep 0.5
 fi
 
 if is_port_listening "${PORT_FRONTEND}"; then
   echo ">>> [WARN] 端口 ${PORT_FRONTEND} 仍被占用，尝试强制清理..."
   lsof -nP -i :${PORT_FRONTEND} -t | xargs kill -9 2>/dev/null || true
-  sleep 3
+  sleep 0.5
 fi
 
 # 清理运行时大型文件，加速启动

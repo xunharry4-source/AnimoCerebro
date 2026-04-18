@@ -224,10 +224,34 @@ cd src/admin-portal && npm run dev
 
 ## ⚙️ Configuration
 
-The system is configured via YAML files. The primary configuration directory is `config/`.
+The system is configured via YAML files and environment variables. The primary configuration directory is `config/`.
 
-- **Model Providers**: `config/provider_tools.yml` defines API bases, models, and environment variable keys for LLM providers.
+- **Model Providers**: `config/provider_tools.yml` defines API bases, models, and environment variable names for LLM providers.
+- **API Keys**: Store your API keys in a `.env` file at the project root (recommended) or set them as environment variables.
 - **System Settings**: Local runtime state and environment variables can be used to further tune the brain's behavior.
+
+### LLM API Key Configuration
+
+**Method 1: Using `.env` file (Recommended)**
+
+Create a `.env` file in the project root directory:
+
+```bash
+# .env file at project root
+GEMINI_API_KEY=your-gemini-key-here
+OPENAI_API_KEY=sk-your-openai-key-here
+ANTHROPIC_API_KEY=your-anthropic-key-here
+```
+
+**Method 2: Environment Variables**
+
+```bash
+export GEMINI_API_KEY=your-key-here
+export OPENAI_API_KEY=sk-your-key
+export ANTHROPIC_API_KEY=your-key-here
+```
+
+The system automatically loads `.env` file and resolves API keys based on the `api_key_env` field in `config/provider_tools.yml`.
 
 Example `config/provider_tools.yml` entry:
 
@@ -250,15 +274,9 @@ The system supports these LLM providers through `config/provider_tools.yml`:
 - `gemini`: Google Gemini API (generativelanguage.googleapis.com)
 - `claude`: Anthropic Claude API (api.anthropic.com/v1)
 
-Configure API keys via environment variables:
+Configure API keys in `.env` file or environment variables (see Configuration section above).
 
-```bash
-export GEMINI_API_KEY=your-key-here
-export OPENAI_API_KEY=sk-your-key
-export ANTHROPIC_API_KEY=your-key-here
-```
-
-Or set in `config/provider_tools.yml` by modifying the `api_key_env` field.
+**Note**: The system also supports `GOOGLE_API_KEY` as an alias for `GEMINI_API_KEY` for compatibility.
 
 ## Testing
 

@@ -17,7 +17,22 @@ from typing import Any, Optional
 
 from zentex.kernel.service import KernelService
 from zentex.web_console.contracts.runtime import RuntimeOverviewPayload
+from zentex.web_console.contracts.transcript import TranscriptEventPayload
 from zentex.web_console.transcript_serialization import serialize_transcript_entry
+
+
+def _coerce_transcript_payload(entry: Any) -> TranscriptEventPayload:
+    if isinstance(entry, dict):
+        # Normalise timestamp to ISO string if it's a datetime object
+        ts = entry.get("timestamp")
+        if hasattr(ts, "isoformat"):
+            entry = {**entry, "timestamp": ts.isoformat()}
+        # Normalise entry_type to string (may be an Enum)
+        et = entry.get("entry_type")
+        if et is not None and not isinstance(et, str):
+            entry = {**entry, "entry_type": str(getattr(et, "value", et))}
+        return TranscriptEventPayload.model_validate(entry)
+    return serialize_transcript_entry(entry)
 
 def build_overview_payload(
     facade: KernelService,
@@ -37,13 +52,13 @@ def build_overview_payload(
     
     # 2. Result Splicing (Mapping core data to UI Contract)
     recent_events = [
-        serialize_transcript_entry(entry) 
+        _coerce_transcript_payload(entry)
         for entry in snapshot.get("recent_entries", [])
     ]
     
     last_intervention = None
     if snapshot.get("last_intervention"):
-        last_intervention = serialize_transcript_entry(snapshot["last_intervention"])
+        last_intervention = _coerce_transcript_payload(snapshot["last_intervention"])
 
     weights = snapshot.get("weights") or {}
     

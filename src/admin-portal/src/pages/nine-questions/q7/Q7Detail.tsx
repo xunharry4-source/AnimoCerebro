@@ -27,6 +27,8 @@ import MountedPluginsZone from "../../../components/MountedPluginsZone";
 import LLMTracePanel from "../../../components/LLMTracePanel";
 import NineQuestionIntroCard from "../../../components/NineQuestionIntroCard";
 import Q7DataTabs from "../../../components/Q7DataTabs";
+import NineQuestionIncompleteResultAlert from "../../../components/NineQuestionIncompleteResultAlert";
+import NineQuestionRerunButton from "../../../components/NineQuestionRerunButton";
 
 function resolveErrorGuidance(errMsg: string): { title: string; action: string } {
   if (errMsg.includes("No active session") || errMsg.includes("没有活动 session")) {
@@ -102,6 +104,7 @@ export const Q7Detail: React.FC = () => {
   const evidence = question.preprocessed_evidence as Q7PreprocessedEvidence;
   const inference = question.inference_result as Q7AlternativeStrategyInferenceView;
   const llmTrace = question.llm_trace_payload;
+  const hasStructuredSnapshot = Boolean(evidence && inference);
 
   return (
     <Box data-testid="q7-detail-root" sx={{ display: "flex", flexDirection: "column", gap: 3 }}>
@@ -114,26 +117,36 @@ export const Q7Detail: React.FC = () => {
             Degradation Strategy & Fallback Planning (Independent API GET /nine-questions/q7)
           </Typography>
         </Box>
-        <Button
-          component={RouterLink}
-          to={`/console/nine-questions/${qId}/test`}
-          variant="contained"
-          color="warning"
-          data-testid="q7-sandbox-nav-button"
-        >
-          进入独立沙箱测试
-        </Button>
+        <Stack direction="row" spacing={1}>
+          <NineQuestionRerunButton qId={qId} onCompleted={loadDetail} />
+          <Button
+            component={RouterLink}
+            to={`/console/nine-questions/${qId}/test`}
+            variant="contained"
+            color="warning"
+            data-testid="q7-sandbox-nav-button"
+          >
+            进入独立沙箱测试
+          </Button>
+        </Stack>
       </Stack>
 
 
-      {/* 问题介绍栏目 */}
-      <NineQuestionIntroCard questionId="q7" />
-
-      {/* Q7 实际数据详情 Tab 面板 */}
-      <Q7DataTabs 
-        evidence={evidence as any} 
-        inference={inference as any} 
-      />
+      {hasStructuredSnapshot ? (
+        <>
+          <NineQuestionIntroCard questionId="q7" />
+          <Q7DataTabs
+            evidence={evidence as any}
+            inference={inference as any}
+          />
+        </>
+      ) : (
+        <NineQuestionIncompleteResultAlert
+          questionId={qId}
+          result={question.result}
+          contextUpdates={question.context_updates}
+        />
+      )}
       <Card variant="outlined">
         <CardContent>
           <Stack direction="row" spacing={1} sx={{ mb: 2 }} useFlexGap flexWrap="wrap">
@@ -147,14 +160,14 @@ export const Q7Detail: React.FC = () => {
         </CardContent>
       </Card>
 
-      {evidence && (
+      {hasStructuredSnapshot ? (
         <Q7EvidencePanel
           evidence={evidence}
           inference={inference}
           providerName={question.provider_name || null}
           elapsedMs={llmTrace?.elapsed_ms || 0}
         />
-      )}
+      ) : null}
 
       <LLMTracePanel trace={llmTrace as LLMTracePayloadView} />
     </Box>

@@ -72,26 +72,38 @@ def _require_task_service(service: Any = Depends(get_task_service)) -> TaskManag
 async def list_tasks(
     service: Annotated[TaskManagementService, Depends(_require_task_service)],
     status_filter: Optional[str] = Query(None, description="Filter by status"),
+    source_module: Optional[str] = Query(None, description="Filter by workflow source module"),
 ) -> List[ZentexTask]:
     """List all tasks with optional status filter."""
     if status_filter:
         try:
             status_enum = TaskStatus(status_filter)
-            return service.list_tasks(status=status_enum)
+            return service.list_tasks(status=status_enum, source_module=source_module)
         except ValueError:
             raise HTTPException(status_code=400, detail=f"Invalid status: {status_filter}")
-    return service.list_tasks()
+    return service.list_tasks(source_module=source_module)
 
 
 @router.get("/tasks/by-status")
 async def get_tasks_grouped_by_status(
     service: Annotated[TaskManagementService, Depends(_require_task_service)],
+    source_module: Optional[str] = Query(None, description="Filter grouped tasks by workflow source module"),
 ) -> Dict[str, List[ZentexTask]]:
     """Get tasks grouped by status categories for tabbed view.
 
     Grouping rules are owned by TaskManagementService.list_tasks_grouped().
     """
-    return service.list_tasks_grouped()
+    grouped = service.list_tasks_grouped()
+    if not source_module:
+        return grouped
+    return {
+        key: [
+            task
+            for task in tasks
+            if str((task.metadata or {}).get("source_module", "")) == source_module
+        ]
+        for key, tasks in grouped.items()
+    }
 
 
 @router.get("/tasks/{task_id}/detail")

@@ -4,7 +4,7 @@
 
 ## 一、核心契约与继承底座
 
-- 所有新插件必须最终继承 [BasePluginSpec](../../zentex/core/plugin_base.py)，并直接实现 [SubjectiveWeightPlugin](../../plugins/weights/subjective_weight_plugin.py)。
+- 所有新插件必须最终继承 [BasePluginSpec](../../zentex/core/plugin_base.py)，并直接实现 [SubjectiveWeightPlugin](../../plugins/weights/assembler/weight_assembler_plugin.py)。
 - 插件物理代码必须放在 `src/plugins/weights/` 下。
 - 必须声明并提供：
   - `risk_tolerance`
@@ -64,7 +64,7 @@ except Exception:
 ```python
 import pytest
 
-from plugins.weights.subjective_weight_plugin import RationalAuditRejectError
+from plugins.weights.assembler.weight_assembler_plugin import RationalAuditRejectError
 
 
 def test_weight_plugin_rolls_back_when_audit_rejects() -> None:

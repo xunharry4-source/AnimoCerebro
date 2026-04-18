@@ -13,10 +13,9 @@ This module must remain a 'Logic-Free Zone'. Any evolution of LLM provider detec
 token calculation rules, or usage reporting must be implemented in `zentex.llm.service`.
 """
 from __future__ import annotations
-from typing import Any, Dict, Optional
+from typing import Any
 from fastapi import Request, HTTPException
 from zentex.llm.service import get_llm_service
-from zentex.foundation.specs.model_provider import ModelProviderSpec
 from zentex.web_console.contracts.runtime import LLMStatusPayload
 
 def compute_llm_status(request: Request, *, probe_live: bool = False) -> LLMStatusPayload:
@@ -40,32 +39,8 @@ def compute_llm_status(request: Request, *, probe_live: bool = False) -> LLMStat
         provider_error_type=status.provider_error_type,
         hint=None  # Explicitly removing 'apology' hints from the UI layer
     )
-    
-    # Update request state for downstream dependencies
     request.app.state.llm_status = payload
     return payload
-
-def resolve_active_model_provider_from_records(
-    records: Dict[str, Any],
-) -> Optional[ModelProviderSpec]:
-    """Scan managed plugin records for an active model provider and return its spec."""
-    for plugin_id, record in records.items():
-        lifecycle = getattr(record, "lifecycle_status", None) or (
-            record.get("lifecycle_status") if isinstance(record, dict) else None
-        )
-        category = getattr(record, "category", None) or (
-            record.get("category") if isinstance(record, dict) else None
-        )
-        if str(lifecycle or "").lower() != "active":
-            continue
-        if str(category or "").lower() != "llm":
-            continue
-        spec = getattr(record, "spec", None) or (
-            record.get("spec") if isinstance(record, dict) else None
-        )
-        if isinstance(spec, ModelProviderSpec):
-            return spec
-    return None
 
 
 def enforce_llm_available(request: Request) -> None:

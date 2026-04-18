@@ -26,6 +26,7 @@ from zentex.foundation.specs.model_provider import (
 from zentex.llm.service import LLMService
 from zentex.kernel import BrainTranscriptEntryType, BrainTranscriptStore
 from zentex.plugins.contracts import PluginLifecycleStatus
+from zentex.memory.consolidation.llm_prompt import build_consolidation_summary_prompt
 
 try:
     from zentex.common.plugin_registry import PluginNotBoundError
@@ -585,10 +586,7 @@ class ConsolidationEngine:
             for ref in output.compressed_refs
         ]
 
-        prompt = (
-            "Summarize the reusable memory value of the supplied memory fragments. "
-            "Return JSON with keys summary, promotion_candidates, compressed_refs."
-        )
+        prompt = build_consolidation_summary_prompt()["prompt"]
         llm_context = self._translate_model_context(
             task_request=task_request,
             plugin_outputs=plugin_outputs,
