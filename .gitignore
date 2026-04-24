@@ -7,3 +7,77 @@
 /.idea/misc.xml
 /.idea/modules.xml
 /.idea/vcs.xml
+/.idea/workspace.xml
+/.venv/
+/.lingma/
+/chrome_custom_profile/
+/chrome_social_profile/
+/browser_sessions/
+# Database files
+*.db
+*.sqlite
+*.sqlite3
+*.db-journal
+/data/
+/tmp/
+# Python cache
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+build/
+develop-eggs/
+dist/
+downloads/
+eggs/
+.eggs/
+lib/
+lib64/
+parts/
+sdist/
+var/
+wheels/
+*.egg-info/
+.installed.cfg
+*.egg
+MANIFEST
+# Environment variables
+.env
+.env.local
+.env.*.local
+# Logs
+*.log
+logs/
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+# OS generated files
+.DS_Store
+.DS_Store?
+._*
+.Spotlight-V100
+.Trashes
+ehthumbs.db
+Thumbs.db
+/desktop.ini
+# Playwright
+/playwright_tmp/
+/screenshots/
+# Test artifacts
+.pytest_cache/
+.coverage
+htmlcov/
+.tox/
+.nox/
+# IDE
+.vscode/
+*.swp
+*.swo
+*~
+# Jupyter Notebook
+.ipynb_checkpoints
+# mypy
+.mypy_cache/
+.dmypy.json
+dmypy.json

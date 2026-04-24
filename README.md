@@ -14,6 +14,8 @@ AnimoCerebro is responsible for reasoning, role inference, goal generation, risk
 
 **🎉 Major Version Update**: This project has undergone a significant architectural evolution (v2.0) with enhanced modularity, plugin architecture, and autonomous decision-making capabilities. See [Major Version Update](docs/MAJOR_VERSION_UPDATE.md) for details.
 
+**🎉 主要版本更新**: 本项目经历了重大的架构演进（v2.0），具有增强的模块化、插件架构和自主决策能力。详见[主要版本更新](docs/MAJOR_VERSION_UPDATE_ZH.md)。
+
 ## What It Is
 
 AnimoCerebro is built around a **nine-question cognitive loop**, which drives AI's autonomous decision-making:
