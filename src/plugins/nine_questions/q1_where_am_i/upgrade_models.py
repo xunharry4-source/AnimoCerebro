@@ -8,6 +8,7 @@ inference schema so the plugin can expose upgrade planning metadata without
 mixing it into the runtime inference contract.
 """
 
+from typing import List, Optional
 from pydantic import BaseModel, ConfigDict, Field
 
 
@@ -21,8 +22,8 @@ class Q1LLMUpgradeProfile(BaseModel):
     baseline_version: str = Field(min_length=1)
     target_metric: str = Field(min_length=1)
     objective_summary: str = Field(min_length=1)
-    dataset_refs: list[str] = Field(default_factory=list)
-    validation_commands: list[str] = Field(default_factory=list)
+    dataset_refs: List[str] = Field(default_factory=list)
+    validation_commands: List[str] = Field(default_factory=list)
 
 
 class Q1LLMUpgradePlanPayload(BaseModel):
@@ -32,6 +33,6 @@ class Q1LLMUpgradePlanPayload(BaseModel):
 
     planning_status: str = Field(min_length=1)
     profile: Q1LLMUpgradeProfile
-    candidate_version: str | None = None
-    release_gate: list[str] = Field(default_factory=list)
-    error_message: str | None = None
+    candidate_version: Optional[str] = None
+    release_gate: List[str] = Field(default_factory=list)
+    error_message: Optional[str] = None

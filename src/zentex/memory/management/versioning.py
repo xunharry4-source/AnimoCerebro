@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from typing import Any, Dict, List, Optional, Union
+
 """
 Memory versioning and rollback for profile-mode records.
 
@@ -18,7 +20,8 @@ import difflib
 import json
 import logging
 import threading
-from datetime import UTC, datetime
+from datetime import datetime, timezone
+UTC = timezone.utc
 from pathlib import Path
 from uuid import uuid4
 
@@ -70,16 +73,16 @@ class VersionChain(BaseModel):
     # ID of the memory_id currently considered "active" (usually latest).
     active_memory_id: str = ""
 
-    def latest(self) -> MemoryVersion | None:
+    def latest(self) -> Optional[MemoryVersion]:
         return self.versions[-1] if self.versions else None
 
-    def get_version(self, version_number: int) -> MemoryVersion | None:
+    def get_version(self, version_number: int) -> Optional[MemoryVersion]:
         for v in self.versions:
             if v.version_number == version_number:
                 return v
         return None
 
-    def diff(self, from_v: int, to_v: int) -> VersionDiff | None:
+    def diff(self, from_v: int, to_v: int) -> Optional[VersionDiff]:
         a = self.get_version(from_v)
         b = self.get_version(to_v)
         if not a or not b:
@@ -137,7 +140,7 @@ class VersionedMemoryStore:
     Thread-safe.  Persists to a single JSON file.
     """
 
-    def __init__(self, store_path: str | Path) -> None:
+    def __init__(self, store_path: Union[str, Path]) -> None:
         self._path = Path(store_path)
         self._path.parent.mkdir(parents=True, exist_ok=True)
         self._lock = threading.Lock()
@@ -216,7 +219,7 @@ class VersionedMemoryStore:
         title: str,
         source_kind: str,
         to_version: int,
-    ) -> MemoryVersion | None:
+    ) -> Optional[MemoryVersion]:
         """
         Mark an older version as the rollback target.
 
@@ -246,7 +249,7 @@ class VersionedMemoryStore:
         source_kind: str,
         from_v: int,
         to_v: int,
-    ) -> VersionDiff | None:
+    ) -> Optional[VersionDiff]:
         key = self.make_profile_key(memory_layer, title, source_kind)
         with self._lock:
             chain = self._chains.get(key)
@@ -260,7 +263,7 @@ class VersionedMemoryStore:
         title: str,
         source_kind: str,
         branch_name: str,
-    ) -> VersionBranch | None:
+    ) -> Optional[VersionBranch]:
         key = self.make_profile_key(memory_layer, title, source_kind)
         with self._lock:
             chain = self._chains.get(key)
@@ -311,7 +314,7 @@ class VersionedMemoryStore:
 
     # ── queries ──────────────────────────────────────────────────────────
 
-    def get_chain(self, memory_layer: str, title: str, source_kind: str) -> VersionChain | None:
+    def get_chain(self, memory_layer: str, title: str, source_kind: str) -> Optional[VersionChain]:
         key = self.make_profile_key(memory_layer, title, source_kind)
         with self._lock:
             return self._chains.get(key)

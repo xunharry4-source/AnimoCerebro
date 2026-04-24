@@ -1,3 +1,5 @@
+from __future__ import annotations
+
 #!/usr/bin/env python3
 """
 Phase 2 任务系统迁移脚本
@@ -31,6 +33,7 @@ sys.path.insert(0, str(Path.cwd() / 'src'))
 from zentex.tasks.models import ZentexTask, SuspendedTask, TaskStatus
 from zentex.tasks.persistence.dao import TaskDAO, SuspendedTaskDAO
 from zentex.common.database import DatabaseConnection
+from zentex.config.storage import get_storage_paths
 
 
 def check_json_files():
@@ -111,7 +114,7 @@ def migrate_to_sqlite(tasks: dict, suspended_tasks: dict):
     
     try:
         # 连接到数据库
-        db = DatabaseConnection("runtime/data/zentex_core.db")
+        db = DatabaseConnection(get_storage_paths().core_db)
         task_dao = TaskDAO(db)
         suspended_dao = SuspendedTaskDAO(db)
         
@@ -175,7 +178,7 @@ def verify_migration():
     print("=" * 60)
     
     try:
-        db = DatabaseConnection("runtime/data/zentex_core.db")
+        db = DatabaseConnection(get_storage_paths().core_db)
         task_dao = TaskDAO(db)
         
         # 查询数据库中的任务数

@@ -91,6 +91,9 @@ class RetryHandler:
         self._total_retries = 0
         self._circuit_open = False
         self._consecutive_failures = 0
+        self._circuit_opened_at: Optional[float] = None
+        # After this many seconds in open state, allow one probe through (half-open).
+        self._circuit_reset_timeout: float = 60.0
         
         logger.info(
             f"RetryHandler initialized: "
@@ -121,8 +124,19 @@ class RetryHandler:
         self._total_calls += 1
         
         if self._circuit_open:
-            logger.warning("Circuit breaker is open, rejecting request")
-            raise Exception("Circuit breaker open - too many consecutive failures")
+            # Half-open: after reset_timeout seconds, allow one probe request through.
+            elapsed = time.monotonic() - (self._circuit_opened_at or 0)
+            if elapsed >= self._circuit_reset_timeout:
+                logger.info(
+                    "Circuit breaker half-open after %.0fs — allowing probe request",
+                    elapsed,
+                )
+                self._circuit_open = False
+                self._consecutive_failures = 0
+                self._circuit_opened_at = None
+            else:
+                logger.warning("Circuit breaker is open, rejecting request")
+                raise Exception("Circuit breaker open - too many consecutive failures")
         
         last_exception = None
         attempts = []
@@ -152,8 +166,8 @@ class RetryHandler:
                         f"Non-retryable error: {type(e).__name__}: {e}"
                     )
                     self._failed_calls += 1
-                    self._consecutive_failures += 1
-                    self._check_circuit_breaker()
+                    # Non-retryable errors (404, auth, config) are NOT transient
+                    # service failures — do NOT count toward circuit breaker.
                     raise
                 
                 # Check if we have retries left
@@ -271,15 +285,18 @@ class RetryHandler:
         # Open circuit after 10 consecutive failures
         if self._consecutive_failures >= 10:
             self._circuit_open = True
+            self._circuit_opened_at = time.monotonic()
             logger.error(
                 f"🔴 Circuit breaker opened after "
-                f"{self._consecutive_failures} consecutive failures"
+                f"{self._consecutive_failures} consecutive failures. "
+                f"Will allow probe after {self._circuit_reset_timeout:.0f}s."
             )
     
     def reset_circuit_breaker(self):
         """Manually reset circuit breaker."""
         self._circuit_open = False
         self._consecutive_failures = 0
+        self._circuit_opened_at = None
         logger.info("Circuit breaker reset")
     
     def get_stats(self) -> dict:

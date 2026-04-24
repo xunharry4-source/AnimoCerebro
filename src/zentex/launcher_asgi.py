@@ -17,6 +17,15 @@ from pathlib import Path
 
 logger = logging.getLogger(__name__)
 
+# Ensure a console handler exists for INFO logs (startup markers, etc.)
+try:
+    from zentex.common.startup_markers import ensure_console_logging_configured
+
+    ensure_console_logging_configured()
+except Exception:
+    # Never block startup on logging bootstrap.
+    pass
+
 
 _ACCESS_STATUS_RE = re.compile(r'"\s(\d{3})\s')
 
@@ -73,7 +82,9 @@ def _is_development_mode() -> bool:
 
 
 def _persist_startup_traceback(traceback_text: str) -> Path:
-    log_dir = Path("app_data") / "logs"
+    from zentex.common.storage_paths import get_storage_paths
+
+    log_dir = get_storage_paths().app_data_dir / "logs"
     log_dir.mkdir(parents=True, exist_ok=True)
     log_path = log_dir / "startup_error.log"
     timestamp = datetime.now().isoformat(timespec="seconds")

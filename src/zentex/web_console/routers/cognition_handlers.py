@@ -1,8 +1,8 @@
+from __future__ import annotations
 """
 Cognition Route Handlers — Business logic for cognitive engine interactions.
 Extracted from cognition.py to follow the Facade-First / Thin-Route pattern.
 """
-from __future__ import annotations
 import logging
 from typing import Any, Dict, List
 from fastapi import HTTPException
@@ -41,13 +41,28 @@ def handle_get_cognitive_agenda(temporal_engine: Any) -> CognitiveAgendaPayload:
     except TimeoutError:
         logger.warning("CognitiveTemporalEngine.evaluate() timed out; returning empty agenda")
         return CognitiveAgendaPayload(
-            state={"state_id": "timeout_fallback", "review_now_item_ids": [], "overdue_item_ids": []},
+            state={
+                "state_id": "timeout_fallback",
+                "review_now_item_ids": [],
+                "overdue_item_ids": [],
+                "health_status": "degraded",
+                "degradation_reason": "timeout",
+            },
             items=[],
         )
-    except Exception as exc:
-        logger.error(f"Error evaluating cognitive agenda: {exc}")
+    except Exception:
+        # Do not collapse agenda engine faults into a silent empty agenda. The
+        # monitoring page may degrade to an empty list, but it must explicitly show
+        # degraded state and preserve the traceback for diagnosis.
+        logger.exception("Error evaluating cognitive agenda")
         return CognitiveAgendaPayload(
-            state={"state_id": "error_fallback", "review_now_item_ids": [], "overdue_item_ids": []},
+            state={
+                "state_id": "error_fallback",
+                "review_now_item_ids": [],
+                "overdue_item_ids": [],
+                "health_status": "degraded",
+                "degradation_reason": "exception",
+            },
             items=[],
         )
 
@@ -101,6 +116,10 @@ def handle_get_simulation_bundle(goal_id: str, simulation_engine: Any) -> Simula
     except HTTPException:
         raise
     except Exception as exc:
+        # Do not hide simulation retrieval failures behind a plain 500 without a
+        # traceback. That would make the control surface look healthy while the
+        # backend bundle assembly is already broken.
+        logger.exception("Error retrieving simulation bundle for %s", goal_id)
         raise HTTPException(status_code=500, detail=f"Failed to retrieve simulation bundle: {exc}")
 
 
@@ -114,9 +133,26 @@ def handle_get_interaction_mind(entity_id: str, interaction_mind_engine: Any) ->
                 "message": "InteractionMindEngine 未初始化。",
             },
         )
-    state = interaction_mind_engine.get_state(entity_id)
-    state_payload = state.model_dump(mode="json") if hasattr(state, "model_dump") else {}
-    return InteractionMindPayload(state=state_payload)
+    try:
+        state = interaction_mind_engine.get_state(entity_id)
+        state_payload = state.model_dump(mode="json") if hasattr(state, "model_dump") else {}
+        return InteractionMindPayload(state=state_payload)
+    except HTTPException:
+        raise
+    except Exception as exc:
+        # Do not let interaction-mind retrieval fail without an explicit traceback.
+        # Pretending this is a generic backend miss destroys operational visibility.
+        logger.exception("Error retrieving interaction mind for %s", entity_id)
+        raise HTTPException(
+            status_code=500,
+            detail={
+                "error": "interaction_mind_query_failed",
+                "message": "Failed to retrieve interaction mind state",
+                "entity_id": entity_id,
+                "exception_type": type(exc).__name__,
+                "exception_message": str(exc),
+            },
+        ) from exc
 
 
 def handle_get_consolidation_cycles(consolidation_engine: Any) -> ConsolidationCyclesPayload:
@@ -129,10 +165,24 @@ def handle_get_consolidation_cycles(consolidation_engine: Any) -> ConsolidationC
                 "message": "ConsolidationEngine 未初始化。",
             },
         )
-    cycles = consolidation_engine.get_recent_cycles()
-    return ConsolidationCyclesPayload(
-        cycles=[cycle.model_dump(mode="json") if hasattr(cycle, "model_dump") else {} for cycle in cycles]
-    )
+    try:
+        cycles = consolidation_engine.get_recent_cycles()
+        return ConsolidationCyclesPayload(
+            cycles=[cycle.model_dump(mode="json") if hasattr(cycle, "model_dump") else {} for cycle in cycles]
+        )
+    except HTTPException:
+        raise
+    except Exception as exc:
+        logger.exception("Error retrieving consolidation cycles")
+        raise HTTPException(
+            status_code=500,
+            detail={
+                "error": "consolidation_cycles_query_failed",
+                "message": "Failed to retrieve consolidation cycles",
+                "exception_type": type(exc).__name__,
+                "exception_message": str(exc),
+            },
+        ) from exc
 
 
 def handle_trigger_consolidation(consolidation_engine: Any) -> Dict[str, str]:
@@ -142,5 +192,21 @@ def handle_trigger_consolidation(consolidation_engine: Any) -> Dict[str, str]:
             status_code=503,
             detail={"error": "consolidation_engine_unavailable"},
         )
-    cycle_id = consolidation_engine.submit_cycle(trigger_reason="manual_web_console")
-    return {"status": "triggered", "cycle_id": cycle_id}
+    try:
+        cycle_id = consolidation_engine.submit_cycle(trigger_reason="manual_web_console")
+        return {"status": "triggered", "cycle_id": cycle_id}
+    except HTTPException:
+        raise
+    except Exception as exc:
+        # Manual trigger is a control path. Returning a generic failure without the
+        # traceback would hide a real backend control-plane fault and is forbidden.
+        logger.exception("Error triggering consolidation cycle from cognition handler")
+        raise HTTPException(
+            status_code=500,
+            detail={
+                "error": "consolidation_trigger_failed",
+                "message": "Failed to trigger consolidation cycle",
+                "exception_type": type(exc).__name__,
+                "exception_message": str(exc),
+            },
+        ) from exc

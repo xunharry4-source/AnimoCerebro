@@ -13,7 +13,6 @@ from zentex.reflection.models import (
 )
 from zentex.reflection.service import ReflectionService
 from zentex.reflection.interface import ReflectionInterface
-from zentex.reflection.persistence import ReflectionPersistence
 from zentex.reflection.llm_generator import LLMReflectionGenerator, get_llm_reflection_generator
 from zentex.reflection.quality_assessor import ReflectionQualityAssessor
 from zentex.reflection.data_sync import ReflectionDataSync
@@ -45,24 +44,16 @@ class ReflectionManager:
             enable_persistence: 是否启用持久化
             backup_count: 备份数量
         """
-        # 设置持久化
-        persistence = None
-        if enable_persistence:
-            if storage_path:
-                persistence = ReflectionPersistence(storage_path, backup_count)
-            else:
-                # 默认存储路径
-                default_path = Path("./reflection_data")
-                default_path.mkdir(exist_ok=True)
-                persistence = ReflectionPersistence(str(default_path), backup_count)
-        
+        del backup_count
+        db_path = storage_path or str(Path(".zentex/reflection/reflection.sqlite3"))
+
         # 创建服务
-        self.service = ReflectionService(persistence)
+        self.service = ReflectionService(db_path=db_path)
         
         # 创建统一接口
         self.interface = ReflectionInterface(self.service)
         
-        logger.info(f"ReflectionManager initialized with persistence={enable_persistence}")
+        logger.info("ReflectionManager initialized with sqlite persistence only")
     
     # === 高级反思生成 ===
     

@@ -1,3 +1,4 @@
+from __future__ import annotations
 """
 Startup configuration dataclasses for zentex.launcher.
 
@@ -5,7 +6,6 @@ All config objects use stdlib dataclasses (not Pydantic) because fields are
 mutated during the loading phase by EnvReader and other pre-validation steps.
 """
 
-from __future__ import annotations
 
 from dataclasses import dataclass, field
 
@@ -14,8 +14,8 @@ from dataclasses import dataclass, field
 class DatabaseConfig:
     """Database / persistence configuration."""
 
-    sqlite_dir: str = "app_data"
-    transcript_dir: str = "app_data/transcripts"
+    sqlite_dir: str = "data"
+    transcript_dir: str = "data/transcripts"
     pool_size: int = 5
     timeout_seconds: int = 30
 
@@ -39,7 +39,7 @@ class KernelConfig:
     session_timeout_seconds: int = 1800
     turn_max_concurrency: int = 10
     working_memory_slots: int = 16
-    transcript_db_dir: str = "app_data/transcripts"
+    transcript_db_dir: str = "data/transcripts"
 
 
 @dataclass

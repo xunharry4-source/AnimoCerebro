@@ -1,7 +1,7 @@
 """Session lifecycle contracts — metadata and snapshot models."""
 
 from datetime import datetime, timezone
-from enum import StrEnum
+from enum import Enum
 
 from pydantic import Field
 
@@ -10,7 +10,7 @@ from zentex.foundation.contracts.base_models import ZentexBaseModel
 UTC = timezone.utc
 
 
-class SessionStatus(StrEnum):
+class SessionStatus(str, Enum):
     active = "active"
     idle = "idle"
     suspended = "suspended"

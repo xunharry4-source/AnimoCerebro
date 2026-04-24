@@ -1,3 +1,4 @@
+from __future__ import annotations
 """
 Memory Service Builders — payload construction helpers for web_console memory routes.
 
@@ -26,7 +27,6 @@ DOES NOT:
   - Fall back to synthetic empty payloads on service failure — callers own that.
 """
 
-from __future__ import annotations
 
 from typing import Any, Protocol
 
@@ -34,6 +34,11 @@ from zentex.web_console.contracts.memory import (
     EnhancedMemoryAuditEventItem,
     EnhancedMemoryAuditPayload,
     EnhancedMemoryOverviewPayload,
+    MemoryRecordDiagnosticsPayload,
+    MemoryRecordManifestItem,
+    MemoryRepairAllPayload,
+    MemoryRepairSchedulerStatusPayload,
+    MemoryRepairTicketItem,
     EnhancedMemoryRecordItem,
     EnhancedMemoryRecallHitItem,
     EnhancedMemoryRecordsPayload,
@@ -47,6 +52,8 @@ class _ModelDumpLike(Protocol):
 
 
 class _EnhancedMemoryServiceLike(Protocol):
+    def query_managed_records(self, *args: Any, **kwargs: Any) -> list[Any]: ...
+
     def list_managed_records(self, *args: Any, **kwargs: Any) -> list[Any]: ...
 
     def list_semantic_records(self) -> list[Any]: ...
@@ -57,15 +64,37 @@ class _EnhancedMemoryServiceLike(Protocol):
 
     def list_projection_failures(self) -> list[Any]: ...
 
+    def list_initialization_failures(self) -> list[Any]: ...
+
+    def list_governance_failures(self) -> list[Any]: ...
+
+    def get_health_snapshot(self) -> dict[str, Any]: ...
+
     def get_backend_status(self) -> list[Any]: ...
 
     def recall(self, *args: Any, **kwargs: Any) -> list[Any]: ...
 
     def list_audit_events(self, *args: Any, **kwargs: Any) -> list[Any]: ...
 
+    def get_record_header(self, memory_id: str) -> Any: ...
+
+    def get_record_manifest(self, memory_id: str) -> Any: ...
+
+    def verify_record(self, memory_id: str) -> Any: ...
+
+    def repair_record(self, memory_id: str) -> Any: ...
+
+    def repair_all(self) -> list[Any]: ...
+
 
 def build_enhanced_memory_record_item(record: _ModelDumpLike) -> EnhancedMemoryRecordItem:
-    return EnhancedMemoryRecordItem.model_validate(record.model_dump())
+    raw = record.model_dump()
+    allowed = {
+        key: raw[key]
+        for key in EnhancedMemoryRecordItem.model_fields
+        if key in raw
+    }
+    return EnhancedMemoryRecordItem.model_validate(allowed)
 
 
 def build_recall_hit_item(hit: _ModelDumpLike) -> EnhancedMemoryRecallHitItem:
@@ -90,6 +119,7 @@ def build_enhanced_memory_overview(
     service: _EnhancedMemoryServiceLike,
 ) -> EnhancedMemoryOverviewPayload:
     managed = service.list_managed_records(limit=10000)
+    health_snapshot = service.get_health_snapshot()
     return EnhancedMemoryOverviewPayload(
         semantic_count=len(service.list_semantic_records()),
         procedural_count=len(service.list_procedural_records()),
@@ -98,7 +128,12 @@ def build_enhanced_memory_overview(
         deprecated_count=sum(1 for item in managed if item.status == "deprecated"),
         archived_count=sum(1 for item in managed if item.status == "archived"),
         suspect_count=sum(1 for item in managed if item.trust_level == "suspect"),
+        health_status=str(health_snapshot.get("health_status", "unknown")),
         projection_failures=service.list_projection_failures(),
+        initialization_failures=service.list_initialization_failures(),
+        governance_failures=service.list_governance_failures(),
+        package_imports=int(health_snapshot.get("package_imports", 0)),
+        contamination_events=int(health_snapshot.get("contamination_events", 0)),
         backends=[
             MemoryBackendStatusItem.model_validate(item.model_dump())
             for item in service.get_backend_status()
@@ -111,15 +146,16 @@ def build_enhanced_memory_records_payload(
     *,
     layer: str,
     limit: int,
-    lifecycle_status: str | None,
-    visibility: str | None,
-    trust_level: str | None,
-    trace_id: str | None,
-    target_id: str | None,
-    tag: str | None,
+    lifecycle_status: Optional[str],
+    visibility: Optional[str],
+    trust_level: Optional[str],
+    trace_id: Optional[str],
+    target_id: Optional[str],
+    tag: Optional[str],
 ) -> EnhancedMemoryRecordsPayload:
     normalized = layer.lower()
-    records = service.list_managed_records(
+    query_fn = getattr(service, "query_managed_records", None) or service.list_managed_records
+    records = query_fn(
         layer=normalized,
         limit=limit,
         status=lifecycle_status,  # FIX: Use 'status' parameter name, not 'lifecycle_status'
@@ -141,8 +177,8 @@ def build_enhanced_memory_search_payload(
     *,
     query: str,
     limit: int,
-    trace_id: str | None,
-    target_id: str | None,
+    trace_id: Optional[str],
+    target_id: Optional[str],
 ) -> EnhancedMemorySearchPayload:
     hits = service.recall(
         query=query,
@@ -172,4 +208,42 @@ def build_enhanced_memory_audit_payload(
             build_memory_audit_event_item(event)
             for event in service.list_audit_events(memory_id=memory_id, limit=limit)
         ],
+    )
+
+
+def build_memory_repair_ticket_item(ticket: _ModelDumpLike) -> MemoryRepairTicketItem:
+    return MemoryRepairTicketItem.model_validate(ticket.model_dump())
+
+
+def build_memory_record_diagnostics_payload(
+    service: _EnhancedMemoryServiceLike,
+    *,
+    memory_id: str,
+) -> MemoryRecordDiagnosticsPayload:
+    header = service.get_record_header(memory_id)
+    if header is None:
+        raise KeyError(memory_id)
+    manifest = service.get_record_manifest(memory_id)
+    verification = service.verify_record(memory_id)
+    return MemoryRecordDiagnosticsPayload(
+        memory_id=memory_id,
+        storage_schema_version=int(getattr(header, "storage_schema_version", 1)),
+        record_health_status=str(getattr(header, "record_health_status", "unknown")),
+        repair_status=str(getattr(header, "repair_status", "unknown")),
+        header=header.model_dump(mode="json"),
+        manifest=MemoryRecordManifestItem.model_validate(manifest.model_dump()) if manifest is not None else None,
+        verification=build_memory_repair_ticket_item(verification) if verification is not None else None,
+    )
+
+
+def build_memory_repair_all_payload(
+    *,
+    items: list[_ModelDumpLike],
+    scheduler_status: dict[str, Any],
+    triggered_by: str = "web_console",
+) -> MemoryRepairAllPayload:
+    return MemoryRepairAllPayload(
+        triggered_by=triggered_by,
+        scheduler=MemoryRepairSchedulerStatusPayload.model_validate(scheduler_status),
+        items=[build_memory_repair_ticket_item(item) for item in items],
     )

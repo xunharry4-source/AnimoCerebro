@@ -1,7 +1,7 @@
 """Sensory signal models — raw ingestion, sanitisation and environment events."""
 
 from datetime import datetime, timezone
-from enum import StrEnum
+from enum import Enum
 from uuid import uuid4
 
 from pydantic import Field
@@ -11,7 +11,7 @@ from zentex.foundation.contracts.base_models import AuditableModel, ZentexBaseMo
 UTC = timezone.utc
 
 
-class SignalSecurityTag(StrEnum):
+class SignalSecurityTag(str, Enum):
     clean = "clean"
     sanitized = "sanitized"
     quarantined = "quarantined"

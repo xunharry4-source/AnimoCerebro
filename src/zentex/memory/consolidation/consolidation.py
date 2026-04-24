@@ -12,8 +12,9 @@ Why:
 
 from concurrent.futures import Future, ThreadPoolExecutor
 from datetime import datetime, timezone
+import logging
 from threading import Lock
-from typing import Any, Dict, List, Literal, Optional, Protocol, Tuple
+from typing import Any, Dict, List, Literal, Optional, Protocol, Tuple, Union
 from zentex.common.locking import get_lock_for_resource
 from uuid import uuid4
 
@@ -33,6 +34,9 @@ try:
 except ModuleNotFoundError:  # pragma: no cover
     class PluginNotBoundError(RuntimeError):
         pass
+
+
+logger = logging.getLogger(__name__)
 
 
 class StaleWriteError(RuntimeError):
@@ -276,13 +280,14 @@ class ConsolidationEngine:
     def __init__(
         self,
         *,
-        llm_service: LLMService | None = None,
-        model_provider: ModelProviderSpec | None = None,
-        model_provider_key: str | None = None,
+        llm_service: Optional[LLMService] = None,
+        model_provider: Optional[ModelProviderSpec] = None,
+        model_provider_key: Optional[str] = None,
         analysis_plugins: List[ConsolidationAnalysisPlugin],
         transcript_store: BrainTranscriptStore,
         brain_scope: str,
         queue: Optional[ConsolidationQueue] = None,
+        enhanced_archive_service: Any = None,
     ) -> None:
         """
         Initialize the consolidation engine.
@@ -296,12 +301,13 @@ class ConsolidationEngine:
             queue: Optional background queue adapter. Defaults to a local thread-pool queue.
         """
         self._llm_service = llm_service
-        self._model_provider: ModelProviderSpec | None = model_provider
+        self._model_provider: Optional[ModelProviderSpec] = model_provider
         self._model_provider_key = model_provider_key
         self._analysis_plugins: List[ConsolidationAnalysisPlugin] = list(analysis_plugins)
         self._transcript_store: BrainTranscriptStore = transcript_store
         self._brain_scope: str = brain_scope
         self._queue: ConsolidationQueue = queue or ThreadPoolConsolidationQueue()
+        self._enhanced_archive_service = enhanced_archive_service
         self._lock = get_lock_for_resource(f"consolidation:{brain_scope}")
         self._cycles_by_id: Dict[str, ConsolidationCycle] = {}
         self._snapshot_version: int = 0
@@ -316,7 +322,7 @@ class ConsolidationEngine:
         self.WARM_TIER_LIMIT = 10 * 1024 * 1024 * 1024 # 10GB (180 days)
         self.COLD_TIER_LIMIT = 50 * 1024 * 1024 * 1024 # 50GB
         
-        self._last_cycle_timestamp: datetime | None = None
+        self._last_cycle_timestamp: Optional[datetime] = None
         
         # Sub-function 59.5 - Storage Budget Monitoring (Priority 3)
         self.storage_usage_stats: Dict[str, float] = {"hot": 0.0, "warm": 0.0, "cold": 0.0}
@@ -342,7 +348,7 @@ class ConsolidationEngine:
         self,
         *,
         ref_versions: Dict[str, int],
-        tombstone_state: Dict[str, bool] | None = None,
+        tombstone_state: Dict[str, Optional[bool]] = None,
         snapshot_version: int = 0,
     ) -> None:
         """Seed in-memory version/tombstone state for development or isolated tests."""
@@ -683,17 +689,70 @@ class ConsolidationEngine:
                         f"expected version {expected_version}, got {current_version}"
                     )
 
+            # Stage updates to ensure either all apply or none
+            version_updates: Dict[str, int] = {}
+            tombstone_updates: Dict[str, bool] = {}
+
             for ref_id in cycle.promoted_refs:
-                self._memory_versions[ref_id] = self._memory_versions.get(ref_id, 0) + 1
+                version_updates[ref_id] = self._memory_versions.get(ref_id, 0) + 1
             for ref_id in cycle.compressed_refs:
-                self._memory_versions[ref_id] = self._memory_versions.get(ref_id, 0) + 1
+                version_updates[ref_id] = self._memory_versions.get(ref_id, 0) + 1
             for ref_id in cycle.pruned_refs:
-                self._tombstone_state[ref_id] = True
-                self._memory_versions[ref_id] = self._memory_versions.get(ref_id, 0) + 1
+                tombstone_updates[ref_id] = True
+                version_updates[ref_id] = self._memory_versions.get(ref_id, 0) + 1
+            
+            # ATOMIC APPLY
+            self._memory_versions.update(version_updates)
+            self._tombstone_state.update(tombstone_updates)
             self._snapshot_version += 1
+            self._last_cycle_timestamp = datetime.now(timezone.utc)
+
             committed_cycle = cycle.model_copy(update={"snapshot_version": self._snapshot_version})
             self._cycles_by_id[committed_cycle.cycle_id] = committed_cycle
+
+        # Persist governance snapshot outside the lock so a slow disk write
+        # doesn't block other readers.  Best-effort: failure is logged but
+        # never raises (in-memory state is already authoritative).
+        self._persist_governance_snapshot()
         return committed_cycle
+
+    def _persist_governance_snapshot(self) -> None:
+        """Write the current in-memory governance state to disk (best-effort).
+
+        Snapshot file: <app_data_dir>/memory/governance/<brain_scope>.json
+
+        On restart, callers can reload this file to restore the last committed
+        memory_versions, tombstone_state, and snapshot_version without
+        re-running all historical consolidation cycles.
+
+        This method never raises — disk failures are logged as warnings.
+        """
+        import json as _json
+        from pathlib import Path as _Path
+        from zentex.common.storage_paths import get_storage_paths
+
+        try:
+            with self._lock:
+                snapshot = {
+                    "brain_scope": self._brain_scope,
+                    "snapshot_version": self._snapshot_version,
+                    "memory_versions": dict(self._memory_versions),
+                    "tombstone_state": dict(self._tombstone_state),
+                    "persisted_at": datetime.now(timezone.utc).isoformat(),
+                }
+
+            gov_dir = _Path(get_storage_paths().app_data_dir) / "memory" / "governance"
+            gov_dir.mkdir(parents=True, exist_ok=True)
+            target = gov_dir / f"{self._brain_scope}.json"
+            tmp = target.with_suffix(".json.tmp")
+            tmp.write_text(_json.dumps(snapshot, ensure_ascii=False, indent=2), encoding="utf-8")
+            tmp.replace(target)  # atomic rename on POSIX; best-effort on Windows
+        except Exception:
+            logger.warning(
+                "consolidation: failed to persist governance snapshot for brain_scope=%s",
+                self._brain_scope,
+                exc_info=True,
+            )
 
     def _build_failed_cycle(
         self,
@@ -829,31 +888,6 @@ class ConsolidationEngine:
         """Extract the stable memory reference id from an input memory object."""
         return str(item.get("ref_id") or item.get("id") or "unknown-ref")
 
-    def check_and_trigger_automatic_consolidation(self) -> None:
-        """Automatic scheduling triggers (Sub-function 59.4)."""
-        now = datetime.now(timezone.utc)
-        
-        # 1. Heartbeat Idle Slot detection (Rule: 1 hour since last cycle)
-        last_time = self._last_cycle_timestamp or datetime.fromtimestamp(0, timezone.utc)
-        if (now - last_time).total_seconds() > 3600:
-             # Trigger background cycle if system is idle (simulated)
-             self._idle_slot_detected = True
-        
-        # 2. Tiered Storage budget checking (Rule: 85% threshold per tier)
-        hot_size = self._calculate_tier_size("hot")
-        if hot_size > self.HOT_TIER_LIMIT * 0.85:
-             # Automatic promotion to Warm/Cold or Pruning
-             self._trigger_consolidation_for_reason("hot_tier_pressure")
-             
-        warm_size = self._calculate_tier_size("warm")
-        if warm_size > self.WARM_TIER_LIMIT * 0.85:
-             self._trigger_consolidation_for_reason("warm_tier_pressure")
-
-    def _calculate_tier_size(self, tier: Literal["hot", "warm", "cold"]) -> int:
-        """Calculate total bytes for a specific storage tier (Sub-function 59.5 Gap)."""
-        # Simulation: in a real system, this queries the filesystem or DB manifests
-        return sum(len(str(v)) for v in self._memory_versions.values()) # Placeholder
-
     def _trigger_consolidation_for_reason(self, reason: str) -> None:
         """Helper to submit a consolidation cycle for a specific resource reason."""
         self.submit_cycle(
@@ -866,12 +900,21 @@ class ConsolidationEngine:
         )
 
     def prune_stale_agenda(self, agenda_items: List[Any], rules: List[ForgettableNoiseRule]) -> List[str]:
-        """Prune expired agenda items using DeferredRiskScore logic (Sub-function 59 gap)."""
+        """Prune expired agenda items using DeferredRiskScore logic (Sub-function 59 gap).
+
+        Items without a ``created_at_ts`` field are skipped conservatively —
+        same policy as apply_forgetting_rules.
+        """
         pruned_ids = []
         now = datetime.now(timezone.utc).timestamp()
         for item in agenda_items:
-            # Assuming item has created_at and importance
-            age = now - item.get("created_at_ts", now)
+            if "created_at_ts" not in item:
+                logger.debug(
+                    "prune_stale_agenda: skipping item %s — missing created_at_ts",
+                    item.get("item_id", "<unknown>"),
+                )
+                continue
+            age = now - item["created_at_ts"]
             risk_score = item.get("deferred_risk_score", 0.5)
             
             for rule in rules:
@@ -915,46 +958,132 @@ class ConsolidationEngine:
 
     def archive_cold(self, memory_ids: List[str]) -> bool:
         """Move memory references from warm/hot to cold storage (Priority 3)."""
-        # 1. Update management state in EnhancedMemoryService via the bridge
-        # Simulation: in a real implementation, we would call enhanced_service.archive_cold 
-        # For now, we update versions to trigger bridge synchronization
-        with self._lock:
-            for m_id in memory_ids:
-                if m_id in self._memory_versions:
-                    self._memory_versions[m_id] += 1
-            self._snapshot_version += 1
-        return True
+        if self._enhanced_archive_service is None:
+            raise RuntimeError(
+                "Enhanced memory archive service is required for archive_cold; "
+                "simulation-only success is forbidden."
+            )
+
+        archived_any = False
+        for memory_id in memory_ids:
+            try:
+                self._enhanced_archive_service.archive_cold(
+                    memory_id,
+                    operator="consolidation_engine",
+                )
+                archived_any = True
+                self.mark_memory_ref_updated(memory_id)
+            except Exception as exc:
+                # Forbidden: returning True here would pretend cold-archive succeeded
+                # even though physical memory governance failed for part of the batch.
+                logger.exception(
+                    "Consolidation archive_cold failed for %s: %s",
+                    memory_id,
+                    exc,
+                )
+                return False
+
+        return archived_any
 
     def check_and_trigger_automatic_consolidation(self) -> None:
-        """Sub-function 59.4 - Automatic budget monitoring and heartbeat triggering (Priority 3)."""
+        """Sub-function 59.4 — idle heartbeat + tiered storage pressure trigger.
+
+        Rules (in priority order):
+        1. Heartbeat idle: no cycle for >1 h → submit heartbeat_idle cycle and return.
+           Idle cycle takes priority; we don't stack additional pressure cycles on the
+           same pass to avoid submitting two competing leases simultaneously.
+        2. Hot-tier pressure: usage_ratio > 85% → submit hot_tier_pressure cycle.
+        3. Warm-tier pressure: usage_ratio > 85% → submit warm_tier_pressure cycle.
+        """
         now = datetime.now(timezone.utc)
-        
-        # Update usage stats (Simulation)
-        self.storage_usage_stats["hot"] = self._calculate_tier_usage_ratio("hot")
-        
-        # Rule 1: Heartbeat idle slot (1 hour idle)
-        is_idle = self._idle_slot_detected if hasattr(self, "_idle_slot_detected") else False
-        if is_idle or (self._last_cycle_timestamp and (now - self._last_cycle_timestamp).total_seconds() > 3600):
-            self._trigger_consolidation_for_reason("heartbeat_idle")
-            
-        # Rule 2: Storage budget pressure (> 80%)
-        if self.storage_usage_stats["hot"] > 0.8:
-            self._trigger_consolidation_for_reason("hot_tier_pressure")
+
+        # Rule 1 — heartbeat idle slot
+        last_time = self._last_cycle_timestamp or datetime.fromtimestamp(0, timezone.utc)
+        if (now - last_time).total_seconds() > 3600:
+            try:
+                self._trigger_consolidation_for_reason("heartbeat_idle")
+            except ConsolidationTaskRejectedError:
+                pass  # lease already held — skip this tick
+            except Exception:
+                logger.warning("Auto-consolidation heartbeat trigger failed", exc_info=True)
+            # Update usage stats even when we skip pressure rules this pass
+            self.storage_usage_stats["hot"] = self._calculate_tier_usage_ratio("hot")
+            self.storage_usage_stats["warm"] = self._calculate_tier_usage_ratio("warm")
+            return
+
+        # Rules 2 & 3 — storage budget pressure
+        hot_ratio = self._calculate_tier_usage_ratio("hot")
+        self.storage_usage_stats["hot"] = hot_ratio
+        if hot_ratio > 0.85:
+            try:
+                self._trigger_consolidation_for_reason("hot_tier_pressure")
+            except ConsolidationTaskRejectedError:
+                pass
+            except Exception:
+                logger.warning("Auto-consolidation hot-tier trigger failed", exc_info=True)
+            return  # don't also trigger warm if hot already scheduled a cycle
+
+        warm_ratio = self._calculate_tier_usage_ratio("warm")
+        self.storage_usage_stats["warm"] = warm_ratio
+        if warm_ratio > 0.85:
+            try:
+                self._trigger_consolidation_for_reason("warm_tier_pressure")
+            except ConsolidationTaskRejectedError:
+                pass
+            except Exception:
+                logger.warning("Auto-consolidation warm-tier trigger failed", exc_info=True)
 
     def _calculate_tier_usage_ratio(self, tier: str) -> float:
-        """Calculate the percentage of budget being used for a given tier."""
-        limit = getattr(self, f"{tier.upper()}_TIER_LIMIT", 1e9)
-        current = sum(len(str(v)) for v in self._memory_versions.values()) # Placeholder usage
-        return min(1.0, current / limit)
+        """Return the fraction (0.0–1.0) of the budget consumed by this storage tier.
+
+        Reads actual disk usage under the tier's storage path.  Falls back to 0.0
+        (safe — no false pressure trigger) if the path is absent or unreadable.
+        """
+        import shutil
+        from pathlib import Path as _Path
+        from zentex.common.storage_paths import get_storage_paths
+
+        tier_limit = getattr(self, f"{tier.upper()}_TIER_LIMIT", None)
+        if not tier_limit:
+            return 0.0
+
+        tier_path_attr = f"{tier}_memory_dir"
+        storage_paths = get_storage_paths()
+        tier_dir = getattr(storage_paths, tier_path_attr, None)
+        if tier_dir is None:
+            # Tier directory not configured; treat as empty.
+            return 0.0
+
+        tier_path = _Path(tier_dir)
+        if not tier_path.exists():
+            return 0.0
+
+        try:
+            usage = shutil.disk_usage(tier_path)
+            return min(1.0, usage.used / tier_limit)
+        except Exception:
+            logger.warning("Failed to measure disk usage for %s tier at %s", tier, tier_path, exc_info=True)
+            return 0.0
 
     def apply_forgetting_rules(self, input_refs: List[Dict[str, Any]], rules: List[ForgettableNoiseRule]) -> List[str]:
-        """Apply noise rules to identify fragments for pruning (Priority 3)."""
+        """Apply noise rules to identify fragments for pruning (Priority 3).
+
+        Refs without a ``created_at_ts`` field are skipped conservatively —
+        we never prune what we cannot age-verify.
+        """
         pruned = []
         now = datetime.now(timezone.utc).timestamp()
         for ref in input_refs:
-            ref_age = now - ref.get("created_at_ts", now)
+            if "created_at_ts" not in ref:
+                # Conservative: missing timestamp → cannot confirm age → do not prune.
+                logger.debug(
+                    "apply_forgetting_rules: skipping ref %s — missing created_at_ts",
+                    self._extract_ref_id(ref),
+                )
+                continue
+            ref_age = now - ref["created_at_ts"]
             reuse = ref.get("reuse_value", 1.0)
-            
+
             for rule in rules:
                 if ref.get("kind") == rule.noise_kind:
                     if ref_age > rule.age_threshold_seconds and reuse < rule.reuse_threshold:

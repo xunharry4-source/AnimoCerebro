@@ -3,17 +3,17 @@ from __future__ import annotations
 from dataclasses import dataclass
 from datetime import datetime
 from enum import Enum
-from typing import Any, Dict
+from typing import Any, Dict, List, Optional, Union
 
-JSONValue = (
-    None
-    | bool
-    | int
-    | float
-    | str
-    | list["JSONValue"]
-    | dict[str, "JSONValue"]
-)
+JSONValue = Union[
+    None,
+    bool,
+    int,
+    float,
+    str,
+    List["JSONValue"],
+    Dict[str, "JSONValue"]
+]
 
 
 class BrainTranscriptEntryType(str, Enum):
@@ -41,6 +41,7 @@ class BrainTranscriptEntryType(str, Enum):
     PLUGIN_AUDIT_EVENT = "plugin_audit_event"
     LEARNING_ENGINE_EVENT = "learning_engine_event"
     TURN_FINISHED = "turn_finished"
+    FLOW_AUDIT = "flow_audit"
 
 
 @dataclass(frozen=True)

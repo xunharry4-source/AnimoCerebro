@@ -1,10 +1,10 @@
+from __future__ import annotations
 """
 Events Commons Module
 Event stream session management and query layer
 Extracted from events.py for Facade-First architecture
 """
 
-from __future__ import annotations
 
 import asyncio
 import logging
@@ -22,7 +22,7 @@ class EventStreamSession:
         self.websocket = websocket
         self.app_state = websocket.app.state
         self.runtime = None
-        self.transcript_store = None
+        self.audit_service = None
         self.session = None
         self._initialized = False
         
@@ -31,12 +31,12 @@ class EventStreamSession:
         try:
             self.runtime = getattr(self.app_state, "runtime", None)
             if self.runtime is None:
-                logger.warning("BrainRuntime not attached to app state")
-                return False
+                # Soft failure: log but continue as BrainRuntime is deprecated
+                logger.info("BrainRuntime not available (legacy mode disabled)")
                 
-            self.transcript_store = getattr(self.app_state, "transcript_store", None)
-            if self.transcript_store is None:
-                logger.warning("TranscriptStore not attached to app state")
+            self.audit_service = getattr(self.app_state, "audit_service", None)
+            if self.audit_service is None:
+                logger.warning("AuditService not attached to app state")
                 return False
             
             self.session = getattr(self.app_state, "session", None)
@@ -49,7 +49,7 @@ class EventStreamSession:
             return True
             
         except Exception as e:
-            logger.error(f"Failed to initialize EventStreamSession: {e}")
+            logger.exception("Failed to initialize EventStreamSession")
             return False
 
 
@@ -63,17 +63,14 @@ async def get_or_create_event_session(websocket: WebSocket) -> EventStreamSessio
 async def get_active_connections(request: Request) -> List[Dict[str, Any]]:
     """Query active WebSocket connections status"""
     try:
-        app_state = request.app.state
-        
-        # Get connection manager or similar if available
-        # For now return empty list as placeholder
-        connections = []
-        
-        logger.info(f"Active connections count: {len(connections)}")
-        return connections
-        
+        # Do not keep a placeholder implementation here. Returning an empty list as
+        # if it were real runtime data would fake a healthy event-plane state and
+        # destroy observability when connection tracking is actually unavailable.
+        raise RuntimeError(
+            "Active connections inspection is not implemented; refusing placeholder results."
+        )
     except Exception as e:
-        logger.error(f"Failed to get active connections: {e}")
+        logger.exception("Failed to get active connections")
         return []
 
 
@@ -81,7 +78,7 @@ async def get_event_statistics(request: Request) -> Dict[str, Any]:
     """Query event stream statistics"""
     try:
         app_state = request.app.state
-        transcript_store = getattr(app_state, "transcript_store", None)
+        audit_service = getattr(app_state, "audit_service", None)
         
         stats = {
             "active_connections": 0,
@@ -90,18 +87,18 @@ async def get_event_statistics(request: Request) -> Dict[str, Any]:
             "status": "healthy"
         }
         
-        if transcript_store is not None:
+        if audit_service is not None:
             try:
-                entries = transcript_store.get_entries_snapshot()
+                entries = audit_service.list_recent_events()
                 stats["total_entries"] = len(entries)
-                stats["current_revision"] = transcript_store.get_revision()
+                stats["current_revision"] = audit_service.get_event_stream_revision()
             except Exception as e:
-                logger.warning(f"Failed to get transcript store stats: {e}")
+                logger.exception("Failed to get audit service stats")
         
         return stats
         
     except Exception as e:
-        logger.error(f"Failed to get event statistics: {e}")
+        logger.exception("Failed to get event statistics")
         return {"status": "error", "error": str(e)}
 
 
@@ -114,21 +111,21 @@ async def wait_for_disconnect(websocket: WebSocket) -> None:
                 logger.info("WebSocket disconnect received")
                 return
     except Exception as e:
-        logger.debug(f"Error while waiting for disconnect: {e}")
+        logger.exception("Error while waiting for disconnect")
         return
 
 
-async def setup_transcript_stream(
+async def setup_audit_event_stream(
     session: EventStreamSession,
     last_entry_id: Optional[str] = None
 ) -> tuple[int, int]:
-    """Setup transcript stream with entry position tracking
+    """Setup audit event stream with entry position tracking.
     
     Returns:
         (last_sent_index, last_seen_revision) tuple
     """
     try:
-        current_entries = session.transcript_store.get_entries_snapshot()
+        current_entries = session.audit_service.list_recent_events()
         
         if last_entry_id:
             last_sent_index = next(
@@ -141,12 +138,14 @@ async def setup_transcript_stream(
             # Historical events available via other endpoints
             last_sent_index = len(current_entries) - 1
         
-        last_seen_revision = session.transcript_store.get_revision()
+        last_seen_revision = session.audit_service.get_event_stream_revision()
         
-        logger.info(f"Transcript stream setup: index={last_sent_index}, revision={last_seen_revision}")
+        logger.info(f"Audit event stream setup: index={last_sent_index}, revision={last_seen_revision}")
         
         return last_sent_index, last_seen_revision
         
     except Exception as e:
-        logger.error(f"Failed to setup transcript stream: {e}")
-        return -1, -1
+        # Do not smuggle a failed stream setup downstream as (-1, -1). That fakes a
+        # valid stream cursor and makes later runtime faults look like "no events".
+        logger.exception("Failed to setup audit event stream")
+        raise

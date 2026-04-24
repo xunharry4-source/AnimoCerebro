@@ -1,3 +1,4 @@
+from __future__ import annotations
 """
 Task Data Access Object for persistent storage.
 
@@ -17,7 +18,7 @@ Architecture:
 - Integrates with LRUCache for performance
 
 Usage:
-    db = DatabaseConnection("runtime/data/zentex_core.db")
+    db = DatabaseConnection(get_storage_paths().core_db)
     cache = LRUCache(max_size=1000, ttl_seconds=60)
     dao = TaskDAO(db, cache)
     
@@ -28,7 +29,6 @@ Usage:
     tasks = dao.list_tasks(status="in_progress")
 """
 
-from __future__ import annotations
 
 import json
 import logging
@@ -74,7 +74,7 @@ class TaskDAO(BaseDAO):
             return success
         except Exception as e:
             logger.error(f"Failed to create task: {e}", exc_info=True)
-            return False
+            raise
     
     def update_task(self, task_id: str, updates: Dict[str, Any]) -> bool:
         """Update an existing task."""
@@ -100,7 +100,7 @@ class TaskDAO(BaseDAO):
             return success
         except Exception as e:
             logger.error(f"Failed to update task: {e}", exc_info=True)
-            return False
+            raise
     
     def get_task(self, task_id: str) -> Optional[Dict[str, Any]]:
         """Get a task by ID."""
@@ -224,6 +224,8 @@ class TaskDAO(BaseDAO):
         # Deserialize JSON fields
         for field in ['subtask_ids', 'depends_on', 'tags']:
             if field in task and task[field]:
+                if isinstance(task[field], list):
+                    continue
                 try:
                     task[field] = json.loads(task[field])
                 except (json.JSONDecodeError, TypeError):
@@ -231,6 +233,8 @@ class TaskDAO(BaseDAO):
         
         for field in ['contract', 'metadata']:
             if field in task and task[field]:
+                if isinstance(task[field], dict):
+                    continue
                 try:
                     task[field] = json.loads(task[field])
                 except (json.JSONDecodeError, TypeError):
@@ -265,11 +269,17 @@ class SuspendedTaskDAO(BaseDAO):
             return success
         except Exception as e:
             logger.error(f"Failed to suspend task: {e}", exc_info=True)
-            return False
+            raise
     
     def resume_task(self, task_id: str) -> bool:
         """Resume a suspended task."""
-        success = self.delete_by_condition("task_id = ?", (task_id,))
+        affected = self.db.execute_update(
+            "DELETE FROM suspended_tasks WHERE task_id = ?",
+            (task_id,),
+        )
+        success = affected > 0
+        if success:
+            self._invalidate_cache(f"{self.table_name}:")
         if success:
             logger.info(f"Task resumed: {task_id}")
         return success
@@ -357,7 +367,7 @@ class TaskAuditLogDAO(BaseDAO):
             return success
         except Exception as e:
             logger.error(f"Failed to log audit action: {e}", exc_info=True)
-            return False
+            raise
     
     def get_audit_history(
         self,

@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from typing import Any, Union
+from typing import Any, Union, Optional
 
 from pydantic import BaseModel, ConfigDict, Field
 from zentex.web_console.contracts.llm_trace import LLMTracePayload
@@ -11,14 +11,18 @@ from zentex.web_console.contracts.llm_trace import LLMTracePayload
 class NineQuestionsReportPayload(BaseModel):
     model_config = ConfigDict(extra="ignore", frozen=True)
 
-    session_id: str
+    # Historical design error:
+    # Nine-Questions only has one authoritative "current" dataset, but older web-facing
+    # contracts leaked a session/execution identifier into the payload. That made callers
+    # treat instance IDs as part of the read path, which is wrong for a single-active-run
+    # product. The report payload now exposes only current data metadata.
     status: str = "ready"
-    status_message: str | None = None
+    status_message: Optional[str] = None
     last_turn_id: str
     snapshot_version: int = 0
     revision: int = 0
-    refreshed_at: str | None = None
-    last_refresh_reason: str | None = None
+    refreshed_at: Optional[str] = None
+    last_refresh_reason: Optional[str] = None
     question_driver_refs: list[str] = Field(default_factory=list)
     questions: list[NineQuestionReportItem] = Field(default_factory=list)
     trace_ids: dict[str, str] = Field(default_factory=dict)
@@ -34,6 +38,7 @@ class NineQuestionsRunRequest(BaseModel):
     model_config = ConfigDict(extra="ignore", frozen=True)
 
     force_refresh: bool = True
+    single_only: bool = False
 
 
 class NineQuestionsRunResponse(BaseModel):
@@ -44,9 +49,9 @@ class NineQuestionsRunResponse(BaseModel):
     refresh_reason: str
     snapshot_version: int = 0
     revision: int = 0
-    task_id: str | None = None
-    task_status: str | None = None
-    error_message: str | None = None
+    task_id: Optional[str] = None
+    task_status: Optional[str] = None
+    error_message: Optional[str] = None
 
 
 class NineQuestionsRunTaskStatusPayload(BaseModel):
@@ -56,10 +61,10 @@ class NineQuestionsRunTaskStatusPayload(BaseModel):
     session_id: str
     status: str
     submitted_at: str
-    started_at: str | None = None
-    finished_at: str | None = None
-    error_message: str | None = None
-    trace_id: str | None = None
+    started_at: Optional[str] = None
+    finished_at: Optional[str] = None
+    error_message: Optional[str] = None
+    trace_id: Optional[str] = None
     snapshot_version: int = 0
     revision: int = 0
 
@@ -106,9 +111,9 @@ class Q1LLMUpgradeView(BaseModel):
 
     planning_status: str
     profile: Q1LLMUpgradeProfileView
-    candidate_version: str | None = None
+    candidate_version: Optional[str] = None
     release_gate: list[str] = Field(default_factory=list)
-    error_message: str | None = None
+    error_message: Optional[str] = None
 
 
 class Q2Q1Summary(BaseModel):
@@ -116,7 +121,7 @@ class Q2Q1Summary(BaseModel):
     primary_domain: str
     secondary_domains: list[str] = Field(default_factory=list)
     uncertainties: list[str] = Field(default_factory=list)
-    risk_summary: str | None = None
+    risk_summary: Optional[str] = None
 
 
 class Q2IdentityKernel(BaseModel):
@@ -128,15 +133,15 @@ class Q2IdentityKernel(BaseModel):
 
 class Q2ManualIntervention(BaseModel):
     model_config = ConfigDict(extra="ignore", frozen=True)
-    latest_manual_role_modification: str | None = None
-    applied_at: str | None = None
+    latest_manual_role_modification: Optional[str] = None
+    applied_at: Optional[str] = None
 
 
 class Q2PreprocessedEvidence(BaseModel):
     model_config = ConfigDict(extra="ignore", frozen=True)
     q1_summary: Q2Q1Summary
     identity_kernel: Q2IdentityKernel
-    manual_intervention: Q2ManualIntervention | None = None
+    manual_intervention: Optional[Q2ManualIntervention] = None
 
 
 class Q2RoleView(BaseModel):
@@ -176,7 +181,7 @@ class Q3AssetRow(BaseModel):
 
 class Q3AgentRow(Q3AssetRow):
     model_config = ConfigDict(extra="ignore", frozen=True)
-    status: str | None = None
+    status: Optional[str] = None
 
 
 class Q3ToolsAndAgents(BaseModel):
@@ -207,11 +212,11 @@ class Q3PreprocessedEvidence(BaseModel):
 class Q3ResourceSufficiencyView(BaseModel):
     model_config = ConfigDict(extra="ignore", frozen=True)
     resource_status: str  # 充沛, 降级, 匮乏
-    resource_status_label: str | None = None
-    resource_status_explanation: str | None = None
+    resource_status_label: Optional[str] = None
+    resource_status_explanation: Optional[str] = None
     missing_critical_assets: list[str] = Field(default_factory=list)
-    bottleneck_node: str | None = None
-    reasoning_summary: str | None = None
+    bottleneck_node: Optional[str] = None
+    reasoning_summary: Optional[str] = None
 
 
 class Q3WhatDoIHaveInferenceView(BaseModel):
@@ -297,8 +302,8 @@ class Q8PersistentTaskItem(BaseModel):
     item_id: str
     title: str
     status: str
-    priority: int | None = None
-    blocker_reason: str | None = None
+    priority: Optional[int] = None
+    blocker_reason: Optional[str] = None
 
 
 class Q8AgendaItem(BaseModel):
@@ -306,9 +311,9 @@ class Q8AgendaItem(BaseModel):
     item_id: str
     title: str
     status: str
-    priority: int | None = None
-    next_review_condition: str | None = None
-    delay_risk_score: float | None = None
+    priority: Optional[int] = None
+    next_review_condition: Optional[str] = None
+    delay_risk_score: Optional[float] = None
 
 
 class Q8RuntimeStateEvidence(BaseModel):
@@ -352,17 +357,17 @@ class Q9CognitiveSnapshotEvidence(BaseModel):
 
 class Q9RecentWeaknessView(BaseModel):
     model_config = ConfigDict(extra="allow", frozen=True)
-    pattern_id: str | None = None
+    pattern_id: Optional[str] = None
     pattern_type: str
-    frequency: int | None = None
-    severity: str | None = None
+    frequency: Optional[int] = None
+    severity: Optional[str] = None
 
 
 class Q9SelfModelEvidence(BaseModel):
     model_config = ConfigDict(extra="ignore", frozen=True)
     cognitive_load: str
-    stability_level: str | None = None
-    confidence_drift: float | None = None
+    stability_level: Optional[str] = None
+    confidence_drift: Optional[float] = None
     recent_weaknesses: list[Q9RecentWeaknessView] = Field(default_factory=list)
 
 
@@ -371,7 +376,7 @@ class Q9ReasoningBudgetEvidence(BaseModel):
     compute_remaining_ratio: float = 0.0
     token_remaining_ratio: float = 0.0
     time_remaining_ratio: float = 0.0
-    budget_pressure: str | None = None
+    budget_pressure: Optional[str] = None
 
 
 class Q9PreprocessedEvidence(BaseModel):
@@ -406,7 +411,7 @@ class NineQuestionReportItem(BaseModel):
     trace_id: str
     timestamp: str
     cache_status: str = "未知"
-    provider_name: str | None = None
+    provider_name: Optional[str] = None
     mounted_plugins: list[MountedPluginInfo] = Field(default_factory=list)
     preprocessed_evidence: Union[
         Q1PreprocessedEvidence,
@@ -432,8 +437,8 @@ class NineQuestionReportItem(BaseModel):
         Q9ActionPostureInferenceView,
         None,
     ] = None
-    q1_llm_upgrade: Q1LLMUpgradeView | None = None
-    llm_trace_payload: LLMTracePayload | None = None
+    q1_llm_upgrade: Optional[Q1LLMUpgradeView] = None
+    llm_trace_payload: Optional[LLMTracePayload] = None
 
 
 class NineQuestionSandboxResponse(BaseModel):
@@ -446,9 +451,9 @@ class NineQuestionSandboxResponse(BaseModel):
     confidence: float
     trace_id: str
     elapsed_ms: int
-    provider_name: str | None = None
+    provider_name: Optional[str] = None
     mounted_plugins: list[MountedPluginInfo] = Field(default_factory=list)
-    prompt: str | None = None
+    prompt: Optional[str] = None
     context: dict[str, Any] = Field(default_factory=dict)
     result: Any
     context_updates: dict[str, Any] = Field(default_factory=dict)
@@ -476,8 +481,8 @@ class NineQuestionSandboxResponse(BaseModel):
         Q9ActionPostureInferenceView,
         None,
     ] = None
-    q1_llm_upgrade: Q1LLMUpgradeView | None = None
-    llm_trace_payload: LLMTracePayload | None = None
+    q1_llm_upgrade: Optional[Q1LLMUpgradeView] = None
+    llm_trace_payload: Optional[LLMTracePayload] = None
 
 
 NineQuestionReportItem.model_rebuild()

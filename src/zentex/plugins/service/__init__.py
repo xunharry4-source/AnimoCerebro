@@ -1,3 +1,4 @@
+from __future__ import annotations
 """
 Canonical public entrypoint for plugin access in Zentex.
 
@@ -5,13 +6,25 @@ External callers must import plugin governance APIs from this package:
     from zentex.plugins.service import SystemPluginService
 """
 
-from __future__ import annotations
 
-from typing import Any
+import logging
+from typing import Any, Optional, Union
 
 from .manager import SystemPluginService
 from .registry import CognitiveToolRegistry, ExecutionDomainRegistry, InMemoryAuditSink
+from .nine_questions import NineQuestionPluginService, get_service as get_nq_service
 from zentex.plugins.models import PluginFeatureCatalogItem
+
+logger = logging.getLogger(__name__)
+
+
+def _extract_binding_rows(payload: Any) -> list[dict[str, Any]]:
+    if isinstance(payload, list):
+        return payload
+    data = getattr(payload, "data", None)
+    if isinstance(data, list):
+        return data
+    return []
 
 try:  # pragma: no cover - optional export compatibility
     from zentex.plugins.weights import WeightPluginAssembler, RationalAuditRejectError
@@ -65,7 +78,7 @@ except ModuleNotFoundError:  # pragma: no cover - legacy module drift
     def is_env_var_reference(*args: Any, **kwargs: Any) -> bool:
         return False
 
-    def resolve_env_value(*args: Any, **kwargs: Any) -> str | None:
+    def resolve_env_value(*args: Any, **kwargs: Any) -> Optional[str]:
         return None
 
 def get_default_provider_key() -> str:
@@ -82,10 +95,10 @@ def get_default_provider_key() -> str:
 def query_all_plugins_by_lifecycle(
     plugin_service: SystemPluginService,
     *,
-    category: str | None = None,
-    lifecycle_status: str | None = None,
-    behavior_key: str | None = None,
-    feature_code: str | None = None,
+    category: Optional[str] = None,
+    lifecycle_status: Optional[str] = None,
+    behavior_key: Optional[str] = None,
+    feature_code: Optional[str] = None,
     limit: int = 200,
 ) -> list[dict[str, Any]]:
     """Query all plugins by lifecycle phase via the canonical public service package."""
@@ -101,10 +114,10 @@ def query_all_plugins_by_lifecycle(
 def query_all_plugins_by_operational_status(
     plugin_service: SystemPluginService,
     *,
-    category: str | None = None,
-    operational_status: str | None = None,
-    behavior_key: str | None = None,
-    feature_code: str | None = None,
+    category: Optional[str] = None,
+    operational_status: Optional[str] = None,
+    behavior_key: Optional[str] = None,
+    feature_code: Optional[str] = None,
     limit: int = 200,
 ) -> list[dict[str, Any]]:
     """Query all plugins by runtime status via the canonical public service package."""
@@ -121,8 +134,8 @@ def query_cognitive_plugin_functionals_by_lifecycle(
     plugin_service: SystemPluginService,
     cognitive_plugin_id: str,
     *,
-    lifecycle_status: str | None = None,
-    role: str | None = None,
+    lifecycle_status: Optional[str] = None,
+    role: Optional[str] = None,
     limit: int = 200,
 ) -> list[dict[str, Any]]:
     """Query one cognitive plugin's functional plugins by lifecycle."""
@@ -138,8 +151,8 @@ def query_cognitive_plugin_functionals_by_operational_status(
     plugin_service: SystemPluginService,
     cognitive_plugin_id: str,
     *,
-    operational_status: str | None = None,
-    role: str | None = None,
+    operational_status: Optional[str] = None,
+    role: Optional[str] = None,
     limit: int = 200,
 ) -> list[dict[str, Any]]:
     """Query one cognitive plugin's functional plugins by runtime status."""
@@ -155,16 +168,18 @@ def query_enabled_cognitive_plugin_functionals(
     plugin_service: SystemPluginService,
     cognitive_plugin_id: str,
     *,
-    role: str | None = None,
+    role: Optional[str] = None,
     limit: int = 200,
 ) -> list[dict[str, Any]]:
     """Query one cognitive plugin's enabled functional plugins."""
     bindings: Any = None
     if callable(getattr(plugin_service, "query_enabled_functional_plugins_for_cognitive", None)):
-        bindings = plugin_service.query_enabled_functional_plugins_for_cognitive(
-            cognitive_plugin_id,
-            role=role,
-            limit=limit,
+        bindings = _extract_binding_rows(
+            plugin_service.query_enabled_functional_plugins_for_cognitive(
+                cognitive_plugin_id,
+                role=role,
+                limit=limit,
+            )
         )
     if not isinstance(bindings, list) and callable(
         getattr(plugin_service, "query_cognitive_functionals_by_status", None)
@@ -184,14 +199,56 @@ def query_enabled_cognitive_plugin_functionals(
             role=role,
             limit=limit,
         )
-    return bindings if isinstance(bindings, list) else []
+    resolved = bindings if isinstance(bindings, list) else []
+    if resolved:
+        return resolved
+
+    # Real runtime bootstrap path: if bindings exist but are still candidate/stopped,
+    # activate them on demand through the canonical management API.
+    try:
+        lifecycle_bindings = plugin_service.query_cognitive_functionals_by_lifecycle(
+            cognitive_plugin_id,
+            role=role,
+            limit=limit,
+        )
+        if isinstance(lifecycle_bindings, list) and lifecycle_bindings:
+            for binding in lifecycle_bindings:
+                plugin_id = str(binding.get("plugin_id") or "").strip()
+                if not plugin_id:
+                    continue
+                try:
+                    plugin_service.enable_plugin(
+                        plugin_id,
+                        reason=f"Auto-activate functional binding for {cognitive_plugin_id}",
+                    )
+                except Exception:
+                    logger.exception(
+                        "[Plugins] Failed auto-activating functional binding %s for %s",
+                        plugin_id,
+                        cognitive_plugin_id,
+                    )
+            rebound = _extract_binding_rows(
+                plugin_service.query_enabled_functional_plugins_for_cognitive(
+                    cognitive_plugin_id,
+                    role=role,
+                    limit=limit,
+                )
+            )
+            if rebound:
+                return rebound
+    except Exception:
+        logger.exception(
+            "[Plugins] Failed resolving enabled functional bindings for cognitive plugin %s",
+            cognitive_plugin_id,
+        )
+    return []
 
 
 def query_cognitive_tools(
     plugin_service: SystemPluginService,
     *,
-    operational_status: str | None = "enabled",
-    feature_code: str | None = None,
+    operational_status: Optional[str] = "enabled",
+    feature_code: Optional[str] = None,
     limit: int = 200,
 ) -> list[dict[str, Any]]:
     """Return cognitive-tool-like plugin rows through the canonical plugins service."""
@@ -206,9 +263,9 @@ def query_cognitive_tools(
 def query_plugin_records(
     plugin_service: SystemPluginService,
     *,
-    category: str | None = None,
-    operational_status: str | None = None,
-    feature_code: str | None = None,
+    category: Optional[str] = None,
+    operational_status: Optional[str] = None,
+    feature_code: Optional[str] = None,
     limit: int = 200,
 ) -> list[dict[str, Any]]:
     """Return generic plugin records without exposing an internal registry instance."""
@@ -224,12 +281,12 @@ def execute_enabled_cognitive_plugin_functionals(
     plugin_service: SystemPluginService,
     cognitive_plugin_id: str,
     *,
-    parameters_by_plugin_id: dict[str, dict[str, Any]] | None = None,
-    default_parameters: dict[str, Any] | None = None,
+    parameters_by_plugin_id: dict[str, dict[str, Optional[Any]]] = None,
+    default_parameters: dict[str, Optional[Any]] = None,
     trace_id: str,
     originator_id: str,
-    caller_plugin_id: str | None = None,
-    role: str | None = None,
+    caller_plugin_id: Optional[str] = None,
+    role: Optional[str] = None,
     limit: int = 200,
 ) -> list[dict[str, Any]]:
     """Query enabled functional bindings and execute them through the public service."""
@@ -321,7 +378,7 @@ def query_enabled_functional_plugins_for_cognitive(
     plugin_service: SystemPluginService,
     cognitive_plugin_id: str,
     *,
-    role: str | None = None,
+    role: Optional[str] = None,
     limit: int = 200,
     trace_id: str = "",
 ):
@@ -423,11 +480,13 @@ __all__ = [
     "ensure_default_plugin_relationships",
     "scan_orphaned_plugin_records",
     "reconcile_orphaned_plugin_records",
+    "NineQuestionPluginService",
+    "get_nq_service",
 ]
 
 
 # Global singleton instance for plugins service
-_default_service: SystemPluginService | None = None
+_default_service: Optional[SystemPluginService] = None
 
 
 def get_service() -> SystemPluginService:
@@ -438,8 +497,8 @@ def get_service() -> SystemPluginService:
     """
     global _default_service
     if _default_service is None:
-        # Use default database path - will be properly configured by launcher
-        from pathlib import Path
-        default_db_path = str(Path("runtime/data/zentex_core.db"))
+        from zentex.common.storage_paths import get_storage_paths
+
+        default_db_path = str(get_storage_paths().core_db)
         _default_service = SystemPluginService(db_path=default_db_path)
     return _default_service

@@ -1,3 +1,4 @@
+from __future__ import annotations
 """
 📋 CLI Adapter Module - Command Line Interface Integration
 
@@ -8,7 +9,7 @@
 - 处理 subprocess 执行、进程管理和命令回显
 
 关键导出：
-- create_cli_adapter_plugin(transcript_store, cognitive_registry) -> CliAdapterPlugin
+- create_cli_adapter_plugin(audit_store, cognitive_registry) -> CliAdapterPlugin
   * 公开初始化函数，bootstrap 应通过此函数创建 CLI 适配器
   * 包含完整的 CLI 环境配置和工具注册，避免 bootstrap 直接导入内部类
 
@@ -19,7 +20,6 @@
 
 """
 
-from __future__ import annotations
 
 import json
 from pathlib import Path
@@ -49,8 +49,8 @@ from zentex.plugins.execution import (
     ActionStatus,
     ExecutionDomainPlugin,
 )
-from zentex.plugins.cognitive_result import CognitiveToolResult
-from zentex.kernel import BrainTranscriptStore, BrainTranscriptEntryType
+from zentex.common.cognitive_result import CognitiveToolResult
+from zentex.kernel import AuditEventStore, AuditEventType
 
 _MUTATING_TOKENS: Set[str] = {
     "rm", "del", "delete", "format", "mkfs", "dd", "chmod", "chown",
@@ -70,7 +70,7 @@ except Exception:  # pragma: no cover - optional dependency
 
 
 def create_cli_adapter_plugin(
-    transcript_store: "BrainTranscriptStore",
+    transcript_store: "AuditEventStore",
     cognitive_registry: Any = None,
 ) -> "CliAdapterPlugin":
     """
@@ -80,7 +80,7 @@ def create_cli_adapter_plugin(
     所有 CLI 适配器配置在这里定义。
     
     Args:
-        transcript_store: 用于审计的 transcript 存储
+        transcript_store: 用于审计的事件存储
         cognitive_registry: 可选的认知工具注册表
         
     Returns:
@@ -101,19 +101,6 @@ def create_cli_adapter_plugin(
     adapter.attach_runtime(
         transport=SubprocessCliTransport(),
         transcript_store=transcript_store,
-    )
-    
-    # 注册 demo 工具
-    adapter.register_tool(
-        CliToolRegistrationConfig(
-            tool_name="repo_echo_probe",
-            command_executable="/bin/echo",
-            description="Read-only shell probe for CLI integration smoke tests.",
-            read_only_flag=True,
-            project_path=".",
-            project_name="AnimoCerebro",
-            project_description="Zentex workspace shell probe",
-        )
     )
     
     return adapter
@@ -157,37 +144,71 @@ class SubprocessCliTransport:
         env = {**config.env}
         cwd = working_directory or config.project_path
 
-        if pexpect is not None and stdin_input and "\n" in stdin_input:
-            child = pexpect.spawn(
-                command_line[0],
-                command_line[1:],
-                cwd=cwd,
-                env=env or None,
-                encoding="utf-8",
-                timeout=timeout_seconds,
+        try:
+            if pexpect is not None and stdin_input and "\n" in stdin_input:
+                child = pexpect.spawn(
+                    command_line[0],
+                    command_line[1:],
+                    cwd=cwd,
+                    env=env or None,
+                    encoding="utf-8",
+                    timeout=timeout_seconds,
+                )
+                child.send(stdin_input)
+                child.sendeof()
+                child.expect(pexpect.EOF)
+                stdout = child.before or ""
+                stderr = ""
+                exit_code = int(child.exitstatus or 0)
+            else:
+                if plumbum_local is not None:
+                    _ = plumbum_local[command_line[0]][command_line[1:]]
+                completed = subprocess.run(  # noqa: S603
+                    command_line,
+                    input=stdin_input,
+                    text=True,
+                    capture_output=True,
+                    cwd=cwd,
+                    env=env or None,
+                    timeout=timeout_seconds,
+                    check=False,
+                )
+                stdout = completed.stdout
+                stderr = completed.stderr
+                exit_code = completed.returncode
+        except (subprocess.TimeoutExpired, TimeoutError):
+            return CliInvocationResult(
+                tool_name=config.tool_name,
+                status="timeout",
+                trace_id=trace_id,
+                exit_code=-1,
+                stdout="",
+                stderr=f"Transport error: Command timed out after {timeout_seconds}s",
+                command_line=command_line,
+                working_directory=cwd,
             )
-            child.send(stdin_input)
-            child.sendeof()
-            child.expect(pexpect.EOF)
-            stdout = child.before or ""
-            stderr = ""
-            exit_code = int(child.exitstatus or 0)
-        else:
-            if plumbum_local is not None:
-                _ = plumbum_local[command_line[0]][command_line[1:]]
-            completed = subprocess.run(  # noqa: S603
-                command_line,
-                input=stdin_input,
-                text=True,
-                capture_output=True,
-                cwd=cwd,
-                env=env or None,
-                timeout=timeout_seconds,
-                check=False,
+        except (FileNotFoundError, PermissionError) as e:
+            return CliInvocationResult(
+                tool_name=config.tool_name,
+                status="transport_error",
+                trace_id=trace_id,
+                exit_code=-1,
+                stdout="",
+                stderr=f"Transport error: {e}",
+                command_line=command_line,
+                working_directory=cwd,
             )
-            stdout = completed.stdout
-            stderr = completed.stderr
-            exit_code = completed.returncode
+        except Exception as e:
+            return CliInvocationResult(
+                tool_name=config.tool_name,
+                status="failed",
+                trace_id=trace_id,
+                exit_code=-1,
+                stdout="",
+                stderr=f"Unexpected transport error: {e}",
+                command_line=command_line,
+                working_directory=cwd,
+            )
 
         return CliInvocationResult(
             tool_name=config.tool_name,
@@ -206,14 +227,14 @@ class CliCognitiveToolPlugin(CognitiveToolSpec):
 
     _transport: CliTransportClient = PrivateAttr()
     _config: CliToolRegistrationConfig = PrivateAttr()
-    _transcript_store: BrainTranscriptStore = PrivateAttr()
+    _transcript_store: AuditEventStore = PrivateAttr()
 
     def attach_runtime(
         self,
         *,
         transport: CliTransportClient,
         config: CliToolRegistrationConfig,
-        transcript_store: BrainTranscriptStore,
+        transcript_store: AuditEventStore,
     ) -> None:
         self._transport = transport
         self._config = config
@@ -234,7 +255,7 @@ class CliCognitiveToolPlugin(CognitiveToolSpec):
         self._transcript_store.write_entry(
             session_id=session_id,
             turn_id=turn_id,
-            entry_type=BrainTranscriptEntryType.PLUGIN_AUDIT_EVENT,
+            entry_type=AuditEventType.PLUGIN_AUDIT_EVENT,
             payload={"tool_name": self._config.tool_name, "mapped_domain": "cognitive", **result.model_dump(mode="json")},
             source="cli.adapter.cognitive",
             trace_id=trace_id,
@@ -254,14 +275,14 @@ class CliExecutionDomainPlugin(ExecutionDomainPlugin):
 
     _transport: CliTransportClient = PrivateAttr()
     _config: CliToolRegistrationConfig = PrivateAttr()
-    _transcript_store: BrainTranscriptStore = PrivateAttr()
+    _transcript_store: AuditEventStore = PrivateAttr()
 
     def attach_runtime(
         self,
         *,
         transport: CliTransportClient,
         config: CliToolRegistrationConfig,
-        transcript_store: BrainTranscriptStore,
+        transcript_store: AuditEventStore,
     ) -> None:
         self._transport = transport
         self._config = config
@@ -285,7 +306,7 @@ class CliExecutionDomainPlugin(ExecutionDomainPlugin):
         self._transcript_store.write_entry(
             session_id=session_id,
             turn_id=turn_id,
-            entry_type=BrainTranscriptEntryType.PLUGIN_AUDIT_EVENT,
+            entry_type=AuditEventType.PLUGIN_AUDIT_EVENT,
             payload={"tool_name": self._config.tool_name, "mapped_domain": "execution", **result.model_dump(mode="json")},
             source="cli.adapter.execution",
             trace_id=trace_id,
@@ -302,7 +323,7 @@ class CliAdapterPlugin(FunctionalPluginSpec):
     purpose: str = "Adapt external CLI tools into cognitive or execution runtimes"
 
     _transport: CliTransportClient = PrivateAttr()
-    _transcript_store: BrainTranscriptStore = PrivateAttr()
+    _transcript_store: AuditEventStore = PrivateAttr()
     _registered_tools: Dict[str, CliToolRegistrationConfig] = PrivateAttr(default_factory=dict)
     _tool_states: Dict[str, CliToolRuntimeState] = PrivateAttr(default_factory=dict)
     _registered_plugin_ids: Set[str] = PrivateAttr(default_factory=set)
@@ -315,15 +336,17 @@ class CliAdapterPlugin(FunctionalPluginSpec):
         self,
         *,
         transport: CliTransportClient,
-        transcript_store: BrainTranscriptStore,
-        cognitive_registry: Any | None = None,
-        execution_registry: Any | None = None,
+        transcript_store: AuditEventStore,
+        cognitive_registry: Optional[Any] = None,
+        execution_registry: Optional[Any] = None,
     ) -> None:
         self._transport = transport
         self._transcript_store = transcript_store
 
     def register_tool(self, config: CliToolRegistrationConfig) -> CliToolRuntimeState:
         normalized = CliToolRegistrationConfig.model_validate(config.model_dump(mode="json"))
+        if normalized.tool_name in self._registered_tools:
+            raise ValueError(f"CLI tool '{normalized.tool_name}' is already registered")
         executable = normalized.command_executable.strip()
         if not executable or any(token in executable for token in (" ", "\t", "|", ";", "&", ">", "<", "$", "`")):
             raise ValueError(
@@ -343,6 +366,44 @@ class CliAdapterPlugin(FunctionalPluginSpec):
 
     def list_tool_states(self) -> List[CliToolRuntimeState]:
         return [self._tool_states[key] for key in sorted(self._tool_states.keys())]
+
+    def activate_tool(self, tool_name: str) -> CliToolRuntimeState:
+        config = self.get_tool_config(tool_name)
+        if not self._transport.health_probe(config):
+            raise FileNotFoundError(f"health probe failed for CLI tool: {config.command_executable}")
+        state = self._build_tool_runtime_state(config).model_copy(update={"status": "active"})
+        self._tool_states[tool_name] = state
+        return state
+
+    def disable_tool(self, tool_name: str) -> CliToolRuntimeState:
+        state = self._tool_states.get(tool_name)
+        if state is None:
+            raise KeyError(tool_name)
+        stopped = state.model_copy(update={"status": "stopped"})
+        self._tool_states[tool_name] = stopped
+        return stopped
+
+    def delete_tool(self, tool_name: str) -> bool:
+        if tool_name not in self._registered_tools:
+            raise KeyError(tool_name)
+        self._registered_tools.pop(tool_name, None)
+        self._tool_states.pop(tool_name, None)
+        return True
+
+    def get_tool_health(self, tool_name: str) -> Dict[str, Any]:
+        config = self.get_tool_config(tool_name)
+        state = self._tool_states.get(tool_name)
+        if state is None:
+            raise KeyError(tool_name)
+        healthy = state.status == "active" and self._transport.health_probe(config)
+        return {
+            "command_name": state.command_name,
+            "status": state.status,
+            "registered": True,
+            "healthy": healthy,
+            "last_test_status": None,
+            "command_executable": config.command_executable,
+        }
 
     def produce_sub_plugin_specs(self) -> List[tuple[BasePluginSpec, Any]]:
         """
@@ -407,7 +468,7 @@ class CliAdapterPlugin(FunctionalPluginSpec):
         self,
         tool_name: str,
         *,
-        arguments: List[str] | None = None,
+        arguments: List[Optional[str]] = None,
         stdin_input: Optional[str] = None,
         trace_id: Optional[str] = None,
         working_directory: Optional[str] = None,

@@ -1,3 +1,4 @@
+from __future__ import annotations
 """Sanity Auditor (G25) - Rational Audit Mechanism
 
 ## File Purpose
@@ -28,7 +29,6 @@ behaviors.
 Based on Zentex Product Document Function 22 (G25)
 """
 
-from __future__ import annotations
 
 from datetime import datetime, timezone
 from enum import Enum, auto
@@ -52,6 +52,9 @@ class AuditStatus(str, Enum):
     PASSED = "passed"
     FAILED = "failed"
     WARNING = "warning"
+    DEGRADED = "degraded"
+    SKIPPED = "skipped"
+    NOT_RUN = "not_run"
     FROZEN = "frozen"
 
 

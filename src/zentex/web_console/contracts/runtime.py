@@ -1,10 +1,10 @@
 from __future__ import annotations
 
-from typing import Any
+from typing import Any, Dict, List, Optional, Union
 
 from pydantic import BaseModel, ConfigDict, Field
 
-from zentex.web_console.contracts.transcript import TranscriptEventPayload
+from zentex.web_console.contracts.audit_event import AuditEventPayload
 
 
 class LLMStatusPayload(BaseModel):
@@ -12,37 +12,37 @@ class LLMStatusPayload(BaseModel):
 
     available: bool
     probe_checked: bool = False
-    provider_name: str | None = None
-    api_base: str | None = None
-    api_key_env: str | None = None
-    health_status: str | None = None
-    reason: str | None = None
+    provider_name: Optional[str] = None
+    api_base: Optional[str] = None
+    api_key_env: Optional[str] = None
+    health_status: Optional[str] = None
+    reason: Optional[str] = None
     missing_env: list[str] = Field(default_factory=list)
-    hint: str | None = None
-    provider_error_type: str | None = None
+    hint: Optional[str] = None
+    provider_error_type: Optional[str] = None
 
 
 class RuntimeOverviewPayload(BaseModel):
     model_config = ConfigDict(extra="forbid", frozen=True)
 
     runtime: dict[str, Any]
-    session: dict[str, Any] | None
+    session: dict[str, Any]
     working_memory: dict[str, Any]
     metacognition: dict[str, Any]
     living_self_model: dict[str, Any]
     temporal_agenda: dict[str, Any]
-    recent_events: list[TranscriptEventPayload] = Field(default_factory=list)
-    last_intervention_event: TranscriptEventPayload | None = None
-    active_weight_plugin_id: str | None = None
+    recent_events: list[AuditEventPayload] = Field(default_factory=list)
+    last_intervention_event: Optional[AuditEventPayload] = None
+    active_weight_plugin_id: Optional[str] = None
     weight_fallback_occurred: bool = False
     weight_profile: dict[str, Any] = Field(default_factory=dict)
 
 
-class TranscriptStreamMessage(BaseModel):
+class AuditEventStreamMessage(BaseModel):
     model_config = ConfigDict(extra="forbid", frozen=True)
 
-    type: str = "transcript_event"
-    event: TranscriptEventPayload
+    type: str = "audit_event"
+    event: AuditEventPayload
     overview: RuntimeOverviewPayload
 
 
@@ -58,7 +58,7 @@ class CognitiveConflictPayload(BaseModel):
 
     conflicts: list[dict[str, Any]] = Field(default_factory=list)
     snapshot_version: int = 0
-    brain_scope: str | None = None
+    brain_scope: Optional[str] = None
 
 
 class SimulationBundlePayload(BaseModel):

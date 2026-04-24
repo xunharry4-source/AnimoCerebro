@@ -1,10 +1,10 @@
+from __future__ import annotations
 """
 Reflection Async API Routes - 反思系统异步API路由
 
 提供反思任务的提交、查询、取消等RESTful API端点。
 """
 
-from __future__ import annotations
 
 import logging
 from typing import Any, Dict, List, Optional

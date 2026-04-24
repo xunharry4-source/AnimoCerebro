@@ -1,13 +1,13 @@
+from __future__ import annotations
 """Core Facade & DTO Definitions
 
 Defines the main dependency contract for web_console, hiding complexity of
 kernel.service and providing a stable interface for web_console modules.
 """
 
-from __future__ import annotations
 
 from abc import ABC, abstractmethod
-from typing import TYPE_CHECKING, Any, Dict, List
+from typing import TYPE_CHECKING, Any, Dict, List, Optional
 from datetime import datetime
 from pydantic import BaseModel, Field
 
@@ -15,7 +15,6 @@ if TYPE_CHECKING:
     from .session_manager import SessionManager
     from .state_manager import NineQuestionStateManager
     from .event_bus import EventBus
-    from .config_manager import ConfigManager
 
 
 # ========== DTO Classes ==========
@@ -33,7 +32,7 @@ class SessionSnapshot(BaseModel):
     workspace: str
     created_at: datetime = Field(default_factory=datetime.utcnow)
     question_drivers: List[str] = []
-    last_turn_id: str | None = None
+    last_turn_id: Optional[str] = None
     metadata: Dict[str, Any] = Field(default_factory=dict)
 
     class Config:
@@ -62,7 +61,7 @@ class NineQuestionStateSnapshot(BaseModel):
         description="Question IDs marked as needing recomputation",
     )
     question_snapshots: Dict[str, Dict[str, Any]] = Field(default_factory=dict)
-    last_refresh_reason: str | None = None
+    last_refresh_reason: Optional[str] = None
     snapshot_version: int = 9  # Legacy field for compatibility
     updated_at: datetime = Field(default_factory=datetime.utcnow)
 
@@ -85,8 +84,6 @@ class AppConfig(BaseModel):
     """
 
     default_workspace: str = "."
-    transcript_db_path: str = "./data/transcripts.db"
-    session_db_path: str = "./data/sessions.db"
     cache_ttl_seconds: int = 3600
     log_level: str = "INFO"
     enable_persistence: bool = True
@@ -95,8 +92,6 @@ class AppConfig(BaseModel):
         json_schema_extra = {
             "example": {
                 "default_workspace": "/work",
-                "transcript_db_path": "./data/transcripts.db",
-                "session_db_path": "./data/sessions.db",
                 "cache_ttl_seconds": 3600,
                 "log_level": "INFO",
             }
@@ -117,15 +112,6 @@ class KernelServiceFacade(ABC):
     - Provides a stable contract during transition from core/runtime
     - Allows multiple implementations (test mocks, different backends)
     """
-
-    @abstractmethod
-    def get_transcript_store(self) -> Any:
-        """Get transcript storage adapter
-        
-        Returns:
-            TranscriptStore: Persisted event log storage
-        """
-        pass
 
     @abstractmethod
     def get_plugin_registry(self) -> Any:
@@ -173,6 +159,11 @@ class KernelServiceFacade(ABC):
         pass
 
     @abstractmethod
+    def get_workspace_store(self) -> Any:
+        """Get the core workspace metadata store."""
+        pass
+
+    @abstractmethod
     def get_config(self) -> AppConfig:
         """Get application configuration
         
@@ -189,7 +180,7 @@ class KernelServiceFacade(ABC):
         pass
 
     @abstractmethod
-    def get_session_meta(self, session_id: str) -> dict | None:
+    def get_session_meta(self, session_id: str) -> Optional[dict]:
         """Get kernel session metadata for a session id."""
         pass
 
@@ -199,33 +190,38 @@ class KernelServiceFacade(ABC):
         pass
 
     @abstractmethod
-    def ensure_nine_questions_bootstrap(self, session_id: str, *, force: bool = False) -> Any:
-        """Run the kernel nine-question bootstrap for a session."""
+    def ensure_nine_questions_bootstrap(self, *, force: bool = False) -> Any:
+        """Run the kernel nine-question bootstrap (global — not session-scoped)."""
         pass
 
     @abstractmethod
-    def get_session_state(self, session_id: str) -> dict | None:
+    def run_single_nine_question(self, question_id: str, max_retries: int = 1) -> Any:
+        """Run exactly one nine-question in isolation without forcing downstream rerun."""
+        pass
+
+    @abstractmethod
+    def get_session_state(self, session_id: str) -> Optional[dict]:
         """Get comprehensive session state (Working Memory, Self Model, Temporal)"""
         pass
 
     @abstractmethod
-    def get_working_memory(self, session_id: str) -> list[dict] | None:
+    def get_working_memory(self, session_id: str) -> list[Optional[dict]]:
         """Get working memory snapshot"""
         pass
 
     @abstractmethod
-    def get_self_model_snapshot(self, session_id: str) -> dict | None:
+    def get_self_model_snapshot(self, session_id: str) -> Optional[dict]:
         """Get self model snapshot"""
         pass
 
     @abstractmethod
-    def get_temporal_snapshot(self, session_id: str) -> dict | None:
+    def get_temporal_snapshot(self, session_id: str) -> Optional[dict]:
         """Get temporal agenda snapshot"""
         pass
 
     @abstractmethod
-    def get_nine_question_state(self, session_id: str) -> dict | None:
-        """Get nine-question state dict"""
+    def get_nine_question_state(self) -> Optional[dict]:
+        """Return the shared nine-question baseline state."""
         pass
 
     @abstractmethod
@@ -260,3 +256,8 @@ class KernelServiceFacade(ABC):
             All aggregation logic resides in kernel.service.KernelService.
         """
         pass
+
+
+# Resolve deferred ForwardRefs for Pydantic v2
+SessionSnapshot.model_rebuild()
+NineQuestionStateSnapshot.model_rebuild()

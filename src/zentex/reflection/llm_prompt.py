@@ -1,3 +1,4 @@
+from __future__ import annotations
 """
 Reflection LLM Prompt Builder — zentex.reflection.llm_prompt
 
@@ -29,7 +30,6 @@ DOES NOT:
   - Import from zentex.llm (no circular dependency risk).
 """
 
-from __future__ import annotations
 
 import json
 import logging
@@ -112,20 +112,7 @@ def build_reflection_prompt(
     context: Dict[str, Any],
     type_specific_guidance: str = "",
 ) -> str:
-    """Return a fully-preprocessed prompt for a reflection LLM call.
-
-    Builds each segment independently, then assembles them in order.
-
-    Args:
-        subject:                Human-readable reflection subject (title).
-        reflection_type_value:  Machine value of ReflectionType.
-        reflection_type_name:   Chinese display name (e.g. "决策").
-        context:                Raw context dict — preprocessed here before use.
-        type_specific_guidance: Optional type-specific guidance section.
-
-    Returns:
-        Complete prompt string ready to pass to llm_service.generate_json().
-    """
+    """Public API: Build a complete reflection prompt string."""
     segs = ReflectionPromptSegments(
         role=_build_role_segment(reflection_type_name),
         subject=_build_subject_segment(subject),
@@ -136,6 +123,99 @@ def build_reflection_prompt(
         guidance=_build_guidance_segment(type_specific_guidance),
     )
     return segs.assemble()
+
+
+def build_quality_audit_prompt(
+    subject: str,
+    reflection_content: Dict[str, Any],
+    context: Dict[str, Any],
+) -> str:
+    """Return a prompt for an LLM-based quality audit of a reflection.
+    
+    Args:
+        subject: The reflection subject.
+        reflection_content: The dictionary containing insights, lessons, etc.
+        context: The original context used for generation.
+        
+    Returns:
+        Complete audit prompt string.
+    """
+    return (
+        "你是一个严苛的【认知质量审计师】。你的任务是评估以下生成的【反思内容】的质量。\n\n"
+        "## 反思主体\n"
+        f"{subject}\n\n"
+        "## 生成的反思内容（待审计）\n"
+        f"{json.dumps(reflection_content, ensure_ascii=False, indent=2)}\n\n"
+        "## 原始上下文（用于验证真实性）\n"
+        f"{json.dumps(_preprocess_context(context), ensure_ascii=False, indent=2)}\n\n"
+        "## 审计标准（严格执行）\n"
+        "1. **深度 (Depth)**: 分析是否触及系统性根因？是否停留在表面逻辑？\n"
+        "2. **行动性 (Actionability)**: 建议是否具备可立即执行的具体路径？\n"
+        "3. **真实性 (Groundedness)**: 内容是否基于上下文中的事实，还是 LLM 的幻觉或套话？\n"
+        "4. **相关性 (Relevance)**: 是否直接解决了反思主题中的核心矛盾？\n\n"
+        "## 返回格式（严格 JSON）\n"
+        "```json\n"
+        "{\n"
+        '  "quality_grade": "EXCELLENT/GOOD/FAIR/POOR",\n'
+        '  "depth_grade": "SYSTEMIC/STRATEGIC/ANALYTICAL",\n'
+        '  "audit_reason": "简短的审计理由，指出具体的加分项或缺陷项",\n'
+        '  "confidence_score": 0.0\n'
+        "}\n"
+        "```"
+    )
+
+
+def build_maintenance_synthesis_prompt(
+    *,
+    top_tags: List[str],
+    titles: List[str],
+    layer_distribution: Dict[str, Any],
+    unverified_count: int,
+) -> str:
+    """Return a prompt for semantic synthesis of memory-maintenance insights.
+
+    Used by ``LLMReflectionGenerator.synthesize_maintenance_insights()``
+    to produce actionable, LLM-derived insights from memory-layer statistics
+    — replacing the raw tag-counter fallback in
+    ``ReflectionService.trigger_memory_aware_maintenance()``.
+
+    Output schema (strict JSON):
+    {
+      "summary": "<one-sentence synthesis of memory state>",
+      "insights": ["...", ...],
+      "lessons": ["...", ...],
+      "improvements": ["...", ...]
+    }
+    """
+    tag_block = ", ".join(top_tags[:10]) if top_tags else "（无标签数据）"
+    title_block = "; ".join(titles[:5]) if titles else "（无标题数据）"
+    layer_block = ", ".join(f"{k}:{v}" for k, v in layer_distribution.items()) if layer_distribution else "（无分层数据）"
+    unverified_line = f"{unverified_count} 条记忆尚未验证。" if unverified_count else "所有近期记忆均已验证。"
+
+    return (
+        "你是一个【记忆治理分析师】。根据以下记忆统计摘要，生成有价值的认知洞察。\n\n"
+        "## 记忆状态摘要\n"
+        f"- 高频标签: {tag_block}\n"
+        f"- 代表性记忆标题: {title_block}\n"
+        f"- 分层分布: {layer_block}\n"
+        f"- 可信度: {unverified_line}\n\n"
+        "## 任务\n"
+        "1. 识别记忆中反复出现的主题或认知模式（insights）。\n"
+        "2. 提炼出可复用的经验教训（lessons）。\n"
+        "3. 提出具体可执行的记忆治理改进建议（improvements），例如哪些主题需要更多验证、\n"
+        "   哪些层级存在过多未整理内容等。\n"
+        "4. 用一句话总结当前记忆状态（summary）。\n\n"
+        "## 返回格式（严格 JSON）\n"
+        "```json\n"
+        "{\n"
+        '  "summary": "...",\n'
+        '  "insights": ["...", "..."],\n'
+        '  "lessons": ["..."],\n'
+        '  "improvements": ["...", "..."]\n'
+        "}\n"
+        "```\n"
+        "不得输出 JSON 以外的内容。每个数组至少含 1 条，最多 3 条。"
+    )
 
 
 def build_type_specific_guidance(

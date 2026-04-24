@@ -1,9 +1,9 @@
+from __future__ import annotations
 """
 Task Reanalysis Service - Handles task continuation and improvement analysis.
 Detects partial completions and generates new tasks for optimization.
 """
 
-from __future__ import annotations
 import logging
 from typing import Any, Dict, List, Optional
 from zentex.tasks.reanalysis.models import (

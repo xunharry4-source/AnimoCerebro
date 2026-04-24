@@ -13,6 +13,7 @@ from zentex.learning.dspy_adapter import ZentexDSPyLM
 from zentex.learning.sandbox import ThoughtSandbox
 from zentex.learning.budget import ReasoningBudget
 from zentex.learning.directions import LearningDirection
+from zentex.learning.store import LEARNING_EVENT_TYPE, LearningStore
 
 __all__ = [
     # Engine / 引擎
@@ -30,6 +31,8 @@ __all__ = [
     
     # Sandbox / 沙盒
     "ThoughtSandbox",
+    "LearningStore",
+    "LEARNING_EVENT_TYPE",
     
     # Budget / 预算
     "ReasoningBudget",

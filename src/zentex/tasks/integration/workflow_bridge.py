@@ -3,7 +3,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import threading
-from typing import Any
+from typing import Any, Dict, List, Optional, Union
 
 from zentex.supervision.integration import (
     SupervisedTaskManager,
@@ -22,8 +22,8 @@ class WorkflowTaskBridge:
     def __init__(
         self,
         *,
-        task_service: TaskManagementService | None = None,
-        supervised_manager: SupervisedTaskManager | None = None,
+        task_service: Optional[TaskManagementService] = None,
+        supervised_manager: Optional[SupervisedTaskManager] = None,
     ) -> None:
         self._task_service = task_service or get_task_service()
         self._supervised_manager = supervised_manager or create_supervised_task_manager(
@@ -37,9 +37,9 @@ class WorkflowTaskBridge:
         subject: str,
         reflection_type: str,
         priority: Any,
-        trace_id: str | None = None,
-        session_id: str | None = None,
-        template_id: str | None = None,
+        trace_id: Optional[str] = None,
+        session_id: Optional[str] = None,
+        template_id: Optional[str] = None,
     ) -> str:
         task = self._ensure_task(
             idempotency_key=f"reflection:{task_id}",
@@ -65,9 +65,9 @@ class WorkflowTaskBridge:
         task_id: str,
         status: str,
         *,
-        subject: str | None = None,
-        reflection_type: str | None = None,
-        remarks: str | None = None,
+        subject: Optional[str] = None,
+        reflection_type: Optional[str] = None,
+        remarks: Optional[str] = None,
     ) -> str:
         task = self._ensure_task(
             idempotency_key=f"reflection:{task_id}",
@@ -174,7 +174,7 @@ class WorkflowTaskBridge:
             logger.warning("workflow bridge failed to update task %s: %s", task_id, exc)
 
     def _update_task_tracking(
-        self, task_id: str, metadata_updates: dict[str, Any], *, remarks: str | None = None
+        self, task_id: str, metadata_updates: dict[str, Any], *, remarks: Optional[str] = None
     ) -> None:
         try:
             self._task_service.update_task_metadata(

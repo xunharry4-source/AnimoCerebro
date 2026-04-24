@@ -13,15 +13,25 @@ from datetime import datetime
 from typing import Any, Dict, List, Optional
 
 from fastapi import APIRouter, HTTPException, Query
+import logging
 
 from zentex.environment.service import get_environment_service
 
 router = APIRouter(prefix="/api/v1/environment", tags=["environment"])
+logger = logging.getLogger(__name__)
 
 
 def _get_service() -> Any:
     """Resolve the environment module through its public service entrypoint."""
     return get_environment_service()
+
+
+def _raise_environment_http_500(operation: str, message: str, exc: Exception) -> None:
+    # Do not let environment collection or interpretation fail without a traceback.
+    # Pretending these backend faults are just ordinary 500 responses destroys
+    # observability and makes the environment page look like a generic frontend miss.
+    logger.exception("Environment API failure during %s", operation)
+    raise HTTPException(status_code=500, detail=f"{message}: {str(exc)}") from exc
 
 
 @router.get("/host-state")
@@ -69,7 +79,7 @@ def get_host_state():
             }
         }
     except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Failed to sample host state: {str(e)}")
+        _raise_environment_http_500("host_state", "Failed to sample host state", e)
 
 
 @router.post("/interpret")
@@ -116,7 +126,7 @@ def interpret_environment(
             }
         }
     except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Failed to interpret environment: {str(e)}")
+        _raise_environment_http_500("interpret_environment", "Failed to interpret environment", e)
 
 
 @router.post("/sanitize")
@@ -164,7 +174,7 @@ def sanitize_signal(
     except HTTPException:
         raise
     except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Failed to sanitize signal: {str(e)}")
+        _raise_environment_http_500("sanitize_signal", "Failed to sanitize signal", e)
 
 
 @router.post("/snapshot")
@@ -210,7 +220,7 @@ def create_snapshot(payload: Dict[str, Any]):
             }
         }
     except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Failed to create snapshot: {str(e)}")
+        _raise_environment_http_500("create_snapshot", "Failed to create snapshot", e)
 
 
 @router.get("/snapshots/recent")
@@ -248,7 +258,7 @@ def get_recent_snapshots(
             ]
         }
     except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Failed to get recent snapshots: {str(e)}")
+        _raise_environment_http_500("get_recent_snapshots", "Failed to get recent snapshots", e)
 
 
 @router.get("/snapshots/query")
@@ -292,7 +302,7 @@ def query_snapshots(
             ]
         }
     except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Failed to query snapshots: {str(e)}")
+        _raise_environment_http_500("query_snapshots", "Failed to query snapshots", e)
 
 
 @router.post("/compare")
@@ -346,7 +356,7 @@ def compare_sources(payload: Dict[str, Any]):
     except HTTPException:
         raise
     except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Failed to compare sources: {str(e)}")
+        _raise_environment_http_500("compare_sources", "Failed to compare sources", e)
 
 
 @router.get("/status")
@@ -364,9 +374,13 @@ def get_status():
         last_state = service.get_last_host_state()
         
         return {
-            "status": "healthy",
+            # Do not advertise the environment service as healthy when it has not
+            # produced any host sample yet. That would fabricate a normal runtime
+            # state with no underlying evidence.
+            "status": "healthy" if last_state else "degraded",
             "service": "environment_awareness",
             "version": "1.0.0",
+            "degradation_reason": None if last_state else "no_host_sample",
             "last_sample": {
                 "timestamp": last_state.timestamp.isoformat() if last_state else None,
                 "hostname": last_state.hostname if last_state else None,
@@ -381,4 +395,4 @@ def get_status():
             ]
         }
     except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Service status check failed: {str(e)}")
+        _raise_environment_http_500("service_status_check", "Service status check failed", e)

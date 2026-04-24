@@ -13,6 +13,12 @@ vi.mock("./nineQuestionsApi", async () => {
   return {
     ...actual,
     fetchNineQuestionDetail: vi.fn(),
+    fetchNineQuestionEvidence: vi.fn(),
+    fetchNineQuestionInference: vi.fn(),
+    fetchNineQuestionModules: vi.fn(),
+    fetchNineQuestionRaw: vi.fn(),
+    fetchNineQuestionSummary: vi.fn(),
+    fetchNineQuestionTracePayload: vi.fn(),
     runNineQuestionSandboxTest: vi.fn(),
   };
 });
@@ -78,10 +84,24 @@ const mockQuestionItem = {
 describe("【Q2 身份审计物理隔离与证据全景测试】", () => {
   beforeEach(() => {
     vi.clearAllMocks();
+    vi.mocked(api.fetchNineQuestionSummary).mockResolvedValue({ status: "completed", question_id: "q2" } as any);
+    vi.mocked(api.fetchNineQuestionEvidence).mockResolvedValue(mockEvidence as any);
+    vi.mocked(api.fetchNineQuestionInference).mockResolvedValue(mockInference as any);
+    vi.mocked(api.fetchNineQuestionTracePayload).mockResolvedValue(mockQuestionItem.llm_trace_payload as any);
+    vi.mocked(api.fetchNineQuestionRaw).mockResolvedValue(mockQuestionItem as any);
+    vi.mocked(api.fetchNineQuestionModules).mockResolvedValue({
+      status: { status: "completed" },
+      module_runs: [
+        { module_id: "q2_identity_kernel", status: "completed" },
+        { module_id: "q2_mission_boundary", status: "completed" },
+      ],
+      plugin_runs: [],
+      upstream_dependencies: [{ dependency_id: "q1", required: true, status: "completed" }],
+    } as any);
   });
 
   it("任务 1: 断言 Q2 详情页独立 API 绑定与物理路由隔离", async () => {
-    vi.mocked(api.fetchNineQuestionDetail).mockResolvedValue(mockQuestionItem as any);
+    vi.mocked(api.fetchNineQuestionDetail).mockRejectedValue(new Error("legacy detail endpoint should not be used"));
 
     render(
       <MemoryRouter initialEntries={["/console/nine-questions/q2"]}>
@@ -93,8 +113,14 @@ describe("【Q2 身份审计物理隔离与证据全景测试】", () => {
 
     // 强断言：必须调用 Q2 的独立 REST 端点
     await waitFor(() => {
-      expect(api.fetchNineQuestionDetail).toHaveBeenCalledWith("q2");
+      expect(api.fetchNineQuestionSummary).toHaveBeenCalledWith("q2");
     });
+    expect(api.fetchNineQuestionEvidence).toHaveBeenCalledWith("q2");
+    expect(api.fetchNineQuestionInference).toHaveBeenCalledWith("q2");
+    expect(api.fetchNineQuestionTracePayload).toHaveBeenCalledWith("q2");
+    expect(api.fetchNineQuestionRaw).toHaveBeenCalledWith("q2");
+    expect(api.fetchNineQuestionModules).toHaveBeenCalledWith("q2");
+    expect(api.fetchNineQuestionDetail).not.toHaveBeenCalled();
 
     expect(screen.getByTestId("q2-detail-root")).toBeInTheDocument();
     expect(screen.getByText(/Q2_Who_Am_I 正式审计页/)).toBeInTheDocument();
@@ -102,8 +128,6 @@ describe("【Q2 身份审计物理隔离与证据全景测试】", () => {
   });
 
   it("任务 2: 证据区高密度渲染与折叠面板默认锁定断言", async () => {
-    vi.mocked(api.fetchNineQuestionDetail).mockResolvedValue(mockQuestionItem as any);
-
     render(
       <MemoryRouter initialEntries={["/console/nine-questions/q2"]}>
         <Routes>
@@ -126,13 +150,16 @@ describe("【Q2 身份审计物理隔离与证据全景测试】", () => {
     expect(rawResponseAccordion.querySelector(".MuiAccordionSummary-root")).toHaveAttribute("aria-expanded", "false");
 
     // 验证状态芯片
-    expect(screen.getByTestId("q2-cache-status-chip")).toHaveTextContent("已就绪");
+    expect(screen.getByTestId("q2-cache-status-chip")).toHaveTextContent("completed");
     expect(screen.getByTestId("q2-trace-chip")).toHaveTextContent("trace: trace-prod-q2-abc");
   });
 
   it("任务 3: Q2 异常降级人话提示强断言 (404 场景)", async () => {
     // 模拟 Q2 尚未生成记录的 404 场景
-    vi.mocked(api.fetchNineQuestionDetail).mockRejectedValue(new Error("Q2 尚无快照记录"));
+    const missingSnapshotError = new Error("Q2 尚无快照记录");
+    vi.mocked(api.fetchNineQuestionSummary).mockRejectedValue(missingSnapshotError);
+    vi.mocked(api.fetchNineQuestionRaw).mockRejectedValue(missingSnapshotError);
+    vi.mocked(api.fetchNineQuestionModules).mockRejectedValue(missingSnapshotError);
 
     render(
       <MemoryRouter initialEntries={["/console/nine-questions/q2"]}>

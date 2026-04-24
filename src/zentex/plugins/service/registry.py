@@ -1,10 +1,10 @@
+from __future__ import annotations
 """Migration-safe registry adapters exposed via zentex.plugins.service.
 
 These registries exist so legacy runtime/core callers can bridge into a stable
 plugins-owned service domain while the business code is migrated off old imports.
 """
 
-from __future__ import annotations
 
 from typing import Any
 
@@ -24,7 +24,7 @@ class ExecutionDomainRegistry(AbstractPluginRegistry[ExecutionDomainPlugin]):
 class CognitiveToolRegistry(AbstractPluginRegistry[CognitiveToolSpec]):
     """Legacy cognitive tool registry kept as a compat object during migration."""
 
-    def __init__(self, transcript_store: Any | None = None, audit_logger: Any | None = None) -> None:
+    def __init__(self, transcript_store: Optional[Any] = None, audit_logger: Optional[Any] = None) -> None:
         super().__init__(CognitiveToolSpec)
         self.transcript_store = transcript_store
         self.audit_logger = audit_logger
@@ -32,7 +32,7 @@ class CognitiveToolRegistry(AbstractPluginRegistry[CognitiveToolSpec]):
     def query_by_type(self, plugin_type: type[Any]) -> list[PluginRegistration]:
         return [reg for reg in self.list_registrations() if isinstance(reg.spec, plugin_type)]
 
-    def get_active_plugins(self, feature_code: str | None = None) -> list[PluginRegistration]:
+    def get_active_plugins(self, feature_code: Optional[str] = None) -> list[PluginRegistration]:
         registrations: list[PluginRegistration] = []
         for registration in self.list_registrations():
             spec = registration.spec

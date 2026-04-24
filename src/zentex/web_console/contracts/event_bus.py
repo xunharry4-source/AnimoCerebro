@@ -1,10 +1,10 @@
+from __future__ import annotations
 """Event Bus Contract (In-Process Pub/Sub)
 
 Defines the event-driven interface for state changes, replacing
 direct manipulation of runtime.nine_question_router.
 """
 
-from __future__ import annotations
 
 from abc import ABC, abstractmethod
 from typing import Any, Awaitable, Callable, Dict, List
@@ -63,7 +63,7 @@ class EventBus(ABC):
         self,
         event_type: str,
         payload: Dict[str, Any],
-        session_id: str | None = None,
+        session_id: Optional[str] = None,
     ) -> EventPublishResult:
         """Publish an event to all subscribers
         

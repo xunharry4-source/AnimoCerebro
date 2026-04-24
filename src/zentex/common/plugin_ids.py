@@ -1,3 +1,4 @@
+from __future__ import annotations
 """
 Plugin ID Constants for Cognitive Plugins
 
@@ -13,7 +14,6 @@ Usage:
     )
 """
 
-from __future__ import annotations
 
 
 # ============================================================================
@@ -228,7 +228,7 @@ def is_nine_question_plugin(plugin_id: str) -> bool:
     return plugin_id in NINE_QUESTIONS_ALL
 
 
-def get_nine_question_number(plugin_id: str) -> int | None:
+def get_nine_question_number(plugin_id: str) -> Optional[int]:
     """
     Extract the question number from a nine questions plugin ID.
     

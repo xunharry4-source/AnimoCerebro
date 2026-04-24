@@ -1,3 +1,4 @@
+from __future__ import annotations
 """
 Agent Data Access Object for persistent storage.
 
@@ -16,7 +17,7 @@ Architecture:
 - Integrates with LRUCache for performance
 
 Usage:
-    db = DatabaseConnection("runtime/data/zentex_core.db")
+    db = DatabaseConnection(get_storage_paths().core_db)
     cache = LRUCache(max_size=500, ttl_seconds=300)
     dao = AgentDAO(db, cache)
     
@@ -27,7 +28,6 @@ Usage:
     agents = dao.list_agents(status="ACTIVE")
 """
 
-from __future__ import annotations
 
 import logging
 from datetime import datetime, timezone
@@ -92,7 +92,7 @@ class AgentDAO(BaseDAO):
             
         except Exception as e:
             logger.error(f"Failed to register agent: {e}", exc_info=True)
-            return False
+            raise
     
     def update_agent(self, agent_id: str, updates: Dict[str, Any], operator_id: str = "system", trace_id: str = "") -> bool:
         """
@@ -126,7 +126,7 @@ class AgentDAO(BaseDAO):
             
         except Exception as e:
             logger.error(f"Failed to update agent {agent_id}: {e}", exc_info=True)
-            return False
+            raise
     
     def list_agents(
         self,
@@ -286,7 +286,7 @@ class AgentDAO(BaseDAO):
             return True
         except Exception as e:
             logger.error(f"Failed to add audit log: {e}", exc_info=True)
-            return False
+            raise
     
     def delete_agent(self, agent_id: str, operator_id: str = "system", trace_id: str = "") -> bool:
         """
@@ -320,4 +320,4 @@ class AgentDAO(BaseDAO):
             
         except Exception as e:
             logger.error(f"Failed to delete agent {agent_id}: {e}", exc_info=True)
-            return False
+            raise

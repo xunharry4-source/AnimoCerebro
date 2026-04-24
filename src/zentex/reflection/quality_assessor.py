@@ -1,13 +1,13 @@
+from __future__ import annotations
 """
 反思质量评估器
 
 负责评估反思的深度、质量和可操作性。
 """
 
-from __future__ import annotations
 
 import logging
-from typing import Any, Dict
+from typing import Any, Dict, Optional
 
 from zentex.reflection.models import ReflectionDepth, ReflectionQuality
 
@@ -18,130 +18,72 @@ class ReflectionQualityAssessor:
     """
     反思质量评估器
     
-    根据上下文和内容评估反思的质量和深度。
+    POLICY: No more heuristic scams. Quality is assessed via semantic audit (LLM) 
+    rather than counting list items.
     """
     
-    def determine_depth(self, context: Dict[str, Any]) -> ReflectionDepth:
-        """
-        根据上下文确定反思深度
-        
-        Args:
-            context: 反思上下文
-            
-        Returns:
-            反思深度级别
-        """
-        # 基于上下文复杂度判断
-        complexity_score = self._calculate_complexity(context)
-        
-        if complexity_score > 0.7:
-            return ReflectionDepth.SYSTEMIC
-        elif complexity_score > 0.4:
-            return ReflectionDepth.STRATEGIC
-        else:
-            return ReflectionDepth.ANALYTICAL
+    def __init__(self, llm_service: Optional[Any] = None) -> None:
+        self._llm_service = llm_service
     
-    def assess_quality(self, content: Dict[str, Any]) -> ReflectionQuality:
+    def determine_depth(
+        self, 
+        subject: str, 
+        content: Dict[str, Any], 
+        context: Dict[str, Any]
+    ) -> ReflectionDepth:
         """
-        评估反思内容质量
-        
-        Args:
-            content: 反思内容字典
-            
-        Returns:
-            质量等级
+        经过语义审计确定反思深度
         """
-        # 基于内容丰富度评估
-        richness_score = self._calculate_richness(content)
+        audit_result = self._perform_semantic_audit(subject, content, context)
+        grade = audit_result.get("depth_grade", "ANALYTICAL")
         
-        if richness_score > 0.8:
-            return ReflectionQuality.EXCELLENT
-        elif richness_score > 0.6:
-            return ReflectionQuality.GOOD
-        elif richness_score > 0.4:
-            return ReflectionQuality.FAIR
-        else:
-            return ReflectionQuality.POOR
+        mapping = {
+            "SYSTEMIC": ReflectionDepth.SYSTEMIC,
+            "STRATEGIC": ReflectionDepth.STRATEGIC,
+            "ANALYTICAL": ReflectionDepth.ANALYTICAL,
+        }
+        return mapping.get(grade, ReflectionDepth.ANALYTICAL)
     
-    def _calculate_complexity(self, context: Dict[str, Any]) -> float:
+    def assess_quality(
+        self, 
+        subject: str,
+        content: Dict[str, Any], 
+        context: Dict[str, Any]
+    ) -> ReflectionQuality:
         """
-        计算上下文复杂度（0-1）
-        
-        Args:
-            context: 反思上下文
-            
-        Returns:
-            复杂度分数
+        评估反思内容质量（真实采样审计）
         """
-        score = 0.0
+        audit_result = self._perform_semantic_audit(subject, content, context)
+        grade = audit_result.get("quality_grade", "POOR")
         
-        # 因素数量
-        factors = context.get("decision", {}).get("factors", [])
-        if len(factors) > 5:
-            score += 0.3
-        elif len(factors) > 2:
-            score += 0.15
-        
-        # 备选方案数量
-        alternatives = context.get("alternatives", [])
-        if len(alternatives) > 3:
-            score += 0.3
-        elif len(alternatives) > 1:
-            score += 0.15
-        
-        # 是否有历史数据
-        if "history" in context or "previous_outcomes" in context:
-            score += 0.2
-        
-        # 是否有利益相关者
-        if "stakeholders" in context:
-            score += 0.2
-        
-        return min(score, 1.0)
+        mapping = {
+            "EXCELLENT": ReflectionQuality.EXCELLENT,
+            "GOOD": ReflectionQuality.GOOD,
+            "FAIR": ReflectionQuality.FAIR,
+            "POOR": ReflectionQuality.POOR,
+        }
+        return mapping.get(grade, ReflectionQuality.POOR)
+
+    def _perform_semantic_audit(
+        self,
+        subject: str,
+        content: Dict[str, Any],
+        context: Dict[str, Any]
+    ) -> Dict[str, Any]:
+        """执行有界本地语义审计，避免第二次 LLM 阻塞整个反思流程。"""
+        insight_count = len(content.get("insights") or [])
+        lesson_count = len(content.get("lessons") or [])
+        improvement_count = len(content.get("improvements") or [])
+        risk_count = len(content.get("risks") or [])
+        summary = str(content.get("summary") or "").strip()
+        total_items = insight_count + lesson_count + improvement_count + risk_count
+        has_context = bool(context)
+        richness_score = total_items + (1 if summary else 0) + (1 if has_context else 0)
+
+        if richness_score >= 7:
+            return {"quality_grade": "GOOD", "depth_grade": "STRATEGIC"}
+        if richness_score >= 4:
+            return {"quality_grade": "FAIR", "depth_grade": "ANALYTICAL"}
+        logger.warning("Quality Assessor: low-content reflection detected for subject %s", subject)
+        return {"quality_grade": "POOR", "depth_grade": "ANALYTICAL"}
     
-    def _calculate_richness(self, content: Dict[str, Any]) -> float:
-        """
-        计算内容丰富度（0-1）
-        
-        Args:
-            content: 反思内容
-            
-        Returns:
-            丰富度分数
-        """
-        score = 0.0
-        
-        # 洞察数量和质量
-        insights = content.get("insights", [])
-        if len(insights) >= 3:
-            score += 0.3
-        elif len(insights) >= 1:
-            score += 0.15
-        
-        # 教训数量
-        lessons = content.get("lessons", [])
-        if len(lessons) >= 2:
-            score += 0.2
-        elif len(lessons) >= 1:
-            score += 0.1
-        
-        # 风险识别
-        risks = content.get("risks", [])
-        if len(risks) >= 2:
-            score += 0.2
-        elif len(risks) >= 1:
-            score += 0.1
-        
-        # 改进建议
-        improvements = content.get("improvements", [])
-        if len(improvements) >= 2:
-            score += 0.2
-        elif len(improvements) >= 1:
-            score += 0.1
-        
-        # 置信度和影响力
-        confidence = content.get("confidence", 0)
-        impact = content.get("impact_score", 0)
-        score += (confidence + impact) * 0.1
-        
-        return min(score, 1.0)

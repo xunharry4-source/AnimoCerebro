@@ -1,3 +1,4 @@
+from __future__ import annotations
 """
 Atomic Upgrade Planner - Automatically decomposes upgrade proposals into atomic tasks.
 
@@ -8,10 +9,9 @@ Each atomic task is designed to complete in 2-5 minutes with clear file paths,
 validation commands, and dependency tracking.
 """
 
-from __future__ import annotations
 
 import json
-from typing import List, Optional
+from typing import List, Optional, Any, Dict, Union
 from uuid import uuid4
 
 from pydantic import BaseModel, Field
@@ -288,7 +288,7 @@ class AtomicUpgradePlanner:
             file_paths=[f"candidates/{proposal.program_id}-candidate/plugin.json"],
             code_changes={"version_update": proposal.candidate_version},
             validation_commands=[
-                f"cat candidates/{proposal.program_id}-candidate/plugin.json | grep version"
+                f"cat candidates/{proposal.program_id}-candidate/plugin.Union[json, grep] version"
             ],
             estimated_time_minutes=2,
             dependencies=[f"task-{(task_counter-1):03d}"],

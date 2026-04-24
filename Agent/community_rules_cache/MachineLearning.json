@@ -1,0 +1,52 @@
+{
+  "subreddit": "MachineLearning",
+  "rules": [
+    {
+      "title": "Be respectful and civil",
+      "description": "Treat all users with respect. No personal attacks, harassment, or hate speech.",
+      "violation_examples": [
+        "Insulting other users",
+        "Threats",
+        "Discriminatory language"
+      ]
+    },
+    {
+      "title": "No spam or excessive self-promotion",
+      "description": "Limit self-promotion to appropriate contexts. Follow the 10:1 rule (10 non-promotional posts for every 1 promotional post).",
+      "violation_examples": [
+        "Repeatedly posting same content",
+        "Only posting your own content",
+        "Vote manipulation"
+      ]
+    },
+    {
+      "title": "Follow Reddit's content policy",
+      "description": "All content must comply with Reddit's site-wide rules and content policy.",
+      "violation_examples": [
+        "Illegal content",
+        "Non-consensual intimate media",
+        "Impersonation"
+      ]
+    },
+    {
+      "title": "Use appropriate post flair",
+      "description": "Tag your posts with relevant flairs to help organize content.",
+      "violation_examples": [
+        "Missing flair",
+        "Incorrect flair"
+      ]
+    },
+    {
+      "title": "No low-effort content",
+      "description": "Posts should contribute meaningfully to the community discussion.",
+      "violation_examples": [
+        "One-word titles",
+        "Meme without context",
+        "Obvious reposts"
+      ]
+    }
+  ],
+  "last_updated": "2026-04-19T16:40:36.951130+00:00",
+  "source": "default_template",
+  "rule_count": 5
+}

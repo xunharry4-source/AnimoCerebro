@@ -1,26 +1,27 @@
 from typing import Optional
 
 
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, HTTPException, Request
 from typing_extensions import Annotated
 from fastapi import Depends
 
-from zentex.web_console.contracts.replay import TranscriptReplayPayload, TurnReplayPayload
-from zentex.web_console.dependencies import get_kernel_service_facade
-from zentex.web_console.replay_builder import build_replay_payload, build_turn_replay_payload
+from zentex.web_console.contracts.replay import TraceReplayPayload, TurnReplayPayload
 
 
 router = APIRouter()
 
 
-@router.get("/replay/{event_id}", response_model=TranscriptReplayPayload)
+@router.get("/replay/{event_id}", response_model=TraceReplayPayload)
 def get_replay_trace(
     event_id: str,
-    facade: Annotated[object, Depends(get_kernel_service_facade)],
+    request: Request,
     include_payload: bool = True,
-) -> TranscriptReplayPayload:
+) -> TraceReplayPayload:
     try:
-        return build_replay_payload(facade, event_id, include_payload=include_payload)
+        audit_service = getattr(request.app.state, "audit_service", None)
+        if audit_service is None:
+            raise RuntimeError("audit service unavailable")
+        return audit_service.build_trace_replay(event_id, include_payload=include_payload)
     except KeyError as exc:
         raise HTTPException(status_code=404, detail=str(exc)) from exc
 
@@ -28,13 +29,15 @@ def get_replay_trace(
 @router.get("/replay/turn/{turn_id}", response_model=TurnReplayPayload)
 def get_turn_replay(
     turn_id: str,
-    facade: Annotated[object, Depends(get_kernel_service_facade)],
+    request: Request,
     session_id: Optional[str] = None,
     include_payload: bool = True,
 ) -> TurnReplayPayload:
     try:
-        return build_turn_replay_payload(
-            facade,
+        audit_service = getattr(request.app.state, "audit_service", None)
+        if audit_service is None:
+            raise RuntimeError("audit service unavailable")
+        return audit_service.build_turn_replay(
             turn_id=turn_id,
             session_id=session_id,
             include_payload=include_payload,

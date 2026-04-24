@@ -1,3 +1,5 @@
+from __future__ import annotations
+
 """WorkingMemoryController — bounded, priority-evicting in-memory slot store."""
 
 import threading
@@ -62,7 +64,7 @@ class WorkingMemoryController:
     # Read
     # ------------------------------------------------------------------
 
-    def read(self, key: str) -> dict | None:
+    def read(self, key: str) -> Optional[dict]:
         """Return the value stored under *key*, or None if absent."""
         with self._lock:
             for slot in self._slots:

@@ -20,6 +20,8 @@ import {
   TextField,
   Typography,
 } from "@mui/material";
+import { Link as RouterLink } from "react-router-dom";
+import { extractApiErrorMessage, readResponseBody } from "../../api/httpError";
 
 type AgendaStatus = "open" | "watching" | "blocked" | "review_now" | "overdue" | "expired";
 
@@ -61,6 +63,7 @@ type EnhancedMemoryOverview = {
   suspect_count: number;
   projection_failures: string[];
   backends: MemoryBackendStatusItem[];
+  health_status?: string;
 };
 
 type EnhancedMemoryRecordItem = {
@@ -92,6 +95,62 @@ type EnhancedMemoryRecordItem = {
   last_verified_at?: string | null;
   updated_at: string;
   created_at: string;
+  storage_schema_version?: number;
+  record_health_status?: string;
+  repair_status?: string;
+};
+
+type MemoryBlockDescriptorItem = {
+  block_id: string;
+  block_kind: string;
+  required: boolean;
+  derived: boolean;
+  codec_chain: string[];
+  status: string;
+  repairable: boolean;
+  compression_strategy?: string;
+  encryption_context?: string | null;
+  last_verified_at?: string | null;
+};
+
+type MemoryRecordManifestItem = {
+  memory_id: string;
+  manifest_version: number;
+  descriptors: MemoryBlockDescriptorItem[];
+  updated_at?: string | null;
+};
+
+type MemoryRepairTicketItem = {
+  memory_id: string;
+  record_health_status: string;
+  repaired_blocks: string[];
+  quarantined_blocks: string[];
+  projection_repairs: string[];
+  notes: string[];
+  updated_at?: string | null;
+};
+
+type MemoryRecordDiagnosticsPayload = {
+  memory_id: string;
+  storage_schema_version: number;
+  record_health_status: string;
+  repair_status: string;
+  header: Record<string, unknown>;
+  manifest?: MemoryRecordManifestItem | null;
+  verification?: MemoryRepairTicketItem | null;
+};
+
+type MemoryRepairSchedulerStatusPayload = {
+  enabled: boolean;
+  interval_seconds: number;
+  last_cycle_at?: string | null;
+  last_summary: Record<string, unknown>;
+};
+
+type MemoryRepairAllPayload = {
+  triggered_by: string;
+  scheduler: MemoryRepairSchedulerStatusPayload;
+  items: MemoryRepairTicketItem[];
 };
 
 type EnhancedMemoryRecordsPayload = {
@@ -174,7 +233,8 @@ async function readJson<T>(input: RequestInfo): Promise<T> {
     headers: { Accept: "application/json" },
   });
   if (!response.ok) {
-    throw new Error(`HTTP ${response.status}`);
+    const data = await readResponseBody(response);
+    throw new Error(extractApiErrorMessage(data, `HTTP ${response.status}`));
   }
   return (await response.json()) as T;
 }
@@ -189,7 +249,8 @@ async function postJson<T>(input: RequestInfo, body: object): Promise<T> {
     body: JSON.stringify(body),
   });
   if (!response.ok) {
-    throw new Error(`HTTP ${response.status}`);
+    const data = await readResponseBody(response);
+    throw new Error(extractApiErrorMessage(data, `HTTP ${response.status}`));
   }
   return (await response.json()) as T;
 }
@@ -200,10 +261,16 @@ export default function MemoryReasoning() {
   const [records, setRecords] = useState<EnhancedMemoryRecordItem[]>([]);
   const [selectedRecord, setSelectedRecord] = useState<EnhancedMemoryRecordItem | null>(null);
   const [selectedAudit, setSelectedAudit] = useState<EnhancedMemoryAuditEvent[]>([]);
+  const [selectedDiagnostics, setSelectedDiagnostics] = useState<MemoryRecordDiagnosticsPayload | null>(null);
   const [searchHits, setSearchHits] = useState<EnhancedMemorySearchHit[]>([]);
+  const [repairSchedulerStatus, setRepairSchedulerStatus] = useState<MemoryRepairSchedulerStatusPayload | null>(null);
+  const [recentRepairAll, setRecentRepairAll] = useState<MemoryRepairAllPayload | null>(null);
   const [layer, setLayer] = useState("all");
   const [statusFilter, setStatusFilter] = useState("all");
   const [trustFilter, setTrustFilter] = useState("all");
+  const [healthFilter, setHealthFilter] = useState("all");
+  const [repairStatusFilter, setRepairStatusFilter] = useState("all");
+  const [schemaFilter, setSchemaFilter] = useState("all");
   const [query, setQuery] = useState("");
   const [reason, setReason] = useState("");
   const [managementNote, setManagementNote] = useState("");
@@ -211,6 +278,7 @@ export default function MemoryReasoning() {
   const [loading, setLoading] = useState(true);
   const [searchLoading, setSearchLoading] = useState(false);
   const [actionLoading, setActionLoading] = useState(false);
+  const [repairLoading, setRepairLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [apiErrors, setApiErrors] = useState<string[]>([]);
 
@@ -230,6 +298,7 @@ export default function MemoryReasoning() {
     let agendaPayload: AgendaResponse | null = null;
     let overviewPayload: EnhancedMemoryOverview | null = null;
     let recordsPayload: EnhancedMemoryRecordsPayload | null = null;
+    let repairStatusPayload: MemoryRepairSchedulerStatusPayload | null = null;
     const errors: string[] = [];
     
     try {
@@ -255,6 +324,14 @@ export default function MemoryReasoning() {
       errors.push(`memory/records: ${errorMsg}`);
       console.warn("Failed to load memory records:", e);
     }
+
+    try {
+      repairStatusPayload = await readJson<MemoryRepairSchedulerStatusPayload>("/api/web/memory/repair/status");
+    } catch (e) {
+      const errorMsg = e instanceof Error ? e.message : String(e);
+      errors.push(`memory/repair/status: ${errorMsg}`);
+      console.warn("Failed to load memory repair status:", e);
+    }
     
     // Track API errors for debugging
     setApiErrors(errors);
@@ -268,6 +345,9 @@ export default function MemoryReasoning() {
     if (recordsPayload) {
       setRecords(recordsPayload.items);
     }
+    if (repairStatusPayload) {
+      setRepairSchedulerStatus(repairStatusPayload);
+    }
     
     const reloadId = recordIdToReload ?? selectedRecord?.memory_id ?? recordsPayload?.items[0]?.memory_id ?? null;
     if (reloadId) {
@@ -279,6 +359,7 @@ export default function MemoryReasoning() {
     } else {
       setSelectedRecord(null);
       setSelectedAudit([]);
+      setSelectedDiagnostics(null);
     }
   };
 
@@ -301,14 +382,32 @@ export default function MemoryReasoning() {
     }
   };
 
+  const filteredRecords = records.filter((record) => {
+    if (healthFilter !== "all" && (record.record_health_status ?? "unknown") !== healthFilter) {
+      return false;
+    }
+    if (repairStatusFilter !== "all" && (record.repair_status ?? "unknown") !== repairStatusFilter) {
+      return false;
+    }
+    if (schemaFilter === "modular_only" && (record.storage_schema_version ?? 1) < 2) {
+      return false;
+    }
+    if (schemaFilter === "legacy_only" && (record.storage_schema_version ?? 1) >= 2) {
+      return false;
+    }
+    return true;
+  });
+
   const loadDetail = async (memoryId: string) => {
     try {
-      const [detailPayload, auditPayload] = await Promise.all([
+      const [detailPayload, auditPayload, diagnosticsPayload] = await Promise.all([
         readJson<EnhancedMemoryRecordItem>(`/api/web/memory/${encodeURIComponent(memoryId)}`),
         readJson<EnhancedMemoryAuditPayload>(`/api/web/memory/${encodeURIComponent(memoryId)}/audit?limit=20`),
+        readJson<MemoryRecordDiagnosticsPayload>(`/api/web/memory/${encodeURIComponent(memoryId)}/diagnostics`),
       ]);
       setSelectedRecord(detailPayload);
       setSelectedAudit(auditPayload.items);
+      setSelectedDiagnostics(diagnosticsPayload);
       setManagementNote(detailPayload.management_note ?? "");
       setCorrectionNote(detailPayload.correction_note ?? "");
     } catch (e) {
@@ -366,6 +465,85 @@ export default function MemoryReasoning() {
     }
   };
 
+  const handleVerifyRecord = async () => {
+    if (!selectedRecord) {
+      return;
+    }
+    setRepairLoading(true);
+    setError(null);
+    try {
+      await postJson<MemoryRepairTicketItem>(
+        `/api/web/memory/${encodeURIComponent(selectedRecord.memory_id)}/verify`,
+        {},
+      );
+      await loadDetail(selectedRecord.memory_id);
+      await loadRecords(selectedRecord.memory_id);
+    } catch (e) {
+      setError(e instanceof Error ? e.message : "记忆校验失败");
+    } finally {
+      setRepairLoading(false);
+    }
+  };
+
+  const handleRepairRecord = async () => {
+    if (!selectedRecord) {
+      return;
+    }
+    setRepairLoading(true);
+    setError(null);
+    try {
+      await postJson<MemoryRepairTicketItem>(
+        `/api/web/memory/${encodeURIComponent(selectedRecord.memory_id)}/repair`,
+        {},
+      );
+      await loadDetail(selectedRecord.memory_id);
+      await loadRecords(selectedRecord.memory_id);
+    } catch (e) {
+      setError(e instanceof Error ? e.message : "记忆修复失败");
+    } finally {
+      setRepairLoading(false);
+    }
+  };
+
+  const handleRepairAll = async () => {
+    setRepairLoading(true);
+    setError(null);
+    try {
+      const payload = await postJson<MemoryRepairAllPayload>("/api/web/memory/repair/trigger", {});
+      setRepairSchedulerStatus(payload.scheduler);
+      setRecentRepairAll(payload);
+      await loadRecords(selectedRecord?.memory_id ?? undefined);
+    } catch (e) {
+      setError(e instanceof Error ? e.message : "全量修复触发失败");
+    } finally {
+      setRepairLoading(false);
+    }
+  };
+
+  const applyQuickFilter = (preset: "all" | "repair_queue" | "degraded_only" | "legacy_only") => {
+    if (preset === "all") {
+      setHealthFilter("all");
+      setRepairStatusFilter("all");
+      setSchemaFilter("all");
+      return;
+    }
+    if (preset === "repair_queue") {
+      setHealthFilter("degraded");
+      setRepairStatusFilter("pending_repair");
+      setSchemaFilter("modular_only");
+      return;
+    }
+    if (preset === "degraded_only") {
+      setHealthFilter("degraded");
+      setRepairStatusFilter("all");
+      setSchemaFilter("all");
+      return;
+    }
+    setHealthFilter("all");
+    setRepairStatusFilter("all");
+    setSchemaFilter("legacy_only");
+  };
+
   return (
     <Stack spacing={3} data-testid="memory-reasoning-root">
       <Stack direction="row" justifyContent="space-between" alignItems="center">
@@ -420,6 +598,7 @@ export default function MemoryReasoning() {
                   <Chip label={`Deprecated: ${overview?.deprecated_count ?? 0}`} variant="outlined" />
                   <Chip label={`Archived: ${overview?.archived_count ?? 0}`} variant="outlined" />
                   <Chip label={`Suspect: ${overview?.suspect_count ?? 0}`} color="error" variant="outlined" />
+                  <Chip label={`Health: ${overview?.health_status ?? "unknown"}`} color="secondary" variant="outlined" />
                 </Stack>
                 {overview?.projection_failures.length ? (
                   <Alert severity="warning" sx={{ mt: 2 }}>
@@ -433,6 +612,95 @@ export default function MemoryReasoning() {
                 <Typography variant="h6" gutterBottom>
                   外部记忆桥状态
                 </Typography>
+                <Stack direction="row" spacing={1} useFlexGap flexWrap="wrap" sx={{ mb: 1.5 }}>
+                  <Chip
+                    size="small"
+                    label={`repair:${repairSchedulerStatus?.enabled ? "on" : "off"}`}
+                    color={repairSchedulerStatus?.enabled ? "success" : "default"}
+                    variant="outlined"
+                  />
+                  <Chip
+                    size="small"
+                    label={`interval:${repairSchedulerStatus?.interval_seconds ?? 0}s`}
+                    variant="outlined"
+                  />
+                  <Chip
+                    size="small"
+                    label={`last:${formatDateTime(repairSchedulerStatus?.last_cycle_at)}`}
+                    variant="outlined"
+                  />
+                  <Chip
+                    size="small"
+                    label={`status:${String(repairSchedulerStatus?.last_summary?.status ?? "unknown")}`}
+                    variant="outlined"
+                  />
+                  <Chip
+                    size="small"
+                    label={`tickets:${Number(repairSchedulerStatus?.last_summary?.tickets ?? 0)}`}
+                    variant="outlined"
+                  />
+                  <Button size="small" variant="outlined" onClick={() => void handleRepairAll()} disabled={repairLoading}>
+                    {repairLoading ? "执行中…" : "全量修复"}
+                  </Button>
+                </Stack>
+                {recentRepairAll ? (
+                  <Paper variant="outlined" sx={{ p: 1.5, mb: 1.5 }}>
+                    <Stack spacing={1.25}>
+                      <Typography variant="subtitle2">最近一次全量修复</Typography>
+                      <Stack direction="row" spacing={1} useFlexGap flexWrap="wrap">
+                        <Chip size="small" label={`triggered:${recentRepairAll.triggered_by}`} variant="outlined" />
+                        <Chip size="small" label={`tickets:${recentRepairAll.items.length}`} color="info" variant="outlined" />
+                        <Chip
+                          size="small"
+                          label={`repaired:${recentRepairAll.items.reduce((sum, item) => sum + item.repaired_blocks.length, 0)}`}
+                          color="success"
+                          variant="outlined"
+                        />
+                        <Chip
+                          size="small"
+                          label={`quarantined:${recentRepairAll.items.reduce((sum, item) => sum + item.quarantined_blocks.length, 0)}`}
+                          color="warning"
+                          variant="outlined"
+                        />
+                      </Stack>
+                      {recentRepairAll.items.length === 0 ? (
+                        <Alert severity="info">这次 repair_all 没有发现需要处理的记录。</Alert>
+                      ) : (
+                        <Stack spacing={1}>
+                          {recentRepairAll.items.map((item) => (
+                            <Paper key={`repair-ticket-${item.memory_id}`} variant="outlined" sx={{ p: 1 }}>
+                              <Stack spacing={0.5}>
+                                <Stack direction="row" spacing={1} useFlexGap flexWrap="wrap">
+                                  <Chip size="small" label={item.memory_id} variant="outlined" />
+                                  <Chip
+                                    size="small"
+                                    label={item.record_health_status}
+                                    color={item.record_health_status === "healthy" ? "success" : "warning"}
+                                    variant="outlined"
+                                  />
+                                  <Chip size="small" label={`repaired:${item.repaired_blocks.length}`} color="success" variant="outlined" />
+                                  <Chip size="small" label={`quarantined:${item.quarantined_blocks.length}`} color="warning" variant="outlined" />
+                                  <Chip size="small" label={`projection:${item.projection_repairs.length}`} color="info" variant="outlined" />
+                                </Stack>
+                                {(item.repaired_blocks.length || item.quarantined_blocks.length || item.projection_repairs.length) ? (
+                                  <Typography variant="caption" color="text.secondary">
+                                    repaired: {item.repaired_blocks.join(" | ") || "--"} | quarantined: {item.quarantined_blocks.join(" | ") || "--"} | projection:{" "}
+                                    {item.projection_repairs.join(" | ") || "--"}
+                                  </Typography>
+                                ) : null}
+                                {item.notes.length ? (
+                                  <Typography variant="caption" color="text.secondary">
+                                    {item.notes.join(" | ")}
+                                  </Typography>
+                                ) : null}
+                              </Stack>
+                            </Paper>
+                          ))}
+                        </Stack>
+                      )}
+                    </Stack>
+                  </Paper>
+                ) : null}
                 <Stack spacing={1.5}>
                   {overview?.backends.map((backend) => (
                     <Paper key={backend.backend} variant="outlined" sx={{ p: 1.5 }}>
@@ -497,6 +765,17 @@ export default function MemoryReasoning() {
                           <Typography variant="caption" color="text.secondary">
                             trace: {hit.trace_id}
                           </Typography>
+                          {hit.trace_id ? (
+                            <Button
+                              size="small"
+                              variant="outlined"
+                              component={RouterLink}
+                              to={`/console/audit/transcript-replay/${encodeURIComponent(hit.trace_id)}`}
+                              onClick={(event) => event.stopPropagation()}
+                            >
+                              查看 trace
+                            </Button>
+                          ) : null}
                         </Stack>
                       </Paper>
                     ))}
@@ -514,7 +793,19 @@ export default function MemoryReasoning() {
                 <Stack spacing={2}>
                   <Stack direction={{ xs: "column", md: "row" }} spacing={2} justifyContent="space-between">
                     <Typography variant="h6">记忆记录</Typography>
-                    <Stack direction="row" spacing={1}>
+                    <Stack direction="row" spacing={1} useFlexGap flexWrap="wrap">
+                      <Button size="small" variant="outlined" onClick={() => applyQuickFilter("repair_queue")}>
+                        只看待修
+                      </Button>
+                      <Button size="small" variant="outlined" onClick={() => applyQuickFilter("degraded_only")}>
+                        只看降级
+                      </Button>
+                      <Button size="small" variant="outlined" onClick={() => applyQuickFilter("legacy_only")}>
+                        只看旧结构
+                      </Button>
+                      <Button size="small" variant="text" onClick={() => applyQuickFilter("all")}>
+                        清除预设
+                      </Button>
                       <Select size="small" value={layer} onChange={(event) => setLayer(String(event.target.value))}>
                         <MenuItem value="all">全部层</MenuItem>
                         <MenuItem value="semantic">Semantic</MenuItem>
@@ -534,7 +825,28 @@ export default function MemoryReasoning() {
                         <MenuItem value="trusted">trusted</MenuItem>
                         <MenuItem value="suspect">suspect</MenuItem>
                       </Select>
+                      <Select size="small" value={healthFilter} onChange={(event) => setHealthFilter(String(event.target.value))}>
+                        <MenuItem value="all">全部健康</MenuItem>
+                        <MenuItem value="healthy">healthy</MenuItem>
+                        <MenuItem value="degraded">degraded</MenuItem>
+                      </Select>
+                      <Select size="small" value={repairStatusFilter} onChange={(event) => setRepairStatusFilter(String(event.target.value))}>
+                        <MenuItem value="all">全部修复状态</MenuItem>
+                        <MenuItem value="none">none</MenuItem>
+                        <MenuItem value="pending_repair">pending_repair</MenuItem>
+                      </Select>
+                      <Select size="small" value={schemaFilter} onChange={(event) => setSchemaFilter(String(event.target.value))}>
+                        <MenuItem value="all">全部结构</MenuItem>
+                        <MenuItem value="modular_only">仅模块化</MenuItem>
+                        <MenuItem value="legacy_only">仅旧结构</MenuItem>
+                      </Select>
                     </Stack>
+                  </Stack>
+                  <Stack direction="row" spacing={1} useFlexGap flexWrap="wrap">
+                    <Chip size="small" label={`visible:${filteredRecords.length}`} variant="outlined" />
+                    <Chip size="small" label={`health-filter:${healthFilter}`} variant="outlined" />
+                    <Chip size="small" label={`repair-filter:${repairStatusFilter}`} variant="outlined" />
+                    <Chip size="small" label={`schema-filter:${schemaFilter}`} variant="outlined" />
                   </Stack>
                   <Table size="small">
                     <TableHead>
@@ -543,11 +855,12 @@ export default function MemoryReasoning() {
                         <TableCell>Layer</TableCell>
                         <TableCell>Status</TableCell>
                         <TableCell>Trust</TableCell>
+                        <TableCell>Storage</TableCell>
                         <TableCell>Trace</TableCell>
                       </TableRow>
                     </TableHead>
                     <TableBody>
-                      {records.map((record) => (
+                      {filteredRecords.map((record) => (
                         <TableRow
                           key={record.memory_id}
                           hover
@@ -559,9 +872,53 @@ export default function MemoryReasoning() {
                           <TableCell>{record.memory_layer}</TableCell>
                           <TableCell>{record.status}</TableCell>
                           <TableCell>{record.trust_level}</TableCell>
-                          <TableCell>{record.trace_id}</TableCell>
+                          <TableCell>
+                            <Stack direction="row" spacing={0.75} useFlexGap flexWrap="wrap">
+                              <Chip
+                                size="small"
+                                label={`schema:${record.storage_schema_version ?? 1}`}
+                                variant="outlined"
+                              />
+                              <Chip
+                                size="small"
+                                label={`health:${record.record_health_status ?? "unknown"}`}
+                                color={(record.record_health_status ?? "unknown") === "healthy" ? "success" : "warning"}
+                                variant="outlined"
+                              />
+                              <Chip
+                                size="small"
+                                label={`repair:${record.repair_status ?? "unknown"}`}
+                                variant="outlined"
+                              />
+                            </Stack>
+                          </TableCell>
+                          <TableCell>
+                            <Stack direction="row" spacing={1} useFlexGap flexWrap="wrap" alignItems="center">
+                              <Typography variant="caption" sx={{ fontFamily: "monospace" }}>
+                                {record.trace_id}
+                              </Typography>
+                              {record.trace_id ? (
+                                <Button
+                                  size="small"
+                                  variant="outlined"
+                                  component={RouterLink}
+                                  to={`/console/audit/transcript-replay/${encodeURIComponent(record.trace_id)}`}
+                                  onClick={(event) => event.stopPropagation()}
+                                >
+                                  查看 trace
+                                </Button>
+                              ) : null}
+                            </Stack>
+                          </TableCell>
                         </TableRow>
                       ))}
+                      {filteredRecords.length === 0 ? (
+                        <TableRow>
+                          <TableCell colSpan={6}>
+                            <Alert severity="info">当前筛选条件下没有匹配记录。</Alert>
+                          </TableCell>
+                        </TableRow>
+                      ) : null}
                     </TableBody>
                   </Table>
                 </Stack>
@@ -580,12 +937,51 @@ export default function MemoryReasoning() {
                       <Chip label={selectedRecord.status} color="primary" variant="outlined" />
                       <Chip label={selectedRecord.trust_level} color="warning" variant="outlined" />
                       <Chip label={selectedRecord.visibility} variant="outlined" />
+                      <Chip
+                        label={`schema:${selectedDiagnostics?.storage_schema_version ?? selectedRecord.storage_schema_version ?? 1}`}
+                        variant="outlined"
+                      />
+                      <Chip
+                        label={`health:${selectedDiagnostics?.record_health_status ?? selectedRecord.record_health_status ?? "unknown"}`}
+                        color={
+                          (selectedDiagnostics?.record_health_status ?? selectedRecord.record_health_status) === "healthy"
+                            ? "success"
+                            : "warning"
+                        }
+                        variant="outlined"
+                      />
+                      <Chip
+                        label={`repair:${selectedDiagnostics?.repair_status ?? selectedRecord.repair_status ?? "unknown"}`}
+                        variant="outlined"
+                      />
                     </Stack>
                     <Typography variant="subtitle1">{selectedRecord.title}</Typography>
                     <Typography variant="body2">{selectedRecord.summary}</Typography>
                     <Typography variant="caption" color="text.secondary">
                       trace: {selectedRecord.trace_id} | target: {selectedRecord.target_id ?? "--"} | version: {selectedRecord.version_id ?? "--"}
                     </Typography>
+                    <Stack direction="row" spacing={1} useFlexGap flexWrap="wrap">
+                      {selectedRecord.trace_id ? (
+                        <Button
+                          size="small"
+                          variant="outlined"
+                          component={RouterLink}
+                          to={`/console/audit/transcript-replay/${encodeURIComponent(selectedRecord.trace_id)}`}
+                        >
+                          查看 trace 回放
+                        </Button>
+                      ) : null}
+                      {selectedRecord.source_event_id ? (
+                        <Button
+                          size="small"
+                          variant="outlined"
+                          component={RouterLink}
+                          to={`/console/audit/transcript-replay/${encodeURIComponent(selectedRecord.source_event_id)}`}
+                        >
+                          查看源事件
+                        </Button>
+                      ) : null}
+                    </Stack>
                     <Typography variant="body2" color="text.secondary">
                       来源: {selectedRecord.source_refs.join(" | ") || "--"}
                     </Typography>
@@ -598,6 +994,70 @@ export default function MemoryReasoning() {
                     <Typography variant="body2" color="text.secondary">
                       更新时间: {formatDateTime(selectedRecord.updated_at)} | 最近验证: {formatDateTime(selectedRecord.last_verified_at)}
                     </Typography>
+                    {selectedDiagnostics ? (
+                      <Paper variant="outlined" sx={{ p: 1.5 }}>
+                        <Stack spacing={1.25}>
+                          <Stack direction="row" spacing={1} useFlexGap flexWrap="wrap" alignItems="center">
+                            <Typography variant="subtitle2">块级诊断</Typography>
+                            <Button size="small" variant="outlined" onClick={() => void handleVerifyRecord()} disabled={repairLoading}>
+                              校验
+                            </Button>
+                            <Button size="small" variant="contained" onClick={() => void handleRepairRecord()} disabled={repairLoading}>
+                              修复
+                            </Button>
+                          </Stack>
+                          {selectedDiagnostics.verification?.notes?.length ? (
+                            <Alert severity="info">
+                              {selectedDiagnostics.verification.notes.join(" | ")}
+                            </Alert>
+                          ) : null}
+                          <Stack direction="row" spacing={1} useFlexGap flexWrap="wrap">
+                            <Chip
+                              size="small"
+                              label={`repaired:${selectedDiagnostics.verification?.repaired_blocks.length ?? 0}`}
+                              color="success"
+                              variant="outlined"
+                            />
+                            <Chip
+                              size="small"
+                              label={`quarantined:${selectedDiagnostics.verification?.quarantined_blocks.length ?? 0}`}
+                              color="warning"
+                              variant="outlined"
+                            />
+                            <Chip
+                              size="small"
+                              label={`projection:${selectedDiagnostics.verification?.projection_repairs.length ?? 0}`}
+                              color="info"
+                              variant="outlined"
+                            />
+                          </Stack>
+                          <Stack spacing={1}>
+                            {(selectedDiagnostics.manifest?.descriptors ?? []).map((descriptor) => (
+                              <Paper key={descriptor.block_id} variant="outlined" sx={{ p: 1 }}>
+                                <Stack spacing={0.5}>
+                                  <Stack direction="row" spacing={1} useFlexGap flexWrap="wrap">
+                                    <Chip size="small" label={descriptor.block_kind} variant="outlined" />
+                                    <Chip
+                                      size="small"
+                                      label={descriptor.status}
+                                      color={descriptor.status === "healthy" ? "success" : "warning"}
+                                      variant="outlined"
+                                    />
+                                    <Chip size="small" label={descriptor.codec_chain.join(" -> ") || "raw"} variant="outlined" />
+                                    <Chip size="small" label={`compress:${descriptor.compression_strategy ?? "none"}`} variant="outlined" />
+                                    <Chip size="small" label={descriptor.encryption_context ? "encrypted" : "plain"} variant="outlined" />
+                                  </Stack>
+                                  <Typography variant="caption" color="text.secondary">
+                                    required: {descriptor.required ? "yes" : "no"} | derived: {descriptor.derived ? "yes" : "no"} | repairable:{" "}
+                                    {descriptor.repairable ? "yes" : "no"} | verified: {formatDateTime(descriptor.last_verified_at)}
+                                  </Typography>
+                                </Stack>
+                              </Paper>
+                            ))}
+                          </Stack>
+                        </Stack>
+                      </Paper>
+                    ) : null}
                     <Divider />
                     <TextField
                       label="治理原因"

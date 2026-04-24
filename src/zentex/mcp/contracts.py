@@ -47,9 +47,10 @@ class McpServerDetailItem(BaseModel):
     transport_type: str
     status: str
     tool_count: int
-    credit_score: int
+    # None = no execution history yet; callers must not display fake 100 when data is absent
+    credit_score: Optional[int] = None
     total_tasks_run: int
-    success_rate: float
-    uptime_seconds: int
+    success_rate: Optional[float] = None
+    uptime_seconds: Optional[int] = None
     tools: List[McpServerToolItem]
     error_message: Optional[str] = None

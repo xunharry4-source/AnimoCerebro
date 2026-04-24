@@ -1,5 +1,6 @@
 import { fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
+import { MemoryRouter } from "react-router-dom";
 
 import McpServerDashboard from "./McpServerDashboard";
 
@@ -60,7 +61,11 @@ describe("McpServerDashboard", () => {
       ],
     } as Response);
 
-    render(<McpServerDashboard />);
+    render(
+      <MemoryRouter>
+        <McpServerDashboard />
+      </MemoryRouter>,
+    );
 
     await waitFor(() => {
       expect(screen.getByText("knowledge-hub")).toBeInTheDocument();
@@ -146,7 +151,11 @@ describe("McpServerDashboard", () => {
         }),
       } as Response);
 
-    render(<McpServerDashboard />);
+    render(
+      <MemoryRouter>
+        <McpServerDashboard />
+      </MemoryRouter>,
+    );
 
     await waitFor(() => expect(screen.getByText("注册 Server")).toBeInTheDocument());
 
@@ -166,5 +175,9 @@ describe("McpServerDashboard", () => {
     fireEvent.click(screen.getByText("执行测试"));
 
     await waitFor(() => expect(screen.getByText(/runbook-42/)).toBeInTheDocument());
+    expect(screen.getByRole("link", { name: "查看 trace 回放" })).toHaveAttribute(
+      "href",
+      "/console/audit/transcript-replay/trace-1",
+    );
   });
 });

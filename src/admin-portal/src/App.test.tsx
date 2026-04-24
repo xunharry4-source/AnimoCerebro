@@ -15,6 +15,9 @@ vi.mock("./pages/upgrades/UpgradeManagement", () => ({ default: () => <div>upgra
 vi.mock("./pages/cli/CliAssetManager", () => ({ default: () => <div>cli</div> }));
 vi.mock("./pages/mcp/McpServerDashboard", () => ({ default: () => <div>mcp</div> }));
 vi.mock("./pages/audit/AuditReplay", () => ({ default: () => <div>audit</div> }));
+vi.mock("./pages/audit/AuditTraceModePage", () => ({ default: () => <div>audit-trace-mode-page</div> }));
+vi.mock("./pages/audit/AuditReviewLedgerPage", () => ({ default: () => <div>audit-review-ledger</div> }));
+vi.mock("./pages/audit/TranscriptReplayPage", () => ({ default: () => <div>transcript-replay</div> }));
 
 import App from "./App";
 

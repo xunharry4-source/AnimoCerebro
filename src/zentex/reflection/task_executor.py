@@ -1,3 +1,4 @@
+from __future__ import annotations
 """
 Reflection Task Executor - 反思任务执行器
 
@@ -5,7 +6,6 @@ Reflection Task Executor - 反思任务执行器
 此模块独立于Web层，仅提供任务执行能力。
 """
 
-from __future__ import annotations
 
 import logging
 import threading

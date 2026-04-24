@@ -16,19 +16,22 @@ try:
     import numpy as _np
     np = _np
 except ImportError:
-    pass
+    logger = logging.getLogger(__name__)
+    logger.debug("NumPy not available; vector search will use reduced functionality", exc_info=True)
 
 try:
     import faiss as _faiss
     faiss = _faiss
 except ImportError:
-    pass
+    logger = logging.getLogger(__name__)
+    logger.debug("FAISS not available; falling back to non-FAISS vector search backend", exc_info=True)
 
 try:
     from sentence_transformers import SentenceTransformer as _ST
     SentenceTransformer = _ST
 except ImportError:
-    pass
+    logger = logging.getLogger(__name__)
+    logger.debug("sentence-transformers not available; embedding-backed vector search disabled", exc_info=True)
 
 logger = logging.getLogger(__name__)
 
@@ -199,7 +202,7 @@ class VectorSearchEngine:
 
     def __init__(
         self, 
-        index_dir: str | Path, 
+        index_dir: Union[str, Path], 
         model_name: str = "all-MiniLM-L6-v2", 
         use_mock: bool = False,
         backend_type: str = "numpy"

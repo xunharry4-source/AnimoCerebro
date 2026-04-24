@@ -1,3 +1,4 @@
+from __future__ import annotations
 """
 LLM驱动的反思内容生成器
 
@@ -12,18 +13,26 @@ DOES NOT:
   - Own service lifecycle.
 """
 
-from __future__ import annotations
 
 import logging
-from typing import Any, Dict, Optional
+from typing import Any, Dict, Optional, List, Union
 
+from zentex.foundation.specs.model_provider import ModelProviderTimeoutError
+from zentex.foundation.specs.model_provider import ModelProviderCallerContext
 from zentex.reflection.models import ReflectionType
 from zentex.reflection.llm_prompt import (
     build_reflection_prompt,
+    build_maintenance_synthesis_prompt,
     build_type_specific_guidance,
 )
 
 logger = logging.getLogger(__name__)
+
+_REFLECTION_LLM_TIMEOUT_SECONDS = 8.0
+_TIMEOUT_FALLBACK_PROVIDER_ORDER = ("gemini", "openai_compat")
+_TIMEOUT_FALLBACK_MODELS = {
+    "openai_compat": "gemini-3-flash",
+}
 
 
 class LLMReflectionGenerator:
@@ -90,31 +99,168 @@ class LLMReflectionGenerator:
         )
         
         # 调用LLM生成结构化JSON
+        decision_id = f"reflection:{subject}:{reflection_type.value}"
+        logger.info(f"[REFLECTION AUDIT] Generating {reflection_type.value} reflection for subject: {subject}")
+        
         try:
-            result = self._llm_service.generate_json(
-                prompt=prompt,
-                context=context,
+            caller_context = ModelProviderCallerContext(
                 source_module="reflection_service",
                 invocation_phase=f"{reflection_type.value}_reflection_generation",
-                temperature=self._temperature,
-                max_output_tokens=self._max_tokens,
-                metadata={
-                    "subject": subject,
-                    "reflection_type": reflection_type.value,
-                    "context_keys": list(context.keys())
-                }
+                decision_id=decision_id,
+            )
+            metadata = {
+                "subject": subject,
+                "reflection_type": reflection_type.value,
+                "context_keys": list(context.keys()),
+                "request_timeout_seconds": _REFLECTION_LLM_TIMEOUT_SECONDS,
+            }
+            result = self._invoke_with_timeout_fallback(
+                prompt=prompt,
+                context=context,
+                caller_context=caller_context,
+                metadata=metadata,
             )
             
             # 解析并验证LLM输出
             output = result.output
             validated_output = self._validate_and_normalize(output, subject)
             
-            logger.info(f"LLM reflection generated successfully for: {subject}")
+            logger.info(f"[REFLECTION AUDIT] Reflection generated Union[successfully, Subject]: {subject} | Trace: {result.provider_key}")
             return validated_output
             
         except Exception as e:
-            logger.error(f"LLM reflection generation failed: {e}")
-            raise
+            logger.error(f"[REFLECTION AUDIT] Reflection generation Union[failed, Subject]: {subject} | Error: {e}")
+            return self._build_fallback_reflection(subject, reflection_type, context, error=e)
+
+    def synthesize_maintenance_insights(
+        self,
+        *,
+        top_tags: List[str],
+        titles: List[str],
+        layer_distribution: Dict[str, Any],
+        unverified_count: int,
+    ) -> Dict[str, Any]:
+        """Call the LLM to produce semantic maintenance insights from memory statistics.
+
+        Returns a dict with keys: summary, insights, lessons, improvements.
+        On any LLM failure, returns an empty dict so the caller can fall back
+        to its counter-based values — no silent swallowing.
+        """
+        prompt = build_maintenance_synthesis_prompt(
+            top_tags=top_tags,
+            titles=titles,
+            layer_distribution=layer_distribution,
+            unverified_count=unverified_count,
+        )
+        caller_context = ModelProviderCallerContext(
+            source_module="reflection_service.maintenance",
+            invocation_phase="memory_maintenance_synthesis",
+            decision_id="reflection-maintenance-synthesis",
+        )
+        try:
+            result = self._invoke_with_timeout_fallback(
+                prompt=prompt,
+                context={},
+                caller_context=caller_context,
+                metadata={"top_tags": top_tags, "title_count": len(titles)},
+            )
+            output = result.output if result is not None else {}
+            if not isinstance(output, dict):
+                logger.warning(
+                    "synthesize_maintenance_insights: LLM returned non-dict output (%s); ignoring",
+                    type(output).__name__,
+                )
+                return {}
+            return output
+        except Exception:
+            logger.warning("synthesize_maintenance_insights: LLM call failed; falling back to counter-based insights", exc_info=True)
+            return {}
+
+    def _invoke_with_timeout_fallback(
+        self,
+        *,
+        prompt: str,
+        context: Dict[str, Any],
+        caller_context: ModelProviderCallerContext,
+        metadata: Dict[str, Any],
+    ) -> Any:
+        try:
+            return self._invoke_generate_json(
+                prompt=prompt,
+                context=context,
+                caller_context=caller_context,
+                metadata=metadata,
+                provider_key=None,
+                model=None,
+            )
+        except ModelProviderTimeoutError as primary_exc:
+            logger.warning(
+                "Reflection LLM timed out on primary provider; trying online fallback providers: %s",
+                ", ".join(_TIMEOUT_FALLBACK_PROVIDER_ORDER),
+            )
+            last_exc: Exception = primary_exc
+            primary_provider = self._resolve_default_provider_key()
+            for provider_key in _TIMEOUT_FALLBACK_PROVIDER_ORDER:
+                if provider_key == primary_provider:
+                    continue
+                try:
+                    return self._invoke_generate_json(
+                        prompt=prompt,
+                        context=context,
+                        caller_context=caller_context,
+                        metadata=metadata,
+                        provider_key=provider_key,
+                        model=_TIMEOUT_FALLBACK_MODELS.get(provider_key),
+                    )
+                except Exception as fallback_exc:
+                    last_exc = fallback_exc
+                    logger.warning(
+                        "Reflection LLM fallback provider failed | provider=%s error=%s",
+                        provider_key,
+                        fallback_exc,
+                    )
+            raise last_exc
+
+    def _invoke_generate_json(
+        self,
+        *,
+        prompt: str,
+        context: Dict[str, Any],
+        caller_context: ModelProviderCallerContext,
+        metadata: Dict[str, Any],
+        provider_key: Optional[str],
+        model: Optional[str],
+    ) -> Any:
+        gateway = getattr(self._llm_service, "_gateway", None)
+        if gateway is not None and callable(getattr(gateway, "invoke_generate_json", None)):
+            return gateway.invoke_generate_json(
+                prompt=prompt,
+                context=context,
+                caller_context=caller_context,
+                provider_key=provider_key,
+                model=model,
+                system_prompt=None,
+                temperature=self._temperature,
+                max_output_tokens=self._max_tokens,
+                metadata=metadata,
+            )
+        return self._llm_service.generate_json(
+            prompt=prompt,
+            context=context,
+            caller_context=caller_context,
+            source_module=caller_context.source_module,
+            invocation_phase=caller_context.invocation_phase,
+            decision_id=caller_context.decision_id,
+            model_provider=provider_key,
+            model=model,
+            temperature=self._temperature,
+            max_output_tokens=self._max_tokens,
+            metadata=metadata,
+        )
+
+    def _resolve_default_provider_key(self) -> Optional[str]:
+        gateway = getattr(self._llm_service, "_gateway", None)
+        return getattr(gateway, "_default_provider_key", None)
     
     def _get_reflection_type_name(self, reflection_type: ReflectionType) -> str:
         """获取反思类型的中文名称"""
@@ -174,6 +320,37 @@ class LLMReflectionGenerator:
             logger.warning(f"LLM generated empty insights/lessons for: {subject}")
         
         return validated
+
+    def _build_fallback_reflection(
+        self,
+        subject: str,
+        reflection_type: ReflectionType,
+        context: Dict[str, Any],
+        *,
+        error: Exception,
+    ) -> Dict[str, Any]:
+        """Build a deterministic reflection when the LLM path times out or fails."""
+        summary = str(context.get("summary") or f"关于“{subject}”的{self._get_reflection_type_name(reflection_type)}反思")
+        question_id = str(context.get("question_id") or "").strip()
+        subject_text = str(subject or "").strip()
+        subject_hint = subject_text or "当前事件"
+        context_keys = sorted(str(key) for key in context.keys())
+        insight = f"{subject_hint} 已进入反思流程，当前上下文包含 {len(context_keys)} 个字段。"
+        if question_id:
+            insight = f"{subject_hint} 关联问题 {question_id}，需要围绕该问题的上下文持续校准。"
+        lesson = "优先保留可追踪上下文与明确主题，再逐步补充更深层分析。"
+        risk = f"LLM 反思生成失败：{type(error).__name__}"
+        improvement = "在完整上下文已持久化的前提下，可后续补跑更深入的反思生成。"
+        return {
+            "summary": summary,
+            "insights": [insight],
+            "lessons": [lesson],
+            "risks": [risk],
+            "improvements": [improvement],
+            "confidence": 0.45,
+            "impact_score": 0.4,
+            "actionability": 0.75,
+        }
 
 
 # 全局单例（可选）

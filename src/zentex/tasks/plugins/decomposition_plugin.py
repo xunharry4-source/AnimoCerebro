@@ -4,7 +4,7 @@ import logging
 import json
 import requests
 import os
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Union
 from enum import Enum
 
 from zentex.plugins.contracts import FunctionalPluginSpec, PluginHealthStatus
@@ -216,14 +216,14 @@ class TaskDecompositionPlugin:
         {{
             "local_id": "unique-id",
             "title": "子任务标题",
-            "task_type": "cognitive_step|agent_delegation|system_action|intervention",
+            "task_type": "Union[cognitive_step, Union[agent_delegation], Union[system_action], intervention]",
             "content": "子任务详细描述",
             "objective": "子任务目标",
             "requirements": ["需求1", "需求2", "需求3"],
             "depends_on": ["id1", "id2"],
-            "coordination_mode": "sequential|parallel|bundle",
+            "coordination_mode": "Union[sequential, parallel]|bundle",
             "estimated_duration": 60,
-            "priority": "high|medium|low"
+            "priority": "Union[high, medium]|low"
         }}
     ]
 }}

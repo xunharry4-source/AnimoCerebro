@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from typing import Any
 
-from plugins.nine_questions.prompt_sections import (
+from zentex.common.nine_questions_prompts import (
     assemble_prompt_sections,
     build_prompt_section,
 )
@@ -28,7 +28,7 @@ def build_q5_llm_request(
             title="Role",
             intent="Define the authorization-boundary task for Q5.",
             purpose="Keep the model focused on allowed actions rather than raw capabilities.",
-            content="You are Zentex. Determine what actions are authorized (Q5: 我被允许做什么).",
+            content="你现在是 G19 Preference AI。请判定哪些动作是经过授权的 (Q5: 我被允许做什么)。",
         )
     ]
     prompt_sections = [

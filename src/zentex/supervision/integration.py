@@ -76,9 +76,19 @@ class SupervisedTaskManager:
             logger.info(f"Task {task.task_id} created and under supervision")
             
         except Exception as e:
-            logger.error(f"Failed to start supervision for task {task.task_id}: {e}")
-            # Don't fail task creation if supervision fails, but log it
-            task.remarks = f"{task.remarks or ''} [Supervision initialization failed: {str(e)}]"
+            logger.error(f"FATAL: Failed to start supervision for task {task.task_id}: {e}")
+            # POLICY: Fail-Closed. Reject task creation if it cannot be supervised.
+            # Attempt to mark the task as FAILED immediately to reflect its status in the registry.
+            try:
+                await self.task_service.update_task_status(
+                    task.task_id, 
+                    TaskStatus.FAILED, 
+                    remarks=f"CRITICAL: Supervision initialization failed: {str(e)}"
+                )
+            except Exception:
+                logger.exception("Failed to mark task %s as FAILED after supervision startup error", task.task_id)
+            
+            raise RuntimeError(f"Task creation REJECTED: Supervision engine failure: {e}")
         
         return task
     

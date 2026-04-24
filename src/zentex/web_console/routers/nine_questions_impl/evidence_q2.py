@@ -1,3 +1,5 @@
+from __future__ import annotations
+
 """
 Q2 (我是谁) evidence building and extraction.
 
@@ -5,7 +7,7 @@ Contains functions for building Q2 preprocessed evidence from context snapshots
 and extracting Q2 inference results from tool outputs.
 """
 
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Union
 
 from zentex.web_console.contracts.nine_questions import (
     Q2PreprocessedEvidence,
@@ -39,7 +41,7 @@ def _has_material_q2_q1_summary(evidence: object) -> bool:
     )
 
 
-def _build_q2_preprocessed_evidence(context_payload: dict[str, Any]) -> Q2PreprocessedEvidence | None:
+def _build_q2_preprocessed_evidence(context_payload: dict[str, Any]) -> Optional[Q2PreprocessedEvidence]:
     """Build Q2 preprocessed evidence from context payload."""
     q1_inference = context_payload.get("workspace_domain_inference", {})
     q1_scene_model = context_payload.get("q1_scene_model", {})
@@ -120,7 +122,7 @@ def _build_q2_preprocessed_evidence(context_payload: dict[str, Any]) -> Q2Prepro
     )
 
 
-def _extract_q2_preprocessed_evidence(context_payload: object) -> Q2PreprocessedEvidence | None:
+def _extract_q2_preprocessed_evidence(context_payload: object) -> Optional[Q2PreprocessedEvidence]:
     """Extract Q2 preprocessed evidence from context payload if available."""
     if not isinstance(context_payload, dict):
         return None
@@ -140,7 +142,7 @@ def _extract_q2_preprocessed_evidence(context_payload: object) -> Q2Preprocessed
     return _build_q2_preprocessed_evidence(context_payload)
 
 
-def _extract_q2_inference_result(result_payload: object) -> Q2WhoAmIInferenceView | None:
+def _extract_q2_inference_result(result_payload: object) -> Optional[Q2WhoAmIInferenceView]:
     """Extract Q2 inference result from tool output payload."""
     if not isinstance(result_payload, dict):
         return None

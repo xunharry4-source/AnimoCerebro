@@ -26,8 +26,9 @@ Design notes:
 """
 
 import math
-from datetime import UTC, datetime
-from typing import Literal
+from datetime import datetime, timezone
+UTC = timezone.utc
+from typing import Literal, Any, Dict, List, Optional, Union
 
 from pydantic import BaseModel, ConfigDict, Field
 
@@ -140,7 +141,7 @@ class ConfidenceCalculator:
         )
     """
 
-    def __init__(self, config: ConfidenceConfig | None = None) -> None:
+    def __init__(self, config: Optional[ConfidenceConfig] = None) -> None:
         self._cfg = config or ConfidenceConfig()
 
     # ── public ──────────────────────────────────────────────────────────
@@ -154,8 +155,8 @@ class ConfidenceCalculator:
         contradiction_count: int = 0,
         affect_intensity: float = 0.0,
         logic_depth: float = 0.5,
-        created_at: datetime | None = None,
-        now: datetime | None = None,
+        created_at: Optional[datetime] = None,
+        now: Optional[datetime] = None,
     ) -> ConfidenceResult:
         """Return a fully explained ConfidenceResult for one memory record."""
         cfg = self._cfg
@@ -239,9 +240,9 @@ class ConfidenceCalculator:
 def score_batch(
     records: list[dict],
     *,
-    access_counts: dict[str, int] | None = None,
-    config: ConfidenceConfig | None = None,
-    now: datetime | None = None,
+    access_counts: dict[str, Optional[int]] = None,
+    config: Optional[ConfidenceConfig] = None,
+    now: Optional[datetime] = None,
 ) -> list[ConfidenceResult]:
     """
     Score a list of record dicts in batch.

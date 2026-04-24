@@ -1,3 +1,4 @@
+from __future__ import annotations
 """
 系统健康监控数据模型
 
@@ -9,7 +10,6 @@
 
 所有模型用于 /api/web/health/system 端点的响应结构。
 """
-from __future__ import annotations
 
 from typing import Any, Dict, List, Optional
 

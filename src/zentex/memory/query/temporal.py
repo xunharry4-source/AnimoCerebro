@@ -1,3 +1,4 @@
+from __future__ import annotations
 """
 Temporal Engine
 ----------------
@@ -6,10 +7,12 @@ It is used by the HybridRetrievalEngine when a query is classified as
 `QueryType.TEMPORAL` and an `as_of_time` is supplied.
 """
 
-from __future__ import annotations
 
+import logging
 from datetime import datetime, timezone
 from typing import Iterable, List, Dict, Any
+
+logger = logging.getLogger(__name__)
 
 from pydantic import BaseModel, ConfigDict, Field
 
@@ -58,6 +61,8 @@ class TemporalEngine:
         try:
             return datetime.fromisoformat(str(value)).replace(tzinfo=timezone.utc)
         except Exception:
+            # POLICY[no-silent-except]: log unparseable timestamp; fall back to now().
+            logger.debug("Could not parse timestamp value %r — using current time", value, exc_info=True)
             return datetime.now(timezone.utc)
 
     def snapshot_at(self, as_of: datetime, limit: int = 10) -> List[RetrievalResult]:

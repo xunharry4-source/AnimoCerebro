@@ -1,96 +1,178 @@
-"""
-Audit Commons Module
-Audit query layer and session management
-Extracted from audit.py for Facade-First architecture
-"""
+"""Audit query layer — reads only from the canonical AuditService store."""
 
-from typing import List, Optional
+from typing import Any, Dict, List, Optional
 import logging
 
+from fastapi import HTTPException, Request
+
 from zentex.web_console.contracts.audit import AuditPagePayload, TurnAuditPagePayload
+from zentex.web_console.contracts.audit import AuditGraphPayload
 from zentex.web_console.contracts.model_provider import ModelProviderTraceItem
-from zentex.web_console.services.audit import (
-    build_audit_page,
-    build_model_provider_traces,
-    build_turn_audit_page
-)
+from zentex.web_console.services.audit import build_audit_graph
 
 logger = logging.getLogger(__name__)
 
 
-class AuditSession:
-    """Request-scoped audit query session"""
-    
-    def __init__(self, facade: object):
-        self.facade = facade
-        self.transcript_store = None
-        self._initialized = False
-        
-    async def initialize(self) -> bool:
-        """Initialize audit session with dependencies"""
-        try:
-            self.transcript_store = self.facade.get_transcript_store()
-            self._initialized = True
-            logger.info("AuditSession initialized")
-            return True
-        except Exception as e:
-            logger.error(f"Failed to initialize AuditSession: {e}")
-            return False
+# ---------------------------------------------------------------------------
+# Internal helpers
+# ---------------------------------------------------------------------------
+
+def _get_audit_service(request: Request) -> Any:
+    return getattr(request.app.state, "audit_service", None)
 
 
-async def get_or_create_audit_session(facade: object) -> AuditSession:
-    """Factory for creating audit sessions"""
-    session = AuditSession(facade)
-    await session.initialize()
-    return session
+# ---------------------------------------------------------------------------
+# Public query API
+# ---------------------------------------------------------------------------
 
+async def query_flow_health(
+    request: Request,
+    *,
+    limit: int = 100,
+    flow_type: Optional[str] = None,
+    status: Optional[str] = None,
+) -> List[Dict[str, Any]]:
+    """Return recent audit flows for the health-monitor panel.
 
-async def query_model_provider_traces(facade: object) -> List[ModelProviderTraceItem]:
-    """Query audit traces for model provider calls"""
+    Each entry: audit_id, flow_type, source_module, status, started_at, ended_at.
+    This data is written directly by route handlers — no sync required.
+    """
+    audit_service = _get_audit_service(request)
+    if audit_service is None:
+        raise HTTPException(
+            status_code=503,
+            detail={
+                "error": "audit_service_unavailable",
+                "message": "Audit service is unavailable",
+            },
+        )
     try:
-        traces = build_model_provider_traces(facade)
-        logger.info(f"Retrieved {len(traces)} model provider traces")
+        return audit_service.query_flows(limit=limit, flow_type=flow_type, status=status)
+    except Exception as exc:
+        # Do not fake "no recent flows" when the flow-health backend failed.
+        logger.exception("Failed to query audit flows")
+        raise HTTPException(
+            status_code=500,
+            detail={
+                "error": "audit_flow_query_failed",
+                "message": "Failed to query audit flows",
+                "exception_type": type(exc).__name__,
+                "exception_message": str(exc),
+            },
+        ) from exc
+
+
+async def query_model_provider_traces(request: Request, facade: object) -> List[ModelProviderTraceItem]:
+    """Query persisted model-provider traces from the canonical audit store."""
+    try:
+        audit_service = _get_audit_service(request)
+        if audit_service is None:
+            raise RuntimeError("audit service unavailable")
+        traces = audit_service.query_model_provider_traces()
+        logger.info("Retrieved %d persisted model provider traces", len(traces))
         return traces
-    except Exception as e:
-        logger.error(f"Failed to query model provider traces: {e}")
-        return []
+    except Exception as exc:
+        # Do not fake an empty trace list when the audit trace plane failed.
+        logger.exception("Failed to query model provider traces")
+        raise HTTPException(
+            status_code=500,
+            detail={
+                "error": "model_provider_trace_query_failed",
+                "message": "Failed to query model provider traces",
+                "exception_type": type(exc).__name__,
+                "exception_message": str(exc),
+            },
+        ) from exc
 
 
 async def query_turn_audit_milestones(
+    request: Request,
     facade: object,
     page: int = 1,
-    page_size: int = 40
+    page_size: int = 40,
 ) -> TurnAuditPagePayload:
-    """Query turn-level audit milestones with pagination"""
+    """Query turn-level audit milestones from the canonical audit store."""
     try:
-        entries = facade.get_transcript_store().get_entries_snapshot()
-        payload = build_turn_audit_page(entries, page=page, page_size=page_size)
-        logger.info(f"Retrieved turn audit page {page} (size={page_size})")
-        return payload
-    except Exception as e:
-        logger.error(f"Failed to query turn audit milestones: {e}")
-        return TurnAuditPagePayload(items=[], total=0, page=page, page_size=page_size)
+        audit_service = _get_audit_service(request)
+        if audit_service is None:
+            raise RuntimeError("audit service unavailable")
+        return audit_service.query_turn_audit_items(page=page, page_size=page_size)
+    except Exception as exc:
+        # Do not fake an empty turn-audit page when the audit backend failed.
+        logger.exception("Failed to query turn audit milestones")
+        raise HTTPException(
+            status_code=500,
+            detail={
+                "error": "turn_audit_query_failed",
+                "message": "Failed to query turn audit milestones",
+                "exception_type": type(exc).__name__,
+                "exception_message": str(exc),
+            },
+        ) from exc
 
 
 async def query_audit_entries(
+    request: Request,
     facade: object,
     page: int = 1,
     page_size: int = 40,
     request_id: Optional[str] = None,
-    decision_id: Optional[str] = None
+    decision_id: Optional[str] = None,
 ) -> AuditPagePayload:
-    """Query audit entries with optional filtering and pagination"""
+    """Query audit entries from the canonical audit store."""
     try:
-        entries = facade.get_transcript_store().get_entries_snapshot()
-        payload = build_audit_page(
-            entries,
+        audit_service = _get_audit_service(request)
+        if audit_service is None:
+            raise RuntimeError("audit service unavailable")
+        return audit_service.query_audit_entries(
             page=page,
             page_size=page_size,
             request_id=request_id,
-            decision_id=decision_id
+            decision_id=decision_id,
         )
-        logger.info(f"Retrieved audit entries page {page} (size={page_size}, filters={bool(request_id or decision_id)})")
-        return payload
-    except Exception as e:
-        logger.error(f"Failed to query audit entries: {e}")
-        return AuditPagePayload(items=[], total=0, page=page, page_size=page_size)
+    except Exception as exc:
+        # Do not fake an empty audit page when the audit backend failed.
+        logger.exception("Failed to query audit entries")
+        raise HTTPException(
+            status_code=500,
+            detail={
+                "error": "audit_entry_query_failed",
+                "message": "Failed to query audit entries",
+                "exception_type": type(exc).__name__,
+                "exception_message": str(exc),
+            },
+        ) from exc
+
+
+async def query_audit_graph(
+    request: Request,
+    facade: object,
+    *,
+    mode: str,
+) -> AuditGraphPayload:
+    try:
+        audit_service = _get_audit_service(request)
+        if audit_service is None:
+            raise RuntimeError("audit service unavailable")
+        audit_page = audit_service.query_audit_entries(page=1, page_size=500)
+        model_traces = audit_service.query_model_provider_traces()
+        return build_audit_graph(mode=mode, audit_items=audit_page.items, model_provider_traces=model_traces)
+    except Exception as exc:
+        # Do not fabricate a graph from stale fallback data after audit assembly has
+        # already failed. Return an explicitly degraded graph so operators can see
+        # the audit plane is unhealthy instead of trusting mismatched data.
+        logger.exception("Failed to query audit graph")
+        return AuditGraphPayload(
+            mode=mode,
+            title="Audit Trace Graph",
+            subtitle="Audit graph degraded due to backend failure",
+            database_backed=False,
+            generated_at="",
+            summary={
+                "health_status": "degraded",
+                "degradation_reason": type(exc).__name__,
+                "error_message": str(exc),
+            },
+            lanes=[],
+            edges=[],
+        )

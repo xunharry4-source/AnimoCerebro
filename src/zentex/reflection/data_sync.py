@@ -1,10 +1,10 @@
+from __future__ import annotations
 """
 反思数据同步器
 
 负责反思列表与旧格式之间的数据同步，以及核心固定项目的管理。
 """
 
-from __future__ import annotations
 
 import logging
 from typing import List

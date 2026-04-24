@@ -1,3 +1,4 @@
+from __future__ import annotations
 """
 G16 Tool Self-Study Pipeline — zentex.learning.g16_pipeline
 
@@ -13,11 +14,10 @@ DOES NOT:
   - Own service lifecycle.
 """
 
-from __future__ import annotations
 
 import uuid
 import json
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Union
 
 import dspy
 
@@ -26,7 +26,6 @@ from zentex.foundation.specs.cognitive_tool_spec import CognitiveToolSpec
 from zentex.plugins.contracts import PluginLifecycleStatus, PluginHealthStatus
 from zentex.learning.g16_models import SandboxValidationResult, ToolKnowledgeRecord
 from zentex.learning.sandbox import ThoughtSandbox
-from zentex.kernel import BrainTranscriptEntryType, BrainTranscriptStore
 from zentex.llm.service import LLMService
 from zentex.learning.llm_prompt import (
     build_g16_distillation_inputs,
@@ -36,6 +35,7 @@ from zentex.learning.llm_prompt import (
 
 from zentex.learning.dspy_adapter import ZentexDSPyLM
 from zentex.learning.g16_dspy_signatures import ToolDistillationModule, ToolCriticModule
+from zentex.learning.store import LEARNING_EVENT_TYPE, LearningStore
 
 MAX_ATTEMPTS = 3
 MAX_CPU_SEC = 2.0
@@ -44,10 +44,10 @@ MAX_MEM_MB = 100.0
 async def run_g16_dynamic_tool_self_study(
     *,
     doc_url: str,
-    provider: ModelProviderSpec | None = None,
-    llm_service: LLMService | None = None,
-    model_provider_key: str | None = None,
-    store: BrainTranscriptStore,
+    provider: Optional[ModelProviderSpec] = None,
+    llm_service: Optional[LLMService] = None,
+    model_provider_key: Optional[str] = None,
+    store: LearningStore,
     trace_id: str,
 ) -> Optional[ToolKnowledgeRecord]:
     """
@@ -83,7 +83,7 @@ async def run_g16_dynamic_tool_self_study(
         store.write_entry(
             session_id="learning_engine",
             turn_id=f"g16_learning_attempt_{attempt + 1}",
-            entry_type=BrainTranscriptEntryType.LEARNING_ENGINE_EVENT,
+            entry_type=LEARNING_EVENT_TYPE,
             payload={"kind": "attempt_started", "attempt": attempt + 1, "feedback": feedback_history},
             source="zentex.learning.g16_pipeline",
             trace_id=trace_id,
@@ -114,7 +114,7 @@ async def run_g16_dynamic_tool_self_study(
             store.write_entry(
                 session_id="learning_engine",
                 turn_id=f"g16_learning_attempt_{attempt + 1}",
-                entry_type=BrainTranscriptEntryType.LEARNING_ENGINE_EVENT,
+                entry_type=LEARNING_EVENT_TYPE,
                 payload={"kind": "retry", "reason": f"DSPy or LLM parsing error: {str(exc)}"},
                 source="zentex.learning.g16_pipeline",
                 trace_id=trace_id,
@@ -145,7 +145,7 @@ async def run_g16_dynamic_tool_self_study(
             store.write_entry(
                 session_id="learning_engine",
                 turn_id=f"g16_learning_attempt_{attempt + 1}",
-                entry_type=BrainTranscriptEntryType.LEARNING_ENGINE_EVENT,
+                entry_type=LEARNING_EVENT_TYPE,
                 payload={"kind": "retry", "reason": "critic_rejected", "critique": critique_res.critique_feedback},
                 source="zentex.learning.g16_pipeline",
                 trace_id=trace_id,
@@ -190,7 +190,7 @@ async def run_g16_dynamic_tool_self_study(
                 store.write_entry(
                     session_id="learning_engine",
                     turn_id=f"g16_learning_attempt_{attempt + 1}",
-                    entry_type=BrainTranscriptEntryType.LEARNING_ENGINE_EVENT,
+                    entry_type=LEARNING_EVENT_TYPE,
                     payload={"kind": "retry", "reason": "performance_overload", "metrics": validation.performance_metrics},
                     source="zentex.learning.g16_pipeline",
                     trace_id=trace_id,
@@ -200,7 +200,7 @@ async def run_g16_dynamic_tool_self_study(
             store.write_entry(
                 session_id="learning_engine",
                 turn_id="g16_learning_success",
-                entry_type=BrainTranscriptEntryType.LEARNING_ENGINE_EVENT,
+                entry_type=LEARNING_EVENT_TYPE,
                 payload={"kind": "completed", "attempt_needed": attempt + 1, "tool_name": record.tool_name},
                 source="zentex.learning.g16_pipeline",
                 trace_id=trace_id,
@@ -215,7 +215,7 @@ async def run_g16_dynamic_tool_self_study(
             store.write_entry(
                 session_id="learning_engine",
                 turn_id=f"g16_learning_attempt_{attempt + 1}",
-                entry_type=BrainTranscriptEntryType.LEARNING_ENGINE_EVENT,
+                entry_type=LEARNING_EVENT_TYPE,
                 payload={"kind": "retry", "reason": feedback_history},
                 source="zentex.learning.g16_pipeline",
                 trace_id=trace_id,
@@ -224,7 +224,7 @@ async def run_g16_dynamic_tool_self_study(
     store.write_entry(
         session_id="learning_engine",
         turn_id="g16_learning_exhausted",
-        entry_type=BrainTranscriptEntryType.LEARNING_ENGINE_EVENT,
+        entry_type=LEARNING_EVENT_TYPE,
         payload={"kind": "aborted", "reason": "Max attempts exhausted"},
         source="zentex.learning.g16_pipeline",
         trace_id=trace_id,

@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from typing import Any
 
-from plugins.nine_questions.prompt_sections import (
+from zentex.common.nine_questions_prompts import (
     assemble_prompt_sections,
     build_prompt_section,
     trim_section_content,
@@ -25,8 +25,8 @@ def build_q1_llm_request(
             intent="Establish the exact task identity for Q1.",
             purpose="Keep the model focused on environment inference instead of planning.",
             content=(
-                "You are Zentex. Infer the current workspace domain (Q1: 我在哪). "
-                "Return STRICT JSON that matches the WorkspaceDomainInference schema exactly."
+                "你现在是 G19 Preference AI。请推断当前所处的 Environment Domain（Q1: 我在哪）。"
+                "你必须返回严格的 JSON，且必须完全符合 WorkspaceDomainInference 结构。"
             ),
         )
     ]

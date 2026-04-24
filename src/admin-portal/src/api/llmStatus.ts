@@ -1,3 +1,5 @@
+import { extractApiErrorMessage, readResponseBody } from "./httpError";
+
 export type LLMStatus = {
   available: boolean;
   probe_checked: boolean;
@@ -11,17 +13,6 @@ export type LLMStatus = {
   provider_error_type?: string | null;
 };
 
-async function readResponseBody(resp: Response): Promise<any> {
-  if (typeof resp.text === "function") {
-    const raw = await resp.text();
-    return raw ? JSON.parse(raw) : null;
-  }
-  if (typeof resp.json === "function") {
-    return resp.json();
-  }
-  return null;
-}
-
 export async function fetchLlmStatus(probeLive = true): Promise<LLMStatus> {
   const query = probeLive ? "?probe_live=1" : "";
   const resp = await fetch(`/api/web/llm/status${query}`, {
@@ -30,7 +21,7 @@ export async function fetchLlmStatus(probeLive = true): Promise<LLMStatus> {
   const data = await readResponseBody(resp);
 
   if (!resp.ok) {
-    throw new Error(data?.detail?.user_message || "LLM 状态检查失败，请检查后端。");
+    throw new Error(extractApiErrorMessage(data, "LLM 状态检查失败，请检查后端。"));
   }
 
   return data as LLMStatus;

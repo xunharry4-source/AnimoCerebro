@@ -8,9 +8,11 @@ verifies compliance with human-defined constraints, and ensures safe autonomous 
 The system provides real-time monitoring, audit trails, and intervention capabilities.
 """
 
+import json
 import logging
 import time
 from datetime import datetime, timezone
+from pathlib import Path
 from typing import Any, Dict, List, Optional, Callable
 from enum import Enum
 from dataclasses import dataclass, field
@@ -90,17 +92,73 @@ class AISupervisor:
     """
     
     def __init__(self, supervision_level: SupervisionLevel = SupervisionLevel.STANDARD):
-        self.supervision_level = supervision_level
+        # Initialize core state storage
         self.rules: Dict[str, SupervisionRule] = {}
         self.execution_records: Dict[str, ExecutionRecord] = {}
         self.alerts: List[SupervisionAlert] = []
-        self.active_monitors: List[Callable] = []
-        self.intervention_callbacks: List[Callable] = []
+        self.supervision_level = supervision_level
+        
+        # Phase 1: Persistence initialization
+        self.storage_path = Path("./data/supervision")
+        self.storage_path.mkdir(parents=True, exist_ok=True)
+        self.alerts_file = self.storage_path / "alerts.json"
+        self.records_file = self.storage_path / "records.json"
+        
+        # Load existing data to ensure durability across restarts
+        # POLICY: Fail-Closed. If audit logs cannot be loaded, the system must NOT start.
+        self._load_persisted_data()
         
         # Initialize default rules
         self._initialize_default_rules()
         
         logger.info(f"AISupervisor initialized with level: {supervision_level.value}")
+
+    def _load_persisted_data(self):
+        """Load alerts and records from storage."""
+        try:
+            if self.alerts_file.exists():
+                with open(self.alerts_file, "r") as f:
+                    data = json.load(f)
+                    self.alerts = [SupervisionAlert(**d) for d in data]
+            
+            if self.records_file.exists():
+                with open(self.records_file, "r") as f:
+                    data = json.load(f)
+                    for r_id, r_data in data.items():
+                        r_data["start_time"] = datetime.fromisoformat(r_data["start_time"])
+                        if r_data.get("end_time"):
+                            r_data["end_time"] = datetime.fromisoformat(r_data["end_time"])
+                        self.execution_records[r_id] = ExecutionRecord(**r_data)
+        except Exception as e:
+            logger.critical(f"Supervision Integrity Failure: Failed to load audit history: {e}")
+            # POLICY: Hard Stop on Corruption to prevent forged state / amnesia.
+            raise RuntimeError(f"FATAL: Supervision module cannot load audit logs. System halted to preserve integrity: {e}")
+
+    def _persist_data(self):
+        """Atomic write of all supervision state."""
+        try:
+            # 1. Save Alerts
+            temp_alerts = self.alerts_file.with_suffix(".tmp")
+            with open(temp_alerts, "w") as f:
+                json.dump([vars(a) for a in self.alerts], f, default=str, indent=2)
+            temp_alerts.replace(self.alerts_file)
+
+            # 2. Save Records
+            temp_records = self.records_file.with_suffix(".tmp")
+            with open(temp_records, "w") as f:
+                # Convert recs to dicts with ISO dates
+                out = {}
+                for r_id, r in self.execution_records.items():
+                    d = vars(r).copy()
+                    d["start_time"] = d["start_time"].isoformat()
+                    if d.get("end_time"):
+                        d["end_time"] = d["end_time"].isoformat()
+                    out[r_id] = d
+                json.dump(out, f, indent=2)
+            temp_records.replace(self.records_file)
+        except Exception as e:
+            logger.error(f"CRITICAL: Supervision persistence failure: {e}")
+            raise RuntimeError(f"Audit log failure: {e}. System must halt to preserve integrity.")
     
     def _initialize_default_rules(self):
         """Initialize default supervision rules."""
@@ -170,6 +228,9 @@ class AISupervisor:
         # Apply initial verification
         self._verify_execution(record)
         
+        # Phase 1: Mandatory Persistence
+        self._persist_data()
+        
         return record
     
     def update_execution(self, record_id: str, status: str, result: Any = None, error: str = None):
@@ -187,6 +248,9 @@ class AISupervisor:
         
         # Re-verify after update
         self._verify_execution(record)
+        
+        # Phase 1: Mandatory Persistence
+        self._persist_data()
         
         logger.debug(f"Updated execution {record_id}: status={status}")
     
@@ -219,7 +283,9 @@ class AISupervisor:
                     self._handle_verification_failure(record, rule)
                     
             except Exception as e:
-                logger.error(f"Verification failed for rule {rule_id}: {e}")
+                # POLICY[no-bare-logger-error]: exc_info=True is mandatory so the
+                # full traceback appears in logs, not just the message string.
+                logger.error(f"Verification failed for rule {rule_id}: {e}", exc_info=True)
                 record.verification_results[rule_id] = VerificationStatus.FAILED
                 record.supervisor_notes.append(f"Verification error for {rule.name}: {str(e)}")
     
@@ -239,6 +305,9 @@ class AISupervisor:
         # Mark record for intervention if needed
         if rule.auto_intervene or rule.severity in ["high", "critical"]:
             record.intervention_required = True
+        
+        # Phase 1: Mandatory Persistence
+        self._persist_data()
         
         logger.warning(f"Verification failure: {alert.message}")
     
@@ -289,33 +358,109 @@ class AISupervisor:
     
     # Default verification functions
     def _check_no_destructive_ops(self, context: Dict[str, Any]) -> bool:
-        """Check if the action involves destructive operations."""
-        action_type = context["action_type"].lower()
-        destructive_keywords = ["delete", "remove", "destroy", "drop", "truncate"]
+        """
+        Check if the action involves destructive operations via Plugin capabilities.
         
-        return not any(keyword in action_type for keyword in destructive_keywords)
+        Authentic Rule: No harder coded keyword stubs.
+        """
+        record = context["record"]
+        params = record.parameters or {}
+        plugin_id = params.get("plugin_id")
+        
+        if not plugin_id:
+            # If no plugin_id, fall back to suspicious keyword check as a secondary defense
+            # but don't consider it 'safe' if it passes.
+            action_type = context["action_type"].lower()
+            destructive_keywords = ["delete", "remove", "destroy", "drop", "truncate"]
+            if any(keyword in action_type for keyword in destructive_keywords):
+                return False
+            return True
+
+        # Authentic Audit via SystemPluginService
+        try:
+            from zentex.plugins.service import get_service
+            plugin_service = get_service()
+            capabilities = plugin_service.get_plugin_capabilities(plugin_id)
+            
+            # Policy: If 'DESTRUCTIVE' or 'SYSTEM_MUTATION' is in capabilities, 
+            # this is considered a destructive operation.
+            dangerous_caps = {"DESTRUCTIVE", "SYSTEM_MUTATION", "FILE_DELETION"}
+            if any(cap.upper() in dangerous_caps for cap in capabilities):
+                logger.warning(f"Supervision: Blocked destructive action from plugin {plugin_id}")
+                return False
+                
+            return True
+        except Exception as e:
+            # POLICY[no-bare-logger-error]: exc_info=True required for full traceback.
+            logger.error(f"Supervision: Capability check failed for {plugin_id}: {e}", exc_info=True)
+            # Fail-Closed: If we can't verify capabilities, assume it's unsafe.
+            return False
     
     def _check_resource_limits(self, context: Dict[str, Any]) -> bool:
         """Check if resource usage is within acceptable limits."""
-        # This would integrate with actual resource monitoring in production
-        # For now, we'll just return True as a placeholder
-        return True
+        record = context["record"]
+        params = record.parameters or {}
+        
+        # Policy: Hard-coded protection stubs are eradicated.
+        if params.get("resource_intensive", False):
+            # Check for explicit 'budget_approved' flag
+            return params.get("budget_approved", False)
+            
+        # Fail-Closed: If a task has no resource profile, default to restricted
+        return params.get("low_resource_mode", True)
     
     def _check_data_access(self, context: Dict[str, Any]) -> bool:
-        """Check if data access complies with policies."""
-        parameters = context["parameters"]
+        """Check if data access complies with policies via Plugin metadata."""
+        record = context["record"]
+        params = record.parameters or {}
+        plugin_id = params.get("plugin_id")
         
-        # Check for sensitive data access patterns
-        sensitive_patterns = ["password", "secret", "token", "key", "credential"]
-        param_keys = [k.lower() for k in parameters.keys()]
-        
-        return not any(pattern in key for pattern in sensitive_patterns for key in param_keys)
+        if not plugin_id:
+            # Secondary heuristic defense
+            parameters = context["parameters"]
+            sensitive_patterns = ["password", "secret", "token", "key", "credential"]
+            param_keys = [k.lower() for k in parameters.keys()]
+            return not any(pattern in key for pattern in sensitive_patterns for key in param_keys)
+
+        # Authentic Audit via SystemPluginService
+        try:
+            from zentex.plugins.service import get_service
+            plugin_service = get_service()
+            rules = plugin_service.get_plugin_rules(plugin_id)
+            
+            # Use 'data_sensitivity' rule from plugin metadata
+            sensitivity = rules.get("data_sensitivity", "high") # Default to high
+            if sensitivity in ["critical", "high"]:
+                # High sensitivity requires explicit 'authorized' context
+                return params.get("auth_verified", False)
+                
+            return True
+        except Exception as e:
+            # POLICY[no-bare-logger-error]: exc_info=True required for full traceback.
+            logger.error(f"Supervision: Data access audit failed for {plugin_id}: {e}", exc_info=True)
+            return False
     
     def _check_action_frequency(self, context: Dict[str, Any]) -> bool:
-        """Check if actions are being performed too frequently."""
-        # This would track action frequency in production
-        # For now, we'll just return True as a placeholder
-        return True
+        """Check if actions are being performed too frequently.
+        
+        Policy: Hard-coded protection stubs are eradicated.
+        """
+        # Simple frequency threshold: No more than 10 actions per 60 seconds per task.
+        current_time = datetime.now(timezone.utc)
+        record = context["record"]
+        task_id = record.task_id
+        
+        if not task_id:
+            return True
+            
+        recent_count = 0
+        for r in self.execution_records.values():
+            if r.task_id == task_id:
+                delta = (current_time - r.start_time).total_seconds()
+                if delta < 60:
+                    recent_count += 1
+                    
+        return recent_count <= 10
 
 
 class TaskSupervisor:

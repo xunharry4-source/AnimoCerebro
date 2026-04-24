@@ -1,13 +1,13 @@
+from __future__ import annotations
 """Public config entrypoint for zentex.launcher.
 
 This package owns startup-time configuration loading and validation.
 Migration note: legacy `zentex.core.config` now bridges into this module.
 """
 
-from __future__ import annotations
 
 from pathlib import Path
-from typing import Any
+from typing import Any, Union
 
 import yaml
 
@@ -29,7 +29,7 @@ class ConfigLoadError(RuntimeError):
     """Raised when launcher-owned configuration cannot be loaded safely."""
 
 
-def load_yaml_config(config_path: str | Path) -> dict[str, Any]:
+def load_yaml_config(config_path: Union[str, Path]) -> dict[str, Any]:
     """Load a YAML mapping from disk using the launcher config boundary."""
     path = Path(config_path)
     if not path.exists():
@@ -41,11 +41,12 @@ def load_yaml_config(config_path: str | Path) -> dict[str, Any]:
     if payload is None:
         return {}
     if not isinstance(payload, dict):
+        print(f"DEBUG: Config load failed for {path}. Type: {type(payload)}. Payload: {payload}")
         raise ConfigLoadError(f"Configuration root must be a mapping: {path}")
     return payload
 
 
-def load_required_mapping_section(config_path: str | Path, section: str) -> dict[str, Any]:
+def load_required_mapping_section(config_path: Union[str, Path], section: str) -> dict[str, Any]:
     """Return a required mapping section from a launcher-managed config file."""
     payload = load_yaml_config(config_path)
     value = payload.get(section)

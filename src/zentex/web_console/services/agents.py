@@ -1,3 +1,4 @@
+from __future__ import annotations
 """
 Agent Service Thin Adapter — Web Console Layer.
 
@@ -12,12 +13,14 @@ DECOUPLING POLICY (Zentex Codex §2):
 This module must remain a 'Logic-Free Zone'. Any evolution of agent metrics, credit scoring 
 algorithms, or task aggregation rules must be implemented in `zentex.agents.service`.
 """
-from __future__ import annotations
+import logging
 from typing import Any, Dict, List, Optional
 from datetime import datetime
 
 from zentex.agents.service import AgentCoordinationService
 from zentex.tasks.service import TaskManagementService
+
+logger = logging.getLogger(__name__)
 
 def calculate_agent_credit_score(
     agent_id: str,
@@ -65,14 +68,14 @@ def get_tasks_by_status(
         try:
             dt_from = datetime.fromisoformat(date_from.replace('Z', '+00:00'))
         except ValueError:
-            pass
+            logger.warning("Invalid agent task date_from filter: %s", date_from)
             
     dt_to = None
     if date_to:
         try:
             dt_to = datetime.fromisoformat(date_to.replace('Z', '+00:00'))
         except ValueError:
-            pass
+            logger.warning("Invalid agent task date_to filter: %s", date_to)
 
     # Call core query logic
     result = agent_service.query_agent_tasks(

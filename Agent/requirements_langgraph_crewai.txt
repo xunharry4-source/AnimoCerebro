@@ -1,0 +1,21 @@
+# LangGraph + CrewAI 内容发布系统依赖
+
+# LangGraph
+langgraph>=0.2.0
+langchain>=0.1.0
+langchain-openai>=0.0.5
+
+# CrewAI
+crewai>=0.30.0
+crewai-tools>=0.4.0
+
+# LLM Provider
+openai>=1.12.0
+
+# 社交媒体 API（可选，用于真实发布）
+tweepy>=4.14.0  # Twitter API
+requests>=2.31.0  # HTTP requests
+
+# 工具库
+python-dotenv>=1.0.0
+pydantic>=2.5.0

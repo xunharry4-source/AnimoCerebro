@@ -38,9 +38,9 @@ type SimulationBundle = {
 export default function SimulationExplorer() {
   const locale: Locale = "zh-CN";
   const copy = simulationCopy[locale];
-  const [goalId, setGoalId] = useState("goal-runtime-stability");
+  const [goalId, setGoalId] = useState("");
   const [bundle, setBundle] = useState<SimulationBundle | null>(null);
-  const [loading, setLoading] = useState(true);
+  const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
   // 为什么这里优先用 branch_label：用户需要看到“哪个方案更推荐”，而不是内部 branch_id。
@@ -51,10 +51,17 @@ export default function SimulationExplorer() {
     : "--";
 
   const loadBundle = async (): Promise<void> => {
+    const normalizedGoalId = goalId.trim();
+    if (!normalizedGoalId) {
+      setBundle(null);
+      setError(null);
+      setLoading(false);
+      return;
+    }
     setLoading(true);
     setError(null);
     try {
-      const response = await fetch(`/api/web/simulations/${encodeURIComponent(goalId)}`);
+      const response = await fetch(`/api/web/simulations/${encodeURIComponent(normalizedGoalId)}`);
       if (!response.ok) {
         throw new Error("simulation_fetch_failed");
       }
@@ -67,10 +74,6 @@ export default function SimulationExplorer() {
     }
   };
 
-  useEffect(() => {
-    void loadBundle();
-  }, []);
-
   const failureCascadeBranches = bundle?.branches.filter((branch) => branch.failure_cascade) || [];
 
   return (
@@ -82,7 +85,7 @@ export default function SimulationExplorer() {
           onChange={(event) => setGoalId(event.target.value)}
           size="small"
         />
-        <Button variant="contained" onClick={() => void loadBundle()}>
+        <Button variant="contained" onClick={() => void loadBundle()} disabled={!goalId.trim()}>
           {copy.refresh}
         </Button>
       </Stack>

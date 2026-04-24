@@ -9,8 +9,9 @@ decides whether to skip, upgrade, or create based on explicit intent payloads,
 then delegates to the specialized upgrade planners.
 """
 
-from typing import Any, Optional
-from zentex.memory import EnhancedMemoryService
+from dataclasses import dataclass
+from typing import Any, Optional, Dict, List, Union
+from zentex.common.storage_paths import get_storage_paths
 from zentex.common.prompt_upgrade_contract import ModulePromptUpgradeContract, build_section_policy
 from zentex.upgrade.llm.service import DSPyLLMUpgradeService
 from zentex.upgrade.models import (
@@ -46,23 +47,50 @@ from zentex.upgrade.models import (
 )
 
 
+@dataclass(frozen=True)
+class UpgradeRuntimeComponents:
+    management_store: UpgradeManagementStore
+    plugin_runtime: PluginEvolutionRuntime
+    audit_store: UpgradeAuditStore
+    memory_store: UpgradeMemoryStore
+    evidence_service: UpgradeEvidenceService
+
+
+def build_default_upgrade_runtime_components(*, memory_service: Optional[Any] = None) -> UpgradeRuntimeComponents:
+    runtime_root = get_storage_paths().runtime_data_dir / "upgrade"
+    runtime_root.mkdir(parents=True, exist_ok=True)
+    audit_store = UpgradeAuditStore(runtime_root / "audit.sqlite3")
+    memory_store = UpgradeMemoryStore(runtime_root / "memory.sqlite3")
+    return UpgradeRuntimeComponents(
+        management_store=UpgradeManagementStore(file_path=runtime_root / "management.sqlite3"),
+        plugin_runtime=PluginEvolutionRuntime(),
+        audit_store=audit_store,
+        memory_store=memory_store,
+        evidence_service=UpgradeEvidenceService(
+            audit_store=audit_store,
+            memory_store=memory_store,
+            memory_service=memory_service,
+        ),
+    )
+
+
 class UpgradeFacade:
     """Coordinates generic upgrade decisions and delegates concrete planning."""
 
     def __init__(
         self,
-        llm_service: DSPyLLMUpgradeService | None = None,
-        plugin_service: OpenHandsPluginUpgradeService | None = None,
-        enhanced_memory_service: EnhancedMemoryService | None = None,
-        execution_service: UpgradeExecutionService | None = None,
+        llm_service: Optional[DSPyLLMUpgradeService] = None,
+        plugin_service: Optional[OpenHandsPluginUpgradeService] = None,
+        memory_service: Optional[Any] = None,
+        execution_service: Optional[UpgradeExecutionService] = None,
     ) -> None:
         self._llm_service = llm_service or DSPyLLMUpgradeService()
         self._plugin_service = plugin_service or OpenHandsPluginUpgradeService()
-        self._enhanced_memory_service = enhanced_memory_service
+        self._memory_service = memory_service
         self._execution_service = execution_service or UpgradeExecutionService(
             facade=self,
             evidence_service=UpgradeEvidenceService(
-                enhanced_memory_service=self._enhanced_memory_service
+                memory_service=self._memory_service
             )
         )
 
@@ -147,7 +175,7 @@ class UpgradeFacade:
     def _resolve_plugin_action(
         self,
         request: PluginEvolutionIntentRequest,
-    ) -> PluginEvolutionAction | None:
+    ) -> Optional[PluginEvolutionAction]:
         if request.requested_action is not None:
             return request.requested_action
         if request.creation_request is not None and request.upgrade_request is None:
@@ -163,7 +191,7 @@ class UpgradeFacade:
     def _build_llm_memory_context(
         self,
         request: LLMUpgradeIntentRequest,
-    ) -> UpgradeMemoryContext | None:
+    ) -> Optional[UpgradeMemoryContext]:
         return self._recall_memory_context(
             query_parts=[
                 request.reason,
@@ -180,7 +208,7 @@ class UpgradeFacade:
     def _build_plugin_memory_context(
         self,
         request: PluginEvolutionIntentRequest,
-    ) -> UpgradeMemoryContext | None:
+    ) -> Optional[UpgradeMemoryContext]:
         if request.upgrade_request is not None:
             return self._recall_memory_context(
                 query_parts=[
@@ -210,10 +238,10 @@ class UpgradeFacade:
         self,
         *,
         query_parts: list[str],
-        target_id: str | None,
-        trace_id: str | None,
-    ) -> UpgradeMemoryContext | None:
-        if self._enhanced_memory_service is None:
+        target_id: Optional[str],
+        trace_id: Optional[str],
+    ) -> Optional[UpgradeMemoryContext]:
+        if self._memory_service is None:
             return None
         query = " ".join(part.strip() for part in query_parts if part and part.strip())
         query_variants = [
@@ -230,7 +258,7 @@ class UpgradeFacade:
         hits = []
         selected_query = query_variants[0]
         for variant in query_variants:
-            hits = self._enhanced_memory_service.recall(
+            hits = self._memory_service.recall(
                 query=variant,
                 limit=8,
                 trace_id=trace_id,
@@ -251,7 +279,7 @@ class UpgradeFacade:
         recalled_ids: list[str] = []
         for hit in hits:
             recalled_ids.append(hit.memory_id)
-            managed = self._enhanced_memory_service.get_managed_record(hit.memory_id)
+            managed = self._memory_service.get_record(hit.memory_id)
             lowered_tags = {tag.lower() for tag in hit.tags}
             summary = hit.summary.strip()
             if managed is not None:

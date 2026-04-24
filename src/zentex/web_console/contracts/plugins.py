@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from datetime import datetime
 from pathlib import Path
-from typing import Any, Literal
+from typing import Any, Literal, Optional
 
 from pydantic import BaseModel, ConfigDict, Field
 
@@ -24,7 +24,7 @@ class CognitivePluginStatusItem(BaseModel):
     version: str
     lifecycle_status: str
     operational_status: str
-    health_status: str | None
+    health_status: Optional[str]
     purpose: str
     description: str
     used_in: list[str]
@@ -38,11 +38,11 @@ class CognitivePluginStatusItem(BaseModel):
     rollback_conditions: list[str] = Field(default_factory=list)
     trigger_conditions: list[str] = Field(default_factory=list)
     required_context: list[str] = Field(default_factory=list)
-    created_at: datetime | None = None
-    updated_at: datetime | None = None
-    started_at: datetime | None = None
-    stopped_at: datetime | None = None
-    last_used_at: datetime | None = None
+    created_at: Optional[datetime] = None
+    updated_at: Optional[datetime] = None
+    started_at: Optional[datetime] = None
+    stopped_at: Optional[datetime] = None
+    last_used_at: Optional[datetime] = None
     is_instantiated: bool = False
 
 
@@ -83,8 +83,8 @@ class PluginFeatureGroupItem(BaseModel):
     feature_code: str
     display_name: str
     plugin_kind: str
-    feature_guide_path: str | None = None
-    family_guide_path: str | None = None
+    feature_guide_path: Optional[str] = None
+    family_guide_path: Optional[str] = None
     supports_multiple_plugins: bool
     binding_status: str
     active_plugin_ids: list[str] = Field(default_factory=list)
@@ -97,10 +97,10 @@ class PluginVersionHistoryItem(BaseModel):
     plugin_id: str
     version: str
     upgrade_status: str
-    started_at: datetime | None = None
-    completed_at: datetime | None = None
-    error_message: str | None = None
-    previous_version: str | None = None
+    started_at: Optional[datetime] = None
+    completed_at: Optional[datetime] = None
+    error_message: Optional[str] = None
+    previous_version: Optional[str] = None
 
 
 class PluginRelationshipItem(BaseModel):
@@ -109,16 +109,16 @@ class PluginRelationshipItem(BaseModel):
     plugin: CognitivePluginStatusItem
     role: str = "primary"
     priority: int = 1
-    fallback_id: str | None = None
-    relationship_created_at: datetime | None = None
-    relationship_updated_at: datetime | None = None
+    fallback_id: Optional[str] = None
+    relationship_created_at: Optional[datetime] = None
+    relationship_updated_at: Optional[datetime] = None
 
 
 class CognitivePluginDetailResponse(BaseModel):
     model_config = ConfigDict(extra="forbid", frozen=True)
 
     plugin: CognitivePluginStatusItem
-    active_version_tool_id: str | None = None
+    active_version_tool_id: Optional[str] = None
     related_versions: list[CognitivePluginStatusItem] = Field(default_factory=list)
     functional_plugins: list[PluginRelationshipItem] = Field(default_factory=list)
     history: list[PluginVersionHistoryItem] = Field(default_factory=list)
@@ -145,7 +145,7 @@ class PluginRelationActionRequest(BaseModel):
     audit_reason: str = Field(min_length=1)
     role: str = "primary"
     priority: int = 1
-    fallback_id: str | None = None
+    fallback_id: Optional[str] = None
 
 
 class PluginTestRequest(BaseModel):
@@ -177,3 +177,7 @@ PLUGIN_FAMILY_GUIDE_PATHS: dict[str, str] = {
     "subjective_weight": str(SRC_ROOT / "plugins/weights/DEVELOPMENT_GUIDE.md"),
     "identity_package": str(DOCS_ROOT / "operability/plugin_features/identity_package_loader.md"),
 }
+
+
+# Resolve deferred ForwardRefs for Pydantic v2
+CognitivePluginStatusItem.model_rebuild()

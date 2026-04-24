@@ -4,10 +4,10 @@ from typing import List, Optional
 
 from pydantic import BaseModel, ConfigDict, Field
 
-from zentex.web_console.contracts.transcript import TranscriptEventPayload
+from zentex.web_console.contracts.audit_event import AuditEventPayload
 
 
-class TranscriptReplayPayload(BaseModel):
+class TraceReplayPayload(BaseModel):
     model_config = ConfigDict(extra="forbid", frozen=True)
 
     event_id: str
@@ -16,7 +16,7 @@ class TranscriptReplayPayload(BaseModel):
     source_module: Optional[str] = None
     invocation_phase: Optional[str] = None
     question_driver_refs: List[str] = Field(default_factory=list)
-    events: List[TranscriptEventPayload] = Field(default_factory=list)
+    events: List[AuditEventPayload] = Field(default_factory=list)
 
 
 class TurnReplayTraceGroup(BaseModel):
@@ -35,5 +35,4 @@ class TurnReplayPayload(BaseModel):
     trace_id: str
     summary: str
     trace_groups: List[TurnReplayTraceGroup] = Field(default_factory=list)
-    events: List[TranscriptEventPayload] = Field(default_factory=list)
-
+    events: List[AuditEventPayload] = Field(default_factory=list)

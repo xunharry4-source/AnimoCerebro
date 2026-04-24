@@ -1,3 +1,5 @@
+from __future__ import annotations
+
 """
 Context Snapshot Store / 上下文快照存储
 
@@ -12,7 +14,7 @@ import json
 from datetime import datetime, timezone
 from pathlib import Path
 from threading import Lock
-from typing import Any
+from typing import Any, Dict, List, Optional, Union
 from uuid import uuid4
 
 from zentex.environment.models import ContextSnapshot, PhysicalHostState
@@ -35,7 +37,7 @@ class ContextSnapshotStore:
     def __init__(
         self,
         *,
-        storage_path: str | None = None,
+        storage_path: Optional[str] = None,
         max_in_memory_snapshots: int = 1000,
     ) -> None:
         """
@@ -81,15 +83,15 @@ class ContextSnapshotStore:
     
     def create_snapshot(
         self,
-        host_state: PhysicalHostState | None = None,
-        session_id: str | None = None,
-        turn_id: str | None = None,
-        active_goals: list[str] | None = None,
-        working_memory_summary: str | None = None,
-        current_role: str | None = None,
-        identity_anchor_ref: str | None = None,
-        tags: list[str] | None = None,
-        metadata: dict[str, Any] | None = None,
+        host_state: Optional[PhysicalHostState] = None,
+        session_id: Optional[str] = None,
+        turn_id: Optional[str] = None,
+        active_goals: list[Optional[str]] = None,
+        working_memory_summary: Optional[str] = None,
+        current_role: Optional[str] = None,
+        identity_anchor_ref: Optional[str] = None,
+        tags: list[Optional[str]] = None,
+        metadata: dict[str, Any] = None,
     ) -> ContextSnapshot:
         """
         Create and add a new context snapshot.
@@ -129,7 +131,7 @@ class ContextSnapshotStore:
         self.add_snapshot(snapshot)
         return snapshot
     
-    def get_snapshot(self, snapshot_id: str) -> ContextSnapshot | None:
+    def get_snapshot(self, snapshot_id: str) -> Optional[ContextSnapshot]:
         """
         Retrieve a specific snapshot by ID.
         
@@ -150,7 +152,7 @@ class ContextSnapshotStore:
     def get_recent_snapshots(
         self,
         count: int = 10,
-        before_timestamp: datetime | None = None,
+        before_timestamp: Optional[datetime] = None,
     ) -> list[ContextSnapshot]:
         """
         Get the most recent snapshots.
@@ -177,11 +179,11 @@ class ContextSnapshotStore:
     
     def query_snapshots(
         self,
-        session_id: str | None = None,
-        turn_id: str | None = None,
-        tag: str | None = None,
-        start_time: datetime | None = None,
-        end_time: datetime | None = None,
+        session_id: Optional[str] = None,
+        turn_id: Optional[str] = None,
+        tag: Optional[str] = None,
+        start_time: Optional[datetime] = None,
+        end_time: Optional[datetime] = None,
     ) -> list[ContextSnapshot]:
         """
         Query snapshots with various filters.

@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from typing import Any
 
-from plugins.nine_questions.prompt_sections import (
+from zentex.common.nine_questions_prompts import (
     assemble_prompt_sections,
     build_prompt_section,
 )
@@ -30,7 +30,7 @@ def build_q7_llm_request(
             intent="Define the fallback-strategy task for Q7.",
             purpose="Generate alternatives without violating prior boundaries.",
             content=(
-                "你现在是 Zentex 外部大脑的备选策略生成中枢。\n"
+                "你现在是 G19 Preference AI 的备选策略生成中枢。\n"
                 "当前主路径已受到能力/授权/红线的约束，你的任务是：\n"
                 "在不违背 Q5（授权边界）和 Q6（红线禁区）的前提下，\n"
                 "生成可行的备选路径、降级策略和协作请求。\n"

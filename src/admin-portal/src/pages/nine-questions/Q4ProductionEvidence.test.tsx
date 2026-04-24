@@ -12,7 +12,13 @@ vi.mock("./nineQuestionsApi", async () => {
   return {
     ...actual,
     fetchNineQuestionDetail: vi.fn(),
+    fetchNineQuestionEvidence: vi.fn(),
+    fetchNineQuestionInference: vi.fn(),
+    fetchNineQuestionModules: vi.fn(),
+    fetchNineQuestionRaw: vi.fn(),
+    fetchNineQuestionSummary: vi.fn(),
     fetchNineQuestionTrace: vi.fn(),
+    fetchNineQuestionTracePayload: vi.fn(),
     runNineQuestionSandboxTest: vi.fn(),
   };
 });
@@ -87,13 +93,49 @@ const mockDetail = {
   inference_result: mockQ4Inference,
   llm_trace_payload: mockTrace.llm_trace_payload,
   result: {},
-  context_updates: { q3_unified_asset_inventory: mockQ4Evidence.q3_inventory },
+  context_updates: {
+    q3_unified_asset_inventory: mockQ4Evidence.q3_inventory,
+    q4_execution_diagnosis: {
+      authenticity_status: "degraded",
+      diagnosis_message: "Q4 capability boundary completed with degraded asset or execution-domain evidence.",
+      recovery_plan: {
+        retriable: true,
+        rollback_available: false,
+        partial_retry_available: true,
+        partial_replace_available: false,
+        actions: [
+          {
+            action_id: "q4-rerun-question",
+            label: "重跑 Q4 及下游",
+            kind: "retry",
+            executable: true,
+            scope: "question_downstream",
+            target: "q4",
+          },
+        ],
+      },
+    },
+  },
 };
 
 describe("Q4 structured evidence rendering", () => {
   beforeEach(() => {
     vi.resetAllMocks();
     vi.mocked(api.fetchNineQuestionDetail).mockResolvedValue(mockDetail as any);
+    vi.mocked(api.fetchNineQuestionSummary).mockResolvedValue({ status: "degraded" });
+    vi.mocked(api.fetchNineQuestionEvidence).mockResolvedValue(mockQ4Evidence as any);
+    vi.mocked(api.fetchNineQuestionInference).mockResolvedValue(mockQ4Inference as any);
+    vi.mocked(api.fetchNineQuestionTracePayload).mockResolvedValue(mockTrace.llm_trace_payload as any);
+    vi.mocked(api.fetchNineQuestionRaw).mockResolvedValue(mockDetail as any);
+    vi.mocked(api.fetchNineQuestionModules).mockResolvedValue({
+      status: { status: "degraded" },
+      module_runs: [
+        { module_id: "q4_inventory_validation", status: "completed" },
+        { module_id: "q4_execution_capability_verification", status: "degraded", error_code: "execution_domains_missing" },
+      ],
+      plugin_runs: [],
+      upstream_dependencies: [{ dependency_id: "q3", required: true, status: "completed" }],
+    } as any);
     vi.mocked(api.fetchNineQuestionTrace).mockResolvedValue(mockTrace as any);
     vi.mocked(api.runNineQuestionSandboxTest).mockResolvedValue({
       ...mockDetail,
@@ -119,11 +161,18 @@ describe("Q4 structured evidence rendering", () => {
     });
     expect(screen.getByTestId("q4-detail-root")).toBeInTheDocument();
     expect(screen.queryByTestId("q4-test-root")).not.toBeInTheDocument();
-    expect(api.fetchNineQuestionDetail).toHaveBeenCalledWith("q4");
-    expect(screen.getByText("【前置资产与态势依据区】")).toBeInTheDocument();
+    expect(api.fetchNineQuestionSummary).toHaveBeenCalledWith("q4");
+    expect(api.fetchNineQuestionModules).toHaveBeenCalledWith("q4");
+    expect(api.fetchNineQuestionDetail).not.toHaveBeenCalled();
+    expect(screen.getByTestId("q4-module-audit")).toHaveTextContent("模块数：2");
+    expect(screen.getByText("nineQuestions.preAssetSnapshot")).toBeInTheDocument();
+    expect(screen.getByTestId("q4-recovery-plan")).toHaveTextContent("可重试：是");
+    expect(screen.getByTestId("q4-recovery-action-q4-rerun-question")).toHaveTextContent(
+      "重跑 Q4 及下游 | retry | question_downstream | executable | q4",
+    );
     expect(screen.getByText("MemorySearch")).toBeInTheDocument();
     expect(screen.queryByText("OfflineAgent")).not.toBeInTheDocument();
-    expect(screen.getByText("【物理能力上限与动作空间区】")).toBeInTheDocument();
+    expect(screen.getByText("nineQuestions.physicalCapabilityLimits")).toBeInTheDocument();
     const actionSpace = screen.getByTestId("q4-actionable-space");
     const chips = actionSpace.querySelectorAll(".MuiChip-root");
     expect(chips.length).toBeGreaterThan(0);
@@ -157,13 +206,16 @@ describe("Q4 structured evidence rendering", () => {
 
     fireEvent.click(screen.getByRole("button", { name: "执行沙箱测试" }));
     await waitFor(() => {
-      expect(screen.getByText("【物理能力上限与动作空间区】")).toBeInTheDocument();
+      expect(screen.getByText("nineQuestions.physicalCapabilityLimits")).toBeInTheDocument();
     });
     expect(screen.getByText("view_dashboard")).toBeInTheDocument();
   });
 
   it("renders a human-readable error panel when Q4 detail loading fails", async () => {
-    vi.mocked(api.fetchNineQuestionDetail).mockRejectedValueOnce(new Error("大模型调用失败，请检查 API Key 配置"));
+    const err = new Error("大模型调用失败，请检查 API Key 配置");
+    vi.mocked(api.fetchNineQuestionSummary).mockRejectedValueOnce(err);
+    vi.mocked(api.fetchNineQuestionRaw).mockRejectedValueOnce(err);
+    vi.mocked(api.fetchNineQuestionModules).mockRejectedValueOnce(err);
 
     render(
       <MemoryRouter initialEntries={["/console/nine-questions/q4"]}>
@@ -173,6 +225,6 @@ describe("Q4 structured evidence rendering", () => {
       </MemoryRouter>,
     );
 
-    expect(await screen.findByText("大模型调用失败，请检查 API Key 配置")).toBeInTheDocument();
+    expect(await screen.findByTestId("q4-error-boundary")).toHaveTextContent("大模型调用失败，请检查 API Key 配置");
   });
 });

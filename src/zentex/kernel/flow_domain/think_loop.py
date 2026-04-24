@@ -1,10 +1,12 @@
+from __future__ import annotations
+
 """ThinkLoop — orchestrates the 9-phase cognitive cycle for a single turn.
 
 Also defines KernelServiceBridge, the Protocol that decouples flow_domain
 from concrete external service implementations.
 """
 
-from typing import Protocol, runtime_checkable
+from typing import Protocol, runtime_checkable, Any, Dict, List, Optional, Union
 
 from zentex.foundation.contracts import PhaseResult, TurnRequest
 from zentex.kernel.flow_domain.phase_executor import PhaseExecutor
@@ -26,6 +28,10 @@ class KernelServiceBridge(Protocol):
 
     def observe_environment(self, session_id: str, turn_id: str) -> dict:
         """Gather raw environmental observations for the current turn."""
+        ...
+
+    def evaluate_drive(self, session_id: str, turn_id: str, context: dict) -> dict:
+        """Determine the situational motivation (Phase 1.5) based on observations."""
         ...
 
     def evaluate_cognition(
@@ -72,7 +78,7 @@ class ThinkLoop:
     def __init__(
         self,
         bridge: KernelServiceBridge,
-        registry: PhaseRegistry | None = None,
+        registry: Optional[PhaseRegistry] = None,
     ) -> None:
         self._bridge = bridge
         self._registry: PhaseRegistry = registry or PhaseRegistry()
@@ -118,6 +124,9 @@ class ThinkLoop:
 
             if phase_name == "observe":
                 fn = lambda: self._bridge.observe_environment(session_id, turn_id)  # noqa: E731
+            elif phase_name == "drive":
+                _ctx = dict(context)
+                fn = lambda: self._bridge.evaluate_drive(session_id, turn_id, _ctx)  # noqa: E731
             elif phase_name == "frame":
                 _ctx = dict(context)
                 fn = lambda: self._bridge.evaluate_cognition(session_id, turn_id, _ctx)  # noqa: E731

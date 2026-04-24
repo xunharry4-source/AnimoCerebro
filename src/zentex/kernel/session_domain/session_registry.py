@@ -1,3 +1,7 @@
+from __future__ import annotations
+
+from typing import Any, Dict, List, Optional, Union
+
 """SessionRegistry — lightweight read-only view over SessionLifecycleManager."""
 
 from zentex.foundation.contracts import SessionStatus
@@ -19,7 +23,7 @@ class SessionRegistry:
     # Read-only accessors
     # ------------------------------------------------------------------
 
-    def get(self, session_id: str) -> KernelSession | None:
+    def get(self, session_id: str) -> Optional[KernelSession]:
         """Return the KernelSession for *session_id*, or None."""
         return self._lifecycle.get_session(session_id)
 

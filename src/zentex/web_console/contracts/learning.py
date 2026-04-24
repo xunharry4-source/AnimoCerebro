@@ -27,11 +27,14 @@ class LearningHistoryRow(BaseModel):
     entry_id: str
     timestamp: str
     trace_id: str
+    session_id: str = ""
+    replay_event_id: str = ""
     kind: str
     direction: str
     verified: bool
     summary: str
     architecture_ref: str = ""
+    question_driver_refs: List[str] = Field(default_factory=list)
 
 
 class LearningHistoryResponse(BaseModel):

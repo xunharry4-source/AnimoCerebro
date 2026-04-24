@@ -56,8 +56,8 @@ def build_section_policy(
     mutable: bool,
     intent: str,
     purpose: str,
-    allowed_operations: list[str] | None = None,
-    forbidden_operations: list[str] | None = None,
+    allowed_operations: list[Optional[str]] = None,
+    forbidden_operations: list[Optional[str]] = None,
 ) -> PromptSectionChangePolicy:
     return PromptSectionChangePolicy(
         section_key=section_key,

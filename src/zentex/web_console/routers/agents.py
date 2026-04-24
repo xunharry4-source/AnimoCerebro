@@ -1,3 +1,4 @@
+from __future__ import annotations
 """
 Agents Router — HTTP route handlers for agent management and task coordination.
 
@@ -34,7 +35,7 @@ DOES NOT:
   - Silently return empty results when a required service is absent.
 """
 
-from __future__ import annotations
+import logging
 from typing import Any, Dict, List, Optional
 
 
@@ -43,6 +44,9 @@ from typing_extensions import Annotated
 from fastapi import Depends
 
 from zentex.agents.service import AgentAsset, AgentCoordinationService, AgentRegistrationRequest
+from zentex.agents.bridge import AgentBridgeError
+
+logger = logging.getLogger(__name__)
 from zentex.tasks.service import TaskManagementService, ZentexTask
 from zentex.web_console.contracts.agents import (
     AgentConsoleRecord,
@@ -84,10 +88,19 @@ async def register_agent(
     service: Annotated[AgentCoordinationService, Depends(get_agent_coordination_service)],
     request: Request,
 ) -> AgentAsset:
-    return await service.register_agent(
-        payload,
-        operator_id=request.client.host if request.client else "unknown",
-    )
+    try:
+        return await service.register_agent(
+            payload,
+            operator_id=request.client.host if request.client else "unknown",
+        )
+    except AgentBridgeError as exc:
+        # Unreachable endpoint or protocol error — reject registration with 400.
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    except HTTPException:
+        raise
+    except Exception as exc:
+        logger.exception("Agent registration failed unexpectedly")
+        raise HTTPException(status_code=500, detail=str(exc)) from exc
 
 
 @router.get("/agents/{agent_id}/handshake", response_model=AgentAsset)
@@ -181,9 +194,8 @@ def list_agent_audit_events(
     request: Request,
 ) -> List[AgentAuditRecord]:
     """获取所有智能体的审计日志"""
-    facade = get_kernel_service_facade(request)
-    transcript_store = facade.get_transcript_store()
-    return handle_get_agent_audit_events(agent_id, transcript_store)
+    audit_service = getattr(request.app.state, "audit_service", None)
+    return handle_get_agent_audit_events(agent_id, audit_service)
 
 
 @router.get("/agents/{agent_id}/detail")

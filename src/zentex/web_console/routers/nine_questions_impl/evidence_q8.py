@@ -1,10 +1,12 @@
+from __future__ import annotations
+
 """
 Q8 (我现在应该做什么) evidence building and extraction.
 
 Contains functions for building and extracting EVIDENCE_Q8 evidence.
 """
 
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Union
 
 from zentex.web_console.contracts.nine_questions import (
     Q8PreprocessedEvidence,
@@ -35,20 +37,24 @@ def _extract_q8_snapshot_dict(context_payload: dict[str, Any]) -> dict[str, Any]
 def _count_q8_redlines(snapshot: dict[str, Any]) -> int:
     q6 = snapshot.get("q6") if isinstance(snapshot.get("q6"), dict) else {}
     q5 = snapshot.get("q5") if isinstance(snapshot.get("q5"), dict) else {}
+    q6_profile = q6.get("forbidden_zone_profile") if isinstance(q6.get("forbidden_zone_profile"), dict) else {}
+    q5_profile = q5.get("authorization_boundary_profile") if isinstance(q5.get("authorization_boundary_profile"), dict) else {}
     return len(
-        _coerce_string_list(q6.get("absolute_red_lines"))
-        + _coerce_string_list(q6.get("non_bypassable_constraints"))
-        + _coerce_string_list(q5.get("explicitly_forbidden_actions"))
+        _coerce_string_list(q6.get("absolute_red_lines") or q6_profile.get("absolute_red_lines"))
+        + _coerce_string_list(q6.get("non_bypassable_constraints") or q6_profile.get("non_bypassable_constraints"))
+        + _coerce_string_list(q5.get("explicitly_forbidden_actions") or q5_profile.get("explicitly_forbidden_actions"))
     )
 
 
 def _count_q8_capability_ceilings(snapshot: dict[str, Any]) -> int:
     q4 = snapshot.get("q4") if isinstance(snapshot.get("q4"), dict) else {}
     q7 = snapshot.get("q7") if isinstance(snapshot.get("q7"), dict) else {}
+    q4_profile = q4.get("capability_boundary_profile") if isinstance(q4.get("capability_boundary_profile"), dict) else {}
+    q7_profile = q7.get("alternative_strategy_profile") if isinstance(q7.get("alternative_strategy_profile"), dict) else {}
     return len(
-        _coerce_string_list(q4.get("capability_upper_limits"))
-        + _coerce_string_list(q4.get("actionable_space"))
-        + _coerce_string_list(q7.get("capability_limits"))
+        _coerce_string_list(q4.get("capability_upper_limits") or q4_profile.get("capability_upper_limits"))
+        + _coerce_string_list(q4.get("actionable_space") or q4_profile.get("actionable_space"))
+        + _coerce_string_list(q7.get("capability_limits") or q7_profile.get("capability_limits"))
     )
 
 
@@ -107,12 +113,18 @@ def _coerce_q8_agenda_items(raw: object) -> list[Q8AgendaItem]:
     return agenda_items
 
 
-def _build_q8_preprocessed_evidence(context_payload: dict[str, Any]) -> Q8PreprocessedEvidence | None:
+def _build_q8_preprocessed_evidence(context_payload: dict[str, Any]) -> Optional[Q8PreprocessedEvidence]:
     snapshot = _extract_q8_snapshot_dict(context_payload)
     task_state = _coerce_q8_persistent_items(
-        context_payload.get("q8_persistent_task_state") or context_payload.get("persistent_task_state")
+        context_payload.get("q8_persistent_task_state")
+        or context_payload.get("persistent_task_state")
+        or (context_payload.get("q8_objective_and_queue") or {}).get("persistent_task_state")
     )
-    agenda_items = _coerce_q8_agenda_items(context_payload.get("cognitive_agenda"))
+    agenda_items = _coerce_q8_agenda_items(
+        context_payload.get("cognitive_agenda")
+        or context_payload.get("q8_cognitive_agenda")
+        or (context_payload.get("q8_objective_and_queue") or {}).get("cognitive_agenda")
+    )
     if not snapshot and not task_state and not agenda_items:
         return None
 
@@ -129,7 +141,7 @@ def _build_q8_preprocessed_evidence(context_payload: dict[str, Any]) -> Q8Prepro
     )
 
 
-def _extract_q8_preprocessed_evidence(context_payload: object) -> Q8PreprocessedEvidence | None:
+def _extract_q8_preprocessed_evidence(context_payload: object) -> Optional[Q8PreprocessedEvidence]:
     if not isinstance(context_payload, dict):
         return None
     if not any(
@@ -140,7 +152,7 @@ def _extract_q8_preprocessed_evidence(context_payload: object) -> Q8Preprocessed
     return _build_q8_preprocessed_evidence(context_payload)
 
 
-def _extract_q8_inference_result(result_payload: object) -> Q8WhatShouldIDoNowInferenceView | None:
+def _extract_q8_inference_result(result_payload: object) -> Optional[Q8WhatShouldIDoNowInferenceView]:
     if not isinstance(result_payload, dict):
         return None
 
@@ -161,6 +173,43 @@ def _extract_q8_inference_result(result_payload: object) -> Q8WhatShouldIDoNowIn
     if not isinstance(objective_raw, dict) or not isinstance(queue_raw, dict):
         return None
 
+    def _normalize_queue_rows(value: object, *, status: str) -> list[dict[str, Any]]:
+        if isinstance(value, str):
+            text = value.strip()
+            return [{"task_id": f"{status}-0", "title": text, "status": status}] if text else []
+
+        if not isinstance(value, list):
+            return []
+
+        rows: list[dict[str, Any]] = []
+        char_titles: list[str] = []
+        for index, item in enumerate(value):
+            if isinstance(item, dict):
+                title = str(item.get("title") or item.get("task") or "").strip()
+                task_id = str(item.get("task_id") or item.get("id") or f"{status}-{index}").strip()
+                row_status = str(item.get("status") or status).strip() or status
+                if title and len(title) == 1 and task_id.startswith(f"{status}-"):
+                    char_titles.append(title)
+                    continue
+                if title:
+                    rows.append(
+                        {
+                            **item,
+                            "task_id": task_id,
+                            "title": title,
+                            "status": row_status,
+                        }
+                    )
+                continue
+
+            text = str(item or "").strip()
+            if text:
+                rows.append({"task_id": f"{status}-{index}", "title": text, "status": status})
+
+        if char_titles and not rows:
+            rows.append({"task_id": f"{status}-0", "title": "".join(char_titles), "status": status})
+        return rows
+
     return Q8WhatShouldIDoNowInferenceView(
         objective_profile=Q8ObjectiveProfileView(
             current_primary_objective=str(objective_raw.get("current_mission") or objective_raw.get("current_primary_objective") or ""),
@@ -168,10 +217,8 @@ def _extract_q8_inference_result(result_payload: object) -> Q8WhatShouldIDoNowIn
             priority_order=_coerce_string_list(objective_raw.get("priority_order")),
         ),
         task_queue=Q8AutonomousTaskQueueView(
-            next_self_tasks=queue_raw.get("next_self_tasks") or [],
-            blocked_self_tasks=queue_raw.get("blocked_self_tasks") or [],
-            proactive_actions=queue_raw.get("proactive_actions") or [],
+            next_self_tasks=_normalize_queue_rows(queue_raw.get("next_self_tasks"), status="next"),
+            blocked_self_tasks=_normalize_queue_rows(queue_raw.get("blocked_self_tasks"), status="blocked"),
+            proactive_actions=_normalize_queue_rows(queue_raw.get("proactive_actions"), status="proactive"),
         ),
     )
-
-

@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from typing import Any, Dict, List, Optional, Union
+
 """
 Typed entity and relationship schemas for structured knowledge representation.
 
@@ -18,7 +20,8 @@ Typed entity and relationship schemas for structured knowledge representation.
 
 import re
 import threading
-from datetime import UTC, datetime
+from datetime import datetime, timezone
+UTC = timezone.utc
 from enum import Enum
 from uuid import uuid4
 
@@ -95,7 +98,7 @@ class TypedEntity(BaseModel):
     name: str
     aliases: list[str] = Field(default_factory=list)
     description: str = Field(default="")
-    source_memory_id: str | None = None
+    source_memory_id: Optional[str] = None
     confidence: float = Field(default=0.7, ge=0.0, le=1.0)
     first_seen: datetime = Field(default_factory=lambda: datetime.now(UTC))
     last_seen: datetime = Field(default_factory=lambda: datetime.now(UTC))
@@ -118,10 +121,10 @@ class TypedRelationship(BaseModel):
     relationship_type: str  # One of RelationshipType values
     source_entity_id: str
     target_entity_id: str
-    source_memory_id: str | None = None
+    source_memory_id: Optional[str] = None
     # Temporal validity (Graphiti-inspired)
-    valid_from: datetime | None = None
-    valid_to: datetime | None = None
+    valid_from: Optional[datetime] = None
+    valid_to: Optional[datetime] = None
     confidence: float = Field(default=0.7, ge=0.0, le=1.0)
     description: str = Field(default="")
     metadata: dict = Field(default_factory=dict)
@@ -163,11 +166,11 @@ class EntityRegistry:
             self._name_index[key] = entity.entity_id
         return entity
 
-    def get(self, entity_id: str) -> TypedEntity | None:
+    def get(self, entity_id: str) -> Optional[TypedEntity]:
         with self._lock:
             return self._entities.get(entity_id)
 
-    def find_by_name(self, name: str, entity_type: str | None = None) -> list[TypedEntity]:
+    def find_by_name(self, name: str, entity_type: Optional[str] = None) -> list[TypedEntity]:
         canonical = name.strip().lower()
         with self._lock:
             results = []
@@ -199,10 +202,10 @@ _PERSON_PATTERN = re.compile(
     r"\b([A-Z][a-z]+ (?:[A-Z][a-z]+ ){0,1}[A-Z][a-z]+)\b"
 )
 _LOCATION_PATTERN = re.compile(
-    r"\b(?:in|at|from|to)\s+([A-Z][a-zA-Z\s]{2,30}(?:City|Town|Province|Country|Region)?)\b"
+    r"\b(?:Union[in, Union[at], Union[from], to])\s+([A-Z][a-zA-Z\s]{2,30}(?:Union[City, Union[Town], Union[Province], Union[Country], Region])?)\b"
 )
 _ORG_PATTERN = re.compile(
-    r"\b([A-Z][a-zA-Z\s]{1,30}(?:Inc|Corp|Ltd|LLC|GmbH|Co|Foundation|Institute|University|Team)\.?)\b"
+    r"\b([A-Z][a-zA-Z\s]{1,30}(?:Union[Inc, Union[Corp], Union[Ltd], Union[LLC], Union[GmbH], Union[Co], Union[Foundation], Union[Institute], Union[University], Team])\.?)\b"
 )
 _CONCEPT_PATTERN = re.compile(
     r"`([a-zA-Z_][a-zA-Z0-9_]{2,40})`"  # Code identifiers in backticks treated as Concept
@@ -222,14 +225,14 @@ class RuleBasedEntityExtractor:
     不需要 LLM 调用。适用于预处理和初步标注；生产级 NER 建议替换为 LLM-based 实现。
     """
 
-    def __init__(self, registry: EntityRegistry | None = None) -> None:
+    def __init__(self, registry: Optional[EntityRegistry] = None) -> None:
         self._registry = registry or EntityRegistry()
 
     def extract(
         self,
         text: str,
         *,
-        source_memory_id: str | None = None,
+        source_memory_id: Optional[str] = None,
     ) -> list[TypedEntity]:
         """
         Extract typed entities from free text.
@@ -317,7 +320,7 @@ class MultimodalMemoryHint(BaseModel):
     hint_id: str = Field(default_factory=lambda: str(uuid4()))
     modality: str  # "text" | "image" | "audio" | "code" | "structured_data"
     reference_uri: str = ""        # URI to external asset (if not inline)
-    inline_content: bytes | None = None
+    inline_content: Optional[bytes] = None
     mime_type: str = ""
     description: str = ""
-    source_memory_id: str | None = None
+    source_memory_id: Optional[str] = None

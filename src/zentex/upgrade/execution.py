@@ -9,9 +9,14 @@ or worker is missing, execution fails closed and the management ledger records
 the failure instead of pretending that rules or planning equal execution.
 """
 
-from collections.abc import Callable
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Union
 from uuid import uuid4
+from pathlib import Path
+import os
+import shutil
+import logging
+
+logger = logging.getLogger(__name__)
 
 from zentex.plugins.contracts import PluginLifecycleStatus
 from zentex.plugins.service import query_cognitive_tools
@@ -81,23 +86,24 @@ class UpgradeExecutionService:
     def __init__(
         self,
         *,
-        facade: Optional[Any] = None,
-        management_store: UpgradeManagementStore | None = None,
-        llm_runtime: LLMUpgradeRuntime | None = None,
-        plugin_runtime: PluginEvolutionRuntime | None = None,
-        plugin_worker: Callable[[Any], dict[str, Any]] | None = None,
-        plugin_service: SystemPluginService | None = None,
-        evidence_service: UpgradeEvidenceService | None = None,
-        workflow_bridge: WorkflowTaskBridge | None = None,
+        facade: Any = None,
+        management_store: Optional[UpgradeManagementStore] = None,
+        llm_runtime: Optional[LLMUpgradeRuntime] = None,
+        plugin_runtime: Optional[PluginEvolutionRuntime] = None,
+        plugin_worker: Callable[[Any], dict[str, Any]] = None,
+        plugin_service: Optional[SystemPluginService] = None,
+        evidence_service: Optional[UpgradeEvidenceService] = None,
+        workflow_bridge: Optional[WorkflowTaskBridge] = None,
     ) -> None:
         self._evidence_service = evidence_service or UpgradeEvidenceService()
         if facade is None:
             from zentex.upgrade.service import UpgradeFacade
             self._facade = UpgradeFacade(
-                enhanced_memory_service=self._evidence_service.enhanced_memory_service,
+                memory_service=self._evidence_service.memory_service,
             )
         else:
             self._facade = facade
+        self._logger = logging.getLogger(__name__)
         self._management_store = management_store or UpgradeManagementStore()
         self._llm_runtime = llm_runtime or LLMUpgradeRuntime(
             prompt_optimizer_runner=build_section_aware_prompt_optimizer_runner(
@@ -110,10 +116,37 @@ class UpgradeExecutionService:
         if workflow_bridge is None:
             try:
                 workflow_bridge = WorkflowTaskBridge()
-            except Exception:
+            except Exception as e:
+                self._logger.warning(f"Failed to initialize WorkflowTaskBridge: {e}. Bridge will be disabled.")
                 workflow_bridge = None
         self._workflow_bridge = workflow_bridge
-        self._tool_registry: Any | None = None
+        self._tool_registry: Any = None
+
+    def _create_physical_backup(self, source_path: str, record_id: str) -> Optional[str]:
+        """Create a physical backup of the target before modification."""
+        if not source_path or not os.path.exists(source_path):
+            self._logger.warning(f"Source path {source_path} does not exist. Skipping backup.")
+            return None
+
+        from zentex.common.storage_paths import get_storage_paths
+
+        backup_root = get_storage_paths().app_data_dir / "backups" / "upgrade" / record_id
+        backup_root.mkdir(parents=True, exist_ok=True)
+        
+        source_p = Path(source_path)
+        backup_path = backup_root / source_p.name
+        
+        try:
+            if source_p.is_dir():
+                shutil.copytree(source_path, str(backup_path), dirs_exist_ok=True)
+            else:
+                shutil.copy2(source_path, str(backup_path))
+            
+            self._logger.info(f"Physical backup created at {backup_path}")
+            return str(backup_path)
+        except Exception as e:
+            self._logger.error(f"Failed to create physical backup: {e}")
+            return None
 
     def _sync_workflow_task(self, record: UpgradeManagementRecord) -> None:
         if self._workflow_bridge is None:
@@ -130,7 +163,7 @@ class UpgradeExecutionService:
 
     def _resolve_trace_context(
         self,
-        request: LLMUpgradeIntentRequest | PluginEvolutionIntentRequest,
+        request: Union[LLMUpgradeIntentRequest, PluginEvolutionIntentRequest],
         *,
         prefix: str,
     ) -> tuple[str, str]:
@@ -144,8 +177,8 @@ class UpgradeExecutionService:
         *,
         stage: str,
         exc: Exception,
-        failed_command: str | None = None,
-        failed_artifact_refs: list[str] | None = None,
+        failed_command: Optional[str] = None,
+        failed_artifact_refs: list[Optional[str]] = None,
     ) -> None:
         error_message = str(exc).strip() or exc.__class__.__name__
         error_type = exc.__class__.__name__
@@ -176,8 +209,8 @@ class UpgradeExecutionService:
         record: UpgradeManagementRecord,
         *,
         stage: str,
-        successful_command: str | None = None,
-        success_artifact_refs: list[str] | None = None,
+        successful_command: Optional[str] = None,
+        success_artifact_refs: list[Optional[str]] = None,
         reusable_insight: str,
     ) -> None:
         record.success_stage = stage
@@ -199,7 +232,7 @@ class UpgradeExecutionService:
     def execute_llm_upgrade(
         self,
         request: LLMUpgradeIntentRequest,
-    ) -> UpgradeManagementRecord | None:
+    ) -> Optional[UpgradeManagementRecord]:
         decision = self._facade.plan_llm_upgrade(request)
         if decision.action is UpgradeDecisionAction.SKIP or decision.candidate is None:
             return None
@@ -265,6 +298,14 @@ class UpgradeExecutionService:
             memory_status="queued",
             started_at=utc_now(),
         )
+        
+        # Physical Backup
+        if request.upgrade_request.prompt_file_path:
+            record.backup_path = self._create_physical_backup(
+                request.upgrade_request.prompt_file_path, 
+                record.record_id
+            )
+            
         self._management_store.upsert(record)
         self._sync_workflow_task(record)
         self._evidence_service.record_event(
@@ -336,7 +377,7 @@ class UpgradeExecutionService:
     def execute_plugin_evolution(
         self,
         request: PluginEvolutionIntentRequest,
-    ) -> UpgradeManagementRecord | None:
+    ) -> Optional[UpgradeManagementRecord]:
         decision = self._facade.plan_plugin_evolution(request)
         if decision.action is UpgradeDecisionAction.SKIP:
             return None
@@ -546,6 +587,14 @@ class UpgradeExecutionService:
             memory_status="queued",
             started_at=utc_now(),
         )
+        
+        # Physical Backup
+        if record.source_path:
+            record.backup_path = self._create_physical_backup(
+                record.source_path, 
+                record.record_id
+            )
+            
         self._management_store.upsert(record)
         self._sync_workflow_task(record)
         self._evidence_service.record_event(
@@ -636,7 +685,7 @@ class UpgradeExecutionService:
         self._sync_workflow_task(persisted)
         return persisted
 
-    def detect_capability_gap(self, session_context: dict[str, Any] | None = None) -> list[SelfUpgradeProposal]:
+    def detect_capability_gap(self, session_context: dict[str, Any] = None) -> list[SelfUpgradeProposal]:
         """Detect gaps in system capabilities with failure pattern clustering (Sub-function 1.1)."""
         proposals = []
         FAILURE_THRESHOLD = 3 # Spec: N times repeat
@@ -795,7 +844,8 @@ class UpgradeExecutionService:
                                     if isinstance(node, (ast.ClassDef, ast.FunctionDef)):
                                         if node.name in required_interfaces:
                                             found_interfaces.append(node.name)
-                            except:
+                            except Exception as e:
+                                self._logger.debug(f"AST parse failed for {filepath}: {e}")
                                 pass
             
             success = len(found_interfaces) > 0
@@ -814,7 +864,8 @@ class UpgradeExecutionService:
     def make_promotion_decision(self, patch: CandidatePatch, verification_result: dict[str, Any]) -> PromotionDecision:
         """Analyze evidence with G25 audit and explicit reviewer tracking (Priority 2)."""
         from uuid import uuid4
-        from datetime import UTC, datetime
+        from datetime import datetime, timezone
+        UTC = timezone.utc
         
         # 1. Verification Logic
         success = all(res.get("success") for res in verification_result.values())
@@ -917,9 +968,84 @@ class UpgradeExecutionService:
     def execute_rollback(self, record_id: str) -> bool:
         """Revert a completed upgrade to the previous baseline (Sub-function 1.5)."""
         record = self._management_store.get(record_id)
-        if record.current_status != UpgradeLifecycleStatus.COMPLETED:
+        if not record or record.current_status != UpgradeLifecycleStatus.COMPLETED:
+            self._logger.error(f"Cannot rollback record {record_id}: record missing or not completed.")
             return False
-            
+
+        target_path = record.source_path or record.candidate_path
+        if not record.backup_path or not os.path.exists(record.backup_path):
+            # 严禁把“没有物理备份”的情况伪装成 rollback 成功。
+            # 只改状态标记而不恢复真实版本内容，属于假回滚，会把不可逆损坏伪装成系统已恢复正常。
+            self._logger.error(
+                "Rollback requires a physical backup but none is available for record %s (backup=%s, target=%s)",
+                record_id,
+                record.backup_path,
+                target_path,
+            )
+            record.current_status = UpgradeLifecycleStatus.ROLLBACK_FAILED
+            record.failure_stage = "rollback"
+            record.failure_reason = "Physical rollback backup is missing."
+            self._management_store.upsert(record)
+            return False
+
+        if not target_path:
+            # 严禁在没有恢复目标路径时假装 rollback 成功。
+            # 没有 target_path 就不存在实体恢复，继续标成功只会制造错误审计。
+            self._logger.error(
+                "Rollback requires a target path but record %s has neither source_path nor candidate_path",
+                record_id,
+            )
+            record.current_status = UpgradeLifecycleStatus.ROLLBACK_FAILED
+            record.failure_stage = "rollback"
+            record.failure_reason = "Rollback target path is missing."
+            self._management_store.upsert(record)
+            return False
+
+        # Physical Restoration - Atomic Swap Pattern
+        try:
+            self._logger.info(f"Atomic rollback: physically restoring {target_path} from {record.backup_path}")
+
+            target_p = Path(target_path)
+            backup_p = Path(record.backup_path)
+
+            # 1. Create a ".corrupted" temporary move for the failing current state
+            corrupted_path = target_p.with_suffix(f"{target_p.suffix}.corrupted.{uuid4().hex[:6]}")
+            if target_p.exists():
+                os.rename(target_path, str(corrupted_path))
+
+            # 2. Restore from backup
+            try:
+                if backup_p.is_dir():
+                    shutil.copytree(str(backup_p), target_path, dirs_exist_ok=True)
+                else:
+                    shutil.copy2(str(backup_p), target_path)
+
+                # 3. Cleanup corrupted only after successful restoration
+                if corrupted_path.exists():
+                    if corrupted_path.is_dir():
+                        shutil.rmtree(str(corrupted_path))
+                    else:
+                        corrupted_path.unlink()
+            except Exception as restoration_exc:
+                # EMERGENCY: Try to restore the ".corrupted" file back if restoration failed
+                if corrupted_path.exists():
+                    os.rename(str(corrupted_path), target_path)
+                raise restoration_exc
+
+        except Exception as e:
+            self._logger.error(
+                f"🚨 CATASTROPHIC UPGRADE ROLLBACK FAILURE (Record: {record_id}): {e}\n"
+                f"Target: {target_path}\n"
+                f"Backup: {record.backup_path}\n"
+                f"Self-Correction: Attempting to preserve '.corrupted' snapshot for manual recovery."
+            )
+            record.current_status = UpgradeLifecycleStatus.ROLLBACK_FAILED
+            record.failure_stage = "rollback"
+            record.failure_reason = str(e)
+            self._management_store.upsert(record)
+            return False
+
+        record.evolution_rollback_triggered = True
         record.current_status = UpgradeLifecycleStatus.CLEANED_UP
         self._management_store.upsert(record)
         return True
@@ -935,6 +1061,10 @@ class EvolutionMonitor:
         self.error_rate_threshold = 0.05  # 5%
         self.latency_threshold_ms = 500   # 500ms
         self.security_alert_threshold = 0  # Any security alert
+        
+        # Batch G: Restoration Loop Prevention
+        self._restoration_history: dict[str, list[datetime]] = {}
+        self.MAX_ROLLBACKS_PER_HOUR = 2
 
     def monitor_and_rollback(self, target_id: str):
         """Monitor tool performance and auto-rollback on issues (Sub-function 58.4)."""
@@ -947,6 +1077,10 @@ class EvolutionMonitor:
 
         latest = target_records[0]
         if latest.current_status != UpgradeLifecycleStatus.COMPLETED:
+            return
+            
+        if getattr(latest, "evolution_rollback_triggered", False):
+            logger.debug(f"EvolutionMonitor: Rollback already triggered for {target_id}, skipping.")
             return
 
         # 2. Check monitoring metrics from payload
@@ -964,10 +1098,31 @@ class EvolutionMonitor:
         should_rollback = error_rate_spike or performance_degradation or privilege_escalation_detected
         
         if should_rollback:
+            # Batch G: Restoration Quota Check
+            if target_id not in self._restoration_history:
+                self._restoration_history[target_id] = []
+            
+            # Housekeeping: Remove timestamps older than 1 hour
+            from zentex.upgrade.management import utc_now
+            now = utc_now()
+            self._restoration_history[target_id] = [
+                ts for ts in self._restoration_history[target_id] 
+                if (now - ts).total_seconds() < 3600
+            ]
+            
+            if len(self._restoration_history[target_id]) >= self.MAX_ROLLBACKS_PER_HOUR:
+                logger.critical(
+                    f"🚨 Restoration Quota Exceeded for tool {target_id}. "
+                    f"Automatic rollback DISABLED to prevent infinite loops. "
+                    f"Manual intervention required."
+                )
+                return
+
             # Trigger automatic rollback
             rollback_success = self._service.execute_rollback(latest.record_id)
             
             if rollback_success:
+                self._restoration_history[target_id].append(now)
                 latest.current_status = UpgradeLifecycleStatus.CLEANED_UP
                 latest.failure_reason = (
                     f"Automatic rollback triggered by EvolutionMonitor. "

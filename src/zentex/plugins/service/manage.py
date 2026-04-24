@@ -1,3 +1,4 @@
+from __future__ import annotations
 """
 Management Service: Plugin Lifecycle and Relationship Management
 
@@ -9,7 +10,6 @@ Handles:
 - Conflict detection and resolution
 """
 
-from __future__ import annotations
 
 import logging
 import json
@@ -30,6 +30,7 @@ from zentex.common.plugin_ids import (
     MEMORY_EXTRACTOR,
     REFLECTION_GENERATOR,
 )
+from zentex.plugins.plugin_ids import canonicalize_plugin_id
 
 logger = logging.getLogger(__name__)
 
@@ -82,7 +83,7 @@ class ManagementService:
     - Handle conflicts and dependencies
     """
     
-    def __init__(self, storage, plugin_instances, plugin_specs, get_factories_fn, determine_category_fn):
+    def __init__(self, storage, plugin_instances, plugin_specs, get_factories_fn, determine_category_fn, index_fn=None):
         """
         Initialize management service.
         
@@ -92,12 +93,14 @@ class ManagementService:
             plugin_specs: Plugin spec cache
             get_factories_fn: Function to get plugin factories
             determine_category_fn: Function to determine plugin category
+            index_fn: Optional function to index plugin runtime state
         """
         self._storage = storage
         self._plugin_instances = plugin_instances
         self._plugin_specs = plugin_specs
         self._get_factories = get_factories_fn
         self._determine_category = determine_category_fn
+        self._index_fn = index_fn
 
     def _sync_instance_status(self, plugin_id: str, lifecycle_status: PluginLifecycleStatus) -> None:
         plugin = self._plugin_instances.get(plugin_id)
@@ -243,6 +246,7 @@ class ManagementService:
             now = datetime.now(timezone.utc).isoformat()
             spec_dict = json.loads(plugin["spec_json"])
             spec_dict["lifecycle_status"] = PluginLifecycleStatus.ACTIVE.value
+            spec_dict["operational_status"] = "enabled"
             self._storage.upsert_plugin(
                 category=plugin["category"],
                 plugin_id=plugin_id,
@@ -256,7 +260,14 @@ class ManagementService:
                     "stopped_at": None,
                 },
             )
-            self._plugin_specs[plugin_id] = spec_dict
+            if self._index_fn:
+                self._index_fn(
+                    plugin_id,
+                    instance=self._plugin_instances.get(plugin_id),
+                    spec_dict=spec_dict,
+                )
+            else:
+                self._plugin_specs[plugin_id] = spec_dict
             self._sync_instance_status(plugin_id, PluginLifecycleStatus.ACTIVE)
             logger.info("[Plugins] %s activated. Reason: %s", plugin_id, reason)
 
@@ -524,13 +535,15 @@ class ManagementService:
         if not behavior_key:
             return []
         conflicts: List[str] = []
+        target_canonical = canonicalize_plugin_id(plugin_id)
         for p in self._storage.list_plugins():
+            pid = p["plugin_id"]
             if (
-                p["plugin_id"] != plugin_id
+                canonicalize_plugin_id(pid) != target_canonical
                 and p.get("behavior_key") == behavior_key
                 and _get_lifecycle_status(p) == PluginLifecycleStatus.ACTIVE.value
             ):
-                conflicts.append(p["plugin_id"])
+                conflicts.append(pid)
         return conflicts
 
     def _stop_superseded_plugin(

@@ -1,10 +1,10 @@
+from __future__ import annotations
 """Nine-Question State Management Contract
 
 Defines atomic operations on nine-question state, replacing
 direct access to runtime.nine_question_state and runtime.nine_question_router.
 """
 
-from __future__ import annotations
 
 from abc import ABC, abstractmethod
 from typing import List
@@ -51,7 +51,7 @@ class NineQuestionStateManager(ABC):
         pass
 
     @abstractmethod
-    async def get_last_refresh_reason(self, session_id: str) -> str | None:
+    async def get_last_refresh_reason(self, session_id: str) -> Optional[str]:
         """Get reason for last state refresh
         
         Args:

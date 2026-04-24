@@ -28,15 +28,15 @@ class LLMUpgradeRequest(BaseModel):
     objective_summary: str = Field(min_length=1)
     validation_commands: list[str] = Field(default_factory=list)
     # DSPy primitives (Function 59 gap)
-    dspy_signature: str | None = None
-    dspy_module: str | None = None
-    dspy_metric: str | None = None
+    dspy_signature: Optional[str] = None
+    dspy_module: Optional[str] = None
+    dspy_metric: Optional[str] = None
     # Prompt optimization metadata
-    upgrade_kind: str | None = None
-    prompt_file_path: str | None = None
-    prompt_builder_symbol: str | None = None
+    upgrade_kind: Optional[str] = None
+    prompt_file_path: Optional[str] = None
+    prompt_builder_symbol: Optional[str] = None
     prompt_contract: dict[str, object] = Field(default_factory=dict)
-    immutable_intent: str | None = None
+    immutable_intent: Optional[str] = None
     forbidden_prompt_changes: list[str] = Field(default_factory=list)
     allowed_prompt_change_scope: list[str] = Field(default_factory=list)
 
@@ -53,8 +53,8 @@ class LLMUpgradeExecutionPlan(BaseModel):
     validation_commands: list[str] = Field(default_factory=list)
     required_artifacts: list[str] = Field(default_factory=list)
     # DSPy runtime options
-    dspy_signature: str | None = None
-    dspy_metric: str | None = None
+    dspy_signature: Optional[str] = None
+    dspy_metric: Optional[str] = None
     metadata: dict[str, object] = Field(default_factory=dict)
 
 
@@ -71,6 +71,6 @@ class LLMUpgradeCandidate(BaseModel):
     execution_plan: LLMUpgradeExecutionPlan
     release_gate: list[str] = Field(default_factory=list)
     # Metadata for registry (Function 59 gap)
-    dspy_signature: str | None = None
-    dspy_module: str | None = None
+    dspy_signature: Optional[str] = None
+    dspy_module: Optional[str] = None
     metadata: dict[str, object] = Field(default_factory=dict)

@@ -1,3 +1,4 @@
+from __future__ import annotations
 """Cloud Auditor Client (G26) - Cloud-based Safety Auditing
 
 ## File Purpose
@@ -29,7 +30,6 @@ review while maintaining fail-closed behavior.
 Based on Zentex Product Document Function 23 (G26)
 """
 
-from __future__ import annotations
 
 import hashlib
 import hmac

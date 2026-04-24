@@ -1,7 +1,10 @@
 """StartupSnapshotBuilder — assembles the startup context snapshot."""
 
 from datetime import datetime, timezone
+import logging
 from typing import Any
+
+logger = logging.getLogger(__name__)
 
 UTC = timezone.utc
 
@@ -25,38 +28,16 @@ class StartupSnapshotBuilder:
     def build(self, session_id: str) -> dict:
         """Collect data from all bridge sources and return a merged snapshot.
 
-        Args:
-            session_id: The active session identifier (forwarded to bridge).
-
-        Returns:
-            A dict with keys: session_id, environment, plugins, identity,
-            capabilities, built_at.
+        Standard Redline (G33):
+        - No more silent suppression of source failures.
+        - If the bridge fails to provide Environment, Plugins, or Identity, we fail.
         """
-        environment: dict = {}
-        try:
-            environment = self._bridge.get_environment_state(session_id) or {}
-        except Exception:  # noqa: BLE001
-            pass
+        environment = self._bridge.get_environment_state(session_id) or {}
+        plugins = self._bridge.get_registered_plugins() or []
+        identity = self._system_identity = self._bridge.get_system_identity() or {}
+        capabilities = self._bridge.get_capability_directory() or []
 
-        plugins: list[dict] = []
-        try:
-            plugins = self._bridge.get_registered_plugins() or []
-        except Exception:  # noqa: BLE001
-            pass
-
-        identity: dict = {}
-        try:
-            identity = self._bridge.get_system_identity() or {}
-        except Exception:  # noqa: BLE001
-            pass
-
-        capabilities: list[dict] = []
-        try:
-            capabilities = self._bridge.get_capability_directory() or []
-        except Exception:  # noqa: BLE001
-            pass
-
-        return {
+        snapshot = {
             "session_id": session_id,
             "environment": environment,
             "plugins": plugins,
@@ -64,3 +45,11 @@ class StartupSnapshotBuilder:
             "capabilities": capabilities,
             "built_at": datetime.now(UTC).isoformat(),
         }
+        
+        # Flatten for evidence extraction compatibility
+        if isinstance(environment, dict):
+            snapshot.update(environment)
+        if isinstance(identity, dict):
+            snapshot.update(identity)
+            
+        return snapshot

@@ -11,30 +11,30 @@ class Q1StructureTreeRow(BaseModel):
     label: str
     depth: int = 0
     kind: str = "directory"
-    file_count: int | None = None
-    summary: str | None = None
+    file_count: Optional[int] = None
+    summary: Optional[str] = None
 
 class Q1CandidateGroupDetail(BaseModel):
     model_config = ConfigDict(extra="ignore", frozen=True)
     group_id: str
     label: str
-    file_count: int | None = None
-    summary: str | None = None
+    file_count: Optional[int] = None
+    summary: Optional[str] = None
 
 class Q1RiskFileDetail(BaseModel):
     model_config = ConfigDict(extra="ignore", frozen=True)
     path: str
-    severity: str | None = None
-    reason: str | None = None
+    severity: Optional[str] = None
+    reason: Optional[str] = None
 
 class Q1WorkspaceSampleSummary(BaseModel):
     model_config = ConfigDict(extra="allow", frozen=True)
-    path: str | None = None
-    file: str | None = None
-    title: str | None = None
-    header: str | None = None
-    summary: str | None = None
-    snippet: str | None = None
+    path: Optional[str] = None
+    file: Optional[str] = None
+    title: Optional[str] = None
+    header: Optional[str] = None
+    summary: Optional[str] = None
+    snippet: Optional[str] = None
 
 class Q1LongTextEvidence(BaseModel):
     model_config = ConfigDict(extra="ignore", frozen=True)
@@ -42,24 +42,24 @@ class Q1LongTextEvidence(BaseModel):
     label: str
     kind: str
     source: str
-    path: str | None = None
+    path: Optional[str] = None
     text: str
 
 class Q1PhysicalAndEnvironmentEvidence(BaseModel):
     model_config = ConfigDict(extra="ignore", frozen=True)
     environment_event: Dict[str, Any] = Field(default_factory=dict)
     physical_host_state: Dict[str, Any] = Field(default_factory=dict)
-    memory_pressure: str | None = None
-    network_health: str | None = None
+    memory_pressure: Optional[str] = None
+    network_health: Optional[str] = None
     memory_pressure_status: str = "unknown"
     network_health_status: str = "unknown"
     environment_summary: List[str] = Field(default_factory=list)
 
 class Q1WorkspaceStructureEvidence(BaseModel):
     model_config = ConfigDict(extra="ignore", frozen=True)
-    directory_hierarchy_summary: str | None = None
+    directory_hierarchy_summary: Optional[str] = None
     top_level_dirs: List[str] = Field(default_factory=list)
-    file_total_count: int | None = None
+    file_total_count: Optional[int] = None
     suffix_distribution: Dict[str, int] = Field(default_factory=dict)
     high_frequency_filename_keywords: Dict[str, int] = Field(default_factory=dict)
     candidate_groups: List[str] = Field(default_factory=list)
@@ -94,8 +94,8 @@ class WorkspaceDomainInferenceView(BaseModel):
     reasoning_summary: str
     uncertainties: List[str] = Field(default_factory=list)
     suggested_first_step: str
-    host_runtime_type: str | None = None
-    host_runtime_reason: str | None = None
+    host_runtime_type: Optional[str] = None
+    host_runtime_reason: Optional[str] = None
 
 # ── Core Report Models ────────────────────────────────────────────────
 
@@ -121,6 +121,6 @@ class NineQuestionReportItem(BaseModel):
     trace_id: str
     timestamp: str
     cache_status: str = "未知"
-    provider_name: str | None = None
+    provider_name: Optional[str] = None
     mounted_plugins: List[MountedPluginInfo] = Field(default_factory=list)
     # ... Simplified view for core integration ...

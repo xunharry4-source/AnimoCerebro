@@ -1,3 +1,4 @@
+from __future__ import annotations
 """
 Background Task Monitor - 后台任务监控系统
 
@@ -5,7 +6,6 @@ Background Task Monitor - 后台任务监控系统
 此模块独立于具体的业务逻辑（反思/学习），仅提供通用的任务监控能力。
 """
 
-from __future__ import annotations
 
 import logging
 from dataclasses import dataclass, field
@@ -14,6 +14,7 @@ from enum import Enum
 from typing import Any, Dict, List, Optional
 from collections import defaultdict
 import threading
+from datetime import timedelta
 
 logger = logging.getLogger(__name__)
 
@@ -54,6 +55,15 @@ class TaskRecord:
     duration_ms: Optional[int] = None
     worker_id: Optional[str] = None
     metadata: Dict[str, Any] = field(default_factory=dict)
+
+    @property
+    def is_retriable(self) -> bool:
+        """Determines if the task should be retried based on error type."""
+        if self.status != TaskStatus.FAILED:
+            return False
+        # terminal errors: AUTH, PERSISTENCE, CONTRACT
+        terminal_errors = ["AUTH_FAILURE", "PERSISTENCE_FAILURE", "CONTRACT_VIOLATION"]
+        return self.error_type not in terminal_errors and self.retry_count < self.max_retries
 
     def to_dict(self) -> Dict[str, Any]:
         """转换为字典"""
@@ -107,28 +117,57 @@ class BackgroundTaskMonitor:
     不依赖任何具体业务模块，仅提供通用监控能力。
     """
 
-    def __init__(self, *, metrics_retention_hours: int = 24):
+    def __init__(
+        self,
+        *,
+        metrics_retention_hours: int = 24,
+        max_tasks: int = 10000,
+        max_metrics: int = 5000
+    ):
         self._tasks: Dict[str, TaskRecord] = {}
         self._metrics_history: List[MetricsSnapshot] = []
         self._lock = threading.RLock()
         self._metrics_retention_hours = metrics_retention_hours
+        self._max_tasks = max_tasks
+        self._max_metrics = max_metrics
         self._alert_callbacks: List[callable] = []
         
-        logger.info("BackgroundTaskMonitor initialized")
+        # Circuit Breaker state (Resilience Batch J)
+        self._failure_stats: Dict[TaskType, int] = defaultdict(int)
+        self._circuit_breakers: Dict[TaskType, datetime] = {}
+        self._failure_threshold = 5
+        self._block_duration_sec = 300 # 5 minutes
+        
+        logger.info("BackgroundTaskMonitor initialized with Circuit Breaker support")
 
     def register_task(self, task_id: str, task_type: TaskType, **kwargs) -> None:
         """
         注册新任务
         
-        Args:
-            task_id: 任务ID
-            task_type: 任务类型
-            **kwargs: 其他任务属性
+        G41: Circuit Breaker Check.
         """
         with self._lock:
+            # Check circuit breaker
+            block_until = self._circuit_breakers.get(task_type)
+            if block_until:
+                if datetime.now(timezone.utc) < block_until:
+                    logger.warning(f"Registration rejected for {task_type.value}: Circuit breaker ACTIVE until {block_until.isoformat()}")
+                    raise RuntimeError(f"Task type {task_type.value} is currently blocked due to high failure rate.")
+                else:
+                    # Cooldown expired
+                    del self._circuit_breakers[task_type]
+                    self._failure_stats[task_type] = 0
+
             if task_id in self._tasks:
                 logger.warning(f"Task {task_id} already registered, updating")
             
+            # Enforce max tasks limit
+            if len(self._tasks) >= self._max_tasks and task_id not in self._tasks:
+                # Evict oldest record (not necessarily based on time, but dict order)
+                oldest_id = next(iter(self._tasks))
+                del self._tasks[oldest_id]
+                logger.debug(f"Evicted oldest task {oldest_id} to make room for {task_id}")
+
             task = TaskRecord(
                 task_id=task_id,
                 task_type=task_type,
@@ -175,6 +214,16 @@ class BackgroundTaskMonitor:
             # 触发告警检查
             if status == TaskStatus.FAILED:
                 self._check_failure_alerts(task)
+                
+                # Resilience Batch J: Increment failure stats and trigger circuit breaker
+                self._failure_stats[task.task_type] += 1
+                if self._failure_stats[task.task_type] >= self._failure_threshold:
+                    block_until = datetime.now(timezone.utc) + timedelta(seconds=self._block_duration_sec)
+                    self._circuit_breakers[task.task_type] = block_until
+                    logger.critical(f"CIRCUIT BREAKER TRIGGERED for {task.task_type.value}. Blocked until {block_until.isoformat()}")
+            elif status == TaskStatus.COMPLETED:
+                # Reset failure count on success
+                self._failure_stats[task.task_type] = 0
 
     def get_task(self, task_id: str) -> Optional[TaskRecord]:
         """获取任务记录"""
@@ -271,6 +320,10 @@ class BackgroundTaskMonitor:
             self._metrics_history.append(snapshot)
             self._cleanup_old_metrics(now)
             
+            # Enforce max metrics limit
+            if len(self._metrics_history) > self._max_metrics:
+                self._metrics_history = self._metrics_history[-self._max_metrics:]
+            
             return snapshot
 
     def get_health(self) -> HealthStatus:
@@ -324,7 +377,7 @@ class BackgroundTaskMonitor:
             try:
                 callback(task)
             except Exception as e:
-                logger.error(f"Alert callback failed: {e}")
+                logger.error(f"Alert callback failed: {e}", exc_info=True)
 
     def _cleanup_old_metrics(self, now: datetime) -> None:
         """清理过期的指标历史"""

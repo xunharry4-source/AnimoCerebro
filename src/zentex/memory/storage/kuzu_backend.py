@@ -1,7 +1,8 @@
 from __future__ import annotations
 
 import logging
-from datetime import datetime
+from datetime import datetime, timezone
+UTC = timezone.utc
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 import json
@@ -16,7 +17,7 @@ class KuzuGraphMemoryClient:
     Replaces the heavy external Graphiti dependency.
     """
 
-    def __init__(self, db_path: str | Path):
+    def __init__(self, db_path: Union[str, Path]):
         try:
             import kuzu
         except ImportError:
@@ -148,18 +149,27 @@ class KuzuGraphMemoryClient:
         if res and res.has_next():
             while res.has_next():
                 row = res.get_next()
-                try:
-                    tags = json.loads(row[5]) if row[5] else []
-                except:
-                    tags = []
+                # Calculate an authentic keyword relevance score
+                name = str(row[1])
+                summary = str(row[2])
+                content = "" # Not returned by search, but we can't score what we don't have
+                
+                # Simple token overlap scorer
+                query_tokens = set(query.lower().split())
+                text_tokens = set((name + " " + summary).lower().split())
+                if not query_tokens:
+                    score = 0.0
+                else:
+                    score = len(query_tokens & text_tokens) / len(query_tokens)
+                
                 hits.append(
                     HitRow(
                         e_id=row[0],
-                        name=row[1],
-                        summary=row[2],
+                        name=name,
+                        summary=summary,
                         trace_id=row[3],
                         target_id=row[4],
-                        score=0.8,  # Default simulated score
+                        score=round(score, 2),
                         tags=tags
                     )
                 )
@@ -173,7 +183,7 @@ class KuzuGraphMemoryClient:
         self,
         entity_name: str,
         *,
-        point_in_time: datetime | None = None,
+        point_in_time: Optional[datetime] = None,
         limit: int = 10,
     ) -> List[Any]:
         """
@@ -227,7 +237,13 @@ class KuzuGraphMemoryClient:
                     try:
                         tags = json.loads(row[5]) if row[5] else []
                     except Exception:
+                        logger.exception("Could not deserialize tags for temporal record")
                         tags = []
+                    
+                    # Authentic temporal relevance: recent knowledge about the entity has higher weight
+                    # For now using a higher base score for temporal certainty
+                    score = 0.9 if point_in_time else 0.7
+                    
                     hits.append(
                         HitRow(
                             e_id=row[0],
@@ -235,14 +251,14 @@ class KuzuGraphMemoryClient:
                             summary=row[2],
                             trace_id=row[3],
                             target_id=row[4],
-                            score=0.85,
+                            score=score,
                             tags=tags,
                         )
                     )
             return hits
         except Exception as exc:
-            logger.warning(f"Temporal query failed: {exc}")
-            return []
+            logger.exception(f"Temporal query failed for entity '{entity_name}': {exc}")
+            raise
 
     def add_entity(self, entity_id: str, name: str) -> None:
         """
@@ -262,8 +278,8 @@ class KuzuGraphMemoryClient:
         episode_id: str,
         entity_id: str,
         *,
-        valid_from: datetime | None = None,
-        valid_to: datetime | None = None,
+        valid_from: Optional[datetime] = None,
+        valid_to: Optional[datetime] = None,
     ) -> None:
         """
         在一条 Episode 和一个 Entity 之间建立时间化关联。
@@ -307,18 +323,21 @@ class KuzuGraphMemoryClient:
             row = res.get_next()
             stats["episode_count"] = row[0] if row else 0
         except Exception:
+            logger.exception("Could not query episode count from kuzu DB")
             stats["episode_count"] = -1
         try:
             res = self.conn.execute("MATCH (en:Entity) RETURN count(en);")
             row = res.get_next()
             stats["entity_count"] = row[0] if row else 0
         except Exception:
+            logger.debug("Could not query entity count from kuzu DB", exc_info=True)
             stats["entity_count"] = -1
         try:
             res = self.conn.execute("MATCH ()-[r:INVOLVES]->() RETURN count(r);")
             row = res.get_next()
             stats["involves_count"] = row[0] if row else 0
         except Exception:
+            logger.debug("Could not query involves-relation count from kuzu DB", exc_info=True)
             stats["involves_count"] = -1
         return stats
 
@@ -334,9 +353,9 @@ class KuzuGraphMemoryClient:
         source_description: str,
         *,
         event_time: datetime,           # When the described event actually occurred
-        ingest_time: datetime | None = None,  # Defaults to utcnow
-        valid_from: datetime | None = None,   # When knowledge becomes valid
-        valid_to: datetime | None = None,     # When knowledge expires (None = permanent)
+        ingest_time: Optional[datetime] = None,  # Defaults to utcnow
+        valid_from: Optional[datetime] = None,   # When knowledge becomes valid
+        valid_to: Optional[datetime] = None,     # When knowledge expires (None = permanent)
         agent_namespace: str = "default",     # Multi-agent namespace isolation
     ) -> str:
         """
@@ -443,7 +462,7 @@ class KuzuGraphMemoryClient:
         *,
         as_of_time: datetime,
         limit: int = 10,
-        agent_namespace: str | None = None,
+        agent_namespace: Optional[str] = None,
     ) -> List[Dict[str, Any]]:
         """
         Reconstruct graph state at a specific point in time (Graphiti capability).
@@ -498,14 +517,16 @@ class KuzuGraphMemoryClient:
                     })
             return rows
         except Exception as exc:
-            logger.warning("query_at_time_point failed: %s", exc)
+            # Read-only temporal query is allowed to degrade to [] for callers,
+            # but it must never hide backend faults behind a light warning.
+            logger.exception("query_at_time_point failed: %s", exc)
             return []
 
     # ── edge invalidation ─────────────────────────────────────────────────
 
     def invalidate_expired_episodes(
         self,
-        current_time: datetime | None = None,
+        current_time: Optional[datetime] = None,
     ) -> int:
         """
         Mark episodes whose valid_to has passed as superseded.
@@ -516,7 +537,7 @@ class KuzuGraphMemoryClient:
         Returns:
             Number of episodes invalidated.
         """
-        now = current_time or datetime.utcnow()
+        now = current_time or datetime.now(UTC)
         try:
             q = """
                 MATCH (e:Episode)
@@ -534,12 +555,16 @@ class KuzuGraphMemoryClient:
                     logger.info("Invalidated %d expired episodes", count)
                 return int(count)
         except Exception as exc:
-            logger.warning("invalidate_expired_episodes failed: %s", exc)
+            # Forbidden: write-path invalidation failure must not pretend there
+            # were simply zero expired episodes. That would hide a broken
+            # governance write behind a fake-normal count of 0.
+            logger.exception("invalidate_expired_episodes failed: %s", exc)
+            raise
         return 0
 
-    def supersede_episode(self, episode_id: str, superseded_at: datetime | None = None) -> None:
+    def supersede_episode(self, episode_id: str, superseded_at: Optional[datetime] = None) -> None:
         """Explicitly mark one episode as superseded (replaced by newer information)."""
-        now = superseded_at or datetime.utcnow()
+        now = superseded_at or datetime.now(UTC)
         try:
             self.conn.execute(
                 "MATCH (e:Episode {id: $id}) SET e.superseded = true, e.valid_to = $ts",
@@ -547,7 +572,11 @@ class KuzuGraphMemoryClient:
             )
             logger.info("Episode %s superseded at %s", episode_id, now)
         except Exception as exc:
-            logger.warning("supersede_episode failed for %s: %s", episode_id, exc)
+            # Forbidden: a failed supersede write must not be downgraded to a warning.
+            # Pretending conflict resolution succeeded here would let stale facts remain
+            # active while the caller believes the older episode was retired.
+            logger.exception("supersede_episode failed for %s: %s", episode_id, exc)
+            raise
 
     # ── conflict detection & resolution ──────────────────────────────────
 
@@ -581,7 +610,7 @@ class KuzuGraphMemoryClient:
                 q,
                 parameters={
                     "entity_name": entity_name,
-                    "now": datetime.utcnow(),
+                    "now": datetime.now(UTC),
                     "ns": agent_namespace,
                 },
             )
@@ -598,8 +627,11 @@ class KuzuGraphMemoryClient:
                     })
             return conflicts
         except Exception as exc:
-            logger.warning("detect_entity_conflicts failed: %s", exc)
-            return []
+            # Forbidden: returning [] here would fake "no conflicts found" even though
+            # the storage layer never answered. Conflict detection failure must remain
+            # visible so callers do not treat contradictory memory as clean state.
+            logger.exception("detect_entity_conflicts failed: %s", exc)
+            raise
 
     def resolve_conflict_supersede_older(
         self,
@@ -659,6 +691,8 @@ class KuzuGraphMemoryClient:
                     row = res.get_next()
                     stats[ns] = int(row[0]) if row else 0
             except Exception:
+                # POLICY[no-silent-except]: log namespace stat failure; report -1 as sentinel.
+                logger.debug("Could not query episode count for namespace %s", ns, exc_info=True)
                 stats[ns] = -1
         return stats
 

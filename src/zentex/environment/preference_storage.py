@@ -1,5 +1,5 @@
 """
-G19 - 用户偏好辨析与意图对齐 - 持久化存储层
+Alignment - 用户偏好辨析与意图对齐 - 持久化存储层
 
 提供 SQLite 后端存储用户偏好、意图歧义案例、异常候选等数据。
 """
@@ -11,6 +11,7 @@ import sqlite3
 from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
+from zentex.common.storage_paths import get_storage_paths
 
 from .preference_models import (
     AnomalyCandidate,
@@ -39,10 +40,10 @@ class PreferenceStore:
         初始化存储
         
         Args:
-            db_path: 数据库文件路径，默认为 app_data/preference_store.db
+            db_path: 数据库文件路径，默认为配置文件中的 app_data_dir/preference_store.db
         """
         if db_path is None:
-            db_path = Path("app_data") / "preference_store.db"
+            db_path = get_storage_paths().app_data_dir / "preference_store.db"
         
         self.db_path = db_path
         self.db_path.parent.mkdir(parents=True, exist_ok=True)
@@ -564,6 +565,86 @@ class PreferenceStore:
             user_feedback=row["user_feedback"],
             metadata=json.loads(row["metadata"]) if row["metadata"] else {}
         )
+
+    async def list_attack_samples(
+        self,
+        attack_type_filter: Optional[str] = None,
+        since: Optional[datetime] = None,
+        until: Optional[datetime] = None,
+        limit: int = 50,
+    ) -> List[AttackSample]:
+        """Query attack samples from the database with optional filters.
+
+        Args:
+            attack_type_filter: If given, only return samples of this attack type.
+            since:              If given, only return samples marked on or after this time.
+            until:              If given, only return samples marked on or before this time.
+            limit:              Maximum number of samples to return (most recent first).
+
+        Returns:
+            List of AttackSample objects ordered by marked_at DESC.
+        """
+        conn = self._get_connection()
+        cursor = conn.cursor()
+        try:
+            clauses: List[str] = []
+            params: List[Any] = []
+
+            if attack_type_filter:
+                clauses.append("attack_type = ?")
+                params.append(attack_type_filter)
+            if since:
+                clauses.append("marked_at >= ?")
+                params.append(since.isoformat())
+            if until:
+                clauses.append("marked_at <= ?")
+                params.append(until.isoformat())
+
+            where = ("WHERE " + " AND ".join(clauses)) if clauses else ""
+            params.append(max(1, limit))
+            cursor.execute(
+                f"SELECT * FROM attack_samples {where} ORDER BY marked_at DESC LIMIT ?",  # noqa: S608
+                params,
+            )
+            rows = cursor.fetchall()
+            return [self._row_to_attack_sample(r) for r in rows]
+        finally:
+            conn.close()
+
+    async def get_attack_statistics(self) -> Dict[str, Any]:
+        """Return aggregate statistics over all stored attack samples."""
+        conn = self._get_connection()
+        cursor = conn.cursor()
+        try:
+            cursor.execute("SELECT COUNT(*) AS total FROM attack_samples")
+            total: int = cursor.fetchone()["total"]
+
+            cursor.execute(
+                "SELECT attack_type, COUNT(*) AS cnt FROM attack_samples GROUP BY attack_type"
+            )
+            by_type = {row["attack_type"]: row["cnt"] for row in cursor.fetchall()}
+
+            # Recent attacks in the last 24 h
+            cursor.execute(
+                "SELECT COUNT(*) AS cnt FROM attack_samples "
+                "WHERE marked_at >= datetime('now', '-1 day')"
+            )
+            recent_24h: int = cursor.fetchone()["cnt"]
+
+            # High-confidence samples (confidence >= 0.8)
+            cursor.execute(
+                "SELECT COUNT(*) AS cnt FROM attack_samples WHERE confidence >= 0.8"
+            )
+            high_confidence: int = cursor.fetchone()["cnt"]
+
+            return {
+                "total_samples": total,
+                "by_type": by_type,
+                "recent_attacks_24h": recent_24h,
+                "high_confidence_samples": high_confidence,
+            }
+        finally:
+            conn.close()
 
     def _row_to_attack_sample(self, row: sqlite3.Row) -> AttackSample:
         """将数据库行转换为 AttackSample 对象"""

@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { render, screen, waitFor } from "@testing-library/react";
+import { fireEvent, render, screen, waitFor } from "@testing-library/react";
 
 import SimulationExplorer from "./SimulationExplorer";
 
@@ -59,6 +59,11 @@ describe("SimulationExplorer", () => {
 
   it("renders horizontal branch comparison cards from the real API payload", async () => {
     render(<SimulationExplorer />);
+
+    fireEvent.change(screen.getByLabelText("目标编号"), {
+      target: { value: "goal-runtime-stability" },
+    });
+    fireEvent.click(screen.getByRole("button", { name: "刷新预演" }));
 
     await waitFor(() => {
       expect(screen.getAllByTestId("simulation-branch-card")).toHaveLength(2);

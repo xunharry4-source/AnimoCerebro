@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from typing import Any
 
-from plugins.nine_questions.prompt_sections import (
+from zentex.common.nine_questions_prompts import (
     assemble_prompt_sections,
     build_prompt_section,
 )
@@ -34,7 +34,7 @@ def build_q4_llm_request(
             intent="Define the capability-boundary task for Q4.",
             purpose="Keep the model grounded in real capabilities rather than imagined ones.",
             content=(
-                "你现在是 Zentex 外部大脑的能力评估中枢。请严格基于传入的 Q3 真实资产清单、"
+                "你现在是 G19 Preference AI 的能力评估中枢。请严格基于传入的 Q3 真实资产清单、"
                 "当前的物理执行域以及环境态势，"
                 "评估系统当前真正具备的行动能力。绝对禁止把不存在的能力写成可行动作。"
             ),

@@ -15,10 +15,15 @@ import RefreshIcon from "@mui/icons-material/Refresh";
 import { Link as RouterLink } from "react-router-dom";
 
 import {
-  fetchNineQuestionDetail,
+  fetchNineQuestionEvidence,
+  fetchNineQuestionInference,
+  fetchNineQuestionModules,
+  fetchNineQuestionRaw,
+  fetchNineQuestionSummary,
+  fetchNineQuestionTracePayload,
   getQuestionDisplayLabel,
   LLMTracePayloadView,
-  NineQuestionItem,
+  Q6ForbiddenZoneInferenceView,
   Q6PreprocessedEvidence,
 } from "../nineQuestionsApi";
 import Q6EvidencePanel from "../../../components/Q6EvidencePanel";
@@ -26,14 +31,19 @@ import MountedPluginsZone from "../../../components/MountedPluginsZone";
 import LLMTracePanel from "../../../components/LLMTracePanel";
 import NineQuestionIntroCard from "../../../components/NineQuestionIntroCard";
 import Q6DataTabs from "../../../components/Q6DataTabs";
-import NineQuestionIncompleteResultAlert from "../../../components/NineQuestionIncompleteResultAlert";
 import NineQuestionRerunButton from "../../../components/NineQuestionRerunButton";
+import NineQuestionSectionBoundary from "../../../components/NineQuestionSectionBoundary";
+import NineQuestionRawPayloadCard from "../../../components/NineQuestionRawPayloadCard";
+import NineQuestionWorkflowNavButton from "../../../components/NineQuestionWorkflowNavButton";
+import NineQuestionRecoveryActions from "../../../components/NineQuestionRecoveryActions";
+import NineQuestionIntegrationStatusCard from "../../../components/NineQuestionIntegrationStatusCard";
+import { sanitizeQ6Evidence, sanitizeQ6Inference } from "../detailSafeData";
 
 function resolveErrorGuidance(errMsg: string): { title: string; action: string } {
   if (errMsg.includes("No active session") || errMsg.includes("没有活动 session")) {
     return {
-      title: "当前没有活动的 Session",
-      action: "请先运行一次完整的九问推演流程，完成后刷新此页即可查看结果。",
+      title: "当前还没有可读取的九问快照",
+      action: "请先运行一次完整的九问推演流程，完成后再回到这个监控页刷新。",
     };
   }
   if (errMsg.includes("尚无快照记录")) {
@@ -56,23 +66,67 @@ function resolveErrorGuidance(errMsg: string): { title: string; action: string }
 
 export const Q6Detail: React.FC = () => {
   const qId = "q6";
-  const [question, setQuestion] = useState<NineQuestionItem | null>(null);
+  const [summary, setSummary] = useState<Record<string, any> | null>(null);
+  const [rawPayload, setRawPayload] = useState<Record<string, any> | null>(null);
+  const [modulesPayload, setModulesPayload] = useState<Record<string, any> | null>(null);
+  const [evidencePayload, setEvidencePayload] = useState<Record<string, any> | null>(null);
+  const [inferencePayload, setInferencePayload] = useState<Record<string, any> | null>(null);
+  const [tracePayload, setTracePayload] = useState<Record<string, any> | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
+  const [sectionErrors, setSectionErrors] = useState<Record<string, string>>({});
   const [workspaceForbiddenActions, setWorkspaceForbiddenActions] = useState<string | null>(null);
 
   const loadDetail = async () => {
     setLoading(true);
     setError(null);
+    setSectionErrors({});
     try {
-      // 物理接口绑定: GET /api/web/nine-questions/q6
-      const item = await fetchNineQuestionDetail(qId);
-      setQuestion(item);
-      
-      // Load workspace forbidden actions from localStorage
-      const currentWorkspaceId = localStorage.getItem("currentWorkspaceId");
-      if (currentWorkspaceId) {
-        try {
+      const results = await Promise.allSettled([
+        fetchNineQuestionSummary(qId),
+        fetchNineQuestionEvidence(qId),
+        fetchNineQuestionInference(qId),
+        fetchNineQuestionTracePayload(qId),
+        fetchNineQuestionRaw(qId),
+        fetchNineQuestionModules(qId),
+      ]);
+
+      const nextErrors: Record<string, string> = {};
+      const [summaryResult, evidenceResult, inferenceResult, traceResult, rawResult, modulesResult] = results;
+
+      if (summaryResult.status === "fulfilled") setSummary(summaryResult.value);
+      else nextErrors.summary = summaryResult.reason?.message || "加载 Q6 summary 失败";
+
+      if (evidenceResult.status === "fulfilled") setEvidencePayload(evidenceResult.value);
+      else nextErrors.evidence = evidenceResult.reason?.message || "加载 Q6 evidence 失败";
+
+      if (inferenceResult.status === "fulfilled") setInferencePayload(inferenceResult.value);
+      else nextErrors.inference = inferenceResult.reason?.message || "加载 Q6 inference 失败";
+
+      if (traceResult.status === "fulfilled") setTracePayload(traceResult.value);
+      else nextErrors.trace = traceResult.reason?.message || "加载 Q6 trace 失败";
+
+      if (rawResult.status === "fulfilled") setRawPayload(rawResult.value);
+      else nextErrors.raw = rawResult.reason?.message || "加载 Q6 raw 失败";
+
+      if (modulesResult.status === "fulfilled") setModulesPayload(modulesResult.value);
+      else nextErrors.modules = modulesResult.reason?.message || "加载 Q6 modules 失败";
+
+      setSectionErrors(nextErrors);
+
+      const hardFailures = [summaryResult, rawResult, modulesResult].every((result) => result.status === "rejected");
+      if (hardFailures) {
+        throw new Error("Q6 基础分区全部加载失败，当前无法建立页面上下文。");
+      }
+    } catch (err: any) {
+      setError(err?.message || "加载 Q6 详情失败");
+    } finally {
+      try {
+        const currentWorkspaceId =
+          typeof localStorage !== "undefined" && typeof localStorage.getItem === "function"
+            ? localStorage.getItem("currentWorkspaceId")
+            : null;
+        if (currentWorkspaceId) {
           const response = await fetch(
             `http://127.0.0.1:8000/api/web/workspaces/${currentWorkspaceId}`
           );
@@ -80,13 +134,10 @@ export const Q6Detail: React.FC = () => {
             const workspace = await response.json();
             setWorkspaceForbiddenActions(workspace.forbidden_actions || null);
           }
-        } catch (err) {
-          console.warn("Failed to load workspace forbidden actions:", err);
         }
+      } catch (err) {
+        console.warn("Failed to load workspace forbidden actions:", err);
       }
-    } catch (err: any) {
-      setError(err?.message || "加载 Q6 详情失败");
-    } finally {
       setLoading(false);
     }
   };
@@ -115,19 +166,21 @@ export const Q6Detail: React.FC = () => {
     );
   }
 
-  if (!question) return <Alert severity="warning">未能找到 Q6 报告记录</Alert>;
-
-  const evidence = question.preprocessed_evidence as Q6PreprocessedEvidence;
-  // Q6 使用 'conclusion' 字段作为 inference_result 的别名，但在标准化接口中统一为 inference_result
-  const inference = question.inference_result;
-  const llmTrace = question.llm_trace_payload;
-  const hasStructuredSnapshot = Boolean(evidence || inference);
-  const safeEvidence: Q6PreprocessedEvidence = evidence || {
-    actionable_space: [],
-    authorization_boundaries: [],
-    non_bypassable_constraints: [],
-    historical_strategy_patches: [],
-  };
+  const rawEvidence = evidencePayload;
+  const rawInference = inferencePayload;
+  const sanitizedEvidence = sanitizeQ6Evidence(rawEvidence);
+  const sanitizedInference = sanitizeQ6Inference(rawInference);
+  const evidence = sanitizedEvidence.value as Q6PreprocessedEvidence;
+  const inference = sanitizedInference.value as Q6ForbiddenZoneInferenceView | null;
+  const llmTrace = tracePayload;
+  const hasStructuredSnapshot = Boolean(rawEvidence || rawInference);
+  const detailWarnings = [...sanitizedEvidence.warnings, ...sanitizedInference.warnings];
+  const providerName = String(tracePayload?.provider_name || rawPayload?.llm_trace_payload?.provider_name || "");
+  const traceId = String(rawPayload?.trace_id || "");
+  const toolId = String(rawPayload?.tool_id || `nine_questions.${qId}`);
+  const pageStatus = String(summary?.status || modulesPayload?.status?.status || "partial");
+  const executionDiagnosis = rawPayload?.context_updates?.q6_execution_diagnosis || null;
+  const recoveryPlan = executionDiagnosis?.recovery_plan || null;
 
   return (
     <Box data-testid="q6-detail-root" sx={{ display: "flex", flexDirection: "column", gap: 3 }}>
@@ -142,6 +195,7 @@ export const Q6Detail: React.FC = () => {
         </Box>
         <Stack direction="row" spacing={1}>
           <NineQuestionRerunButton qId={qId} onCompleted={loadDetail} />
+          <NineQuestionWorkflowNavButton qId={qId} />
           <Button
             component={RouterLink}
             to={`/console/nine-questions/${qId}/test`}
@@ -155,21 +209,37 @@ export const Q6Detail: React.FC = () => {
       </Stack>
 
 
-      {hasStructuredSnapshot ? (
-        <>
-          <NineQuestionIntroCard questionId="q6" />
-          <Q6DataTabs
-            evidence={safeEvidence as any}
-            inference={inference as any}
-          />
-        </>
-      ) : (
-        <NineQuestionIncompleteResultAlert
-          questionId={qId}
-          result={question.result}
-          contextUpdates={question.context_updates}
+      <NineQuestionIntroCard questionId="q6" />
+      {executionDiagnosis ? (
+        <Alert severity={executionDiagnosis.authenticity_status === "completed" ? "success" : "warning"}>
+          <AlertTitle>
+            {executionDiagnosis.authenticity_status === "completed" ? "Q6 真实性状态：已验证完成" : "Q6 真实性状态：降级/部分失败"}
+          </AlertTitle>
+          <Typography variant="body2">
+            {String(executionDiagnosis.diagnosis_message || "当前没有诊断说明。")}
+          </Typography>
+        </Alert>
+      ) : null}
+      {recoveryPlan ? (
+        <Alert severity="info" data-testid="q6-recovery-plan">
+          <AlertTitle>Q6 失败恢复计划</AlertTitle>
+          <NineQuestionRecoveryActions qId={qId} recoveryPlan={recoveryPlan} onCompleted={loadDetail} />
+        </Alert>
+      ) : null}
+      {!hasStructuredSnapshot ? (
+        <Alert severity="info" sx={{ mb: 3 }}>
+          Q6 当前只拿到了部分分区数据，页面已按可用结果降级展示。
+        </Alert>
+      ) : null}
+      <NineQuestionSectionBoundary title="Q6 数据详情">
+        {sectionErrors.summary ? <Alert severity="warning" sx={{ mb: 2 }}>{sectionErrors.summary}</Alert> : null}
+        {sectionErrors.evidence ? <Alert severity="warning" sx={{ mb: 2 }}>{sectionErrors.evidence}</Alert> : null}
+        {sectionErrors.inference ? <Alert severity="warning" sx={{ mb: 2 }}>{sectionErrors.inference}</Alert> : null}
+        <Q6DataTabs
+          evidence={hasStructuredSnapshot ? evidence : null}
+          inference={inference}
         />
-      )}
+      </NineQuestionSectionBoundary>
       {/* Workspace Forbidden Actions */}
       {workspaceForbiddenActions && (
         <Alert severity="warning" variant="outlined" sx={{ backgroundColor: "#fff3e0" }}>
@@ -185,26 +255,51 @@ export const Q6Detail: React.FC = () => {
       <Card variant="outlined">
         <CardContent>
           <Stack direction="row" spacing={1} sx={{ mb: 2 }} useFlexGap flexWrap="wrap">
-            <Chip label={question.cache_status} color="primary" data-testid="q6-cache-status-chip" />
-            <Chip label={question.provider_name} variant="outlined" />
-            <Chip label={question.tool_id} variant="outlined" sx={{ fontFamily: "monospace" }} />
-            {question.trace_id && <Chip label={`trace: ${question.trace_id}`} variant="outlined" sx={{ fontFamily: "monospace" }} data-testid="q6-trace-chip" />}
+            <Chip label={pageStatus} color="primary" data-testid="q6-cache-status-chip" />
+            {providerName ? <Chip label={providerName} variant="outlined" /> : null}
+            <Chip label={toolId} variant="outlined" sx={{ fontFamily: "monospace" }} />
+            {traceId ? <Chip label={`trace: ${traceId}`} variant="outlined" sx={{ fontFamily: "monospace" }} data-testid="q6-trace-chip" /> : null}
           </Stack>
 
-          <MountedPluginsZone plugins={question.mounted_plugins || []} />
+          <MountedPluginsZone plugins={[]} />
         </CardContent>
       </Card>
 
-      {hasStructuredSnapshot ? (
+      {!hasStructuredSnapshot ? (
+        <Alert severity="warning">
+          当前没有可用的结构化证据，以下区域保留布局并显示可恢复的空态。
+        </Alert>
+      ) : null}
+      <NineQuestionSectionBoundary title="Q6 结构化证据">
+        {sectionErrors.modules ? <Alert severity="warning" sx={{ mb: 2 }}>{sectionErrors.modules}</Alert> : null}
         <Q6EvidencePanel
-          evidence={safeEvidence}
-          inference={inference as any}
-          providerName={question.provider_name || null}
-          elapsedMs={llmTrace?.elapsed_ms || 0}
+          evidence={evidence}
+          inference={inference}
+          providerName={providerName || null}
+          elapsedMs={tracePayload?.elapsed_ms || rawPayload?.llm_trace_payload?.elapsed_ms || 0}
+        />
+      </NineQuestionSectionBoundary>
+
+      <NineQuestionIntegrationStatusCard qId={qId} modulesPayload={modulesPayload} />
+
+      {detailWarnings.length > 0 || !rawEvidence || !rawInference ? (
+        <NineQuestionRawPayloadCard
+          title="Q6 原始字段诊断"
+          warnings={detailWarnings}
+          payloads={[
+            { label: "summary", value: summary },
+            { label: "modules", value: modulesPayload },
+            { label: "preprocessed_evidence", value: rawEvidence },
+            { label: "inference_result", value: rawInference },
+            { label: "raw", value: rawPayload },
+          ]}
         />
       ) : null}
 
-      <LLMTracePanel trace={llmTrace as LLMTracePayloadView} />
+      <NineQuestionSectionBoundary title="Q6 Trace">
+        {sectionErrors.trace ? <Alert severity="warning" sx={{ mb: 2 }}>{sectionErrors.trace}</Alert> : null}
+        <LLMTracePanel trace={llmTrace as LLMTracePayloadView} />
+      </NineQuestionSectionBoundary>
     </Box>
   );
 };

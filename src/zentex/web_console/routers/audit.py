@@ -6,13 +6,15 @@ Facade-First route layer extracted from audit.py
 
 from typing import List, Optional
 
-from fastapi import APIRouter, Depends
+from fastapi import APIRouter, Depends, Request
 from typing_extensions import Annotated
 
-from zentex.web_console.contracts.audit import AuditPagePayload, TurnAuditPagePayload
+from zentex.web_console.contracts.audit import AuditGraphPayload, AuditPagePayload, TurnAuditPagePayload
 from zentex.web_console.contracts.model_provider import ModelProviderTraceItem
 from zentex.web_console.dependencies import get_kernel_service_facade
 from .audit_commons import (
+    query_audit_graph,
+    query_flow_health,
     query_model_provider_traces,
     query_turn_audit_milestones,
     query_audit_entries,
@@ -21,8 +23,33 @@ from .audit_commons import (
 router = APIRouter()
 
 
+@router.get("/audit/flow-health")
+async def list_audit_flow_health(
+    request: Request,
+    limit: int = 100,
+    flow_type: Optional[str] = None,
+    status: Optional[str] = None,
+) -> List[dict]:
+    return await query_flow_health(
+        request,
+        limit=limit,
+        flow_type=flow_type,
+        status=status,
+    )
+
+
+@router.get("/audit/trace-center/{mode}", response_model=AuditGraphPayload)
+async def get_audit_trace_graph(
+    mode: str,
+    request: Request,
+    facade: Annotated[object, Depends(get_kernel_service_facade)],
+) -> AuditGraphPayload:
+    return await query_audit_graph(request, facade, mode=mode)
+
+
 @router.get("/audit/model-provider", response_model=List[ModelProviderTraceItem])
 async def list_model_provider_audit_traces(
+    request: Request,
     facade: Annotated[object, Depends(get_kernel_service_facade)],
 ) -> List[ModelProviderTraceItem]:
     """
@@ -31,11 +58,12 @@ async def list_model_provider_audit_traces(
     Returns:
         List of model provider trace items with timing and token information
     """
-    return await query_model_provider_traces(facade)
+    return await query_model_provider_traces(request, facade)
 
 
 @router.get("/audit/turns", response_model=TurnAuditPagePayload)
 async def list_turn_audit_milestones(
+    request: Request,
     facade: Annotated[object, Depends(get_kernel_service_facade)],
     page: int = 1,
     page_size: int = 40,
@@ -50,11 +78,12 @@ async def list_turn_audit_milestones(
     Returns:
         Paginated turn audit milestones
     """
-    return await query_turn_audit_milestones(facade, page=page, page_size=page_size)
+    return await query_turn_audit_milestones(request, facade, page=page, page_size=page_size)
 
 
 @router.get("/audits", response_model=AuditPagePayload)
 async def list_audit_entries(
+    request: Request,
     facade: Annotated[object, Depends(get_kernel_service_facade)],
     page: int = 1,
     page_size: int = 40,
@@ -74,6 +103,7 @@ async def list_audit_entries(
         Paginated audit entries matching filters
     """
     return await query_audit_entries(
+        request,
         facade,
         page=page,
         page_size=page_size,

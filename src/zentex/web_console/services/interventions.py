@@ -30,7 +30,7 @@ def _serialize_nine_question_state(runtime_source: Any) -> Dict[str, Any]:
 async def post_intervention(
     payload: InterventionRequest,
     runtime_source: Any,
-    transcript_store: Any,
+    audit_service: Any,
     session_manager: Any,
     request: Request,
 ) -> Dict[str, Any]:
@@ -49,15 +49,10 @@ async def post_intervention(
     if existing_receipt is not None:
         return {**existing_receipt, "idempotent_replay": True}
 
-    existing_intervention_entry = next(
-        (
-            entry
-            for entry in reversed(transcript_store.get_entries_snapshot())
-            if _entry_type_value(entry) == "human_intervention_applied"
-            and isinstance(entry.payload, dict)
-            and entry.payload.get("idempotency_key") == payload.idempotency_key
-        ),
-        None,
+    existing_intervention_entry = (
+        audit_service.find_intervention_entry(payload.idempotency_key)
+        if audit_service is not None and callable(getattr(audit_service, "find_intervention_entry", None))
+        else None
     )
     if existing_intervention_entry is not None and isinstance(existing_intervention_entry.payload, dict):
         payload_dict = existing_intervention_entry.payload

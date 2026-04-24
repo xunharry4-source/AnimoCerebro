@@ -1,3 +1,4 @@
+from __future__ import annotations
 """
 MCP Server and Tool Data Access Objects.
 
@@ -11,7 +12,7 @@ Responsibilities:
 - Cache management for server states
 
 Usage:
-    db = DatabaseConnection("runtime/data/zentex_core.db")
+    db = DatabaseConnection(get_storage_paths().core_db)
     dao = McpServerDAO(db)
     
     # Register server
@@ -21,7 +22,6 @@ Usage:
     dao.add_tools(server_id, tools_list)
 """
 
-from __future__ import annotations
 
 import logging
 from typing import Any, Dict, List, Optional

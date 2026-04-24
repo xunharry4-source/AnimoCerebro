@@ -20,7 +20,7 @@ from zentex.web_console.models.workspace import (
     WorkspaceActionResponse,
 )
 from zentex.web_console.dependencies import get_kernel_service_facade
-from zentex.web_console.storage.workspace import WorkspaceStore
+from zentex.kernel.workspace_store import WorkspaceStore
 from zentex.web_console.dependencies import get_workspace_store
 
 logger = logging.getLogger(__name__)

@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from typing import Any
 
-from plugins.nine_questions.prompt_sections import (
+from zentex.common.nine_questions_prompts import (
     assemble_prompt_sections,
     build_prompt_section,
 )
@@ -28,7 +28,7 @@ def build_q6_llm_request(
             intent="Define the red-line extraction task for Q6.",
             purpose="Keep the model focused on what must not be done.",
             content=(
-                "你现在是 Zentex 外部大脑的红线与禁区生成中枢。请严格对比当前系统的『可行动作空间』与底层的『不可绕过约束/历史禁令』。\n"
+                "你现在是 G19 Preference AI 的红线与禁区生成中枢。请严格对比当前系统的『可行动作空间』与底层的『不可绕过约束/历史禁令』。\n"
                 "你的任务是：明确指出在当前特定环境下，系统即使物理上能做、权限上被允许，也**绝对不该做**的事情。"
                 "你必须返回严格 JSON，顶层键只能是 `forbidden_zone_profile`，禁止输出 `redline_policy_report` 或任何其他顶层键。"
             ),

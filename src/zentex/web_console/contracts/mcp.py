@@ -1,5 +1,5 @@
 from __future__ import annotations
-from typing import List, Optional
+from typing import List, Optional, Any, Dict, Union
 from pydantic import BaseModel, ConfigDict, Field
 
 # Re-exporting from core contracts to maintain backward compatibility 

@@ -152,8 +152,8 @@ class AutomatedTestVerifier(BaseVerifier):
                 # 终止超时进程
                 try:
                     process.kill()
-                except:
-                    pass
+                except Exception as e:
+                    logger.exception(f"Failed to kill timed-out verification process for task {task.task_id}")
 
                 return SingleVerifierResult(
                     verifier_id=self.verifier_id,
@@ -315,7 +315,15 @@ class LLMEvaluationVerifier(BaseVerifier):
                         "criteria_failed": parsed.get("criteria_failed", []),
                     }
         except Exception as e:
-            logger.warning(f"Failed to parse LLM response as JSON: {e}")
+            logger.exception(f"Error parsing LLM evaluation response: {e}")
+            return {
+                "passed": False,
+                "confidence": 0.0,
+                "summary": f"解析评估结果失败: {str(e)}",
+                "reasoning": response[:500],
+                "criteria_met": [],
+                "criteria_failed": [],
+            }
 
         # 默认返回（解析失败时）
         return {
@@ -536,3 +544,94 @@ class RuleBasedVerifier(BaseVerifier):
             "passed": passed,
             "message": f"字段 '{field}' 值 '{value}' {'是' if passed else '不是'} 允许值之一 {allowed_values}",
         }
+
+
+class LogAuditVerifier(BaseVerifier):
+    """
+    日志审计验证器 (Phase C2 Hardening)
+    
+    物理检查系统日志文件，验证任务是否产生了真实的痕迹。
+    用于防止“功能假实现”和“伪造测试数据”。
+    
+    配置示例：
+    {
+        "log_path": "data/app_data/logs/cognitive_tool_invocations.jsonl",
+        "require_task_id": True,
+        "min_log_entries": 1
+    }
+    """
+
+    @property
+    def verifier_type(self) -> str:
+        return "log_audit"
+
+    async def verify(
+        self, task: ZentexTask, result: Dict[str, Any]
+    ) -> SingleVerifierResult:
+        start_time = datetime.now()
+        default_log_path = None
+        if "log_path" not in self.config:
+            from zentex.common.storage_paths import get_storage_paths
+
+            default_log_path = str(get_storage_paths().app_data_dir / "logs" / "cognitive_tool_invocations.jsonl")
+        log_path = self.config.get("log_path", default_log_path)
+        if log_path is None:
+            raise RuntimeError("LogAuditVerifier requires a configured log_path")
+        
+        try:
+            path = Path(log_path)
+            if not path.exists():
+                return SingleVerifierResult(
+                    verifier_id=self.verifier_id,
+                    verifier_type=self.verifier_type,
+                    status=VerificationStatus.ERROR,
+                    passed=False,
+                    confidence=0.0,
+                    error=f"Log file not found: {log_path}",
+                    summary="日志文件缺失，无法进行物理审计",
+                )
+
+            # 物理扫描日志
+            found_count = 0
+            # 兼容 invocation_id 或 task_id
+            search_terms = [task.task_id]
+            if task.metadata.get("turn_id"):
+                search_terms.append(task.metadata["turn_id"])
+
+            with open(path, "r", encoding="utf-8", errors="ignore") as f:
+                for line in f:
+                    if any(term in line for term in search_terms):
+                        found_count += 1
+
+            min_entries = self.config.get("min_log_entries", 1)
+            passed = found_count >= min_entries
+            
+            elapsed_ms = int((datetime.now() - start_time).total_seconds() * 1000)
+
+            return SingleVerifierResult(
+                verifier_id=self.verifier_id,
+                verifier_type=self.verifier_type,
+                status=VerificationStatus.PASSED if passed else VerificationStatus.FAILED,
+                passed=passed,
+                confidence=1.0 if passed else 0.0,
+                summary=f"物理审计通过: 找到 {found_count} 条相关日志" if passed else f"物理审计失败: 仅找到 {found_count} 条日志 (预期 >= {min_entries})",
+                details={
+                    "found_entries": found_count,
+                    "target_terms": search_terms,
+                    "log_source": str(path)
+                },
+                execution_time_ms=elapsed_ms,
+            )
+
+        except Exception as e:
+            logger.exception(f"Log audit verifier failed: {e}")
+            return SingleVerifierResult(
+                verifier_id=self.verifier_id,
+                verifier_type=self.verifier_type,
+                status=VerificationStatus.ERROR,
+                passed=False,
+                confidence=0.0,
+                error=str(e),
+                summary="日志审计执行出错",
+                execution_time_ms=int((datetime.now() - start_time).total_seconds() * 1000),
+            )

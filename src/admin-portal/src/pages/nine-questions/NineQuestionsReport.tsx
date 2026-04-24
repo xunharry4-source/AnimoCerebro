@@ -113,8 +113,7 @@ export default function NineQuestionsReport() {
             {t("nineQuestions.subtitle")}
           </Typography>
           <Typography variant="body2" color="text.secondary">
-            Session: {report?.session_id || "-"} | Snapshot: v{report?.snapshot_version ?? 0} / rev{" "}
-            {report?.revision ?? 0}
+            当前最新快照: v{report?.snapshot_version ?? 0} / rev {report?.revision ?? 0}
           </Typography>
         </Box>
         <Stack direction="row" spacing={1}>
@@ -126,6 +125,10 @@ export default function NineQuestionsReport() {
           </Button>
         </Stack>
       </Stack>
+
+      <Alert severity="info" sx={{ mb: 2 }}>
+        该页面只是九问运行结果的监控与审计视图，不定义九问本体的运行语义。九问只关心当前最新且可验证的数据，前端页面只是读取并展示。
+      </Alert>
 
       {notice ? (
         <Alert severity="info" sx={{ mb: 2 }}>

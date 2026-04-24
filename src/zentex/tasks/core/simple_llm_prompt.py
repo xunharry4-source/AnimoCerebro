@@ -14,7 +14,7 @@ def build_simple_decomposition_request(
     strategy: str,
     mission_title: str,
     mission_content: str,
-    context: dict[str, Any] | None,
+    context: dict[str, Optional[Any]],
 ) -> dict[str, Any]:
     strategy_prompt = _build_strategy_prompt(strategy)
     context_info = _build_context_info(context)
@@ -100,7 +100,7 @@ def _build_strategy_prompt(strategy: str) -> str:
     return prompts.get(strategy, prompts["hybrid"])
 
 
-def _build_context_info(context: dict[str, Any] | None) -> str:
+def _build_context_info(context: dict[str, Optional[Any]]) -> str:
     if not context:
         return "- 附加约束: [未提供]"
     lines: list[str] = []
@@ -111,7 +111,7 @@ def _build_context_info(context: dict[str, Any] | None) -> str:
     return "\n".join(lines) if lines else "- 附加约束: [未提供]"
 
 
-def _clip_text(value: str | None, limit: int) -> str:
+def _clip_text(value: Optional[str], limit: int) -> str:
     text = (value or "").strip()
     if not text:
         return "[未提供]"

@@ -1,3 +1,4 @@
+from __future__ import annotations
 """
 反思工作流编排器
 
@@ -5,7 +6,6 @@
 Service层应该只调用这个编排器，而不包含任何编排逻辑。
 """
 
-from __future__ import annotations
 
 import logging
 from datetime import datetime, timezone
@@ -104,14 +104,16 @@ class ReflectionWorkflowOrchestrator:
         )
         
         # 步骤3：评估深度和质量
-        depth = self._quality_assessor.determine_depth(context)
-        quality = self._quality_assessor.assess_quality(reflection_content)
+        depth = self._quality_assessor.determine_depth(subject, reflection_content, context)
+        quality = self._quality_assessor.assess_quality(subject, reflection_content, context)
         
         # 步骤4：创建反思记录
+        # audit_id is forwarded via context when FlowAudit.as_payload() was merged in.
+        audit_id = context.get("audit_id") if isinstance(context, dict) else None
         reflection = ReflectionRecord(
             reflection_id=create_reflection_id(),
             trace_id=trace_id,
-            session_id=session_id,
+            audit_id=audit_id or None,
             reflection_type=reflection_type,
             depth=depth,
             quality=quality,
@@ -122,6 +124,13 @@ class ReflectionWorkflowOrchestrator:
             **reflection_content
         )
         
+        # POLICY: Fail-Closed. Reject or flag POOR quality reflections.
+        from zentex.reflection.models import ReflectionQuality, GovernanceStatus
+        if quality == ReflectionQuality.POOR:
+             logger.warning(f"Reflection Orchestrator: Semantic audit failed for subject '{subject}'. Marking as SUSPECT.")
+             reflection.governance_status = GovernanceStatus.SUSPECT
+             reflection.suspect_reason = "Semantic audit failed: Low quality or potentially forged/hallucinated insights."
+
         # 步骤5-8：数据后处理
         self._post_process_reflection(reflection)
         

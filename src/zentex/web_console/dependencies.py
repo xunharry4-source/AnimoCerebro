@@ -1,3 +1,4 @@
+from __future__ import annotations
 """
 Web Console Dependency Providers — FastAPI dependency injection entry points.
 
@@ -8,8 +9,6 @@ RESPONSIBILITY:
 
 CAPABILITIES:
   - Facade-based getters (Phase 0): the authoritative path for new code.
-  - Legacy shim getters: backward-compatible delegates to kernel.service for
-    routes that have not yet been migrated to the Facade API.
 
 FAIL-CLOSED CONTRACT (Zentex Codex §1):
   - Getters that return a service which may be None MUST raise HTTPException(503)
@@ -26,11 +25,8 @@ DOES NOT:
 
 MIGRATION STATUS:
   Phase 0 Facade getters are the target end-state.
-  Legacy shim getters are provided only for gradual migration and will be
-  removed once all route handlers are ported to the Facade API.
 """
 
-from __future__ import annotations
 
 import logging
 from typing import Any
@@ -185,16 +181,6 @@ def get_task_service(request: Request) -> Any:
         message="任务管理服务未初始化，任务功能暂不可用。请检查启动流程。",
     )
 
-
-def get_transcript_store(request: Request) -> Any:
-    """⚠️ LEGACY - Use Facade instead"""
-    svc = _get_app_state_service(request, "transcript_store")
-    if svc is not None:
-        return svc
-    facade = get_kernel_service_facade(request)
-    return facade.get_transcript_store()
-
-
 def get_cognitive_tool_registry(request: Request) -> Any:
     """⚠️ LEGACY - Use Facade instead"""
     from zentex.plugins.service import SystemPluginService
@@ -272,12 +258,13 @@ def get_consolidation_engine(request: Request) -> Any:
 
 def get_enhanced_memory_service(request: Request) -> Any:
     """⚠️ LEGACY"""
-    return _get_state_or_kernel_service(request, "enhanced_memory_service")
+    return _get_state_or_kernel_service(request, "memory_service")
 
 
 def get_workspace_store(request: Request) -> Any:
-    """⚠️ LEGACY — reads app.state first (set by create_app), falls back to runtime."""
-    return _get_state_or_kernel_service(request, "workspace_store")
+    """Get the core workspace store via KernelServiceFacade."""
+    facade = get_kernel_service_facade(request)
+    return facade.get_workspace_store()
 
 
 def get_active_session(request: Request) -> Any:

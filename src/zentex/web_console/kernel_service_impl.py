@@ -1,13 +1,13 @@
+from __future__ import annotations
 """Default Kernel Service Facade Implementation
 
 Adapter pattern connecting web_console to kernel.service.
 Gradually replaces direct kernel/runtime dependencies.
 """
 
-from __future__ import annotations
 
 import logging
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, Dict, List, Optional, Union
 
 from .contracts.kernel_service import (
     KernelServiceFacade,
@@ -17,7 +17,6 @@ from .cache_manager import WebConsoleCacheManager
 from .contracts.session_manager import SessionManager
 from .contracts.state_manager import NineQuestionStateManager
 from .contracts.event_bus import EventBus
-from .contracts.config_manager import ConfigManager
 
 if TYPE_CHECKING:
     from zentex.kernel.service import KernelService
@@ -29,100 +28,105 @@ class DefaultKernelServiceFacade(KernelServiceFacade):
     """Default implementation using adapter pattern
     
     Strategy:
-    - Old interfaces (get_transcript_store) still come from kernel.service
-    - New interfaces (session_manager) use new SQL stores
-    - Gradual transition during migration from core/runtime
+    - WebConsole owns only facade calls.
+    - Core assembles persistence-backed state services.
     """
 
     def __init__(
         self,
-        session_db_path: str = "./data/sessions.db",
-        transcript_db_path: str = "./data/transcripts.db",
-        config: AppConfig | None = None,
+        config: Optional[AppConfig] = None,
     ):
-        """Initialize facade with storage backends
+        """Initialize facade with core-owned storage backends.
 
         Args:
-            session_db_path: SQLite path for sessions
-            transcript_db_path: SQLite path for transcripts
             config: Optional custom config (defaults to AppConfig)
         """
-        # Lazy import to avoid circular dependencies
-        from .internal.event_bus_impl import InProcessEventBus
-        from .internal.session_store import SQLiteSessionStore
-        from .internal.state_store import SQLiteStateStore
-        from .internal.session_manager_impl import SessionManagerImpl
-        from .internal.state_manager_impl import NineQuestionStateManagerImpl
+        from zentex.kernel.console_state_services import build_console_state_services
 
         # Backend: old runtime service (lazy loaded on first use)
         self._runtime_service: Any = None  # Will be loaded on demand
         self._runtime_service_loaded = False
+        self._runtime_service_load_error: Optional[Exception] = None
 
-        # New components (SQL persistence)
-        self._session_store = SQLiteSessionStore(session_db_path)
-        self._state_store = SQLiteStateStore(session_db_path)
-        self._event_bus = InProcessEventBus()
-        self._cache_manager = WebConsoleCacheManager(
-            default_ttl_seconds=(config.cache_ttl_seconds if config is not None else AppConfig().cache_ttl_seconds)
-        )
+        self._config = config or AppConfig(default_workspace=".")
 
-        # New components (Manager services)
-        self._session_manager: SessionManager = SessionManagerImpl(
-            store=self._session_store,
-            event_bus=self._event_bus,
-            cache_manager=self._cache_manager,
+        state_services = build_console_state_services(
+            cache_ttl_seconds=self._config.cache_ttl_seconds
         )
-        self._state_manager: NineQuestionStateManager = NineQuestionStateManagerImpl(
-            store=self._state_store,
-            event_bus=self._event_bus,
-            cache_manager=self._cache_manager,
-        )
+        self._session_manager: SessionManager = state_services.session_manager
+        self._state_manager: NineQuestionStateManager = state_services.state_manager
+        self._event_bus = state_services.event_bus
+        self._cache_manager = state_services.cache_manager
+        self._workspace_store = state_services.workspace_store
 
-        # Configuration
-        self._config = config or AppConfig(
-            default_workspace=".",
-            transcript_db_path=transcript_db_path,
-            session_db_path=session_db_path,
-        )
+    def _load_kernel_service(self) -> Any:
+        """Load kernel.service lazily so failure semantics are testable."""
+        from zentex.kernel.service import get_service as get_kernel_service
+
+        return get_kernel_service()
 
     def _get_kernel_service(self) -> Any:
-        """Lazily load kernel service on first access"""
+        """Lazily load kernel service on first access.
+        
+        Standard Redline:
+        - Fail-Closed: If the kernel service cannot be loaded, this method must
+          propagate the exception to prevent the system from operating in a 
+          functionally amputated state.
+        """
         if not self._runtime_service_loaded:
             try:
-                from zentex.kernel.service import get_service as get_kernel_service
-                self._runtime_service = get_kernel_service()
-            except Exception as e:
-                logger.warning(f"Could not load kernel service: {e}")
+                self._runtime_service = self._load_kernel_service()
+                self._runtime_service_load_error = None
+            except Exception as exc:
+                # Standard redline: never swallow kernel assembly failure and pretend
+                # the compatibility facade merely has "no data". That fake-normal
+                # path hides backend breakage and destroys operator visibility.
+                logger.exception("Could not load kernel service")
                 self._runtime_service = None
+                self._runtime_service_load_error = exc
             self._runtime_service_loaded = True
         return self._runtime_service
 
-
-    def get_transcript_store(self) -> Any:
-        """Get transcript storage (from kernel.service)"""
+    def _require_kernel_service(self, operation: str) -> Any:
+        """Return the kernel service or fail closed with the real backend cause."""
         kernel_service = self._get_kernel_service()
-        if kernel_service:
-            return kernel_service.get_transcript_store()
-        raise RuntimeError("Kernel service not available - transcript store cannot be accessed")
+        if kernel_service is not None:
+            return kernel_service
 
-    def get_session_transcript_store(self, session_id: str) -> Any:
-        """Get transcript storage for a specific kernel session."""
-        kernel_service = self._get_kernel_service()
-        if kernel_service and hasattr(kernel_service, "get_session_transcript_store"):
-            return kernel_service.get_session_transcript_store(session_id)
-        return None
+        if self._runtime_service_load_error is not None:
+            raise RuntimeError(
+                f"Kernel service unavailable during {operation}; refusing to fake a normal empty result: "
+                f"{self._runtime_service_load_error}"
+            ) from self._runtime_service_load_error
+
+        # Standard redline: if the facade cannot provide a backend here, returning
+        # None or {} would be a fake implementation that lies to monitoring pages.
+        raise RuntimeError(
+            f"Kernel service unavailable during {operation}; refusing to fake backend availability"
+        )
+
+    @staticmethod
+    def _require_kernel_method(kernel_service: Any, method_name: str, operation: str) -> Any:
+        method = getattr(kernel_service, method_name, None)
+        if method is None:
+            # Standard redline: do not pretend an unimplemented kernel bridge method
+            # is the same as "no data right now". That is a fake completed feature.
+            raise RuntimeError(
+                f"Kernel service does not implement {method_name} for {operation}; refusing to fake success"
+            )
+        return method
 
     def get_nine_question_audit_store(self, session_id: str) -> Any:
         """Get the session-scoped nine-question audit transcript store."""
-        kernel_service = self._get_kernel_service()
-        if kernel_service and hasattr(kernel_service, "get_nine_question_audit_store"):
-            return kernel_service.get_nine_question_audit_store(session_id)
-        return None
+        kernel_service = self._require_kernel_service("get_nine_question_audit_store")
+        return self._require_kernel_method(
+            kernel_service,
+            "get_nine_question_audit_store",
+            "get_nine_question_audit_store",
+        )(session_id)
 
     def get_plugin_registry(self) -> Any:
         """Get plugin registry from plugins.service"""
-        # Plugin registry is now managed by plugins.service, not kernel
-        # This method should be deprecated in favor of direct plugins.service usage
         raise NotImplementedError(
             "get_plugin_registry is deprecated. "
             "Use plugins.service.SystemPluginService directly or inject it via app.state.plugin_service"
@@ -130,7 +134,6 @@ class DefaultKernelServiceFacade(KernelServiceFacade):
 
     def get_cognitive_tools(self) -> Any:
         """Get cognitive tool registry from plugins.service"""
-        # Cognitive tools are now managed by plugins.service
         raise NotImplementedError(
             "get_cognitive_tools is deprecated. "
             "Use plugins.service.SystemPluginService.query_cognitive_tools() instead"
@@ -148,6 +151,10 @@ class DefaultKernelServiceFacade(KernelServiceFacade):
         """Get event bus"""
         return self._event_bus
 
+    def get_workspace_store(self) -> Any:
+        """Get the core workspace metadata store."""
+        return self._workspace_store
+
     def get_config(self) -> AppConfig:
         """Get application configuration"""
         return self._config
@@ -156,94 +163,101 @@ class DefaultKernelServiceFacade(KernelServiceFacade):
 
     def list_active_sessions(self) -> list[str]:
         """List active session IDs"""
-        kernel = self._get_kernel_service()
-        if kernel:
-            return kernel.list_active_sessions()
-        return []
+        kernel = self._require_kernel_service("list_active_sessions")
+        return self._require_kernel_method(kernel, "list_active_sessions", "list_active_sessions")()
 
-    def get_session_meta(self, session_id: str) -> dict | None:
+    def get_session_meta(self, session_id: str) -> Optional[dict]:
         """Get kernel session metadata."""
-        kernel = self._get_kernel_service()
-        if kernel and hasattr(kernel, "get_session_meta"):
-            return kernel.get_session_meta(session_id)
-        return None
+        kernel = self._require_kernel_service("get_session_meta")
+        return self._require_kernel_method(kernel, "get_session_meta", "get_session_meta")(session_id)
 
     def create_kernel_session(self, user_id: str = "") -> str:
         """Create a kernel-backed session."""
-        kernel = self._get_kernel_service()
-        if kernel and hasattr(kernel, "create_session"):
-            return str(kernel.create_session(user_id=user_id))
-        raise RuntimeError("Kernel service not available - cannot create kernel session")
+        kernel = self._require_kernel_service("create_kernel_session")
+        return str(self._require_kernel_method(kernel, "create_session", "create_kernel_session")(user_id=user_id))
 
-    def ensure_nine_questions_bootstrap(self, session_id: str, *, force: bool = False) -> Any:
-        """Run kernel nine-question bootstrap."""
-        kernel = self._get_kernel_service()
-        if kernel and hasattr(kernel, "ensure_nine_questions_bootstrap"):
-            return kernel.ensure_nine_questions_bootstrap(session_id, force=force)
-        raise RuntimeError("Kernel service not available - cannot bootstrap nine questions")
+    def ensure_nine_questions_bootstrap(self, *, force: bool = False) -> Any:
+        """Run kernel nine-question bootstrap (global — no session scoping)."""
+        kernel = self._require_kernel_service("ensure_nine_questions_bootstrap")
+        return self._require_kernel_method(
+            kernel,
+            "ensure_nine_questions_bootstrap",
+            "ensure_nine_questions_bootstrap",
+        )(force=force)
 
-    def rerun_nine_questions_from(self, session_id: str, question_id: str) -> Any:
+    def rerun_nine_questions_from(self, question_id: str, max_retries: int = 1) -> Any:
         """Re-run a single nine-question and its downstream chain."""
-        kernel = self._get_kernel_service()
-        if kernel and hasattr(kernel, "rerun_nine_questions_from"):
-            return kernel.rerun_nine_questions_from(session_id, question_id)
-        raise RuntimeError("Kernel service not available - cannot rerun single nine question")
+        kernel = self._require_kernel_service("rerun_nine_questions_from")
+        return self._require_kernel_method(
+            kernel,
+            "rerun_nine_questions_from",
+            "rerun_nine_questions_from",
+        )(question_id, max_retries=max_retries)
 
-    def get_session_state(self, session_id: str) -> dict | None:
+    def run_single_nine_question(self, question_id: str, max_retries: int = 1) -> Any:
+        """Run only one nine-question and keep downstream questions untouched."""
+        kernel = self._require_kernel_service("run_single_nine_question")
+        return self._require_kernel_method(
+            kernel,
+            "run_single_nine_question",
+            "run_single_nine_question",
+        )(question_id, max_retries=max_retries)
+
+    def get_session_state(self, session_id: str) -> Optional[dict]:
         """Get comprehensive session state"""
-        kernel = self._get_kernel_service()
-        if kernel:
-            return kernel.get_session_state(session_id)
-        return None
+        kernel = self._require_kernel_service("get_session_state")
+        return self._require_kernel_method(kernel, "get_session_state", "get_session_state")(session_id)
 
-    def get_working_memory(self, session_id: str) -> list[dict] | None:
+    def get_working_memory(self, session_id: str) -> list[Optional[dict]]:
         """Get working memory snapshot"""
-        kernel = self._get_kernel_service()
-        if kernel:
-            return kernel.get_working_memory(session_id)
-        return None
+        kernel = self._require_kernel_service("get_working_memory")
+        return self._require_kernel_method(kernel, "get_working_memory", "get_working_memory")(session_id)
 
-    def get_self_model_snapshot(self, session_id: str) -> dict | None:
+    def get_self_model_snapshot(self, session_id: str) -> Optional[dict]:
         """Get self model snapshot"""
-        kernel = self._get_kernel_service()
-        if kernel:
-            return kernel.get_self_model_snapshot(session_id)
-        return None
+        kernel = self._require_kernel_service("get_self_model_snapshot")
+        return self._require_kernel_method(
+            kernel,
+            "get_self_model_snapshot",
+            "get_self_model_snapshot",
+        )(session_id)
 
-    def get_temporal_snapshot(self, session_id: str) -> dict | None:
+    def get_temporal_snapshot(self, session_id: str) -> Optional[dict]:
         """Get temporal agenda snapshot"""
-        kernel = self._get_kernel_service()
-        if kernel:
-            return kernel.get_temporal_snapshot(session_id)
-        return None
+        kernel = self._require_kernel_service("get_temporal_snapshot")
+        return self._require_kernel_method(kernel, "get_temporal_snapshot", "get_temporal_snapshot")(session_id)
 
-    def get_nine_question_state(self, session_id: str) -> dict | None:
-        """Get nine-question state dict"""
-        kernel = self._get_kernel_service()
-        if kernel:
-            return kernel.get_nine_question_state(session_id)
-        return None
+    def get_nine_question_state(self) -> Optional[dict]:
+        """Return the shared nine-question baseline state."""
+        kernel = self._require_kernel_service("get_nine_question_state")
+        return self._require_kernel_method(
+            kernel,
+            "get_nine_question_state",
+            "get_nine_question_state",
+        )()
 
     def get_runtime_overview(
         self,
         session_id: str = "zentex-default-session",
         weight_assembler: Any = None,
     ) -> dict:
-        """Delegate to kernel service; return empty overview when kernel is unavailable."""
-        kernel = self._get_kernel_service()
-        if kernel and hasattr(kernel, "get_runtime_overview"):
-            return kernel.get_runtime_overview(
+        """Delegate to kernel service; must fail if kernel is unavailable.
+        
+        Standard Redline:
+        - Honest Reporting: Do not return 'fake' empty dictionaries if the kernel
+          is missing or if the implementation is removed. An empty dashboard is 
+          a deception that masks engine failure.
+        """
+        kernel = self._require_kernel_service("get_runtime_overview")
+        try:
+            return self._require_kernel_method(
+                kernel,
+                "get_runtime_overview",
+                "get_runtime_overview",
+            )(
                 session_id=session_id,
                 weight_assembler=weight_assembler,
             )
-        return {
-            "runtime": {},
-            "session": None,
-            "working_memory": {"slots": []},
-            "metacognition": {},
-            "living_self_model": {},
-            "temporal_agenda": {},
-            "recent_entries": [],
-            "last_intervention": None,
-            "weights": {},
-        }
+        except Exception as exc:
+            logger.exception("[WEBCONSOLE] Failed to retrieve runtime overview from kernel")
+            raise RuntimeError(f"Kernel Runtime Overview failure: {exc}") from exc

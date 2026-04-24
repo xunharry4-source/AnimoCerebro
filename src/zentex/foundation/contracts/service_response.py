@@ -1,3 +1,4 @@
+from __future__ import annotations
 """
 Unified service response structure for all cross-module service calls.
 
@@ -7,12 +8,11 @@ always present and structurally consistent across foundation / kernel /
 launcher and all external modules.
 """
 
-from __future__ import annotations
 
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
-from enum import StrEnum
-from typing import Any
+from enum import Enum
+from typing import Any, Dict, List, Optional, Union
 from uuid import uuid4
 
 UTC = timezone.utc
@@ -23,7 +23,7 @@ UTC = timezone.utc
 # ---------------------------------------------------------------------------
 
 
-class ServiceStatus(StrEnum):
+class ServiceStatus(str, Enum):
     """Top-level outcome status of a service call."""
 
     ok = "ok"
@@ -33,7 +33,7 @@ class ServiceStatus(StrEnum):
     partial = "partial"          # partial success (some sub-operations failed)
 
 
-class ServiceErrorCode(StrEnum):
+class ServiceErrorCode(str, Enum):
     """Stable, machine-readable error codes.
 
     Calling code may switch on these codes without parsing error messages.
@@ -153,16 +153,17 @@ class ServiceResponse:
     @classmethod
     def error(
         cls,
-        code: ServiceErrorCode | str,
+        code: Union[ServiceErrorCode, str],
         message: str,
         trace_id: str = "",
         audit_ref: str = "",
         data: Any = None,
     ) -> "ServiceResponse":
         """Create an error response."""
+        code_str = code.value if hasattr(code, "value") else str(code)
         return cls(
             status=ServiceStatus.error,
-            code=str(code),
+            code=code_str,
             message=message,
             data=data,
             trace_id=trace_id or str(uuid4()),
@@ -178,11 +179,10 @@ class ServiceResponse:
         """Create a timeout response."""
         return cls(
             status=ServiceStatus.timeout,
-            code=ServiceErrorCode.SERVICE_TIMEOUT,
+            code=ServiceErrorCode.SERVICE_TIMEOUT.value,
             message=message,
             trace_id=trace_id or str(uuid4()),
         )
-
     @classmethod
     def unavailable(
         cls,
@@ -197,7 +197,7 @@ class ServiceResponse:
         )
         return cls(
             status=ServiceStatus.unavailable,
-            code=ServiceErrorCode.DEPENDENCY_UNAVAILABLE,
+            code=ServiceErrorCode.DEPENDENCY_UNAVAILABLE.value,
             message=msg,
             trace_id=trace_id or str(uuid4()),
         )

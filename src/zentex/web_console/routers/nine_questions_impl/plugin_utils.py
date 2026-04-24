@@ -1,3 +1,5 @@
+from __future__ import annotations
+
 """
 Plugin utilities for nine questions router.
 
@@ -5,7 +7,10 @@ Contains functions for handling plugin information, display names,
 and feature code mappings.
 """
 
+import logging
 from typing import Any
+
+logger = logging.getLogger(__name__)
 
 from zentex.plugins.service import (
     query_all_plugins_by_operational_status,
@@ -54,8 +59,8 @@ def _humanize_plugin_token(value: str) -> str:
 def _derive_plugin_display_name(
     *,
     plugin_id: str,
-    feature_code: str | None,
-    plugin: object | None,
+    feature_code: Optional[str],
+    plugin: Optional[object],
     catalog_by_feature: dict[str, Any],
 ) -> str:
     """Derive display name for a plugin from multiple sources."""
@@ -70,9 +75,9 @@ def _derive_plugin_display_name(
 def _derive_plugin_function_description(
     *,
     plugin_id: str,
-    feature_code: str | None,
-    plugin: object | None,
-    raw_description: str | None,
+    feature_code: Optional[str],
+    plugin: Optional[object],
+    raw_description: Optional[str],
     source_kind: str,
     display_name: str,
 ) -> str:
@@ -95,7 +100,7 @@ def _derive_plugin_function_description(
 def _get_mounted_plugins_for_question(
     runtime: Any,
     q_id: str,
-    plugin_feature_catalog: list[Any] | None = None,
+    plugin_feature_catalog: list[Optional[Any]] = None,
 ) -> list[MountedPluginInfo]:
     """
     Expose the truth of capability patch mountings for the frontend.
@@ -169,6 +174,12 @@ def _get_mounted_plugins_for_question(
                 if str(item.get("plugin_id") or "").strip()
             }
         except Exception:
+            logger.warning(
+                "Failed to query enabled functional plugins for q_id=%s — "
+                "plugin dependency info will be empty",
+                q_id,
+                exc_info=True,
+            )
             service_plugins = {}
 
         cognitive_candidates: list[str] = []
@@ -190,6 +201,11 @@ def _get_mounted_plugins_for_question(
                     or []
                 )
             except Exception:
+                logger.warning(
+                    "Failed to query functional relations for cognitive_plugin_id=%s — skipping",
+                    cognitive_plugin_id,
+                    exc_info=True,
+                )
                 continue
 
             for relation in relations:

@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from typing import Any, Dict, List, Optional, Union
+
 """
 Builders for upgrade management payloads.
 
@@ -34,7 +36,7 @@ from zentex.web_console.contracts.upgrades import (
 )
 
 
-def _extract_prompt_upgrade_view(payload: dict[str, object]) -> tuple[str | None, list[str], list[str], str | None]:
+def _extract_prompt_upgrade_view(payload: dict[str, object]) -> tuple[Optional[str], list[str], list[str], Optional[str]]:
     modified_files = payload.get("modified_files")
     prompt_target_file = (
         str(modified_files[0]).strip()
@@ -129,7 +131,7 @@ def build_upgrade_record_item(record: UpgradeManagementRecord) -> UpgradeRecordI
         prompt_upgrade_sections=prompt_upgrade_sections,
         prompt_upgrade_notes=prompt_upgrade_notes,
         prompt_upgrade_summary=prompt_upgrade_summary,
-        can_cancel=record.current_status in WAITING_STATUSES | ONGOING_STATUSES,
+        can_cancel=record.current_status in Union[WAITING_STATUSES, ONGOING_STATUSES],
         can_cleanup_failed_candidate=(
             record.target_kind is UpgradeTargetKind.PLUGIN
             and record.current_status in FAILED_STATUSES
@@ -142,7 +144,7 @@ def build_upgrade_collection(
     *,
     target_kind: UpgradeTargetKind,
     lifecycle: UpgradeLifecycleView,
-    action: str | None = None,
+    action: Optional[str] = None,
 ) -> UpgradeRecordCollection:
     items = [
         build_upgrade_record_item(record)
@@ -192,8 +194,8 @@ def build_upgrade_memory_record_item(record: UpgradeMemoryRecord) -> UpgradeMemo
 def build_upgrades_by_lifecycle_view(
     store: UpgradeManagementStore,
     *,
-    target_kind: UpgradeTargetKind | None = None,
-    plugin_action: str | None = None,
+    target_kind: Optional[UpgradeTargetKind] = None,
+    plugin_action: Optional[str] = None,
 ) -> UpgradesByLifecycleViewPayload:
     """Build upgrades grouped by lifecycle view for tabbed display."""
     all_records = store.list_records(

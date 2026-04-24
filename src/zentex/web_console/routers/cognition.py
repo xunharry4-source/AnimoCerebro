@@ -1,13 +1,9 @@
 from __future__ import annotations
 
-import logging
 from typing import Any
 from fastapi import APIRouter
-from fastapi import HTTPException
 from typing_extensions import Annotated
 from fastapi import Depends
-
-logger = logging.getLogger(__name__)
 
 from zentex.safety.service import CognitiveConflictEngine
 from zentex.web_console.contracts.runtime import (
@@ -24,6 +20,14 @@ from zentex.web_console.dependencies import (
     get_simulation_engine,
     get_temporal_engine,
 )
+from .cognition_handlers import (
+    handle_get_cognitive_agenda,
+    handle_get_cognitive_conflicts,
+    handle_get_consolidation_cycles,
+    handle_get_interaction_mind,
+    handle_get_simulation_bundle,
+    handle_trigger_consolidation,
+)
 
 
 router = APIRouter()
@@ -33,74 +37,17 @@ router = APIRouter()
 def get_cognitive_agenda(
     temporal_engine: Annotated[Any, Depends(get_temporal_engine)],
 ) -> CognitiveAgendaPayload:
-    try:
-        # Use snapshot() method which is the correct API for CognitiveTemporalEngine
-        snap = temporal_engine.snapshot()
-        return CognitiveAgendaPayload(
-            state={
-                "state_id": snap.get("session_id", "temporal"),
-                "review_now_item_ids": [],
-                "overdue_item_ids": [],
-                **snap,
-            },
-            items=[],
-        )
-    except TimeoutError:
-        # If evaluation times out, return empty agenda state instead of failing
-        import logging
-        logging.warning("CognitiveTemporalEngine.snapshot() timed out; returning empty agenda")
-        return CognitiveAgendaPayload(
-            state={
-                "state_id": "timeout_fallback",
-                "review_now_item_ids": [],
-                "overdue_item_ids": [],
-            },
-            items=[],
-        )
-    except Exception as exc:
-        # Log other errors but don't break the page load
-        import logging
-        logging.error(f"Error evaluating cognitive agenda: {exc}")
-        return CognitiveAgendaPayload(
-            state={
-                "state_id": "error_fallback",
-                "review_now_item_ids": [],
-                "overdue_item_ids": [],
-            },
-            items=[],
-        )
+    # Do not maintain a second cognition implementation in the legacy route layer.
+    # Duplicated fallback logic here caused the web path to drift away from the
+    # tested handler semantics and created fake-normal behavior in production.
+    return handle_get_cognitive_agenda(temporal_engine)
 
 
 @router.get("/cognitive-conflicts", response_model=CognitiveConflictPayload)
 def get_cognitive_conflicts(
     conflict_engine: Annotated[CognitiveConflictEngine, Depends(get_conflict_engine)],
 ) -> CognitiveConflictPayload:
-    snapshot_fn = getattr(conflict_engine, "snapshot", None)
-    if not callable(snapshot_fn):
-        raise HTTPException(
-            status_code=500,
-            detail=(
-                "CognitiveConflictEngine is missing snapshot() implementation; "
-                "backend assembly is incompatible with the web console contract."
-            ),
-        )
-    report = snapshot_fn()
-    report_payload = report.model_dump(mode="json") if hasattr(report, "model_dump") else {}
-    conflicts = report_payload.get("unresolved_conflicts", [])
-    if not isinstance(conflicts, list):
-        conflicts = []
-    snapshot_version = report_payload.get("snapshot_version", 0)
-    try:
-        snapshot_version = int(snapshot_version)
-    except Exception:
-        snapshot_version = 0
-    brain_scope = report_payload.get("brain_scope")
-    brain_scope = str(brain_scope) if brain_scope is not None else None
-    return CognitiveConflictPayload(
-        conflicts=conflicts,
-        snapshot_version=snapshot_version,
-        brain_scope=brain_scope,
-    )
+    return handle_get_cognitive_conflicts(conflict_engine)
 
 
 @router.get("/simulations/{goal_id}", response_model=SimulationBundlePayload)
@@ -108,27 +55,7 @@ def get_simulation_bundle(
     goal_id: str,
     simulation_engine: Annotated[Any, Depends(get_simulation_engine)],
 ) -> SimulationBundlePayload:
-    if simulation_engine is None:
-        raise HTTPException(
-            status_code=503,
-            detail="Simulation engine is not available.",
-        )
-    try:
-        bundle = simulation_engine.get_bundle(goal_id)
-        if bundle is None:
-            raise HTTPException(
-                status_code=404,
-                detail=f"Simulation bundle not found for goal_id: {goal_id}",
-            )
-        bundle_payload = bundle.model_dump(mode="json") if hasattr(bundle, "model_dump") else {}
-        return SimulationBundlePayload(bundle=bundle_payload)
-    except HTTPException:
-        raise
-    except Exception as exc:
-        raise HTTPException(
-            status_code=500,
-            detail=f"Failed to retrieve simulation bundle: {exc}",
-        ) from exc
+    return handle_get_simulation_bundle(goal_id, simulation_engine)
 
 
 @router.get("/interaction-mind/{entity_id}", response_model=InteractionMindPayload)
@@ -136,28 +63,14 @@ def get_interaction_mind(
     entity_id: str,
     interaction_mind_engine: Annotated[Any, Depends(get_interaction_mind_engine)],
 ) -> InteractionMindPayload:
-    if interaction_mind_engine is None:
-        error_msg = "Interaction mind engine 未初始化。"
-        logger.error(f"[API] GET /interaction-mind/{entity_id} — interaction_mind_engine is None: {error_msg}")
-        raise HTTPException(status_code=503, detail={"error": "interaction_mind_unavailable", "message": error_msg})
-    
-    try:
-        state = interaction_mind_engine.get_state(entity_id)
-        state_payload = state.model_dump(mode="json") if hasattr(state, "model_dump") else {}
-        return InteractionMindPayload(state=state_payload)
-    except Exception as exc:
-        logger.error(f"[API] GET /interaction-mind/{entity_id} — Exception: {exc}", exc_info=True)
-        raise HTTPException(status_code=500, detail=f"Failed to get interaction mind: {exc}") from exc
+    return handle_get_interaction_mind(entity_id, interaction_mind_engine)
 
 
 @router.get("/memory/consolidation-cycles", response_model=ConsolidationCyclesPayload)
 def get_consolidation_cycles(
     consolidation_engine: Annotated[Any, Depends(get_consolidation_engine)],
 ) -> ConsolidationCyclesPayload:
-    cycles = consolidation_engine.get_recent_cycles()
-    return ConsolidationCyclesPayload(
-        cycles=[cycle.model_dump(mode="json") if hasattr(cycle, "model_dump") else {} for cycle in cycles]
-    )
+    return handle_get_consolidation_cycles(consolidation_engine)
 
 
 @router.post("/memory/consolidation/trigger")
@@ -165,5 +78,4 @@ def trigger_consolidation(
     consolidation_engine: Annotated[Any, Depends(get_consolidation_engine)],
 ) -> dict[str, str]:
     """Manual trigger for memory consolidation via Web Console (Sub-function 59 gap)."""
-    cycle_id = consolidation_engine.submit_cycle(trigger_reason="manual_web_console")
-    return {"status": "triggered", "cycle_id": cycle_id}
+    return handle_trigger_consolidation(consolidation_engine)

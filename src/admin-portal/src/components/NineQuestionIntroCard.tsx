@@ -1,4 +1,4 @@
-import { Box, Card, CardContent, Table, TableBody, TableCell, TableContainer, TableRow, Typography } from "@mui/material";
+import { Box, Card, CardContent, Stack, Typography } from "@mui/material";
 
 /**
  * 九问介绍信息定义
@@ -216,8 +216,38 @@ export default function NineQuestionIntroCard({ questionId }: NineQuestionIntroC
     return null;
   }
 
-  // 计算最大行数
-  const maxRows = Math.max(intro.goals.length, intro.expectedData.length, intro.outputs.length);
+  const SectionRows = ({ title, items }: { title: string; items: string[] }) => (
+    <Box sx={{ border: 1, borderColor: "divider", borderRadius: 1, overflow: "hidden" }}>
+      <Box
+        sx={{
+          px: 2,
+          py: 1.5,
+          bgcolor: "action.hover",
+          color: "text.primary",
+          fontWeight: 700,
+          WebkitTextFillColor: (theme) => theme.palette.text.primary,
+        }}
+      >
+        {title}
+      </Box>
+      <Stack spacing={0} divider={<Box sx={{ borderTop: 1, borderColor: "divider" }} />}>
+        {items.map((item, index) => (
+          <Box
+            key={`${title}-${index}`}
+            sx={{
+              px: 2,
+              py: 1.5,
+              color: "text.primary",
+              WebkitTextFillColor: (theme) => theme.palette.text.primary,
+              wordBreak: "break-word",
+            }}
+          >
+            {item}
+          </Box>
+        ))}
+      </Stack>
+    </Box>
+  );
 
   return (
     <Card variant="outlined" sx={{ mb: 3, bgcolor: "info.50", borderColor: "info.main" }}>
@@ -226,53 +256,11 @@ export default function NineQuestionIntroCard({ questionId }: NineQuestionIntroC
           📖 {intro.title} - 问题说明
         </Typography>
 
-        <TableContainer>
-          <Table size="small">
-            <TableBody>
-              {/* 表头行 */}
-              <TableRow sx={{ bgcolor: "info.100" }}>
-                <TableCell sx={{ fontWeight: "bold", width: "20%" }}>维度</TableCell>
-                <TableCell sx={{ fontWeight: "bold", width: "80%" }}>内容</TableCell>
-              </TableRow>
-
-              {/* 目标行 */}
-              {intro.goals.map((goal, index) => (
-                <TableRow key={`goal-${index}`} hover>
-                  {index === 0 && (
-                    <TableCell rowSpan={intro.goals.length} sx={{ fontWeight: "bold", verticalAlign: "top" }}>
-                      🎯 目标
-                    </TableCell>
-                  )}
-                  <TableCell>{goal}</TableCell>
-                </TableRow>
-              ))}
-
-              {/* 期望数据行 */}
-              {intro.expectedData.map((data, index) => (
-                <TableRow key={`data-${index}`} hover sx={{ bgcolor: index % 2 === 0 ? "inherit" : "action.hover" }}>
-                  {index === 0 && (
-                    <TableCell rowSpan={intro.expectedData.length} sx={{ fontWeight: "bold", verticalAlign: "top" }}>
-                      📊 期望获得的数据
-                    </TableCell>
-                  )}
-                  <TableCell>{data}</TableCell>
-                </TableRow>
-              ))}
-
-              {/* 最终输出行 */}
-              {intro.outputs.map((output, index) => (
-                <TableRow key={`output-${index}`} hover>
-                  {index === 0 && (
-                    <TableCell rowSpan={intro.outputs.length} sx={{ fontWeight: "bold", verticalAlign: "top" }}>
-                      ✨ 最终输出
-                    </TableCell>
-                  )}
-                  <TableCell>{output}</TableCell>
-                </TableRow>
-              ))}
-            </TableBody>
-          </Table>
-        </TableContainer>
+        <Stack spacing={2}>
+          <SectionRows title="🎯 目标" items={intro.goals} />
+          <SectionRows title="📊 期望获得的数据" items={intro.expectedData} />
+          <SectionRows title="✨ 最终输出" items={intro.outputs} />
+        </Stack>
       </CardContent>
     </Card>
   );

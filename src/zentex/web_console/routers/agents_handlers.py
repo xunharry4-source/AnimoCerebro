@@ -1,8 +1,9 @@
+from __future__ import annotations
 """
 Agent Route Handlers — Business logic for agent management.
 Extracted from agents.py to follow the Facade-First / Thin-Route pattern.
 """
-from __future__ import annotations
+import logging
 from typing import Any, Dict, List
 from fastapi import HTTPException, Request
 
@@ -18,6 +19,8 @@ from zentex.web_console.services.agents import (
     calculate_agent_credit_score,
     get_agent_statistics,
 )
+
+logger = logging.getLogger(__name__)
 
 
 def handle_list_agents(
@@ -77,32 +80,15 @@ def handle_list_agents(
 
 def handle_get_agent_audit_events(
     agent_id: str,
-    transcript_store: Any,
+    audit_service: Any,
 ) -> List[AgentAuditRecord]:
     """Handle auditing events for a specific agent."""
-    events: List[AgentAuditRecord] = []
-    # Safeguard against missing transcript store
-    if transcript_store is None:
+    if audit_service is None:
         return []
-        
-    for entry in reversed(transcript_store.get_entries_snapshot()):
-        if entry.session_id != "agent-management-audit":
-            continue
-        payload = entry.payload if isinstance(entry.payload, dict) else {}
-        if str(payload.get("agent_id") or "") != agent_id:
-            continue
-            
-        events.append(AgentAuditRecord(
-            agent_id=agent_id,
-            event_type=str(payload.get("event_type") or "UNKNOWN"),
-            timestamp=entry.timestamp.isoformat(),
-            summary=str(payload.get("summary") or ""),
-            details=payload.get("details") if isinstance(payload.get("details"), dict) else {}
-        ))
-        if len(events) >= 200:
-            break
-    events.reverse()
-    return events
+    return [
+        AgentAuditRecord.model_validate(item)
+        for item in audit_service.list_agent_audit_records(agent_id, limit=200)
+    ]
 
 
 def handle_get_agent_detail(
@@ -193,6 +179,7 @@ def handle_cancel_agent_task(
         task_service.update_task_status(task_id, "cancelled")
         return {"success": True, "message": f"Task {task_id} has been cancelled", "task_id": task_id, "new_status": "cancelled"}
     except Exception as e:
+        logger.exception("Failed to cancel agent task")
         raise HTTPException(status_code=500, detail=f"Failed to cancel task: {str(e)}")
 
 
@@ -223,4 +210,5 @@ def handle_retry_agent_task(
         task_service.update_task_status(task_id, "todo")
         return {"success": True, "message": f"Task {task_id} has been reset to todo for retry", "task_id": task_id, "new_status": "todo"}
     except Exception as e:
+        logger.exception("Failed to retry agent task")
         raise HTTPException(status_code=500, detail=f"Failed to retry task: {str(e)}")

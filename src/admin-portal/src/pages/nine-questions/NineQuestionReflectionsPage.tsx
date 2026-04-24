@@ -1,6 +1,6 @@
 import { useEffect, useState } from "react";
 import { Alert, Box, CircularProgress, Stack, Typography, Chip, Button } from "@mui/material";
-import { useLocation, useSearchParams } from "react-router-dom";
+import { Link as RouterLink, useLocation, useSearchParams } from "react-router-dom";
 
 import {
   fetchNineQuestionReflectionDetail,
@@ -83,6 +83,10 @@ export default function NineQuestionReflectionsPage() {
         </Alert>
       ) : null}
 
+      <Alert severity="info" sx={{ mb: 2 }}>
+        反思页同样只是监控与审计视图。这里展示的是九问运行后的分析记录，不反向定义九问当前运行语义。
+      </Alert>
+
       {forcedResults.length > 0 ? (
         <Alert severity="success" sx={{ mb: 2 }}>
           已完成本次强制反思（来源 {sourceQuestionId.toUpperCase() || "Q?"}，触发时间 {forcedAt || "-"}）。
@@ -143,6 +147,38 @@ export default function NineQuestionReflectionsPage() {
                   <Typography variant="body2" sx={{ mt: 0.5 }}>
                     {item.summary}
                   </Typography>
+                  <Stack direction="row" spacing={1} useFlexGap flexWrap="wrap" sx={{ mt: 1 }}>
+                    {itemQId ? (
+                      <>
+                        <Button
+                          size="small"
+                          variant="outlined"
+                          component={RouterLink}
+                          to={`/console/nine-questions/${itemQId}`}
+                        >
+                          查看本问
+                        </Button>
+                        <Button
+                          size="small"
+                          variant="outlined"
+                          component={RouterLink}
+                          to={`/console/nine-questions/${itemQId}/workflow`}
+                        >
+                          查看工作流
+                        </Button>
+                      </>
+                    ) : null}
+                    {item.trace_id ? (
+                      <Button
+                        size="small"
+                        variant="outlined"
+                        component={RouterLink}
+                        to={`/console/audit/transcript-replay/${encodeURIComponent(String(item.trace_id))}`}
+                      >
+                        查看 trace 回放
+                      </Button>
+                    ) : null}
+                  </Stack>
                 </Box>
               );
             })}
@@ -161,6 +197,42 @@ export default function NineQuestionReflectionsPage() {
               <Typography variant="subtitle1">{detail.subject}</Typography>
               <Typography variant="body2" color="text.secondary">
                 {detail.created_at}
+              </Typography>
+              <Stack direction="row" spacing={1} useFlexGap flexWrap="wrap">
+                {detail.context?.question_id ? (
+                  <>
+                    <Chip label={`question: ${String(detail.context.question_id).toUpperCase()}`} variant="outlined" />
+                    <Button
+                      size="small"
+                      variant="outlined"
+                      component={RouterLink}
+                      to={`/console/nine-questions/${String(detail.context.question_id).toLowerCase()}`}
+                    >
+                      回到本问
+                    </Button>
+                    <Button
+                      size="small"
+                      variant="outlined"
+                      component={RouterLink}
+                      to={`/console/nine-questions/${String(detail.context.question_id).toLowerCase()}/workflow`}
+                    >
+                      查看本问工作流
+                    </Button>
+                  </>
+                ) : null}
+                {detail.trace_id ? (
+                  <Button
+                    size="small"
+                    variant="outlined"
+                    component={RouterLink}
+                    to={`/console/audit/transcript-replay/${encodeURIComponent(String(detail.trace_id))}`}
+                  >
+                    查看 trace 回放
+                  </Button>
+                ) : null}
+              </Stack>
+              <Typography variant="body2" sx={{ fontFamily: "monospace" }}>
+                trace_id: {String(detail.trace_id || "-")}
               </Typography>
               <Typography variant="body2">{detail.summary}</Typography>
               <Alert severity="info">

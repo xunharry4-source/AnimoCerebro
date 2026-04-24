@@ -1,3 +1,4 @@
+from __future__ import annotations
 """
 Deep Recall Engine
 -----------------
@@ -5,7 +6,6 @@ Provides a lightweight in‑memory knowledge‑graph built from memory records.
 Supports BFS, DFS and shortest‑path queries with optional path‑explanation.
 """
 
-from __future__ import annotations
 
 import collections
 import heapq
@@ -37,7 +37,7 @@ class MemoryEdge(BaseModel):
     source_id: str = Field(..., min_length=1)
     target_id: str = Field(..., min_length=1)
     weight: float = Field(default=1.0, ge=0.0)
-    created_at: datetime | None = None
+    created_at: Optional[datetime] = None
 
 # ---------------------------------------------------------------------------
 # Engine implementation
@@ -142,7 +142,7 @@ class DeepRecallEngine:
                 stack.append((new_path, visited | {nxt}))
         return results
 
-    def shortest_path(self, start_id: str, goal_id: str) -> List[str] | None:
+    def shortest_path(self, start_id: str, goal_id: str) -> List[Optional[str]]:
         """Dijkstra‑style shortest‑weight path.
 
         Returns a list of memory IDs from ``start_id`` to ``goal_id`` or ``None``

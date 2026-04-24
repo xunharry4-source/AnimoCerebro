@@ -1,3 +1,4 @@
+from __future__ import annotations
 """
 ServiceRegistry — thread-safe registry of all initialised service instances.
 
@@ -5,9 +6,9 @@ Each entry tracks the instance, health state, initialisation duration, and any
 error message that was recorded when marking a service unhealthy.
 """
 
-from __future__ import annotations
 
 import threading
+from typing import Optional
 from dataclasses import dataclass, field
 
 
@@ -61,13 +62,13 @@ class ServiceRegistry:
     # Read operations
     # ------------------------------------------------------------------
 
-    def get(self, name: str) -> object | None:
+    def get(self, name: str) -> Optional[object]:
         """Return the service instance for *name*, or None if not registered."""
         with self._lock:
             entry = self._entries.get(name)
             return entry.instance if entry is not None else None
 
-    def get_entry(self, name: str) -> ServiceEntry | None:
+    def get_entry(self, name: str) -> Optional[ServiceEntry]:
         """Return the full ServiceEntry for *name*, or None."""
         with self._lock:
             return self._entries.get(name)

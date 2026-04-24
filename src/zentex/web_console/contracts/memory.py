@@ -76,7 +76,12 @@ class EnhancedMemoryOverviewPayload(BaseModel):
     deprecated_count: int = 0
     archived_count: int = 0
     suspect_count: int = 0
+    health_status: str = "unknown"
     projection_failures: List[Any] = Field(default_factory=list)
+    initialization_failures: List[Any] = Field(default_factory=list)
+    governance_failures: List[Any] = Field(default_factory=list)
+    package_imports: int = 0
+    contamination_events: int = 0
     backends: List[MemoryBackendStatusItem] = Field(default_factory=list)
 
 
@@ -96,3 +101,80 @@ class EnhancedMemorySearchPayload(BaseModel):
     trace_id: Optional[str] = None
     target_id: Optional[str] = None
     items: List[EnhancedMemoryRecallHitItem] = Field(default_factory=list)
+
+
+class MemoryBlockDescriptorItem(BaseModel):
+    model_config = ConfigDict(extra="ignore")
+
+    block_id: str
+    block_kind: str
+    required: bool = False
+    derived: bool = False
+    codec_chain: List[str] = Field(default_factory=list)
+    content_checksum: str = ""
+    storage_checksum: str = ""
+    status: str = "unknown"
+    repairable: bool = True
+    encryption_context: Optional[str] = None
+    compression_strategy: str = "none"
+    serializer_version: str = ""
+    last_verified_at: Optional[datetime] = None
+
+
+class MemoryRecordManifestItem(BaseModel):
+    model_config = ConfigDict(extra="ignore")
+
+    memory_id: str
+    manifest_version: int = 1
+    descriptors: List[MemoryBlockDescriptorItem] = Field(default_factory=list)
+    updated_at: Optional[datetime] = None
+
+
+class MemoryRepairTicketItem(BaseModel):
+    model_config = ConfigDict(extra="ignore")
+
+    memory_id: str
+    record_health_status: str = "unknown"
+    repaired_blocks: List[str] = Field(default_factory=list)
+    quarantined_blocks: List[str] = Field(default_factory=list)
+    projection_repairs: List[str] = Field(default_factory=list)
+    notes: List[str] = Field(default_factory=list)
+    updated_at: Optional[datetime] = None
+
+
+class MemoryRecordDiagnosticsPayload(BaseModel):
+    model_config = ConfigDict(extra="ignore")
+
+    memory_id: str
+    storage_schema_version: int = 1
+    record_health_status: str = "unknown"
+    repair_status: str = "unknown"
+    header: Dict[str, Any] = Field(default_factory=dict)
+    manifest: Optional[MemoryRecordManifestItem] = None
+    verification: Optional[MemoryRepairTicketItem] = None
+
+
+class MemoryRepairSchedulerStatusPayload(BaseModel):
+    model_config = ConfigDict(extra="ignore")
+
+    enabled: bool = False
+    interval_seconds: int = 0
+    last_cycle_at: Optional[str] = None
+    last_summary: Dict[str, Any] = Field(default_factory=dict)
+
+
+class MemoryRepairAllPayload(BaseModel):
+    model_config = ConfigDict(extra="ignore")
+
+    triggered_by: str = "web_console"
+    scheduler: MemoryRepairSchedulerStatusPayload
+    items: List[MemoryRepairTicketItem] = Field(default_factory=list)
+
+
+MemoryRecordDiagnosticsPayload.model_rebuild()
+MemoryRepairAllPayload.model_rebuild()
+EnhancedMemorySearchPayload.model_rebuild()
+EnhancedMemoryAuditEventItem.model_rebuild()
+EnhancedMemoryAuditPayload.model_rebuild()
+EnhancedMemoryOverviewPayload.model_rebuild()
+EnhancedMemoryRecordsPayload.model_rebuild()

@@ -1,3 +1,4 @@
+from __future__ import annotations
 """
 Plugin Service Bootstrap Module
 
@@ -10,15 +11,16 @@ Key Principle:
   - Bootstrap functions only instantiate plugins through the service
 """
 
-from __future__ import annotations
 
 from dataclasses import dataclass
 import logging
-from typing import Dict, List
+from typing import Dict, List, Optional
 
 from zentex.plugins.contracts import ManagedPluginRecord, PluginFeatureCatalogItem
 from zentex.plugins.service import SystemPluginService
 from zentex.plugins.service.utils import build_managed_plugin_record
+
+from zentex.common.startup_markers import log_once
 
 logger = logging.getLogger(__name__)
 
@@ -88,13 +90,20 @@ def build_managed_plugin_records_from_plugins(
 
 
 def seed_plugin_runtime_bundle(
-    db_path: str = ".zentex/plugins.db",
+    db_path: Optional[str] = None,
 ) -> PluginRuntimeBundle:
     """Create the single plugin runtime bundle used by one startup flow."""
+    if db_path is None:
+        from zentex.common.storage_paths import get_storage_paths
+
+        db_path = str(get_storage_paths().app_data_dir / "plugins.db")
     plugin_service = SystemPluginService(db_path=db_path)
     plugin_service.bootstrap()
+    log_once("plugins.bootstrapped", db_path=db_path)
     plugin_service.activate_all_cognitive(reason="system startup - activate all cognitive plugins")
+    log_once("plugins.activated.cognitive")
     plugin_service.activate_all_functional(reason="system startup - activate all functional plugins")
+    log_once("plugins.activated.functional")
 
     logger.info(
         "[Bootstrap] Plugin service bootstrapped with %s plugins",

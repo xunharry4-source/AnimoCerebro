@@ -38,7 +38,7 @@ class CliToolRuntimeState(BaseModel):
     side_effect_free: bool = True
     mutates_state: bool = False
     requires_cloud_audit: bool = False
-    status: Literal["active", "degraded", "revoked"] = "active"
+    status: Literal["active", "degraded", "revoked", "stopped"] = "active"
     help_doc_url: Optional[str] = None
     project_path: Optional[str] = None
     project_name: Optional[str] = None
@@ -48,7 +48,7 @@ class CliInvocationResult(BaseModel):
     model_config = ConfigDict(extra="forbid", frozen=True)
 
     tool_name: str
-    status: Literal["success", "failed"]
+    status: Literal["success", "failed", "timeout", "transport_error"]
     trace_id: str
     exit_code: int
     stdout: str = ""

@@ -1,6 +1,6 @@
+from __future__ import annotations
 """Public concrete cognitive-tool plugin spec owned by zentex.plugins."""
 
-from __future__ import annotations
 
 from pydantic import ConfigDict, Field, model_validator
 

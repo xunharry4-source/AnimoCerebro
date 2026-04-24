@@ -1,3 +1,4 @@
+from __future__ import annotations
 """
 Public service boundary for zentex.foundation.
 
@@ -5,6 +6,13 @@ All external modules (kernel, launcher, etc.) MUST interact with foundation
 exclusively through this file. No direct imports from foundation submodules.
 """
 
+
+from typing import Any, Dict, List, Optional, Union
+
+import logging
+import os
+import json
+from pathlib import Path
 from datetime import datetime, timezone
 
 from zentex.foundation.contracts import ZentexBaseModel
@@ -34,6 +42,7 @@ from zentex.foundation.meta import (
 )
 
 UTC = timezone.utc
+logger = logging.getLogger(__name__)
 
 # ---------------------------------------------------------------------------
 # Default identity used when no identity is provided at construction
@@ -50,6 +59,35 @@ _DEFAULT_IDENTITY = IdentityCore(
     version=IdentityVersion(created_at=datetime.now(UTC), description="Default foundation identity"),
 )
 
+def _load_identity_from_file() -> Optional[IdentityCore]:
+    """Attempt to load custom identity from the local .zentex directory."""
+    path = Path(".zentex/identity.json")
+    if not path.exists():
+        return None
+        
+    try:
+        payload = json.loads(path.read_text(encoding="utf-8"))
+        if not isinstance(payload, dict):
+            raise ValueError("Identity file must contain a JSON object.")
+            
+        # Handle nested core values (IdentityCore expects tuple)
+        if "core_values" in payload and isinstance(payload["core_values"], list):
+            payload["core_values"] = tuple(payload["core_values"])
+        
+        return IdentityCore(
+            role_name=payload.get("role_name", _DEFAULT_IDENTITY.role_name),
+            mission=payload.get("mission", _DEFAULT_IDENTITY.mission),
+            core_values=payload.get("core_values", _DEFAULT_IDENTITY.core_values),
+            continuity_lock=IdentityLock(
+                locked_fields=frozenset(["role_name", "mission", "core_values"]),
+                lock_reason="Loaded from .zentex/identity.json",
+            ),
+            version=IdentityVersion(created_at=datetime.now(UTC), description="Identity loaded from JSON file"),
+        )
+    except Exception as exc:
+        logger.error(f"CRITICAL: Failed to load identity from .zentex/identity.json: {exc}")
+        # FAIL-CLOSED: No silent fallback to default identity if a specific one was intended.
+        raise RuntimeError(f"Identity Corruption: {exc}. Startup halted to prevent identity drift.") from exc
 
 class FoundationService:
     """Single public interface for the foundation module.
@@ -59,15 +97,27 @@ class FoundationService:
     are prohibited.
     """
 
-    def __init__(self, identity: IdentityCore | None = None) -> None:
+    def __init__(self, identity: Optional[IdentityCore] = None) -> None:
+        if identity is None:
+            identity = _load_identity_from_file()
+            
         resolved_identity = identity if identity is not None else _DEFAULT_IDENTITY
         self._identity_service: IdentityService = IdentityService(resolved_identity)
         self._capability_directory: CapabilityDirectory = DEFAULT_CAPABILITY_DIRECTORY
+        self._start_time: datetime = datetime.now(timezone.utc)
         self._initialized: bool = True
 
     # ------------------------------------------------------------------
     # Version & compatibility
     # ------------------------------------------------------------------
+
+    def get_runtime_id(self) -> str:
+        """Return a unique ID for this foundation service instance."""
+        return f"zentex-{os.getpid()}"
+
+    def get_start_time(self) -> datetime:
+        """Return the initialization time of this foundation service."""
+        return self._start_time
 
     def get_protocol_version(self) -> SystemVersionInfo:
         """Parse and return FOUNDATION_VERSION as a SystemVersionInfo."""
@@ -257,7 +307,7 @@ class FoundationService:
                 "required_fields": ["session_id", "turn_id", "status", "result"],
                 "always_include": ["trace_id", "duration_ms", "audit_log"],
                 "result_structure": {
-                    "cognitive_output": "dict | None",
+                    "cognitive_output": "Optional[dict]",
                     "action_recommendations": "list[dict]",
                     "next_actions": "list[dict]",
                 },
@@ -340,10 +390,10 @@ class FoundationService:
 # Module-level lazy singleton
 # ---------------------------------------------------------------------------
 
-_default_service: FoundationService | None = None
+_default_service: Optional[FoundationService] = None
 
 
-def get_service(identity: IdentityCore | None = None) -> FoundationService:
+def get_service(identity: Optional[IdentityCore] = None) -> FoundationService:
     """Return the module-level FoundationService singleton, creating it if necessary.
 
     If an identity is supplied on first call it is used to construct the

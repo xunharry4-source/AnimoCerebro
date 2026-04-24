@@ -21,8 +21,8 @@ class LLMUpgradeRuntime:
     def __init__(
         self,
         *,
-        optimizer_runner: Callable[[LLMUpgradeCandidate], dict[str, Any]] | None = None,
-        prompt_optimizer_runner: Callable[[LLMUpgradeCandidate], dict[str, Any]] | None = None,
+        optimizer_runner: Callable[[LLMUpgradeCandidate], dict[str, Optional[Any]]] = None,
+        prompt_optimizer_runner: Callable[[LLMUpgradeCandidate], dict[str, Optional[Any]]] = None,
     ) -> None:
         self._optimizer_runner = optimizer_runner
         self._prompt_optimizer_runner = prompt_optimizer_runner
@@ -101,7 +101,7 @@ class LLMUpgradeRuntime:
 
 def build_section_aware_prompt_optimizer_runner(
     *,
-    section_mutator: Callable[[dict[str, Any]], dict[str, Any]] | None,
+    section_mutator: Callable[[dict[str, Any]], dict[str, Optional[Any]]],
     write_back: bool = True,
 ) -> Callable[[LLMUpgradeCandidate], dict[str, Any]]:
     runner = SectionAwarePromptOptimizerRunner(

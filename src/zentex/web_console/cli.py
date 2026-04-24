@@ -56,8 +56,8 @@ def validate_web_console_startup() -> None:
 
 def run_migration_verification(
     *,
-    root: Path | None = None,
-    modules: list[str] | None = None,
+    root: Optional[Path] = None,
+    modules: list[Optional[str]] = None,
 ) -> tuple[list[object], list[SmokeImportResult], str]:
     scan_root = root or Path("src/zentex/web_console")
     smoke_modules = modules or ["zentex.web_console.router", "zentex.web_console.app"]
@@ -70,7 +70,7 @@ def run_migration_verification(
     return scan_findings, smoke_results, report
 
 
-def main(argv: List[str] | None = None) -> int:
+def main(argv: List[Optional[str]] = None) -> int:
     parser = argparse.ArgumentParser(prog="zentex-web-console")
     subparsers = parser.add_subparsers(dest="command", required=True)
     subparsers.add_parser("check-startup", help="Validate web console startup dependencies and runtime assembly")

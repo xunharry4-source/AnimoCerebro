@@ -1,3 +1,4 @@
+from __future__ import annotations
 """Safety Gate (G12) - Autonomous Safety and Alignment Guardrails
 
 ## File Purpose
@@ -34,14 +35,16 @@ escalation, or identity-related operations must pass strict safety validation be
 Based on Zentex Product Document Function 8 (G12)
 """
 
-from __future__ import annotations
 
+import logging
 from datetime import datetime, timezone
 from enum import Enum
 from typing import Any, Dict, List, Literal, Optional, Set
 from uuid import uuid4
 
 from pydantic import BaseModel, ConfigDict, Field
+
+logger = logging.getLogger(__name__)
 
 
 class RiskLevel(str, Enum):
@@ -755,20 +758,41 @@ class SafetyGate:
         return False
 
     def _is_encoded_payload(self, payload: Dict[str, Any]) -> bool:
-        """Detect if payload uses encoding to obscure content."""
-        # Check for encoded content markers
-        encoded_markers = ["encoded", "encrypted", "base64", "obfuscated"]
-        return any(marker in payload for marker in encoded_markers)
+        """Detect if payload uses encoding or obfuscation to obscure content.
+        
+        Policy: Fail-Closed. Any high-entropy or binary-wrapped payload is flagged.
+        """
+        # 1. Check for explicit obfuscation markers in keys OR values
+        obfuscation_keywords = {"encoded", "encrypted", "base64", "obfuscated", "hex", "secret", "hidden"}
+        
+        def _scan(data: Any) -> bool:
+            if isinstance(data, dict):
+                for k, v in data.items():
+                    if any(kw in str(k).lower() for kw in obfuscation_keywords):
+                        return True
+                    if _scan(v):
+                        return True
+            elif isinstance(data, list):
+                return any(_scan(i) for i in data)
+            elif isinstance(data, str):
+                # Structural density check: detect suspicious encoding patterns
+                if any(kw in data.lower() for kw in obfuscation_keywords):
+                    return True
+                # Detect non-human readable high-entropy strings (e.g. data: URI or large base64)
+                if len(data) > 100 and not any(c in data for c in " \n\t"):
+                     return True
+            return False
+
+        return _scan(payload)
 
     def _check_identity_kernel_redlines(
         self,
         action_type: str,
         action_payload: Dict[str, Any],
     ) -> Optional[str]:
-        """Check if action violates identity kernel redlines.
-
-        Returns:
-            Violation description if redline violated, None otherwise
+        """Check if action violates identity kernel redlines using canonical paths.
+        
+        Hard Redline: Protecting the 'Self' from unauthorized modification.
         """
         identity_redlines = self._config.identity_kernel_redlines or [
             "update_identity_kernel",
@@ -778,12 +802,24 @@ class SafetyGate:
         ]
 
         if action_type in identity_redlines:
-            return f"Action '{action_type}' is in identity kernel redline list"
+            return f"Action '{action_type}' is a restricted identity-kernel operation."
 
-        # Check payload for identity-related operations
-        target = action_payload.get("target", "")
-        if isinstance(target, str) and "identity" in target.lower():
-            return f"Payload targets identity component: {target}"
+        # Authentic Path-Based Verification
+        # Check for writes to core identity assets
+        target = str(action_payload.get("target", action_payload.get("path", ""))).lower()
+        
+        PROTECTED_PATHS = [
+            ".zentex/identity/",
+            "config/identity",
+            "src/zentex/kernel/",
+            "src/zentex/foundation/meta.py",
+            ".zentex/continuity_lock"
+        ]
+        
+        for protected in PROTECTED_PATHS:
+            if protected in target:
+                logger.critical(f"IDENTITY PROTECTION BREACH: Action {action_type} attempted to modify protected path: {target}")
+                return f"Unauthorized write attempt to protected identity asset: {target}"
 
         return None
 
@@ -793,25 +829,37 @@ class SafetyGate:
         action_payload: Dict[str, Any],
         is_redline: bool,
     ) -> RiskLevel:
-        """Assess the risk level of an action."""
+        """Assess the risk level of an action with Fail-Closed defaults.
+        
+        Policy: Any unknown action with IO side-effects is HIGH risk.
+        """
         if is_redline:
-            redline = self._redlines.get(action_type)
-            if redline:
-                if redline.requires_human_review:
-                    return RiskLevel.CRITICAL
-                if redline.requires_cloud_audit:
-                    return RiskLevel.HIGH
-                if redline.requires_dual_confirmation:
-                    return RiskLevel.HIGH
-            return RiskLevel.MEDIUM
+            return RiskLevel.HIGH
 
-        # Check payload for risk indicators
+        # 1. IO Intensity Assessment
+        io_keywords = ["write", "delete", "rm", "send", "post", "execute", "run"]
+        if action_type in io_keywords or any(k in action_type for k in io_keywords):
+            return RiskLevel.HIGH
+
+        # 2. Structural Risk (e.g. scripts, command lines)
+        payload_str = str(action_payload).lower()
+        if "command" in payload_str or "script" in payload_str or "exec" in payload_str:
+            return RiskLevel.HIGH
+
+        # 3. Payload-level danger flags
         if action_payload.get("irreversible", False):
             return RiskLevel.HIGH
 
         if action_payload.get("affects_system_state", False):
             return RiskLevel.MEDIUM
 
+        # 4. Default for unknown operations
+        if action_type not in ["read_file", "list_dir", "get_status", "search_web"]:
+            return RiskLevel.MEDIUM
+
+        # Standard redline: do not leave dead risk-classification fragments behind
+        # after refactors. That kind of fake implementation can make safety checks
+        # look complete in tests while real runtime branches are never executed.
         return RiskLevel.LOW
 
 

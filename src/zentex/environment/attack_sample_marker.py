@@ -1,5 +1,5 @@
 """
-G19 - 用户偏好辨析与意图对齐 - 攻击样本标记器
+Alignment - 用户偏好辨析与意图对齐 - 攻击样本标记器
 
 负责标记恶意信号、存储攻击样本、检测同类攻击。
 """
@@ -124,32 +124,27 @@ class AttackSampleMarker:
         time_range: Optional[Tuple[datetime, datetime]] = None,
         limit: int = 50
     ) -> List[AttackSample]:
+        """查询攻击历史，委托给 PreferenceStore.list_attack_samples().
+
+        # POLICY[no-fake-impl]: 此处原先硬返回空列表，使调用者始终看不到任何攻击记录，
+        # 严重破坏安全监控功能。现已实现真实数据库查询。
         """
-        查询攻击历史
-        
-        Args:
-            attack_type_filter: 攻击类型过滤
-            time_range: 时间范围
-            limit: 返回数量限制
-            
-        Returns:
-            攻击样本列表
-        """
-        # 简化实现：返回空列表
-        # 实际应从数据库查询，这里需要扩展 PreferenceStore 添加查询方法
-        return []
+        since: Optional[datetime] = None
+        until: Optional[datetime] = None
+        if time_range is not None:
+            since, until = time_range
+
+        return await self.store.list_attack_samples(
+            attack_type_filter=attack_type_filter,
+            since=since,
+            until=until,
+            limit=limit,
+        )
 
     async def get_attack_statistics(self) -> Dict[str, Any]:
+        """获取攻击统计信息，委托给 PreferenceStore.get_attack_statistics().
+
+        # POLICY[no-fake-impl]: 此处原先硬返回全零统计，使调用者误以为系统从未遭受攻击，
+        # 严重破坏安全感知能力。现已实现真实数据库聚合查询。
         """
-        获取攻击统计信息
-        
-        Returns:
-            统计信息字典
-        """
-        # 简化实现：返回模拟统计数据
-        return {
-            "total_samples": 0,
-            "by_type": {},
-            "recent_attacks_24h": 0,
-            "high_confidence_samples": 0
-        }
+        return await self.store.get_attack_statistics()

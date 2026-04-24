@@ -2,12 +2,12 @@ from __future__ import annotations
 
 import time
 from dataclasses import dataclass
-from enum import StrEnum
+from enum import Enum
 from threading import RLock
-from typing import Any
+from typing import Any, Dict, List, Optional, Union
 
 
-class CacheNamespace(StrEnum):
+class CacheNamespace(str, Enum):
     SESSION = "session"
     STATE = "state"
     TRANSCRIPT_SUMMARY = "transcript_summary"
@@ -37,7 +37,7 @@ class WebConsoleCacheManager:
             "invalidations": 0,
         }
 
-    def get(self, namespace: CacheNamespace, key: str) -> Any | None:
+    def get(self, namespace: CacheNamespace, key: str) -> Optional[Any]:
         compound_key = (str(namespace), key)
         now = time.time()
         with self._lock:
@@ -59,7 +59,7 @@ class WebConsoleCacheManager:
         key: str,
         value: Any,
         *,
-        ttl_seconds: int | None = None,
+        ttl_seconds: Optional[int] = None,
     ) -> None:
         ttl = max(int(ttl_seconds or self._default_ttl_seconds), 1)
         compound_key = (str(namespace), key)
@@ -71,7 +71,7 @@ class WebConsoleCacheManager:
         self,
         namespace: CacheNamespace,
         *,
-        key_prefix: str | None = None,
+        key_prefix: Optional[str] = None,
     ) -> int:
         with self._lock:
             matching_keys = [
@@ -91,7 +91,7 @@ class WebConsoleCacheManager:
             self._entries.clear()
             self._stats["invalidations"] += removed
 
-    def get_stats(self) -> dict[str, int | float]:
+    def get_stats(self) -> dict[str, Union[int, float]]:
         with self._lock:
             total_requests = self._stats["hits"] + self._stats["misses"]
             hit_rate = self._stats["hits"] / total_requests if total_requests else 0.0

@@ -12,6 +12,8 @@ AnimoCerebro is the **Brain** for Agents and Host Systems. It provides an **Exte
 
 AnimoCerebro is responsible for reasoning, role inference, goal generation, risk assessment, memory accumulation, delegation advice, and long-term experience exchange. It is the core engine for AI to achieve high-level cognition and independent action.
 
+**🎉 Major Version Update**: This project has undergone a significant architectural evolution (v2.0) with enhanced modularity, plugin architecture, and autonomous decision-making capabilities. See [Major Version Update](docs/MAJOR_VERSION_UPDATE.md) for details.
+
 ## What It Is
 
 AnimoCerebro is built around a **nine-question cognitive loop**, which drives AI's autonomous decision-making:
@@ -347,11 +349,11 @@ pytest tests/web_console/test_events_stream_integration.py -m integration
 
 ## Next Reading
 
-- [Startup Guide](docs/启动指南.md) - Detailed startup instructions
+- [Startup Guide](docs/operability/STARTUP_AND_TEST.md) - Detailed startup instructions
 - [Quick Start & Test](docs/operability/STARTUP_AND_TEST.md) - One-click commands
 - [Functional Implementation](docs/operability/FUNCTION_MODULES.md) - Feature overview
 - [Latest Directory Map](docs/operability/LATEST_DIRECTORY_MAP.md) - Current project structure
-- [Project Summary](docs/operability/项目总结_当前实现概览.md) - Implementation overview
+- [Project Summary](docs/operability/RUNTIME_AND_TESTS.md) - Implementation overview
 - More documentation can be found in the `docs/` directory.
 
 ## Contact

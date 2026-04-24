@@ -1,10 +1,10 @@
+from __future__ import annotations
 """
 ConfigValidator — validates a StartupConfig and returns a ValidationResult.
 
 Errors block startup; warnings are advisory only.
 """
 
-from __future__ import annotations
 
 from dataclasses import dataclass, field
 

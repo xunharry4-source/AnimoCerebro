@@ -22,6 +22,16 @@ interface Q8EvidencePanelProps {
   elapsedMs?: number;
 }
 
+function normalizeTaskItem(item: any) {
+  if (typeof item === "string") {
+    return { title: item };
+  }
+  if (item && typeof item === "object" && !Array.isArray(item)) {
+    return item;
+  }
+  return { title: String(item ?? "") };
+}
+
 export const Q8EvidencePanel: React.FC<Q8EvidencePanelProps> = ({
   evidence, inference, providerName, elapsedMs = 0,
 }) => {
@@ -33,14 +43,17 @@ export const Q8EvidencePanel: React.FC<Q8EvidencePanelProps> = ({
   const taskRows: any[] = [];
   if (inference?.task_queue) {
     const q = inference.task_queue;
-    (q.next_self_tasks || []).forEach((t, i) => {
-      taskRows.push({ id: `next-${i}`, grid_type: 'NEXT', title: t.title || t.name || t.task || 'MNC', reason: '-', ...t });
+    (q.next_self_tasks || []).forEach((rawItem, i) => {
+      const item = normalizeTaskItem(rawItem);
+      taskRows.push({ id: `next-${i}`, grid_type: 'NEXT', title: item.title || item.name || item.task || 'MNC', reason: '-', ...item });
     });
-    (q.blocked_self_tasks || []).forEach((t, i) => {
-      taskRows.push({ id: `blocked-${i}`, grid_type: 'BLOCKED', title: t.title || t.name || t.task || 'MNC', reason: t.reason || t.blocker_reason || t.block_reason || 'Unknown Block', ...t });
+    (q.blocked_self_tasks || []).forEach((rawItem, i) => {
+      const item = normalizeTaskItem(rawItem);
+      taskRows.push({ id: `blocked-${i}`, grid_type: 'BLOCKED', title: item.title || item.name || item.task || 'MNC', reason: item.reason || item.blocker_reason || item.block_reason || 'Unknown Block', ...item });
     });
-    (q.proactive_actions || []).forEach((t, i) => {
-      taskRows.push({ id: `proactive-${i}`, grid_type: 'PROACTIVE', title: t.title || t.name || t.task || 'MNC', reason: t.intent || t.reason || 'Probing', ...t });
+    (q.proactive_actions || []).forEach((rawItem, i) => {
+      const item = normalizeTaskItem(rawItem);
+      taskRows.push({ id: `proactive-${i}`, grid_type: 'PROACTIVE', title: item.title || item.name || item.task || 'MNC', reason: item.intent || item.reason || 'Probing', ...item });
     });
   }
 
@@ -262,28 +275,37 @@ const Q8DetailedTablesPartition: React.FC<{ inference: Q8WhatShouldIDoNowInferen
     priority: priority,
   }));
 
-  const nextTasksRows = (inference.task_queue?.next_self_tasks || []).map((task: any, idx: number) => ({
+  const nextTasksRows = (inference.task_queue?.next_self_tasks || []).map((rawTask: any, idx: number) => {
+    const task = normalizeTaskItem(rawTask);
+    return ({
     id: `next-${idx}`,
     index: idx + 1,
     taskId: task.task_id || task.id || '-',
     title: task.title || task.name || task.task || '-',
-  }));
+    });
+  });
 
-  const blockedTasksRows = (inference.task_queue?.blocked_self_tasks || []).map((task: any, idx:number) => ({
+  const blockedTasksRows = (inference.task_queue?.blocked_self_tasks || []).map((rawTask: any, idx:number) => {
+    const task = normalizeTaskItem(rawTask);
+    return ({
     id: `blocked-${idx}`,
     index: idx + 1,
     taskId: task.task_id || task.id || '-',
     title: task.title || task.name || task.task || '-',
     reason: task.reason || task.blocker_reason || task.block_reason || '-',
-  }));
+    });
+  });
 
-  const proactiveActionRows = (inference.task_queue?.proactive_actions || []).map((action: any, idx: number) => ({
+  const proactiveActionRows = (inference.task_queue?.proactive_actions || []).map((rawAction: any, idx: number) => {
+    const action = normalizeTaskItem(rawAction);
+    return ({
     id: `proactive-${idx}`,
     index: idx + 1,
     taskId: action.task_id || action.id || '-',
     title: action.title || action.name || action.task || '-',
     intent: action.intent || action.reason || '-',
-  }));
+    });
+  });
 
   // 定义表格列
   const objectiveColumns: GridColDef[] = [
@@ -303,13 +325,13 @@ const Q8DetailedTablesPartition: React.FC<{ inference: Q8WhatShouldIDoNowInferen
 
   const nextTasksColumns: GridColDef[] = [
     { field: 'index', headerName: t("nineQuestions.order"), width: 80 },
-    { field: 'taskId', headerName: 'Task ID', width: 120, sx: { fontFamily: 'monospace' } },
+    { field: 'taskId', headerName: 'Task ID', width: 120 },
     { field: 'title', headerName: t("nineQuestions.taskTitle"), flex: 1, minWidth: 250 },
   ];
 
   const blockedTasksColumns: GridColDef[] = [
     { field: 'index', headerName: t("nineQuestions.order"), width: 80 },
-    { field: 'taskId', headerName: 'Task ID', width: 120, sx: { fontFamily: 'monospace' } },
+    { field: 'taskId', headerName: 'Task ID', width: 120 },
     { field: 'title', headerName: t("nineQuestions.taskTitle"), flex: 1, minWidth: 200 },
     { field: 'reason', headerName: t("nineQuestions.blockerReason"), flex: 1, minWidth: 200, renderCell: (params) => (
       <Typography variant="body2" color="error.main">{params.value}</Typography>
@@ -318,7 +340,7 @@ const Q8DetailedTablesPartition: React.FC<{ inference: Q8WhatShouldIDoNowInferen
 
   const proactiveActionColumns: GridColDef[] = [
     { field: 'index', headerName: t("nineQuestions.order"), width: 80 },
-    { field: 'taskId', headerName: 'Task ID', width: 120, sx: { fontFamily: 'monospace' } },
+    { field: 'taskId', headerName: 'Task ID', width: 120 },
     { field: 'title', headerName: t("nineQuestions.taskTitle"), flex: 1, minWidth: 200 },
     { field: 'intent', headerName: t("nineQuestions.intent"), flex: 1, minWidth: 200 },
   ];

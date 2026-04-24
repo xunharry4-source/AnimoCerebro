@@ -9,6 +9,7 @@ plugin evolution jobs.
 """
 
 from datetime import datetime
+from typing import Any, Dict, List, Optional
 
 from pydantic import BaseModel, ConfigDict, Field
 
@@ -26,53 +27,53 @@ class UpgradeRecordItem(BaseModel):
     reason: str
     trace_id: str
     request_id: str
-    source_event_id: str | None = None
-    parent_record_id: str | None = None
+    source_event_id: Optional[str] = None
+    parent_record_id: Optional[str] = None
     evidence_refs: list[str] = Field(default_factory=list)
     change_summary: str
     function_summary: str
-    previous_version: str | None = None
+    previous_version: Optional[str] = None
     current_version: str
-    candidate_version: str | None = None
+    candidate_version: Optional[str] = None
     current_status: str
     lifecycle_view: str
     current_progress: int = Field(ge=0, le=100)
-    success_stage: str | None = None
-    success_summary: str | None = None
-    reusable_insight: str | None = None
-    successful_command: str | None = None
+    success_stage: Optional[str] = None
+    success_summary: Optional[str] = None
+    reusable_insight: Optional[str] = None
+    successful_command: Optional[str] = None
     success_artifact_refs: list[str] = Field(default_factory=list)
-    promotion_hint: str | None = None
+    promotion_hint: Optional[str] = None
     success_tags: list[str] = Field(default_factory=list)
-    failure_reason: str | None = None
-    failure_stage: str | None = None
-    failure_code: str | None = None
-    failure_summary: str | None = None
-    root_cause_hypothesis: str | None = None
-    failed_command: str | None = None
+    failure_reason: Optional[str] = None
+    failure_stage: Optional[str] = None
+    failure_code: Optional[str] = None
+    failure_summary: Optional[str] = None
+    root_cause_hypothesis: Optional[str] = None
+    failed_command: Optional[str] = None
     failed_artifact_refs: list[str] = Field(default_factory=list)
-    retryable: bool | None = None
-    prevention_hint: str | None = None
+    retryable: Optional[bool] = None
+    prevention_hint: Optional[str] = None
     learning_tags: list[str] = Field(default_factory=list)
-    source_path: str | None = None
-    candidate_path: str | None = None
-    memory_recall_query: str | None = None
+    source_path: Optional[str] = None
+    candidate_path: Optional[str] = None
+    memory_recall_query: Optional[str] = None
     recalled_memory_ids: list[str] = Field(default_factory=list)
     recalled_success_patterns: list[str] = Field(default_factory=list)
     recalled_failure_patterns: list[str] = Field(default_factory=list)
     recalled_suspect_patterns: list[str] = Field(default_factory=list)
-    memory_recall_summary: str | None = None
+    memory_recall_summary: Optional[str] = None
     audit_status: str
     memory_status: str
     created_at: datetime
     updated_at: datetime
-    started_at: datetime | None = None
-    finished_at: datetime | None = None
+    started_at: Optional[datetime] = None
+    finished_at: Optional[datetime] = None
     payload: dict[str, object] = Field(default_factory=dict)
-    prompt_target_file: str | None = None
+    prompt_target_file: Optional[str] = None
     prompt_upgrade_sections: list[str] = Field(default_factory=list)
     prompt_upgrade_notes: list[str] = Field(default_factory=list)
-    prompt_upgrade_summary: str | None = None
+    prompt_upgrade_summary: Optional[str] = None
     can_cancel: bool = False
     can_cleanup_failed_candidate: bool = False
 
@@ -93,7 +94,7 @@ class UpgradeRecordCollection(BaseModel):
 
     target_kind: str
     lifecycle: str
-    action_filter: str | None = None
+    action_filter: Optional[str] = None
     counts: UpgradeCountSummary
     items: list[UpgradeRecordItem] = Field(default_factory=list)
 
@@ -136,13 +137,13 @@ class ExecuteLLMUpgradeRequest(BaseModel):
     model_config = ConfigDict(extra="forbid", frozen=True)
 
     reason: str = Field(min_length=1)
-    trace_id: str | None = None
-    request_id: str | None = None
-    source_event_id: str | None = None
-    parent_record_id: str | None = None
+    trace_id: Optional[str] = None
+    request_id: Optional[str] = None
+    source_event_id: Optional[str] = None
+    parent_record_id: Optional[str] = None
     evidence_refs: list[str] = Field(default_factory=list)
     change_signals: list[str] = Field(default_factory=list)
-    upgrade_required: bool | None = None
+    upgrade_required: Optional[bool] = None
     upgrade_request: LLMUpgradeRequest
 
 
@@ -157,8 +158,8 @@ class UpgradeAuditEventItem(BaseModel):
     record_id: str
     trace_id: str
     request_id: str
-    source_event_id: str | None = None
-    parent_record_id: str | None = None
+    source_event_id: Optional[str] = None
+    parent_record_id: Optional[str] = None
     target_kind: str
     action: str
     target_id: str
@@ -168,28 +169,28 @@ class UpgradeAuditEventItem(BaseModel):
     summary: str
     current_status: str
     current_progress: int = Field(ge=0, le=100)
-    previous_version: str | None = None
+    previous_version: Optional[str] = None
     current_version: str
-    candidate_version: str | None = None
-    success_stage: str | None = None
-    success_summary: str | None = None
-    reusable_insight: str | None = None
-    successful_command: str | None = None
+    candidate_version: Optional[str] = None
+    success_stage: Optional[str] = None
+    success_summary: Optional[str] = None
+    reusable_insight: Optional[str] = None
+    successful_command: Optional[str] = None
     success_artifact_refs: list[str] = Field(default_factory=list)
-    promotion_hint: str | None = None
+    promotion_hint: Optional[str] = None
     success_tags: list[str] = Field(default_factory=list)
-    failure_reason: str | None = None
-    failure_stage: str | None = None
-    failure_code: str | None = None
-    failure_summary: str | None = None
-    root_cause_hypothesis: str | None = None
-    failed_command: str | None = None
+    failure_reason: Optional[str] = None
+    failure_stage: Optional[str] = None
+    failure_code: Optional[str] = None
+    failure_summary: Optional[str] = None
+    root_cause_hypothesis: Optional[str] = None
+    failed_command: Optional[str] = None
     failed_artifact_refs: list[str] = Field(default_factory=list)
-    retryable: bool | None = None
-    prevention_hint: str | None = None
+    retryable: Optional[bool] = None
+    prevention_hint: Optional[str] = None
     learning_tags: list[str] = Field(default_factory=list)
-    source_path: str | None = None
-    candidate_path: str | None = None
+    source_path: Optional[str] = None
+    candidate_path: Optional[str] = None
     evidence_refs: list[str] = Field(default_factory=list)
     payload: dict[str, object] = Field(default_factory=dict)
     created_at: datetime
@@ -202,8 +203,8 @@ class UpgradeMemoryRecordItem(BaseModel):
     record_id: str
     trace_id: str
     request_id: str
-    source_event_id: str | None = None
-    parent_record_id: str | None = None
+    source_event_id: Optional[str] = None
+    parent_record_id: Optional[str] = None
     target_kind: str
     action: str
     target_id: str
@@ -213,26 +214,34 @@ class UpgradeMemoryRecordItem(BaseModel):
     summary: str
     current_status: str
     current_progress: int = Field(ge=0, le=100)
-    previous_version: str | None = None
+    previous_version: Optional[str] = None
     current_version: str
-    candidate_version: str | None = None
-    success_stage: str | None = None
-    success_summary: str | None = None
-    reusable_insight: str | None = None
-    successful_command: str | None = None
+    candidate_version: Optional[str] = None
+    success_stage: Optional[str] = None
+    success_summary: Optional[str] = None
+    reusable_insight: Optional[str] = None
+    successful_command: Optional[str] = None
     success_artifact_refs: list[str] = Field(default_factory=list)
-    promotion_hint: str | None = None
+    promotion_hint: Optional[str] = None
     success_tags: list[str] = Field(default_factory=list)
-    failure_reason: str | None = None
-    failure_stage: str | None = None
-    failure_code: str | None = None
-    failure_summary: str | None = None
-    root_cause_hypothesis: str | None = None
-    failed_command: str | None = None
+    failure_reason: Optional[str] = None
+    failure_stage: Optional[str] = None
+    failure_code: Optional[str] = None
+    failure_summary: Optional[str] = None
+    root_cause_hypothesis: Optional[str] = None
+    failed_command: Optional[str] = None
     failed_artifact_refs: list[str] = Field(default_factory=list)
-    retryable: bool | None = None
-    prevention_hint: str | None = None
+    retryable: Optional[bool] = None
+    prevention_hint: Optional[str] = None
     learning_tags: list[str] = Field(default_factory=list)
     evidence_refs: list[str] = Field(default_factory=list)
     payload: dict[str, object] = Field(default_factory=dict)
     created_at: datetime
+    
+    
+UpgradeRecordItem.model_rebuild()
+UpgradeOverviewPayload.model_rebuild()
+UpgradesByLifecycleViewPayload.model_rebuild()
+UpgradeAuditEventItem.model_rebuild()
+UpgradeMemoryRecordItem.model_rebuild()
+ExecuteLLMUpgradeRequest.model_rebuild()

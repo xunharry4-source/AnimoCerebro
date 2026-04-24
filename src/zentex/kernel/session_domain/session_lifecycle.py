@@ -1,3 +1,7 @@
+from __future__ import annotations
+
+from typing import Any, Dict, List, Optional, Union
+
 """SessionLifecycleManager — thread-safe CRUD operations over KernelSessions."""
 
 import threading
@@ -32,7 +36,7 @@ class SessionLifecycleManager:
             self._sessions[session_id] = session
         return session
 
-    def get_session(self, session_id: str) -> KernelSession | None:
+    def get_session(self, session_id: str) -> Optional[KernelSession]:
         """Return the KernelSession for *session_id*, or None if unknown."""
         with self._lock:
             return self._sessions.get(session_id)

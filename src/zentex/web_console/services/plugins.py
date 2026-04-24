@@ -1,3 +1,4 @@
+from __future__ import annotations
 """
 Plugin Service Thin Adapter — Web Console Layer.
 
@@ -13,7 +14,6 @@ DECOUPLING POLICY (Zentex Codex §2):
 This module must remain a 'Logic-Free Zone'. All business logic lives in 
 `zentex.plugins.service.query.QueryService`.
 """
-from __future__ import annotations
 import logging
 from typing import Any, Dict, List, Optional
 
@@ -234,40 +234,62 @@ def build_functional_plugin_detail(
     )
 
 
-def run_managed_plugin_test(
+async def run_managed_plugin_test(
     plugin_service: Any, 
     plugin_id: str, 
     test_payload: Dict[str, Any]
 ) -> Dict[str, Any]:
-    """Delegate plugin test execution to plugin service."""
+    """Delegate plugin test execution to plugin service.
+    
+    NOTE: SystemPluginService does not have a generic run_plugin_test method.
+    We fall back to run_health_check which is the closest functional equivalent
+    for verifying a plugin instance.
+    """
     if plugin_service is None:
-        return {"status": "failed", "error": "plugin_service_unavailable"}
+        raise RuntimeError("plugin_service_unavailable")
     
     try:
-        result = plugin_service.run_plugin_test(plugin_id, test_payload)
-        if isinstance(result, dict):
-            return result
-        return {"status": "passed", "plugin_id": plugin_id}
+        # run_health_check is async in SystemPluginService
+        report = await plugin_service.run_health_check(plugin_id)
+        
+        # Convert HealthReport dataclass to dict for web response
+        from dataclasses import asdict
+        return asdict(report)
     except Exception as exc:
-        return {"status": "failed", "error": str(exc), "plugin_id": plugin_id}
+        logger.exception("run_managed_plugin_test failed for %s", plugin_id)
+        raise
 
 
-def force_enable_managed_plugin(plugin_service: Any, plugin_id: str) -> None:
-    """Delegate force-enable to plugin service."""
+def force_enable_managed_plugin(
+    plugin_service: Any, 
+    plugin_id: str,
+    reason: str = "Web Console Force-Enable"
+) -> None:
+    """Delegate enable to plugin service."""
     if plugin_service is not None:
         try:
-            plugin_service.force_enable(plugin_id)
+            plugin_service.enable_plugin(plugin_id, reason=reason)
         except Exception as exc:
-            logger.warning("force_enable_managed_plugin: %s", exc)
+            # Do not swallow force-enable failures. Pretending the control operation
+            # completed while only logging a warning makes the plugin page lie.
+            logger.exception("force_enable_managed_plugin failed for %s", plugin_id)
+            raise
 
 
-def force_disable_managed_plugin(plugin_service: Any, plugin_id: str) -> None:
-    """Delegate force-disable to plugin service."""
+def force_disable_managed_plugin(
+    plugin_service: Any, 
+    plugin_id: str,
+    reason: str = "Web Console Force-Disable"
+) -> None:
+    """Delegate disable to plugin service."""
     if plugin_service is not None:
         try:
-            plugin_service.force_disable(plugin_id)
+            plugin_service.disable_plugin(plugin_id, reason=reason)
         except Exception as exc:
-            logger.warning("force_disable_managed_plugin: %s", exc)
+            # Do not swallow force-disable failures. Warning-only behavior fakes a
+            # successful control action while the runtime state stays unchanged.
+            logger.exception("force_disable_managed_plugin failed for %s", plugin_id)
+            raise
 
 
 def build_force_enable_response(

@@ -1,3 +1,5 @@
+from __future__ import annotations
+
 """
 Environment Scouter / 环境侦察器
 
@@ -8,6 +10,7 @@ Provides debounced, smoothed output with proper failure handling.
 提供去抖、平滑输出和适当的故障处理。
 """
 
+import logging
 import os
 import platform
 import socket
@@ -15,7 +18,9 @@ import subprocess
 import sys
 from datetime import datetime, timezone
 from threading import Lock
-from typing import Any
+from typing import Any, Dict, List, Optional, Union
+
+logger = logging.getLogger(__name__)
 
 from zentex.environment.models import (
     HealthStatus,
@@ -25,7 +30,7 @@ from zentex.environment.models import (
 )
 
 
-def _safe_float(value: str | None) -> float | None:
+def _safe_float(value: Optional[str]) -> Optional[float]:
     """Safely convert string to float."""
     if value is None:
         return None
@@ -35,7 +40,7 @@ def _safe_float(value: str | None) -> float | None:
         return None
 
 
-def _classify_memory_pressure(used_ratio: float | None) -> MemoryPressureLevel:
+def _classify_memory_pressure(used_ratio: Optional[float]) -> MemoryPressureLevel:
     """Classify memory pressure based on usage ratio."""
     if used_ratio is None:
         return MemoryPressureLevel.UNKNOWN
@@ -48,7 +53,7 @@ def _classify_memory_pressure(used_ratio: float | None) -> MemoryPressureLevel:
     return MemoryPressureLevel.NORMAL
 
 
-def _read_linux_memory_info() -> tuple[float | None, int | None, int | None]:
+def _read_linux_memory_info() -> tuple[Optional[float], Optional[int], Optional[int]]:
     """Read memory information from /proc/meminfo on Linux."""
     meminfo: dict[str, float] = {}
     try:
@@ -74,14 +79,14 @@ def _read_linux_memory_info() -> tuple[float | None, int | None, int | None]:
     return max(0.0, min(1.0, used_ratio)), int(total), int(available)
 
 
-def _read_darwin_memory_info() -> tuple[float | None, int | None, int | None]:
+def _read_darwin_memory_info() -> tuple[Optional[float], Optional[int], Optional[int]]:
     """Read memory information on macOS using sysctl and vm_stat."""
     try:
         total_raw = subprocess.check_output(
-            ["sysctl", "-n", "hw.memsize"], text=True
+            ["sysctl", "-n", "hw.memsize"], encoding="utf-8", errors="replace"
         ).strip()
         total = _safe_float(total_raw)
-        vm_stat = subprocess.check_output(["vm_stat"], text=True)
+        vm_stat = subprocess.check_output(["vm_stat"], encoding="utf-8", errors="replace")
     except (OSError, subprocess.SubprocessError):
         return None, None, None
     
@@ -122,7 +127,7 @@ def _read_darwin_memory_info() -> tuple[float | None, int | None, int | None]:
     return max(0.0, min(1.0, used_ratio)), int(total), int(available)
 
 
-def _read_memory_info() -> tuple[float | None, int | None, int | None]:
+def _read_memory_info() -> tuple[Optional[float], Optional[int], Optional[int]]:
     """Read memory information based on platform."""
     if sys.platform.startswith("linux"):
         return _read_linux_memory_info()
@@ -133,7 +138,7 @@ def _read_memory_info() -> tuple[float | None, int | None, int | None]:
         return None, None, None
 
 
-def _has_non_loopback_interface_psutil() -> tuple[bool, bool] | None:
+def _has_non_loopback_interface_psutil() -> tuple[bool, Optional[bool]]:
     """Check for non-loopback network interfaces using psutil."""
     try:
         import psutil  # type: ignore
@@ -179,7 +184,7 @@ def _has_non_loopback_interface_fallback() -> tuple[bool, bool]:
     """Fallback method to check network interfaces using ifconfig."""
     try:
         output = subprocess.check_output(
-            ["ifconfig"], text=True, stderr=subprocess.DEVNULL
+            ["ifconfig"], encoding="utf-8", errors="replace", stderr=subprocess.DEVNULL
         )
     except (OSError, subprocess.SubprocessError):
         return False, False
@@ -243,8 +248,8 @@ def _read_network_health() -> tuple[NetworkHealthStatus, bool, bool]:
 def _assess_overall_health(
     memory_pressure: MemoryPressureLevel,
     network_health: NetworkHealthStatus,
-    cpu_load: float | None,
-    disk_usage: float | None,
+    cpu_load: Optional[float],
+    disk_usage: Optional[float],
 ) -> HealthStatus:
     """Assess overall host health based on individual metrics."""
     # Critical conditions
@@ -301,8 +306,8 @@ class EnvironmentScouter:
         self.sampling_source = sampling_source
         
         self._lock = Lock()
-        self._last_state: PhysicalHostState | None = None
-        self._last_change_time: datetime | None = None
+        self._last_state: Optional[PhysicalHostState] = None
+        self._last_change_time: Optional[datetime] = None
     
     def sample_host_state(self) -> PhysicalHostState:
         """
@@ -368,7 +373,7 @@ class EnvironmentScouter:
         
         return debounced_state
     
-    def _read_cpu_load(self) -> float | None:
+    def _read_cpu_load(self) -> Optional[float]:
         """Read CPU load percentage."""
         try:
             if sys.platform.startswith("linux"):
@@ -382,7 +387,7 @@ class EnvironmentScouter:
             elif sys.platform == "darwin":
                 # Use top command on macOS
                 output = subprocess.check_output(
-                    ["top", "-l", "1", "-s", "0"], text=True, stderr=subprocess.DEVNULL
+                    ["top", "-l", "1", "-s", "0"], encoding="utf-8", errors="replace", stderr=subprocess.DEVNULL
                 )
                 for line in output.splitlines():
                     if "CPU usage" in line:
@@ -392,18 +397,18 @@ class EnvironmentScouter:
                             usage_str = parts[1].strip().split("%")[0]
                             return _safe_float(usage_str)
         except Exception:
-            pass
+            logger.debug("Failed to sample CPU usage via top output", exc_info=True)
         
         return None
     
-    def _get_cpu_count(self) -> int | None:
+    def _get_cpu_count(self) -> Optional[int]:
         """Get number of CPU cores."""
         try:
             return os.cpu_count()
         except Exception:
             return None
     
-    def _read_disk_usage(self) -> tuple[float | None, int | None]:
+    def _read_disk_usage(self) -> tuple[Optional[float], Optional[int]]:
         """Read disk usage percentage and free space."""
         try:
             statvfs = os.statvfs("/")
@@ -418,8 +423,8 @@ class EnvironmentScouter:
         self,
         memory_pressure: MemoryPressureLevel,
         network_health: NetworkHealthStatus,
-        cpu_load: float | None,
-        disk_usage: float | None,
+        cpu_load: Optional[float],
+        disk_usage: Optional[float],
     ) -> list[str]:
         """Generate warning messages based on metrics."""
         warnings = []
@@ -501,7 +506,7 @@ class EnvironmentScouter:
         
         return False
     
-    def get_last_state(self) -> PhysicalHostState | None:
+    def get_last_state(self) -> Optional[PhysicalHostState]:
         """Get the last sampled state without triggering a new sample."""
         with self._lock:
             return self._last_state

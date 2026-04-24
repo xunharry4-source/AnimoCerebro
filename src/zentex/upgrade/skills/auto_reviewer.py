@@ -1,3 +1,4 @@
+from __future__ import annotations
 """
 Automated Two-Stage Code Reviewer - Performs automated code quality review.
 
@@ -10,13 +11,15 @@ Stages:
 2. Code Quality Review - Assess code quality using LLM analysis
 """
 
-from __future__ import annotations
 
 import ast
+import logging
 import os
 import re
-from typing import List, Optional
+from typing import List, Optional, Any, Dict, Union
 from datetime import datetime
+
+logger = logging.getLogger(__name__)
 
 from pydantic import BaseModel, Field
 from zentex.upgrade.skills.auto_reviewer_llm_prompt import build_code_review_prompt
@@ -300,7 +303,8 @@ class AutomatedTwoStageReviewer:
                             suggestion="Address quality concerns identified by AI review"
                         ))
             except Exception:
-                # LLM review failure is not blocking
+                # POLICY[no-silent-except]: LLM review failure is non-blocking but must be logged.
+                logger.warning("LLM quality review failed for candidate — skipping", exc_info=True)
                 passed_checks.append("llm_quality_review_skipped")
         
         # Determine overall status
@@ -352,8 +356,9 @@ class AutomatedTwoStageReviewer:
                                         if node.name in required_interfaces:
                                             found_interfaces.append(node.name)
                         except Exception:
-                            pass
-            
+                            # POLICY[no-silent-except]: log unreadable/unparseable files.
+                            logger.debug("Could not parse %s for interface check — skipping", filepath, exc_info=True)
+
             success = len(found_interfaces) > 0
             return {
                 "success": success,
@@ -377,7 +382,7 @@ class AutomatedTwoStageReviewer:
         
         forbidden_patterns = [
             (r'os\.system\s*\(', 'os.system() - arbitrary command execution'),
-            (r'subprocess\.(run|call|Popen)\s*\(', 'subprocess - process spawning'),
+            (r'subprocess\.(Union[run, Union[call], Popen])\s*\(', 'subprocess - process spawning'),
             (r'eval\s*\(', 'eval() - code injection risk'),
             (r'exec\s*\(', 'exec() - code execution'),
             (r'__import__\s*\(', '__import__() - dynamic import'),
@@ -394,8 +399,8 @@ class AutomatedTwoStageReviewer:
                                 if re.search(pattern, content):
                                     violations.append(f"{filepath}: {description}")
                     except Exception:
-                        pass
-        
+                        # POLICY[no-silent-except]: log unreadable files; skip them.
+                        logger.debug("Could not read %s for pattern check — skipping", filepath, exc_info=True)
         return violations
     
     async def _verify_version_bumped(self, candidate) -> bool:
@@ -409,8 +414,10 @@ class AutomatedTwoStageReviewer:
             
             return baseline != cand_version
         except Exception:
+            # POLICY[no-silent-except]: log and treat as non-blocking (assume OK).
+            logger.debug("Could not verify version bump — assuming OK", exc_info=True)
             return True
-    
+
     async def _verify_tests_included(self, candidate) -> bool:
         """Check if test files are included."""
         try:
@@ -427,8 +434,10 @@ class AutomatedTwoStageReviewer:
             
             return False
         except Exception:
+            # POLICY[no-silent-except]: log and treat as non-blocking (assume OK).
+            logger.debug("Could not verify test inclusion — assuming OK", exc_info=True)
             return True
-    
+
     async def _verify_syntax(self, candidate) -> dict:
         """Verify Python syntax validity."""
         try:
@@ -503,10 +512,12 @@ class AutomatedTwoStageReviewer:
                                             suggestion="Remove trailing whitespace"
                                         ))
                         except Exception:
-                            pass
+                            # POLICY[no-silent-except]: log unreadable files; skip them.
+                            logger.debug("Could not read %s for style check — skipping", filepath, exc_info=True)
         except Exception:
-            pass
-        
+            # POLICY[no-silent-except]: log outer style-check failure; return what we found.
+            logger.warning("Style check walk failed — returning partial results", exc_info=True)
+
         return issues
     
     async def _verify_error_handling(self, candidate) -> dict:
@@ -528,13 +539,16 @@ class AutomatedTwoStageReviewer:
                                     has_try_except = True
                                     break
                         except Exception:
-                            pass
-            
+                            # POLICY[no-silent-except]: log unreadable files; skip them.
+                            logger.debug("Could not read %s for error-handling check — skipping", filepath, exc_info=True)
+
             return {
                 "adequate": has_try_except,
                 "detail": "Error handling found" if has_try_except else "No error handling detected"
             }
         except Exception:
+            # POLICY[no-silent-except]: log and treat as non-blocking (assume OK).
+            logger.warning("Error-handling verification failed — assuming adequate", exc_info=True)
             return {"adequate": True, "detail": "Verification skipped"}
     
     async def _llm_code_review(self, candidate) -> dict:
@@ -556,7 +570,8 @@ class AutomatedTwoStageReviewer:
                                 with open(filepath, 'r', encoding='utf-8') as f:
                                     code_snippets.append(f"# File: {filepath}\n{f.read()}")
                             except Exception:
-                                pass
+                                # POLICY[no-silent-except]: log unreadable files; skip them.
+                                logger.debug("Could not read %s for LLM review — skipping", filepath, exc_info=True)
             
             if not code_snippets:
                 return {"passed": True, "issues": [], "detail": "No code to review"}
@@ -574,8 +589,9 @@ class AutomatedTwoStageReviewer:
                     data = json.loads(response[start_idx:end_idx])
                     return data
             except Exception:
-                pass
-            
+                # POLICY[no-silent-except]: log JSON parse failure from LLM response.
+                logger.debug("Could not parse LLM review response as JSON — treating as inconclusive", exc_info=True)
+
             return {"passed": True, "issues": [], "detail": "LLM review inconclusive"}
         except Exception as e:
             return {"passed": True, "issues": [], "detail": f"LLM review failed: {str(e)}"}

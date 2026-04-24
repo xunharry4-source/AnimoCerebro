@@ -1,3 +1,5 @@
+from __future__ import annotations
+
 """
 Helper utilities for nine questions router.
 
@@ -5,7 +7,6 @@ Contains general-purpose helper functions used across all question modules.
 """
 
 from typing import Any, Dict, List, Optional
-from pathlib import Path
 from pydantic import BaseModel
 
 # Note: startup_snapshot import removed - module not available in web_console context
@@ -24,7 +25,7 @@ def _normalize_health_status(value: object) -> str:
     return "unknown"
 
 
-def _serialize_contract_payload(value: object) -> dict[str, object] | None:
+def _serialize_contract_payload(value: object) -> dict[str, Optional[object]]:
     """Serialize contract payload to JSON-compatible dict."""
     if isinstance(value, BaseModel):
         return value.model_dump(mode="json")
@@ -40,7 +41,7 @@ def _coerce_string_list(value: object) -> list[str]:
     return [str(item) for item in value if str(item).strip()]
 
 
-def _humanize_constraint_text(value: object) -> str | None:
+def _humanize_constraint_text(value: object) -> Optional[str]:
     """Humanize constraint text with predefined labels."""
     labels = {
         "NO_FAKE_RUNTIME_STATE": "禁止伪造运行态事实或虚构系统状态",
@@ -89,21 +90,11 @@ def _build_runtime_workspace_snapshot(
     *,
     workspace_root: str,
     cognitive_registry: Any,
-    execution_registry: object | None,
-    task_service: object | None,
-    host_telemetry_plugin: object | None = None,
+    execution_registry: Optional[object],
+    task_service: Optional[object],
+    host_telemetry_plugin: Optional[object] = None,
 ) -> dict[str, object]:
-    """Build runtime workspace snapshot for nine questions context.
-    
-    Note: This is a stub - actual implementation requires runtime module.
-    Returns minimal snapshot structure.
-    """
-    # Return minimal snapshot - this should be populated from kernel/runtime
-    return {
-        "workspace_root": workspace_root,
-        "cognitive_registry": str(cognitive_registry),
-        "execution_registry": str(execution_registry),
-        "task_service": str(task_service),
-        "environment_summary": "web_console_nine_questions_context",
-        "host_telemetry_plugin": str(host_telemetry_plugin),
-    }
+    raise RuntimeError(
+        "_build_runtime_workspace_snapshot is not implemented in web_console; "
+        "runtime workspace snapshots must come from the real kernel/runtime pipeline."
+    )

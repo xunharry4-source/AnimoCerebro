@@ -56,12 +56,12 @@ def derive_feature_code(plugin: Any) -> str:
 def build_managed_plugin_record(
     plugin: Any,
     *,
-    feature_code: str | None = None,
-    supports_multiple_plugins: bool | None = None,
+    feature_code: Optional[str] = None,
+    supports_multiple_plugins: Optional[bool] = None,
     is_default: bool = False,
     is_official_release: bool = True,
     source_kind: str = "builtin",
-    description: str | None = None,
+    description: Optional[str] = None,
 ) -> ManagedPluginRecord:
     """Canonical builder for in-memory plugin records, moved from web_console."""
     timestamp = datetime.now(timezone.utc)

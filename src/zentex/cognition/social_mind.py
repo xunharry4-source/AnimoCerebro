@@ -9,7 +9,7 @@ Interaction mind engine / 社会心智模型引擎。
 """
 
 from datetime import datetime, timezone
-from typing import Any, Dict, List, Literal, Optional
+from typing import Any, Dict, List, Literal, Optional, Union
 from uuid import uuid4
 
 from pydantic import BaseModel, ConfigDict, Field
@@ -111,11 +111,11 @@ class InteractionMindEngine:
     def __init__(
         self,
         *,
-        llm_service: LLMService | None = None,
-        model_provider: ModelProviderSpec | None = None,
-        model_provider_key: str | None = None,
+        llm_service: Optional[LLMService] = None,
+        model_provider: Optional[ModelProviderSpec] = None,
+        model_provider_key: Optional[str] = None,
         brain_scope: str = "zentex.runtime",
-        initial_states: Dict[str, InteractionMindState] | None = None,
+        initial_states: Dict[str, Optional[InteractionMindState]] = None,
     ) -> None:
         """
         初始化社会心智模型引擎。
@@ -127,7 +127,7 @@ class InteractionMindEngine:
             initial_states: 可选的初始快照，用于开发态或测试态种子。
         """
         self._llm_service = llm_service
-        self._model_provider: ModelProviderSpec | None = model_provider
+        self._model_provider: Optional[ModelProviderSpec] = model_provider
         self._model_provider_key = model_provider_key
         self._brain_scope: str = brain_scope
         self._states: Dict[str, InteractionMindState] = dict(initial_states or {})
@@ -140,10 +140,6 @@ class InteractionMindEngine:
     def get_state(self, entity_id: str) -> Optional[InteractionMindState]:
         """读取指定交互对象的最新心智状态。"""
         return self._states.get(entity_id)
-
-    def seed_state(self, state: InteractionMindState) -> None:
-        """注入开发态或测试态的已知状态。"""
-        self._states[state.entity_id] = state
 
     def infer_interaction_mind(
         self,
@@ -203,36 +199,101 @@ class InteractionMindEngine:
                 )
             else:
                 raise RuntimeError("LLM MANDATORY: missing llm_service and model_provider fallback")
-        except Exception:
+        except Exception as exc:
+            # Policy: Propagate critical infrastructure errors for Fail-Closed
+            logger.error(f"Interaction Mind: Infrastructure failure during inference: {exc}")
             raise
+            
+        # Policy: Ambiguity Recognition - if payload is garbage or lacks model, enter clarification mode
+        if not payload or not isinstance(payload, dict) or "model" not in payload:
+            logger.warning(f"Interaction Mind: Inference ambiguity for {entity_id}. Falling back to authentic-unknown state.")
+            inferred_state = self._harvest_ambiguity_state(
+                entity_id=entity_id,
+                snapshot_version=snapshot_version,
+                context=context,
+                previous_state=current_state
+            )
+        else:
+            inferred_state = InteractionMindState(
+                entity_id=entity_id,
+                brain_scope=self._brain_scope,
+                snapshot_version=snapshot_version + 1,
+                clarification_mode=False,
+                model=InteractionMindModel.model_validate(
+                    {
+                        "entity_id": entity_id,
+                        **dict(payload.get("model") or {}),
+                        "last_updated_at": datetime.now(timezone.utc),
+                    }
+                ),
+                knowledge_gap=KnowledgeGapEstimate.model_validate(
+                    {"entity_id": entity_id, **dict(payload.get("knowledge_gap") or {})}
+                ),
+                communication_fit=CommunicationFitProfile.model_validate(
+                    {"entity_id": entity_id, **dict(payload.get("communication_fit") or {})}
+                ),
+                misunderstanding_signals=[
+                    MisunderstandingSignal.model_validate(
+                        {"entity_id": entity_id, **dict(signal)}
+                    )
+                    for signal in list(payload.get("misunderstanding_signals") or [])
+                ],
+            )
+            
+        self._states[entity_id] = inferred_state
+        return inferred_state
 
-        inferred_state = InteractionMindState(
+    def _harvest_ambiguity_state(
+        self,
+        *,
+        entity_id: str,
+        snapshot_version: int,
+        context: Dict[str, Any],
+        previous_state: Optional[InteractionMindState],
+    ) -> InteractionMindState:
+        """Constructs an honest 'Unknown' state when inference cannot proceed with high confidence."""
+        role_hint: str = str(context.get("observed_role_hint") or context.get("role_hint") or "unknown partner")
+        if previous_state and not role_hint:
+            role_hint = previous_state.model.role_hint
+            
+        return InteractionMindState(
             entity_id=entity_id,
             brain_scope=self._brain_scope,
             snapshot_version=snapshot_version + 1,
-            clarification_mode=False,
-            model=InteractionMindModel.model_validate(
-                {
-                    "entity_id": entity_id,
-                    **dict(payload.get("model") or {}),
-                    "last_updated_at": datetime.now(timezone.utc),
-                }
+            clarification_mode=True,
+            model=InteractionMindModel(
+                entity_id=entity_id,
+                role_hint=role_hint,
+                current_goal_hypothesis="Ambiguous: Intent requires explicit clarification.",
+                knowledge_depth=previous_state.model.knowledge_depth if previous_state else "medium",
+                tolerance_for_detail=previous_state.model.tolerance_for_detail if previous_state else "medium",
+                current_engagement_state="uncertain",
+                trust_estimate=previous_state.model.trust_estimate if previous_state else 0.5,
+                last_updated_at=datetime.now(timezone.utc)
             ),
-            knowledge_gap=KnowledgeGapEstimate.model_validate(
-                {"entity_id": entity_id, **dict(payload.get("knowledge_gap") or {})}
+            knowledge_gap=KnowledgeGapEstimate(
+                entity_id=entity_id,
+                known_topics=list(previous_state.knowledge_gap.known_topics) if previous_state else [],
+                uncertain_topics=["Core Intent", "Communication Thresholds"],
+                likely_missing_topics=[],
+                confidence=0.1,
             ),
-            communication_fit=CommunicationFitProfile.model_validate(
-                {"entity_id": entity_id, **dict(payload.get("communication_fit") or {})}
+            communication_fit=CommunicationFitProfile(
+                entity_id=entity_id,
+                preferred_style="structured",
+                detail_level="low",
+                clarification_bias=1.0,
+                risk_of_misunderstanding=1.0,
             ),
             misunderstanding_signals=[
-                MisunderstandingSignal.model_validate(
-                    {"entity_id": entity_id, **dict(signal)}
-                )
-                for signal in list(payload.get("misunderstanding_signals") or [])
+                *(list(previous_state.misunderstanding_signals) if previous_state else []),
+                MisunderstandingSignal(
+                    entity_id=entity_id,
+                    signal_type="silence_after_complexity",
+                    severity="medium",
+                ),
             ],
         )
-        self._states[entity_id] = inferred_state
-        return inferred_state
 
     def record_user_correction(
         self,
@@ -314,57 +375,6 @@ class InteractionMindEngine:
                 f"expected snapshot_version {current_state.snapshot_version}, got {snapshot_version}"
             )
 
-    def _build_clarification_state(
-        self,
-        *,
-        entity_id: str,
-        snapshot_version: int,
-        context: Dict[str, Any],
-        previous_state: Optional[InteractionMindState],
-    ) -> InteractionMindState:
-        """构造最保守的澄清模式状态，用于 LLM 失败后的安全回退。"""
-        role_hint_source: Optional[str] = context.get("role_hint")
-        if role_hint_source is None and previous_state is not None:
-            role_hint_source = previous_state.model.role_hint
-        role_hint: str = str(role_hint_source or "unknown partner")
-        current_goal_hypothesis: str = "需要先澄清对方的真实意图，再继续推理"
-        return InteractionMindState(
-            entity_id=entity_id,
-            brain_scope=self._brain_scope,
-            snapshot_version=snapshot_version,
-            clarification_mode=True,
-            model=InteractionMindModel(
-                entity_id=entity_id,
-                role_hint=role_hint,
-                current_goal_hypothesis=current_goal_hypothesis,
-                knowledge_depth=previous_state.model.knowledge_depth if previous_state else "medium",
-                tolerance_for_detail=previous_state.model.tolerance_for_detail if previous_state else "medium",
-                current_engagement_state=previous_state.model.current_engagement_state if previous_state else "uncertain",
-                trust_estimate=previous_state.model.trust_estimate if previous_state else 0.5,
-            ),
-            knowledge_gap=KnowledgeGapEstimate(
-                entity_id=entity_id,
-                known_topics=list(previous_state.knowledge_gap.known_topics) if previous_state else [],
-                uncertain_topics=["当前意图", "关键约束"],
-                likely_missing_topics=list(previous_state.knowledge_gap.likely_missing_topics) if previous_state else [],
-                confidence=0.2,
-            ),
-            communication_fit=CommunicationFitProfile(
-                entity_id=entity_id,
-                preferred_style="structured",
-                detail_level="low",
-                clarification_bias=1.0,
-                risk_of_misunderstanding=1.0,
-            ),
-            misunderstanding_signals=[
-                *(list(previous_state.misunderstanding_signals) if previous_state else []),
-                MisunderstandingSignal(
-                    entity_id=entity_id,
-                    signal_type="contradiction",
-                    severity="high",
-                ),
-            ],
-        )
 
     def _translate_context(self, context: Dict[str, Any]) -> Dict[str, Any]:
         """把内部上下文翻译成更适合模型理解的自然语义键。"""

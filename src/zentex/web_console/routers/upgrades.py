@@ -1,3 +1,4 @@
+from __future__ import annotations
 """
 Upgrades Router — /api/web/upgrades/* endpoints.
 
@@ -20,9 +21,8 @@ DOES NOT:
   - Manage app state or startup lifecycle.
 """
 
-from __future__ import annotations
 
-from typing import Any
+from typing import Any, Optional
 
 from fastapi import APIRouter, HTTPException, Request
 from fastapi import Depends
@@ -113,9 +113,9 @@ def get_upgrade_overview(
 
 @router.get("/upgrades/by-lifecycle-view", response_model=UpgradesByLifecycleViewPayload)
 def get_upgrades_by_lifecycle_view(
-    target_kind: str | None = None,
-    plugin_action: str | None = None,
-    store=Depends(get_upgrade_management_store),
+    target_kind: Optional[str] = None,
+    plugin_action: Optional[str] = None,
+    store: Any = Depends(_require_upgrade_management_store),
 ) -> UpgradesByLifecycleViewPayload:
     """Get upgrades grouped by lifecycle view for tabbed display."""
     tk = None
@@ -135,7 +135,7 @@ def get_upgrades_by_lifecycle_view(
 @router.get("/upgrades/llm", response_model=UpgradeRecordCollection)
 def list_llm_upgrades(
     lifecycle: UpgradeLifecycleView = UpgradeLifecycleView.ALL,
-    store=Depends(get_upgrade_management_store),
+    store: Any = Depends(_require_upgrade_management_store),
 ) -> UpgradeRecordCollection:
     return build_upgrade_collection(
         store,
@@ -147,8 +147,8 @@ def list_llm_upgrades(
 @router.get("/upgrades/plugins", response_model=UpgradeRecordCollection)
 def list_plugin_evolutions(
     lifecycle: UpgradeLifecycleView = UpgradeLifecycleView.ALL,
-    action: str | None = None,
-    store=Depends(get_upgrade_management_store),
+    action: Optional[str] = None,
+    store: Any = Depends(_require_upgrade_management_store),
 ) -> UpgradeRecordCollection:
     return build_upgrade_collection(
         store,

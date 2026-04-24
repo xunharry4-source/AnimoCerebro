@@ -2,12 +2,16 @@ from __future__ import annotations
 
 """Public CLI integration facade used by web and runtime callers."""
 
+import logging
 from typing import List, Optional, Dict, Any
 from datetime import datetime, timezone
+
+logger = logging.getLogger(__name__)
 
 from zentex.cli.adapter import CliAdapterPlugin, create_cli_adapter_plugin
 from zentex.cli.adapter import SubprocessCliTransport
 from zentex.cli.models import CliInvocationResult, CliToolRegistrationConfig, CliToolRuntimeState
+from zentex.foundation.contracts.service_response import ServiceResponse, ServiceErrorCode
 
 
 class CliIntegrationService:
@@ -19,24 +23,68 @@ class CliIntegrationService:
     def list_tools(self) -> List[CliToolRuntimeState]:
         return self._adapter.list_tool_states()
 
-    def register_tool(self, config: CliToolRegistrationConfig) -> CliToolRuntimeState:
-        return self._adapter.register_tool(config)
+    def register_tool(self, config: CliToolRegistrationConfig) -> ServiceResponse:
+        try:
+            state = self._adapter.register_tool(config)
+            return ServiceResponse.ok(data=state)
+        except (FileNotFoundError, ValueError) as e:
+            # Validation / reachability failures are expected; log at WARNING.
+            logger.warning(
+                "CLI tool registration rejected for '%s': %s",
+                config.tool_name, e, exc_info=True,
+            )
+            return ServiceResponse.error(
+                code=ServiceErrorCode.INVALID_ARGUMENT,
+                message=f"Failed to register CLI tool '{config.tool_name}': {e}",
+            )
+        except Exception as e:
+            logger.error(
+                "CLI tool registration failed unexpectedly for '%s'",
+                config.tool_name, exc_info=True,
+            )
+            return ServiceResponse.error(
+                code=ServiceErrorCode.INVALID_ARGUMENT,
+                message=f"Failed to register CLI tool '{config.tool_name}': {e}",
+            )
 
     def test_call(
         self,
         tool_name: str,
         *,
-        arguments: List[str] | None = None,
+        arguments: List[Optional[str]] = None,
         stdin_input: Optional[str] = None,
         working_directory: Optional[str] = None,
         timeout_seconds: float = 15.0,
-    ) -> CliInvocationResult:
-        return self._adapter.invoke_tool(
+    ) -> ServiceResponse:
+        result = self._adapter.invoke_tool(
             tool_name,
             arguments=arguments,
             stdin_input=stdin_input,
             working_directory=working_directory,
             timeout_seconds=timeout_seconds,
+        )
+        return self._map_invocation_result(result)
+
+    def _map_invocation_result(self, result: CliInvocationResult) -> ServiceResponse:
+        """Map raw CLI invocation result to standardized ServiceResponse."""
+        if result.status == "success":
+            return ServiceResponse.ok(data=result)
+        
+        if result.status == "timeout":
+            return ServiceResponse.timeout(message=result.stderr)
+        
+        if result.status == "transport_error":
+            return ServiceResponse.error(
+                code=ServiceErrorCode.DEPENDENCY_UNAVAILABLE,
+                message=f"CLI transport failed for '{result.tool_name}': {result.stderr}",
+                data=result
+            )
+            
+        # Default failed status (non-zero exit code or unexpected error)
+        return ServiceResponse.error(
+            code=ServiceErrorCode.INTERNAL_UNRECOVERABLE,
+            message=f"CLI tool '{result.tool_name}' failed with status '{result.status}'",
+            data=result
         )
 
     def get_tool_detail(self, tool_name: str) -> Optional[CliToolRuntimeState]:
@@ -46,6 +94,18 @@ class CliIntegrationService:
             if tool.command_name == tool_name:
                 return tool
         return None
+
+    def activate_tool(self, tool_name: str) -> CliToolRuntimeState:
+        return self._adapter.activate_tool(tool_name)
+
+    def disable_tool(self, tool_name: str) -> CliToolRuntimeState:
+        return self._adapter.disable_tool(tool_name)
+
+    def delete_tool(self, tool_name: str) -> bool:
+        return self._adapter.delete_tool(tool_name)
+
+    def get_tool_health(self, tool_name: str) -> Dict[str, Any]:
+        return self._adapter.get_tool_health(tool_name)
 
     def get_tool_tasks_by_status(self, tool_name: str, status_filter: str) -> List[Dict[str, Any]]:
         """根据状态获取工具相关任务"""
@@ -83,37 +143,34 @@ class CliIntegrationService:
         if not self._transcript_store:
             return []
         
-        try:
-            # 从 transcript store 中查询该工具的审计记录
-            entries = []
-            if hasattr(self._transcript_store, 'list_entries'):
-                entries = self._transcript_store.list_entries(
-                    session_id=None,
-                    entry_type="plugin_audit_event",
-                    limit=limit
-                )
-            
-            # 过滤出与该工具相关的记录
-            history = []
-            for entry in entries:
-                payload = entry.get("payload", {}) if isinstance(entry, dict) else getattr(entry, 'payload', {})
-                if payload.get("tool_name") == tool_name:
-                    history.append({
-                        "trace_id": entry.get("trace_id", ""),
-                        "tool_name": tool_name,
-                        "status": payload.get("status", "unknown"),
-                        "exit_code": payload.get("exit_code", -1),
-                        "stdout": payload.get("stdout", ""),
-                        "stderr": payload.get("stderr", ""),
-                        "command_line": payload.get("command_line", []),
-                        "working_directory": payload.get("working_directory"),
-                        "executed_at": entry.get("timestamp", datetime.now(timezone.utc).isoformat()),
-                        "duration_ms": None  # 如果有 duration 信息可以添加
-                    })
-            
-            return history[:limit]
-        except Exception:
-            return []
+        # 从 transcript store 中查询该工具的审计记录
+        entries = []
+        if hasattr(self._transcript_store, 'list_entries'):
+            entries = self._transcript_store.list_entries(
+                session_id=None,
+                entry_type="plugin_audit_event",
+                limit=limit
+            )
+        
+        # 过滤出与该工具相关的记录
+        history = []
+        for entry in entries:
+            payload = entry.get("payload", {}) if isinstance(entry, dict) else getattr(entry, 'payload', {})
+            if payload.get("tool_name") == tool_name:
+                history.append({
+                    "trace_id": entry.get("trace_id", ""),
+                    "tool_name": tool_name,
+                    "status": payload.get("status", "unknown"),
+                    "exit_code": payload.get("exit_code", -1),
+                    "stdout": payload.get("stdout", ""),
+                    "stderr": payload.get("stderr", ""),
+                    "command_line": payload.get("command_line", []),
+                    "working_directory": payload.get("working_directory"),
+                    "executed_at": entry.get("timestamp", datetime.now(timezone.utc).isoformat()),
+                    "duration_ms": None  # 如果有 duration 信息可以添加
+                })
+        
+        return history[:limit]
 
     def calculate_credit_score(self, tool_name: str) -> Dict[str, Any]:
         """计算工具信用分"""
@@ -121,8 +178,10 @@ class CliIntegrationService:
         
         total_executions = len(history)
         if total_executions == 0:
+            # POLICY[no-fake-impl]: return zero-based scores, not an optimistic default.
+            # "unrated" signals to callers that there is no real execution data yet.
             return {
-                "total_score": 50.0,  # 默认分数
+                "total_score": 0.0,
                 "success_rate": 0.0,
                 "total_executions": 0,
                 "successful_executions": 0,
@@ -130,8 +189,8 @@ class CliIntegrationService:
                 "average_response_time_ms": None,
                 "error_rate": 0.0,
                 "usage_frequency": "low",
-                "credit_level": "fair",
-                "last_updated": datetime.now(timezone.utc).isoformat()
+                "credit_level": "unrated",
+                "last_updated": datetime.now(timezone.utc).isoformat(),
             }
         
         successful = sum(1 for h in history if h.get("status") == "success")

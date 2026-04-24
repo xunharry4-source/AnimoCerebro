@@ -12,6 +12,7 @@ zstandard>=0.22.0
 lz4>=4.3.3
 cryptography>=42.0.0
 msgpack>=1.0.7
+mmh3>=5.1.0
 faiss-cpu>=1.8.0
 sentence-transformers>=2.6.0
 numpy>=1.26.0

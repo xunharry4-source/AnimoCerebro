@@ -1,3 +1,4 @@
+from __future__ import annotations
 """
 Upgrade Service: Plugin Version Management
 
@@ -8,7 +9,6 @@ Handles:
 - Integration with zentex.upgrade system
 """
 
-from __future__ import annotations
 
 import logging
 from datetime import datetime, timezone

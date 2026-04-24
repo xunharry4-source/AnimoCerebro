@@ -1,3 +1,7 @@
+from __future__ import annotations
+
+from typing import Any, Dict, List, Optional, Union
+
 """CognitiveTemporalEngine — session and turn timing bookkeeping."""
 
 import threading
@@ -9,15 +13,15 @@ UTC = timezone.utc
 class CognitiveTemporalEngine:
     """Tracks wall-clock timing for sessions and individual turns.
 
-    Each turn is stored as a tuple of (turn_id, start_datetime, end_datetime | None).
+    Each turn is stored as a tuple of (turn_id, start_datetime, Optional[end_datetime]).
     Methods are thread-safe.
     """
 
     def __init__(self, session_id: str) -> None:
         self._session_id = session_id
         self._session_start: datetime = datetime.now(UTC)
-        # list of (turn_id, start, end | None)
-        self._turn_timestamps: list[tuple[str, datetime, datetime | None]] = []
+        # list of (turn_id, start, Optional[end])
+        self._turn_timestamps: list[tuple[str, datetime, Optional[datetime]]] = []
         self._lock = threading.Lock()
 
     # ------------------------------------------------------------------
@@ -64,7 +68,7 @@ class CognitiveTemporalEngine:
             return 0.0
         return sum(completed) / len(completed)
 
-    def last_turn_gap_seconds(self) -> float | None:
+    def last_turn_gap_seconds(self) -> Optional[float]:
         """Return seconds between the last two turn starts.
 
         Returns None if fewer than two turns have been recorded.

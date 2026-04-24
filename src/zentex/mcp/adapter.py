@@ -1,3 +1,4 @@
+from __future__ import annotations
 """
 📋 MCP Adapter Module - Model Context Protocol Integration
 
@@ -8,7 +9,7 @@
 - 不负责 web_console 相关的业务逻辑
 
 关键导出：
-- create_mcp_adapter_plugin(transcript_store, cognitive_registry, defer_sync) -> (McpAdapterPlugin, ExecutionDomainRegistry)
+- create_mcp_adapter_plugin(audit_store, cognitive_registry, defer_sync) -> (McpAdapterPlugin, ExecutionDomainRegistry)
   * 公开初始化函数，bootstrap 应通过此函数创建 MCP 适配器
   * 包含完整的 MCP 环境配置，避免 bootstrap 直接导入内部类
 
@@ -18,7 +19,6 @@
 - Clean Imports: 所有导入在模块顶部，无函数内导入
 """
 
-from __future__ import annotations
 
 from collections.abc import Callable
 from datetime import datetime, timezone
@@ -43,9 +43,9 @@ from zentex.mcp.models import (
 )
 from zentex.plugins.cognitive_spec import CognitiveToolSpec
 from zentex.plugins.contracts import FunctionalPluginSpec, PluginHealthStatus, PluginLifecycleStatus
-from zentex.plugins.cognitive_result import CognitiveToolResult
+from zentex.common.cognitive_result import CognitiveToolResult
 from zentex.plugins.service import CognitiveToolRegistry
-from zentex.kernel import BrainTranscriptEntryType, BrainTranscriptStore
+from zentex.kernel import AuditEventStore, AuditEventType
 from zentex.supervision.service import get_ai_supervisor
 
 
@@ -69,7 +69,7 @@ class McpCognitiveToolPlugin(CognitiveToolSpec):
 
     _transport: McpTransportClient = PrivateAttr()
     _server_config: McpServerConfig = PrivateAttr()
-    _transcript_store: BrainTranscriptStore = PrivateAttr()
+    _transcript_store: AuditEventStore = PrivateAttr()
     _server_id: str = PrivateAttr()
     _tool_name: str = PrivateAttr()
     _tool_description: str = PrivateAttr()
@@ -79,7 +79,7 @@ class McpCognitiveToolPlugin(CognitiveToolSpec):
         *,
         transport: McpTransportClient,
         server_config: McpServerConfig,
-        transcript_store: BrainTranscriptStore,
+        transcript_store: AuditEventStore,
         tool_name: str,
         tool_description: str,
     ) -> None:
@@ -166,7 +166,7 @@ class McpCognitiveToolPlugin(CognitiveToolSpec):
         self._transcript_store.write_entry(
             session_id=session_id,
             turn_id=turn_id,
-            entry_type=BrainTranscriptEntryType.PLUGIN_AUDIT_EVENT,
+            entry_type=AuditEventType.PLUGIN_AUDIT_EVENT,
             payload={
                 "server_id": self._server_id,
                 "tool_name": self._tool_name,
@@ -185,7 +185,7 @@ class McpExecutionDomainPlugin(ExecutionDomainPlugin):
     requires_cloud_audit: bool = False
     _transport: McpTransportClient = PrivateAttr()
     _server_config: McpServerConfig = PrivateAttr()
-    _transcript_store: BrainTranscriptStore = PrivateAttr()
+    _transcript_store: AuditEventStore = PrivateAttr()
     _server_id: str = PrivateAttr()
     _tool_name: str = PrivateAttr()
     _tool_description: str = PrivateAttr()
@@ -195,7 +195,7 @@ class McpExecutionDomainPlugin(ExecutionDomainPlugin):
         *,
         transport: McpTransportClient,
         server_config: McpServerConfig,
-        transcript_store: BrainTranscriptStore,
+        transcript_store: AuditEventStore,
         tool_name: str,
         tool_description: str,
     ) -> None:
@@ -278,7 +278,7 @@ class McpExecutionDomainPlugin(ExecutionDomainPlugin):
         self._transcript_store.write_entry(
             session_id=session_id,
             turn_id=turn_id,
-            entry_type=BrainTranscriptEntryType.PLUGIN_AUDIT_EVENT,
+            entry_type=AuditEventType.PLUGIN_AUDIT_EVENT,
             payload={
                 "server_id": self._server_id,
                 "tool_name": self._tool_name,
@@ -298,7 +298,7 @@ class McpAdapterPlugin(FunctionalPluginSpec):
     purpose: str = "Adapt external MCP servers into cognitive or execution runtimes"
 
     _client_factory: Callable[[McpServerConfig], McpTransportClient] = PrivateAttr()
-    _transcript_store: BrainTranscriptStore = PrivateAttr()
+    _transcript_store: AuditEventStore = PrivateAttr()
     _cognitive_registry: CognitiveToolRegistry = PrivateAttr()
     _execution_registry: ExecutionDomainRegistry = PrivateAttr()
     _server_states: Dict[str, McpServerRuntimeState] = PrivateAttr(default_factory=dict)
@@ -312,7 +312,7 @@ class McpAdapterPlugin(FunctionalPluginSpec):
         self,
         *,
         client_factory: Callable[[McpServerConfig], McpTransportClient],
-        transcript_store: BrainTranscriptStore,
+        transcript_store: AuditEventStore,
         cognitive_registry: CognitiveToolRegistry,
         execution_registry: ExecutionDomainRegistry,
     ) -> None:
@@ -331,8 +331,48 @@ class McpAdapterPlugin(FunctionalPluginSpec):
         return [self._server_states[key] for key in sorted(self._server_states.keys())]
 
     def register_server(self, config: McpServerConfig) -> McpServerRuntimeState:
+        if any(item.server_id == config.server_id for item in self.server_configs):
+            raise ValueError(f"MCP server '{config.server_id}' is already registered")
         self.server_configs.append(config)
         return self._sync_single_server(config)
+
+    def activate_server(self, server_id: str) -> McpServerRuntimeState:
+        config = next((item for item in self.server_configs if item.server_id == server_id), None)
+        if config is None:
+            raise KeyError(server_id)
+        return self._sync_single_server(config)
+
+    def disable_server(self, server_id: str) -> McpServerRuntimeState:
+        state = self._server_states.get(server_id)
+        if state is None:
+            raise KeyError(server_id)
+        stopped = state.model_copy(update={"status": "offline"})
+        self._server_states[server_id] = stopped
+        return stopped
+
+    def delete_server(self, server_id: str) -> bool:
+        if server_id not in self._server_states and not any(
+            item.server_id == server_id for item in self.server_configs
+        ):
+            raise KeyError(server_id)
+        self.server_configs[:] = [item for item in self.server_configs if item.server_id != server_id]
+        self._server_states.pop(server_id, None)
+        self._registered_tool_ids = {
+            tool_id for tool_id in self._registered_tool_ids if not tool_id.startswith(f"mcp:{server_id}:")
+        }
+        return True
+
+    def get_server_health(self, server_id: str) -> Dict[str, Any]:
+        state = self._server_states.get(server_id)
+        if state is None:
+            raise KeyError(server_id)
+        return {
+            "server_id": state.server_id,
+            "status": state.status,
+            "tool_count": state.tool_count,
+            "error_message": state.error_message,
+            "healthy": state.status == "online" and state.error_message is None,
+        }
 
     def invoke_tool(
         self,
@@ -543,49 +583,8 @@ class McpAdapterPlugin(FunctionalPluginSpec):
         )
 
 
-class FakeMcpTransportClient:
-    def __init__(
-        self,
-        *,
-        tools: List[McpToolDescriptor],
-        invocations: Dict[str, Dict[str, Any]] | None = None,
-        healthy: bool = True,
-        fail_with: Optional[Exception] = None,
-    ) -> None:
-        self._tools = tools
-        self._invocations = invocations or {}
-        self._healthy = healthy
-        self._fail_with = fail_with
-
-    def list_tools(self, config: McpServerConfig) -> List[McpToolDescriptor]:
-        if self._fail_with is not None:
-            raise self._fail_with
-        return list(self._tools)
-
-    def invoke_tool(
-        self,
-        config: McpServerConfig,
-        *,
-        tool_name: str,
-        arguments: Dict[str, Any],
-        trace_id: str,
-    ) -> Dict[str, Any]:
-        if self._fail_with is not None:
-            raise self._fail_with
-        payload = dict(self._invocations.get(tool_name) or {})
-        payload.setdefault("summary", f"{tool_name} completed")
-        payload.setdefault("trace_id", trace_id)
-        payload.setdefault("arguments_echo", arguments)
-        return payload
-
-    def health_probe(self, config: McpServerConfig) -> bool:
-        if self._fail_with is not None:
-            raise self._fail_with
-        return self._healthy
-
-
 def create_mcp_adapter_plugin(
-    transcript_store: BrainTranscriptStore,
+    transcript_store: AuditEventStore,
     cognitive_registry: CognitiveToolRegistry,
     defer_sync: bool = False,
 ) -> tuple[McpAdapterPlugin, ExecutionDomainRegistry]:
@@ -593,10 +592,10 @@ def create_mcp_adapter_plugin(
     ✅ 公开 API - mcp 模块负责自己的 adapter 初始化
     
     bootstrap 只调用此函数，不应 import McpAdapterPlugin 或相关内部类。
-    所有 MCP 适配器配置（server_configs, transports）在这里定义。
+    所有 MCP 适配器配置在这里定义。
     
     Args:
-        transcript_store: Transcript 存储用于审计
+        transcript_store: 审计事件存储
         cognitive_registry: 认知工具注册表
         defer_sync: 是否延后服务器同步到后台
         
@@ -605,6 +604,7 @@ def create_mcp_adapter_plugin(
     """
     from threading import Thread
     import logging
+    from zentex.mcp.sdk_transport import build_official_mcp_client_factory
     
     logger = logging.getLogger(__name__)
     
@@ -636,85 +636,6 @@ def create_mcp_adapter_plugin(
         ),
     ]
 
-    transports = {
-        "knowledge-hub": FakeMcpTransportClient(
-            tools=[
-                McpToolDescriptor(
-                    tool_name="search_documents",
-                    description="Search indexed runbooks and incident notes",
-                    input_schema={"type": "object"},
-                    mutates_state=False,
-                    read_only_hint=True,
-                )
-            ],
-            invocations={
-                "search_documents": {
-                    "summary": "knowledge search completed",
-                    "context_updates": {"knowledge_hits": ["runbook-42"]},
-                }
-            },
-            healthy=True,
-        ),
-        "ops-bridge": FakeMcpTransportClient(
-            tools=[
-                McpToolDescriptor(
-                    tool_name="update_ticket",
-                    description="Update incident ticket in external system",
-                    input_schema={"type": "object"},
-                    mutates_state=True,
-                    read_only_hint=False,
-                )
-            ],
-            invocations={"update_ticket": {"summary": "ticket updated", "receipt_id": "ops-991"}},
-            healthy=True,
-        ),
-    }
-
-    def _build_dynamic_transport(config: McpServerConfig) -> FakeMcpTransportClient:
-        explicit_bindings = list(config.tool_bindings or [])
-        if explicit_bindings:
-            tools = [
-                McpToolDescriptor(
-                    tool_name=binding.tool_name,
-                    description=f"Dynamic MCP tool for {config.server_id}",
-                    input_schema={"type": "object"},
-                    mutates_state=binding.mutates_state,
-                    read_only_hint=binding.read_only,
-                )
-                for binding in explicit_bindings
-            ]
-            invocations = {
-                binding.tool_name: {
-                    "summary": f"{binding.tool_name} completed",
-                    "server_id": config.server_id,
-                }
-                for binding in explicit_bindings
-            }
-        else:
-            tools = [
-                McpToolDescriptor(
-                    tool_name="ping",
-                    description=f"Connectivity probe for {config.server_id}",
-                    input_schema={"type": "object"},
-                    mutates_state=False,
-                    read_only_hint=True,
-                )
-            ]
-            invocations = {
-                "ping": {
-                    "summary": f"{config.server_id} ping completed",
-                    "server_id": config.server_id,
-                }
-            }
-        return FakeMcpTransportClient(
-            tools=tools,
-            invocations=invocations,
-            healthy=True,
-        )
-
-    def _resolve_transport(config: McpServerConfig) -> FakeMcpTransportClient:
-        return transports.setdefault(config.server_id, _build_dynamic_transport(config))
-
     # 创建适配器
     adapter = McpAdapterPlugin(
         plugin_id="mcp-adapter-core",
@@ -731,7 +652,7 @@ def create_mcp_adapter_plugin(
     
     # 运行时附件
     adapter.attach_runtime(
-        client_factory=_resolve_transport,
+        client_factory=build_official_mcp_client_factory(),
         transcript_store=transcript_store,
         cognitive_registry=cognitive_registry,
         execution_registry=execution_registry,
@@ -742,8 +663,19 @@ def create_mcp_adapter_plugin(
         def _sync_bg():
             try:
                 adapter.sync_servers()
-            except Exception:
-                logger.exception("Deferred MCP sync failed")
+            except Exception as e:
+                logger.error(f"FATAL: Deferred MCP sync failed globally: {e}")
+                # Fail-Closed: Manually mark all configuring servers as degraded so health checks visibly fail
+                for config in adapter.server_configs:
+                    if config.server_id not in adapter._server_states:
+                        adapter._server_states[config.server_id] = McpServerRuntimeState(
+                            server_id=config.server_id,
+                            transport_type=config.transport_type,
+                            status="degraded",
+                            tool_count=0,
+                            error_message=f"Background sync catastrophic failure: {e}",
+                            tools=[],
+                        )
         Thread(target=_sync_bg, name="mcp-bg-sync", daemon=True).start()
     else:
         adapter.sync_servers()

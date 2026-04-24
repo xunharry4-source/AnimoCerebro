@@ -10,7 +10,6 @@ from zentex.tasks.models import (
 )
 from zentex.tasks.service import TaskManagementService
 from zentex.tasks.registry import TaskRegistry
-from zentex.tasks.persistence import TaskPersistence
 from zentex.tasks.core import TaskDecomposerPlugin
 
 logger = logging.getLogger(__name__)

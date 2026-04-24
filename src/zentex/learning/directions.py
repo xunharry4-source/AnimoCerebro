@@ -10,6 +10,7 @@ class LearningDirection(str, Enum):
     """
     G16_TOOL_SELF_STUDY = "g16_tool_self_study"
     G24_CURIOSITY = "g24_curiosity"
+    NINE_QUESTION_INTEGRATION = "nine_question_integration"
 
 
 def describe_direction(direction: LearningDirection) -> Dict[str, Any]:
@@ -24,6 +25,10 @@ def describe_direction(direction: LearningDirection) -> Dict[str, Any]:
         LearningDirection.G24_CURIOSITY: {
             "ref": "G24",
             "description": "Exploratory curiosity-driven data ingest."
+        },
+        LearningDirection.NINE_QUESTION_INTEGRATION: {
+            "ref": "NQ",
+            "description": "Nine-question downstream learning persistence."
         }
     }
     return mapping.get(direction, {"ref": "UNKNOWN", "description": "N/A"})

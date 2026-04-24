@@ -14,7 +14,7 @@ def build_llm_evaluation_prompt(
     *,
     task_title: str,
     task_type: str,
-    task_remarks: str | None,
+    task_remarks: Optional[str],
     result: dict[str, Any],
     criteria: list[str],
 ) -> dict[str, Any]:
@@ -96,7 +96,7 @@ def build_llm_evaluation_prompt(
     }
 
 
-def _clip_text(value: str | None, limit: int) -> str:
+def _clip_text(value: Optional[str], limit: int) -> str:
     text = (value or "").strip()
     if not text:
         return "[未提供]"

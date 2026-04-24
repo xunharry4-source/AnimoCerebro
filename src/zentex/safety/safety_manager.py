@@ -1,3 +1,4 @@
+from __future__ import annotations
 """Safety Manager - Unified External Service Interface for Safety & Conflict Management
 
 ## File Purpose
@@ -65,7 +66,6 @@ Usage:
     )
 """
 
-from __future__ import annotations
 
 from datetime import datetime, timezone
 from typing import Any, Dict, List, Literal, Optional, Union
@@ -422,9 +422,9 @@ class SafetyManager:
             SanityAuditReport with findings and disposition
         """
         if self._sanity_auditor is None:
-            # Return empty passed report if auditing disabled
+            # Return skipped report if auditing disabled
             return SanityAuditReport(
-                status=AuditStatus.PASSED,
+                status=AuditStatus.SKIPPED,
                 summary="Sanity audit disabled",
             )
 

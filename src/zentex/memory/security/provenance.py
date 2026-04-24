@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from typing import Any, Dict, List, Optional, Union
+
 """
 Memory provenance and lineage tracking.
 
@@ -17,7 +19,8 @@ Memory provenance and lineage tracking.
 import json
 import logging
 import threading
-from datetime import UTC, datetime
+from datetime import datetime, timezone
+UTC = timezone.utc
 from pathlib import Path
 from uuid import uuid4
 
@@ -98,7 +101,7 @@ class MemoryLineageGraph:
             self._in_edges.setdefault(edge.target_node_id, []).append(edge)
         return edge
 
-    def find_node_by_ref(self, ref_id: str) -> ProvenanceNode | None:
+    def find_node_by_ref(self, ref_id: str) -> Optional[ProvenanceNode]:
         with self._lock:
             for node in self._nodes.values():
                 if node.ref_id == ref_id:
@@ -220,7 +223,7 @@ class ProvenanceTracker:
         tracker.explain(memory_id="m-456")  # → "transcript[abc123] → memory[m-456]"
     """
 
-    def __init__(self, graph: MemoryLineageGraph | None = None) -> None:
+    def __init__(self, graph: Optional[MemoryLineageGraph] = None) -> None:
         self._graph = graph or MemoryLineageGraph()
 
     @property

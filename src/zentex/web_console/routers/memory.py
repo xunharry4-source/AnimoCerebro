@@ -1,3 +1,4 @@
+from __future__ import annotations
 """Memory Routes v3 - Refactored with Facade-First Design
 
 ⚠️  MODULARIZATION CONSTRAINT - MAX 150 LINES
@@ -10,7 +11,6 @@ This file contains ONLY route definitions that delegate to services.
 ════════════════════════════════════════════════════════════════════
 """
 
-from __future__ import annotations
 
 import logging
 from typing import Optional

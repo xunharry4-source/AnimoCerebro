@@ -1,3 +1,4 @@
+from __future__ import annotations
 """
 TaskExecutionWorker — the missing bridge between dispatch and plugin execution.
 
@@ -16,7 +17,6 @@ CONTRACT (fail-closed):
   - If the plugin_layer is None the worker logs a warning and skips execution.
 """
 
-from __future__ import annotations
 
 import asyncio
 import json
@@ -24,6 +24,8 @@ import logging
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional
+
+from zentex.common.startup_markers import log_once
 
 logger = logging.getLogger(__name__)
 
@@ -45,6 +47,10 @@ class WorkerConfig:
     enable_fallback: bool = True
     # Only dispatch tasks whose task_type is in this set (None = all types)
     allowed_task_types: Optional[List[str]] = None
+    # Option A: If True, only execute tasks with metadata.operator_approval = True
+    require_approval: bool = False
+    # If True, throttle execution (batch size 1, longer timeouts)
+    conservative_mode: bool = False
 
 
 # ---------------------------------------------------------------------------
@@ -121,6 +127,13 @@ class TaskExecutionWorker:
         started_at = datetime.now(timezone.utc)
         stats = WorkerCycleStats(cycle_started_at=started_at.isoformat())
 
+        log_once(
+            "tasks.worker.cycle.invoked",
+            batch_size=self._cfg.batch_size,
+            max_attempts=self._cfg.max_attempts,
+            enable_fallback=self._cfg.enable_fallback,
+        )
+
         dispatchable = self._fetch_dispatchable_tasks()
         logger.info(
             "TaskExecutionWorker cycle: %d dispatchable task(s) found",
@@ -176,14 +189,10 @@ class TaskExecutionWorker:
           - attempt_count < max_attempts
           - (optional) task_type is in allowed_task_types
         """
-        try:
-            candidates = self._dao.list_tasks(
-                status="todo",
-                limit=self._cfg.batch_size,
-            )
-        except Exception as exc:
-            logger.error("TaskExecutionWorker: failed to fetch TODO tasks: %s", exc)
-            return []
+        candidates = self._dao.list_tasks(
+            status="todo",
+            limit=self._cfg.batch_size,
+        )
 
         ready = []
         for task in candidates:
@@ -209,10 +218,21 @@ class TaskExecutionWorker:
                 try:
                     depends_on = json.loads(depends_on)
                 except Exception:
+                    logger.warning("Failed to parse depends_on JSON for task %s", task_id)
                     depends_on = []
 
             if depends_on:
                 if not self._all_deps_done(depends_on):
+                    continue
+
+            # --- OPTION A: Safety Lock Check ---
+            if self._cfg.require_approval:
+                metadata = task.get("metadata") or {}
+                if not metadata.get("operator_approval"):
+                    logger.debug(
+                        "Task %s skipped: Q9 rhythm requires manual operator_approval.",
+                        task.get("task_id"),
+                    )
                     continue
 
             ready.append(task)
@@ -220,16 +240,25 @@ class TaskExecutionWorker:
         return ready
 
     def _all_deps_done(self, dep_ids: List[str]) -> bool:
-        """Return True only if every dependency task has status 'done'."""
+        """Return True only if every dependency task finished in an accepted terminal state."""
         for dep_id in dep_ids:
-            try:
-                dep = self._dao.get_task(dep_id)
-                if dep is None or dep.get("status") != "done":
-                    return False
-            except Exception as exc:
-                logger.warning("Could not fetch dependency %s: %s", dep_id, exc)
+            dep = self._dao.get_task(dep_id)
+            if dep is None:
+                return False
+            if dep.get("status") != "done":
+                return False
+            metadata = dep.get("metadata") if isinstance(dep.get("metadata"), dict) else {}
+            completion_status = str(metadata.get("completion_status") or "completed").strip().lower()
+            if completion_status not in {"completed", "degraded"}:
                 return False
         return True
+
+    @staticmethod
+    def _merge_metadata(task: Dict[str, Any], **updates: Any) -> Dict[str, Any]:
+        metadata = task.get("metadata")
+        merged = dict(metadata) if isinstance(metadata, dict) else {}
+        merged.update(updates)
+        return merged
 
     async def _process_task(self, task: Dict[str, Any]) -> str:
         """
@@ -240,13 +269,41 @@ class TaskExecutionWorker:
         task_id: str = task["task_id"]
         attempt_count: int = (task.get("attempt_count") or 0) + 1
 
+        # Detect origin for clinical-grade auditing
+        metadata = task.get("metadata") or {}
+        source_module = metadata.get("source_module", "manual")
+        session_id = metadata.get("session_id", "unknown")
+        
+        if source_module == "q8_what_should_i_do_now":
+            logger.info(f"TaskWorker: Processing MISSION-DRIVEN task {task_id} (Session: {session_id}, Turn: {metadata.get('turn_id')})")
+        else:
+            logger.info(f"TaskWorker: Processing {source_module} task {task_id}")
+
+        log_once(
+            "tasks.worker.process_task.invoked",
+            task_id=task_id,
+            task_type=str(task.get("task_type") or ""),
+            origin=source_module
+        )
+
         # 1. Mark IN_PROGRESS and increment attempt count
         now_iso = datetime.now(timezone.utc).isoformat()
+        lease_owner = f"TaskExecutionWorker:{task_id}"
         self._dao.update_task(task_id, {
             "status": "in_progress",
             "attempt_count": attempt_count,
             "execution_started_at": now_iso,
             "started_at": task.get("started_at") or now_iso,
+            "metadata": self._merge_metadata(
+                task,
+                lease={
+                    "status": "active",
+                    "owner": lease_owner,
+                    "acquired_at": now_iso,
+                    "heartbeat_at": now_iso,
+                    "attempt_count": attempt_count,
+                },
+            ),
         })
 
         # 2. Build SubtaskIntent for the router / executor
@@ -256,7 +313,11 @@ class TaskExecutionWorker:
         decision = None
         try:
             if self._router is not None:
-                decision = await self._router.get_dispatch_decision(subtask_intent)
+                decision = await self._router.get_dispatch_decision(
+                    subtask_intent,
+                    task_id=task_id,
+                    context={"task": task, "attempt_count": attempt_count},
+                )
         except Exception as exc:
             logger.warning(
                 "Router failed for task %s: %s — will try internal executor directly",
@@ -294,6 +355,15 @@ class TaskExecutionWorker:
                     "status": "todo",
                     "last_error": error_msg,
                     "execution_finished_at": datetime.now(timezone.utc).isoformat(),
+                    "metadata": self._merge_metadata(
+                        task,
+                        lease={
+                            "status": "released",
+                            "owner": lease_owner,
+                            "released_at": datetime.now(timezone.utc).isoformat(),
+                            "attempt_count": attempt_count,
+                        },
+                    ),
                 })
                 self._update_router_credit(decision, plugin_id, succeeded=False,
                                            duration=exec_result.get("duration_seconds", 0))
@@ -370,6 +440,7 @@ class TaskExecutionWorker:
             try:
                 output_json = json.dumps(output, ensure_ascii=False, default=str)
             except Exception:
+                logger.warning("Failed to serialize task output for %s, falling back to raw string", task_id)
                 output_json = json.dumps({"raw": str(output)})
 
         self._dao.update_task(task_id, {
@@ -380,6 +451,13 @@ class TaskExecutionWorker:
             "dispatch_plugin_id": plugin_id,
             "execution_output": output_json,
             "last_error": None,
+            "metadata": {
+                "completion_status": "completed",
+                "lease": {
+                    "status": "released",
+                    "released_at": now_iso,
+                },
+            },
         })
         logger.info("Task %s completed successfully via plugin %s", task_id, plugin_id)
 
@@ -396,6 +474,13 @@ class TaskExecutionWorker:
             "completed_at": now_iso,
             "execution_finished_at": now_iso,
             "last_error": error_msg[:2000],    # cap to 2000 chars
+            "metadata": {
+                "completion_status": "failed",
+                "lease": {
+                    "status": "released",
+                    "released_at": now_iso,
+                },
+            },
         }
         if plugin_id:
             updates["dispatch_plugin_id"] = plugin_id
@@ -449,6 +534,7 @@ class TaskExecutionWorker:
                     parsed = json.loads(val)
                     return parsed if isinstance(parsed, list) else []
                 except Exception:
+                    logger.warning("Failed to parse tags/capabilities JSON for task %s", task.get("task_id"))
                     return []
             return []
 

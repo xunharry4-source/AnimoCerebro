@@ -9,13 +9,13 @@ specification from the product documentation.
 该模块为 Zentex 大脑提供全面的环境感知能力，使其能够感知和解释物理宿主状态、
 工作区变化和外部信号。实现了产品文档中的 G8（环境觉知与态势解释层）规范。
 
-Also includes G19 (User Preference Discrimination & Intent Alignment) capabilities:
+Also includes Preference Alignment (User Preference Discrimination & Intent Alignment) capabilities:
 - Three-step judgment process (anomaly -> preference candidate -> confirmation)
 - Extreme signal interception and risk assessment
 - Attack sample marking and detection
 - Preference management (confirm/revoke/query)
 
-同时包含 G19（用户偏好辨析与意图对齐）能力：
+同时包含偏好对齐（用户偏好辨析与意图对齐）能力：
 - 三步判断流程（异常 -> 偏好候选 -> 确认）
 - 极端信号拦截与风险评估
 - 攻击样本标记与检测

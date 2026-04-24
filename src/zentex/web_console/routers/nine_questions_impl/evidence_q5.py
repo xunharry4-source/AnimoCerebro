@@ -1,10 +1,12 @@
+from __future__ import annotations
+
 """
 Q5 (我被允许做什么) evidence extraction.
 
 Contains functions for building and extracting EVIDENCE_Q5 evidence.
 """
 
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Union
 
 from zentex.web_console.contracts.nine_questions import (
     Q5PreprocessedEvidence,
@@ -14,7 +16,7 @@ from zentex.web_console.contracts.nine_questions import (
 from .helpers import _coerce_string_list
 
 
-def _extract_q5_preprocessed_evidence(context_payload: object) -> Q5PreprocessedEvidence | None:
+def _extract_q5_preprocessed_evidence(context_payload: object) -> Optional[Q5PreprocessedEvidence]:
     if not isinstance(context_payload, dict):
         return None
 
@@ -35,38 +37,95 @@ def _extract_q5_preprocessed_evidence(context_payload: object) -> Q5Preprocessed
         return _coerce_string_list(value)
 
     q4_profile = context_payload.get("q4_capability_boundary_profile")
+    q5_profile = (
+        context_payload.get("q5_authorization_boundary_profile")
+        or context_payload.get("q5_permission_boundary")
+        or {}
+    )
+    if not isinstance(q5_profile, dict):
+        q5_profile = {}
+    authorization_baseline = context_payload.get("q5_authorization_baseline")
+    if not isinstance(authorization_baseline, dict):
+        authorization_baseline = {}
+
     action_space = _coerce_string_list(context_payload.get("actionable_space"))
     if not action_space and isinstance(q4_profile, dict):
         action_space = _coerce_string_list(q4_profile.get("actionable_space"))
     if not action_space:
-        authorization_baseline = context_payload.get("q5_authorization_baseline")
-        if isinstance(authorization_baseline, dict):
-            action_space = _coerce_string_list(authorization_baseline.get("allowed_action_space"))
+        action_space = _coerce_string_list(q5_profile.get("allowed_action_space"))
+    if not action_space:
+        action_space = _coerce_string_list(authorization_baseline.get("allowed_action_space"))
 
     boundaries = _coerce_string_list(context_payload.get("tenant_boundaries"))
     if not boundaries:
         boundaries = _flatten_policy_lines(context_payload.get("tenant_scope"))
     if not boundaries:
-        authorization_baseline = context_payload.get("q5_authorization_baseline")
-        if isinstance(authorization_baseline, dict):
-            boundaries = _flatten_policy_lines(
-                (authorization_baseline.get("contact_and_org_boundaries") or {}).get("tenant_scope")
-            )
+        boundaries = _flatten_policy_lines(
+            (authorization_baseline.get("contact_and_org_boundaries") or {}).get("tenant_scope")
+        )
+    if not boundaries:
+        q4_permission_profile = context_payload.get("q4_permission_profile")
+        q4_permission_profile = q4_permission_profile if isinstance(q4_permission_profile, dict) else {}
+        tenant_permissions = _coerce_string_list(q4_permission_profile.get("tenant_permissions"))
+        workspace_zones = _coerce_string_list(q4_permission_profile.get("accessible_workspace_zones"))
+        derived_scope: dict[str, object] = {}
+        if tenant_permissions:
+            derived_scope["tenant_permissions"] = tenant_permissions
+        if workspace_zones:
+            derived_scope["accessible_workspace_zones"] = workspace_zones
+        if tenant_permissions:
+            derived_scope["same_org_only"] = True
+        boundaries = _flatten_policy_lines(derived_scope)
 
     contact_policy = _flatten_policy_lines(context_payload.get("contact_policy"))
     if not contact_policy:
-        authorization_baseline = context_payload.get("q5_authorization_baseline")
-        if isinstance(authorization_baseline, dict):
-            contact_policy = _flatten_policy_lines(
-                (authorization_baseline.get("contact_and_org_boundaries") or {}).get("contact_policy")
-            )
+        contact_policy = _flatten_policy_lines(
+            (authorization_baseline.get("contact_and_org_boundaries") or {}).get("contact_policy")
+        )
+    if not contact_policy:
+        q4_permission_profile = context_payload.get("q4_permission_profile")
+        q4_permission_profile = q4_permission_profile if isinstance(q4_permission_profile, dict) else {}
+        derived_contact_policy: dict[str, object] = {}
+        mode = q4_permission_profile.get("mode")
+        if mode is not None:
+            derived_contact_policy["interaction_scope"] = str(mode)
+        if "is_read_only" in q4_permission_profile:
+            derived_contact_policy["requires_human_confirmation"] = bool(q4_permission_profile.get("is_read_only"))
+        execution_tokens = _coerce_string_list(q4_permission_profile.get("execution_tokens"))
+        if execution_tokens:
+            derived_contact_policy["execution_tokens"] = execution_tokens
+        workspace_zones = _coerce_string_list(q4_permission_profile.get("accessible_workspace_zones"))
+        if workspace_zones:
+            derived_contact_policy["accessible_workspace_zones"] = workspace_zones
+        contact_policy = _flatten_policy_lines(derived_contact_policy)
 
     trust = context_payload.get("q5_agent_trust_status") or context_payload.get("agent_trust_status") or {}
     if not isinstance(trust, dict):
         trust = {}
+    if not trust:
+        baseline_trust = authorization_baseline.get("agent_trust_status")
+        if isinstance(baseline_trust, dict):
+            trust = baseline_trust
     if not trust and isinstance(context_payload.get("q3_connected_agents"), list):
         derived_trust: dict[str, str] = {}
         for raw_agent in context_payload.get("q3_connected_agents", []):
+            if not isinstance(raw_agent, dict):
+                continue
+            agent_id = raw_agent.get("agent_id") or raw_agent.get("id") or raw_agent.get("name")
+            agent_status = raw_agent.get("trust_level") or raw_agent.get("status") or raw_agent.get("scope")
+            if agent_id and agent_status:
+                derived_trust[str(agent_id)] = str(agent_status)
+        trust = derived_trust
+    if not trust:
+        connected_agents_inventory = context_payload.get("connected_agents_inventory")
+        q3_inventory = context_payload.get("q3_unified_asset_inventory")
+        connected_agents = []
+        if isinstance(connected_agents_inventory, dict) and isinstance(connected_agents_inventory.get("connected_agents"), list):
+            connected_agents = connected_agents_inventory.get("connected_agents", [])
+        elif isinstance(q3_inventory, dict) and isinstance(q3_inventory.get("connected_agents"), list):
+            connected_agents = q3_inventory.get("connected_agents", [])
+        derived_trust = {}
+        for raw_agent in connected_agents:
             if not isinstance(raw_agent, dict):
                 continue
             agent_id = raw_agent.get("agent_id") or raw_agent.get("id") or raw_agent.get("name")
@@ -85,7 +144,7 @@ def _extract_q5_preprocessed_evidence(context_payload: object) -> Q5Preprocessed
     )
 
 
-def _extract_q5_inference_result(result_payload: object) -> Q5WhatAmIAllowedToDoInferenceView | None:
+def _extract_q5_inference_result(result_payload: object) -> Optional[Q5WhatAmIAllowedToDoInferenceView]:
     if not isinstance(result_payload, dict):
         return None
     # Q5 plugin 写入 context_updates 的是 q5_authorization_boundary_profile（直接是 profile dict）
@@ -167,4 +226,3 @@ def _extract_q5_inference_result(result_payload: object) -> Q5WhatAmIAllowedToDo
         compliance_risks=compliance_risks,
         allowed_delegation_targets=allowed_delegation_targets,
     )
-

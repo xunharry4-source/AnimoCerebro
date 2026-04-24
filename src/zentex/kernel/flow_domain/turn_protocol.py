@@ -51,26 +51,20 @@ class TurnProtocol:
         temporal: CognitiveTemporalEngine,
     ) -> TurnResult:
         """Execute one complete cognitive turn and return its TurnResult.
-
-        Args:
-            request:        The incoming TurnRequest.
-            session:        The active KernelSession.
-            transcript:     Transcript store for this session.
-            working_memory: Working memory controller for this session.
-            self_model:     Self-model engine for this session.
-            temporal:       Temporal engine for this session.
-
-        Returns:
-            A fully populated TurnResult.
+        
+        Implementation uses a Staged Commitment pattern: entries are buffered 
+        in memory and only appended to the durable TranscriptStore at the end 
+        of the turn to avoid log pollution from non-finalized states.
         """
         turn_id = request.turn_id
         session_id = request.session_id
+        staged_entries: list[TranscriptEntry] = []
 
         # 1. Record turn start in temporal engine
         temporal.record_turn_start(turn_id)
 
-        # 2. Write turn_start transcript entry
-        transcript.append(
+        # 2. Stage turn_start transcript entry
+        staged_entries.append(
             TranscriptEntry(
                 entry_type=TranscriptEntryType.turn_start,
                 session_id=session_id,
@@ -90,10 +84,10 @@ class TurnProtocol:
             temporal=temporal,
         )
 
-        # 5. Record each phase result and add to builder
+        # 5. Stage each phase result and add to builder
         for pr in phase_results:
             builder.add_phase(pr)
-            transcript.append(
+            staged_entries.append(
                 TranscriptEntry(
                     entry_type=TranscriptEntryType.phase_result,
                     session_id=session_id,
@@ -117,8 +111,8 @@ class TurnProtocol:
         # 8. Build TurnResult
         turn_result = builder.build(status=status, response=response)
 
-        # 9. Write turn_end transcript entry
-        transcript.append(
+        # 9. Stage turn_end transcript entry
+        staged_entries.append(
             TranscriptEntry(
                 entry_type=TranscriptEntryType.turn_end,
                 session_id=session_id,
@@ -130,17 +124,28 @@ class TurnProtocol:
                 },
             )
         )
+        
+        # 10. COMMIT ALL STAGED ENTRIES ATOMICALLY
+        for entry in staged_entries:
+            transcript.append(entry)
 
-        # 10. Record turn end in temporal; update self-model
-        temporal.record_turn_end(turn_id)
+        # 11. STAGED COMMITMENT: Only update self-model and temporal if the turn succeeded/partially failed.
+        # This prevents absolute failures (e.g. crashes in required phases) from 
+        # polluting the long-term cognitive health model or leaving dangling 'turn_start' records.
+        if status != TurnStatus.failed:
+            temporal.record_turn_end(turn_id)
+            
+            phase_error_count = sum(1 for pr in phase_results if pr.error and not pr.skipped)
+            self_model.record_turn(
+                duration_ms=turn_result.duration_ms,
+                phase_error_count=phase_error_count,
+            )
+        else:
+            # For failed turns, we record the end in temporal to close the span, 
+            # but we skip updating the self-model metrics to avoid skewing rolling averages.
+            temporal.record_turn_end(turn_id)
 
-        phase_error_count = sum(1 for pr in phase_results if pr.error and not pr.skipped)
-        self_model.record_turn(
-            duration_ms=turn_result.duration_ms,
-            phase_error_count=phase_error_count,
-        )
-
-        # 11. Touch session
+        # 12. Touch session
         session.touch()
 
         return turn_result
@@ -150,8 +155,13 @@ class TurnProtocol:
     # ------------------------------------------------------------------
 
     def _resolve_status(self, phase_results: list[PhaseResult]) -> TurnStatus:
-        """Return completed unless a required phase failed (not skipped)."""
+        """Return status based on phase outcomes."""
+        any_error = False
         for pr in phase_results:
-            if pr.phase_name in self._REQUIRED_PHASES and pr.error and not pr.skipped:
-                return TurnStatus.failed
-        return TurnStatus.completed
+            if pr.error and not pr.skipped:
+                # If a required phase failed, the whole turn fails
+                if pr.phase_name in self._REQUIRED_PHASES:
+                    return TurnStatus.failed
+                any_error = True
+        
+        return TurnStatus.partial_failed if any_error else TurnStatus.completed

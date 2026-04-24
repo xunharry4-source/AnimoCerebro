@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from typing import Any
 
-from plugins.nine_questions.prompt_sections import (
+from zentex.common.nine_questions_prompts import (
     assemble_prompt_sections,
     build_prompt_section,
 )
@@ -29,7 +29,7 @@ def build_q2_llm_request(
             intent="Define the identity inference task for Q2.",
             purpose="Keep the model focused on role and mission inference.",
             content=(
-                "你现在是 Zentex 外部大脑。请根据当前所处的 environment 态势（Q1结果）和你的底层身份内核，"
+                "你现在是 G19 Preference AI。请根据当前所处的 environment 态势（Q1结果）和你的底层身份内核，"
                 "推断出你当前最合适的任务角色、主体定位以及首要职责。"
                 f"当前主观风险偏好权重: {risk_weight:.2f} (0=激进, 1=保守)。"
                 "记住，你的动态角色绝不能违背底层的不可绕过约束。"

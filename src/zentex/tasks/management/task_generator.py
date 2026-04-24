@@ -1,3 +1,5 @@
+from __future__ import annotations
+
 """
 产品文档转任务转换器
 
@@ -532,7 +534,7 @@ from pathlib import Path
 
 def save_task_list_to_json(
     task_list: TaskList,
-    file_path: str | Path,
+    file_path: Union[str, Path],
 ) -> Tuple[bool, Optional[str]]:
     """
     将任务列表保存为JSON文件（包含产品文档数据）
@@ -554,7 +556,7 @@ def save_task_list_to_json(
 
 
 def load_task_list_from_json(
-    file_path: str | Path,
+    file_path: Union[str, Path],
 ) -> Tuple[Optional[TaskList], Optional[str]]:
     """
     从JSON文件加载任务列表（包含产品文档数据）

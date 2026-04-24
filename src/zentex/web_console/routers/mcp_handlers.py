@@ -1,8 +1,8 @@
+from __future__ import annotations
 """
 MCP Route Handlers — Business logic for Model Context Protocol interactions.
 Extracted from mcp.py to follow the Facade-First / Thin-Route pattern.
 """
-from __future__ import annotations
 from typing import Any, List, Optional
 from uuid import uuid4
 from zentex.mcp.models import McpServerConfig, McpServerRuntimeState
@@ -52,13 +52,23 @@ def handle_register_mcp_server(
     payload: McpServerRegistrationRequest,
     service: McpIntegrationService,
 ) -> McpServerStatusItem:
-    """Handle registering a new MCP server."""
+    """Handle registering a new MCP server.
+
+    Raises ValueError if the server cannot be reached (status == 'degraded').
+    Registration is fail-closed: a degraded state means the health probe or
+    tool-list failed, so the server should not be considered registered.
+    """
     service.register_server(McpServerConfig.model_validate(payload.model_dump(mode="json")))
     # Refresh and find the registered server
     states = handle_list_mcp_servers(service)
     registered = next((item for item in states if item.server_id == payload.server_id), None)
     if not registered:
         raise ValueError(f"Server {payload.server_id} registration failed or server not found after refresh.")
+    if registered.status == "degraded":
+        error_detail = registered.error_message or "health probe failed"
+        raise ValueError(
+            f"MCP server '{payload.server_id}' is not reachable: {error_detail}"
+        )
     return registered
 
 

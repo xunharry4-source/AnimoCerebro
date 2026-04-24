@@ -157,20 +157,18 @@ def resolve_registry_factories(factory_catalog: Dict[str, PluginFactory]) -> Dic
     for plugin_dir in plugin_dirs:
         startup_path = plugin_dir / "startup.py"
         module_name = "plugins_unit_" + "_".join(plugin_dir.relative_to(root).parts) + "_startup"
-        try:
-            module = _load_module_from_file(module_name, startup_path)
-            startup = getattr(module, "startup", None)
-            if not callable(startup):
-                logger.warning(f"[Plugins] startup() not callable: {startup_path}")
-                continue
+        
+        # Policy: Any failure to load/execute a plugin is fatal (Fail-Closed).
+        module = _load_module_from_file(module_name, startup_path)
+        startup = getattr(module, "startup", None)
+        if not callable(startup):
+            raise RuntimeError(f"[Plugins] Critical failure: startup() not callable in plugin {startup_path}")
 
-            plugin_id, factory = startup(factory_catalog)
-            if isinstance(plugin_id, str) and callable(factory):
-                resolved[plugin_id] = factory
-            else:
-                logger.warning(f"[Plugins] Invalid startup() return in {startup_path}")
-        except Exception as exc:
-            logger.warning(f"[Plugins] Failed loading plugin unit {startup_path}: {exc}")
+        plugin_id, factory = startup(factory_catalog)
+        if isinstance(plugin_id, str) and callable(factory):
+            resolved[plugin_id] = factory
+        else:
+            raise RuntimeError(f"[Plugins] Critical failure: Invalid startup() return values in {startup_path}")
 
     if resolved:
         return resolved

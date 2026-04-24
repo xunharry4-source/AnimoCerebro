@@ -27,7 +27,7 @@ class AssetDatabaseStore:
             return obj.value
         return str(obj)
 
-    def __init__(self, db_path: str | Path):
+    def __init__(self, db_path: Union[str, Path]):
         self.db_path = Path(db_path)
         self.db_path.parent.mkdir(parents=True, exist_ok=True)
         self._lock = threading.Lock()

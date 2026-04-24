@@ -1,3 +1,4 @@
+from __future__ import annotations
 """
 Sandbox Process Pool - 沙箱进程池
 
@@ -5,7 +6,6 @@ Sandbox Process Pool - 沙箱进程池
 此模块提供进程级别的安全边界，防止恶意代码逃逸。
 """
 
-from __future__ import annotations
 
 import logging
 import multiprocessing
@@ -63,6 +63,15 @@ class SandboxProcessInfo:
         }
 
 
+# Module-level registry for pickling compatibility across processes
+_WORKER_REGISTRY: Dict[str, Callable] = {}
+
+def register_sandbox_worker(name: str, func: Callable) -> None:
+    """Register a function to be available for execution within sandboxes."""
+    _WORKER_REGISTRY[name] = func
+    logger.info(f"Registered sandbox worker function: {name}")
+
+
 class SandboxProcessPool:
     """
     沙箱进程池
@@ -70,12 +79,9 @@ class SandboxProcessPool:
     管理固定数量的沙箱进程，用于执行不可信的代码验证。
     每个沙箱进程都是独立的Python进程，具有严格的资源限制。
     
-    安全特性：
-    - 进程级隔离
-    - 资源限制（内存、CPU、时间）
-    - 禁止网络访问（可选）
-    - 文件系统只读（可选）
-    - 自动健康检查和恢复
+    Standard Redline:
+    - No fake stubs: The worker must actually execute registered functions.
+    - No silent leaks: Process termination failures must be escalated.
     """
 
     def __init__(
@@ -90,14 +96,6 @@ class SandboxProcessPool:
     ):
         """
         初始化沙箱进程池
-        
-        Args:
-            pool_size: 进程池大小
-            timeout_seconds: 任务超时时间（秒）
-            memory_limit_mb: 内存限制（MB）
-            cpu_limit: CPU限制（核数）
-            enable_network_restriction: 是否禁止网络访问
-            enable_filesystem_restriction: 是否限制文件系统访问
         """
         self._pool_size = pool_size
         self._timeout = timeout_seconds
@@ -114,6 +112,10 @@ class SandboxProcessPool:
         self._lock = threading.Lock()
         self._health_check_thread: Optional[threading.Thread] = None
         self._running = False
+        
+        # G33: Tracks failed terminations to prevent silent host exhaustion
+        self._zombie_count = 0
+        self._max_zombies = pool_size * 2
         
         # 初始化进程池
         self._initialize_pool()
@@ -162,15 +164,7 @@ class SandboxProcessPool:
         logger.info(f"Sandbox process created: {process_id} (PID: {process.pid})")
 
     def acquire(self, timeout: float = 5.0) -> Optional[str]:
-        """
-        获取空闲的沙箱进程
-        
-        Args:
-            timeout: 等待超时时间（秒）
-        
-        Returns:
-            进程ID，或None（无可用进程）
-        """
+        """获取空闲的沙箱进程"""
         start_time = time.time()
         
         while time.time() - start_time < timeout:
@@ -188,12 +182,7 @@ class SandboxProcessPool:
         return None
 
     def release(self, process_id: str) -> None:
-        """
-        释放沙箱进程回池
-        
-        Args:
-            process_id: 进程ID
-        """
+        """释放沙箱进程回池"""
         with self._lock:
             if process_id in self._processes:
                 info = self._processes[process_id]
@@ -201,30 +190,42 @@ class SandboxProcessPool:
                 info.assigned_task_id = None
                 logger.debug(f"Sandbox process released: {process_id}")
 
+    def register_worker_function(self, name: str, func: Callable) -> None:
+        """
+        Registers a worker function and broadcasts it to all sandbox processes.
+        
+        Args:
+            name: The name of the function to register.
+            func: The function object (must be picklable).
+        """
+        _WORKER_REGISTRY[name] = func
+        
+        with self._lock:
+            for process_id, queue in self._request_queues.items():
+                try:
+                    queue.put({
+                        "type": "register",
+                        "name": name,
+                        "func": func,
+                    }, timeout=1.0)
+                    logger.debug(f"Broadcasted registration of '{name}' to {process_id}")
+                except Exception as e:
+                    logger.error(f"Failed to broadcast registration to {process_id}: {e}")
+
     def execute_task(
         self,
         process_id: str,
         task_id: str,
-        worker_func: Callable,
+        worker_func_name: str,
         worker_args: tuple = (),
         worker_kwargs: Optional[Dict[str, Any]] = None,
     ) -> Dict[str, Any]:
         """
         在沙箱进程中执行任务
-        
-        Args:
-            process_id: 进程ID
-            task_id: 任务ID
-            worker_func: 要执行的函数
-            worker_args: 位置参数
-            worker_kwargs: 关键字参数
-        
-        Returns:
-            执行结果
         """
         if worker_kwargs is None:
             worker_kwargs = {}
-        
+            
         with self._lock:
             if process_id not in self._processes:
                 raise ValueError(f"Invalid process_id: {process_id}")
@@ -234,8 +235,9 @@ class SandboxProcessPool:
         
         # 准备请求
         request = {
+            "type": "execute",
             "task_id": task_id,
-            "worker_func_name": worker_func.__name__,
+            "worker_func_name": worker_func_name,
             "args": worker_args,
             "kwargs": worker_kwargs,
             "timeout": self._timeout,
@@ -274,19 +276,10 @@ class SandboxProcessPool:
         
         except Exception as e:
             logger.error(f"Task execution error in {process_id}: {e}", exc_info=True)
-            return {
-                "success": False,
-                "error": str(e),
-                "error_type": type(e).__name__,
-            }
+            raise e
 
     def health_check(self) -> List[Dict[str, Any]]:
-        """
-        执行健康检查
-        
-        Returns:
-            所有进程的健康状态列表
-        """
+        """执行健康检查"""
         results = []
         
         with self._lock:
@@ -330,6 +323,7 @@ class SandboxProcessPool:
                 "error_count": errors,
                 "utilization": busy / total if total > 0 else 0,
                 "processes": [p.to_dict() for p in self._processes.values()],
+                "zombie_count": self._zombie_count,
             }
 
     def shutdown(self, wait: bool = True, timeout: float = 10.0) -> None:
@@ -342,15 +336,16 @@ class SandboxProcessPool:
         
         with self._lock:
             for process_id, process in list(self._process_objects.items()):
-                try:
-                    if process.is_alive():
-                        process.terminate()
-                        if wait:
-                            process.join(timeout=timeout)
+                if process.is_alive():
+                    process.terminate()
+                    if wait:
+                        process.join(timeout=timeout)
+                        if process.is_alive():
+                            process.kill()
+                            process.join(timeout=1.0)
                             if process.is_alive():
-                                process.kill()
-                except Exception as e:
-                    logger.error(f"Error terminating process {process_id}: {e}")
+                                # Standard Redline: Raise if we cannot clean up resources
+                                raise RuntimeError(f"Could not terminate sandbox process {process_id} (PID: {process.pid})")
             
             self._processes.clear()
             self._process_objects.clear()
@@ -377,24 +372,24 @@ class SandboxProcessPool:
     def _health_check_loop(self, interval: int = 30) -> None:
         """健康检查循环"""
         while self._running:
-            try:
-                time.sleep(interval)
-                self.health_check()
-            except Exception as e:
-                logger.error(f"Health check error: {e}")
+            time.sleep(interval)
+            self.health_check()
 
     def _terminate_and_rebuild_process(self, process_id: str) -> None:
         """终止并重建进程"""
         with self._lock:
             process = self._process_objects.get(process_id)
             if process and process.is_alive():
-                try:
-                    process.terminate()
-                    process.join(timeout=5.0)
+                process.terminate()
+                process.join(timeout=5.0)
+                if process.is_alive():
+                    process.kill()
+                    process.join(timeout=1.0)
                     if process.is_alive():
-                        process.kill()
-                except Exception as e:
-                    logger.error(f"Error terminating process {process_id}: {e}")
+                        self._zombie_count += 1
+                        logger.error(f"Failed to kill sandbox process {process_id} (PID: {process.pid}). Total zombies: {self._zombie_count}")
+                        if self._zombie_count > self._max_zombies:
+                            raise RuntimeError(f"Critical resource leak: {self._zombie_count} zombie sandbox processes detected.")
             
             # 更新状态
             if process_id in self._processes:
@@ -403,7 +398,14 @@ class SandboxProcessPool:
         
         # 重建进程
         self._create_sandbox_process(process_id)
-        logger.info(f"Sandbox process rebuilt: {process_id}")
+        
+        # G33: Re-broadcast existing registry to the new process
+        with self._lock:
+            queue = self._request_queues[process_id]
+            for name, func in _WORKER_REGISTRY.items():
+                queue.put({"type": "register", "name": name, "func": func})
+        
+        logger.info(f"Sandbox process rebuilt and resynchronized: {process_id}")
 
     @staticmethod
     def _sandbox_worker(
@@ -413,46 +415,71 @@ class SandboxProcessPool:
     ) -> None:
         """
         沙箱工作进程主循环
-        
-        此函数在独立进程中运行，接收任务请求并执行。
-        
-        Args:
-            process_id: 进程ID
-            request_queue: 请求队列
-            response_queue: 响应队列
         """
         logger.info(f"Sandbox worker started: {process_id} (PID: {os.getpid()})")
+        
+        # Worker-local registry
+        local_registry: Dict[str, Callable] = {}
         
         while True:
             try:
                 # 等待请求
                 request = request_queue.get(timeout=60.0)
+                req_type = request.get("type", "execute")
                 
-                task_id = request.get("task_id")
-                logger.debug(f"Sandbox executing task: {task_id}")
-                
-                # 注意：这里无法直接执行传入的函数对象
-                # 实际使用时需要注册worker函数映射
-                # 这是一个简化的实现
-                
-                response = {
-                    "success": False,
-                    "error": "Worker function not registered. Use register_worker() first.",
-                    "error_type": "NotImplementedError",
-                }
-                
-                response_queue.put(response)
+                if req_type == "register":
+                    name = request.get("name")
+                    func = request.get("func")
+                    if name and func:
+                        local_registry[name] = func
+                        logger.debug(f"Worker {process_id} registered function: {name}")
+                    continue
+
+                if req_type == "execute":
+                    task_id = request.get("task_id")
+                    worker_func_name = request.get("worker_func_name")
+                    args = request.get("args") or ()
+                    kwargs = request.get("kwargs") or {}
+                    
+                    logger.debug(f"Sandbox executing task: {task_id} (func: {worker_func_name})")
+                    
+                    func = local_registry.get(worker_func_name)
+                    if func is None:
+                        response_queue.put({
+                            "success": False,
+                            "error": f"Worker function '{worker_func_name}' not registered in worker process '{process_id}'.",
+                            "error_type": "NotImplementedError",
+                        })
+                        continue
+
+                    try:
+                        result = func(*args, **kwargs)
+                        response_queue.put({
+                            "success": True,
+                            "task_id": task_id,
+                            "data": result,
+                        })
+                    except Exception as e:
+                        logger.exception(f"Error in sandbox worker function '{worker_func_name}': {e}")
+                        response_queue.put({
+                            "success": False,
+                            "error": str(e),
+                            "error_type": type(e).__name__,
+                        })
             
             except multiprocessing.queues.Empty:
-                # 超时，继续等待
                 continue
             except Exception as e:
-                logger.error(f"Sandbox worker error: {e}", exc_info=True)
-                response_queue.put({
-                    "success": False,
-                    "error": str(e),
-                    "error_type": type(e).__name__,
-                })
+                logger.error(f"Sandbox worker loop error: {e}", exc_info=True)
+                try:
+                    response_queue.put({
+                        "success": False,
+                        "error": f"Worker loop internal error: {e}",
+                        "error_type": type(e).__name__,
+                    })
+                except Exception:
+                    logger.exception("Failed to publish sandbox worker loop error to response queue")
+                break
 
 
 # 全局单例

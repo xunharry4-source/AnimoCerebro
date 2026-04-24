@@ -1,3 +1,5 @@
+from __future__ import annotations
+
 """
 Multi-Source Comparator / 多源比较器
 
@@ -9,7 +11,7 @@ Implements cross-source validation and conflict resolution logic.
 """
 
 from datetime import datetime, timezone
-from typing import Any
+from typing import Any, Dict, List, Optional, Union
 from uuid import uuid4
 
 from zentex.environment.models import SourceConflictScore
@@ -53,7 +55,7 @@ class MultiSourceComparator:
         value_a: Any,
         value_b: Any,
         conflict_type: str = "value_mismatch",
-    ) -> SourceConflictScore | None:
+    ) -> Optional[SourceConflictScore]:
         """
         Compare values from two sources for the same field.
         
@@ -240,7 +242,7 @@ class MultiSourceComparator:
         value_b: Any,
         severity: float,
         confidence: float,
-    ) -> str | None:
+    ) -> Optional[str]:
         """
         Suggest how to resolve the detected conflict.
         

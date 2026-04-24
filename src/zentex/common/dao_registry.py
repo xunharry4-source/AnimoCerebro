@@ -1,3 +1,4 @@
+from __future__ import annotations
 """
 DAO Registry - Centralized management of all Data Access Objects.
 
@@ -21,14 +22,13 @@ Usage:
     registry = get_dao_registry()
     
     # Initialize with database path (uses UnifiedDatabaseConnection internally)
-    registry.initialize("runtime/data/zentex_core.db")
+    registry.initialize(get_storage_paths().core_db)
     
     # Get specific DAO
     agent_dao = registry.get_agent_dao()
     mcp_dao = registry.get_mcp_server_dao()
 """
 
-from __future__ import annotations
 
 import logging
 from typing import Optional

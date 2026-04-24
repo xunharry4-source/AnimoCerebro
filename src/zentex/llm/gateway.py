@@ -1,25 +1,15 @@
 from __future__ import annotations
 
 import json
+import logging
 from dataclasses import dataclass
 from threading import Lock
-from typing import Any, Dict, Optional
+from typing import Any, Dict, List, Optional, Union
 
-from zentex.plugins.service import (
-    AuthError,
-    BaseProviderTool,
-    ConfigError,
-    OpenAICompatibleGatewayTool,
-    RateLimitError,
-    RemoteServiceError,
-    RemoteTimeoutError,
-    ResponseParseError,
-    ToolInvocationRequest,
-    ToolInvocationResponse,
-    build_default_provider_tools,
-    get_default_provider_key,
-)
+logger = logging.getLogger(__name__)
+
 from zentex.foundation.specs.model_provider import (
+    ModelProviderError,
     ModelProviderAuthError,
     ModelProviderCallerContext,
     ModelProviderConfigError,
@@ -29,7 +19,6 @@ from zentex.foundation.specs.model_provider import (
     ModelProviderTimeoutError,
 )
 
-
 @dataclass(frozen=True)
 class LLMTokenUsage:
     input_tokens: int = 0
@@ -37,7 +26,7 @@ class LLMTokenUsage:
     total_tokens: int = 0
 
     @classmethod
-    def from_optional_mapping(cls, payload: Dict[str, Any] | None) -> "LLMTokenUsage":
+    def from_optional_mapping(cls, payload: Dict[str, Optional[Any]]) -> "LLMTokenUsage":
         if not payload:
             return cls()
         input_tokens = int(payload.get("input_tokens") or 0)
@@ -60,22 +49,14 @@ class LLMGatewayCall:
 
 
 class LLMGateway:
-    """
-    Single entrypoint for all LLM calls in the repo.
-
-    Responsibilities:
-    - select provider tool + model (default from config, overrideable per call)
-    - enforce "return JSON only" contract and parse JSON
-    - normalize provider errors into Zentex ModelProvider* errors
-    - maintain process-level request/token counters
-    """
-
     def __init__(
         self,
         *,
         default_provider_key: Optional[str] = None,
-        tools: Dict[str, BaseProviderTool | OpenAICompatibleGatewayTool] | None = None,
+        tools: Optional[Dict[str, Any]] = None,
     ) -> None:
+        from zentex.plugins.service import build_default_provider_tools, get_default_provider_key
+        
         self._tools = tools or build_default_provider_tools()
         
         if default_provider_key:
@@ -87,20 +68,64 @@ class LLMGateway:
         self._request_count = 0
         self._input_tokens = 0
         self._output_tokens = 0
+        self._provider_stats: Dict[str, Dict[str, int]] = {}
 
-    def __deepcopy__(self, memo: Dict[int, object]) -> "LLMGateway":
-        # `ManagedPluginRecord.model_copy(deep=True)` is used in core runtime and 
-        # web-console test sandboxes. Thread locks are not deepcopyable, so we 
-        # recreate a new gateway while reusing the already-built tool objects.
-        cloned = LLMGateway(
-            default_provider_key=self._default_provider_key,
-            tools=self._tools,
-        )
-        with self._lock:
-            cloned._request_count = self._request_count
-            cloned._input_tokens = self._input_tokens
-            cloned._output_tokens = self._output_tokens
-        return cloned
+    @staticmethod
+    def _strip_markdown_fence(text: str) -> str:
+        stripped = text.strip()
+        if stripped.startswith("```") and stripped.endswith("```"):
+            lines = stripped.splitlines()
+            if len(lines) >= 3:
+                return "\n".join(lines[1:-1]).strip()
+        return stripped
+
+    @staticmethod
+    def _extract_first_json_object(text: str) -> Optional[str]:
+        start = text.find("{")
+        if start < 0:
+            return None
+        depth = 0
+        in_string = False
+        escaped = False
+        for idx in range(start, len(text)):
+            ch = text[idx]
+            if escaped:
+                escaped = False
+                continue
+            if ch == "\\":
+                escaped = True
+                continue
+            if ch == '"':
+                in_string = not in_string
+                continue
+            if in_string:
+                continue
+            if ch == "{":
+                depth += 1
+            elif ch == "}":
+                depth -= 1
+                if depth == 0:
+                    return text[start : idx + 1]
+        return None
+
+    @classmethod
+    def _parse_json_output(cls, output_text: str) -> Dict[str, Any]:
+        normalized = cls._strip_markdown_fence(str(output_text or ""))
+        try:
+            parsed = json.loads(normalized)
+            if isinstance(parsed, dict):
+                return parsed
+        except json.JSONDecodeError:
+            pass
+
+        candidate = cls._extract_first_json_object(normalized)
+        if candidate:
+            parsed = json.loads(candidate)
+            if isinstance(parsed, dict):
+                logger.warning("[LLM GATEWAY] Recovered JSON object from mixed provider output.")
+                return parsed
+
+        raise ModelProviderParseError("Provider returned non-JSON output that cannot be recovered to a JSON object.")
 
     def stats_snapshot(self) -> Dict[str, int]:
         with self._lock:
@@ -111,6 +136,24 @@ class LLMGateway:
                 "output_tokens": self._output_tokens,
                 "total_tokens": total,
             }
+
+    def _record_usage(self, provider_key: str, usage: LLMTokenUsage) -> None:
+        with self._lock:
+            self._request_count += 1
+            self._input_tokens += usage.input_tokens
+            self._output_tokens += usage.output_tokens
+
+            p_stats = self._provider_stats.setdefault(provider_key, {
+                "request_count": 0,
+                "input_tokens": 0,
+                "output_tokens": 0,
+                "total_tokens": 0,
+                "error_count": 0
+            })
+            p_stats["request_count"] += 1
+            p_stats["input_tokens"] += usage.input_tokens
+            p_stats["output_tokens"] += usage.output_tokens
+            p_stats["total_tokens"] += usage.total_tokens
 
     def invoke_generate_json(
         self,
@@ -123,268 +166,222 @@ class LLMGateway:
         system_prompt: Optional[str] = None,
         temperature: float = 0.2,
         max_output_tokens: int = 1024,
-        metadata: Dict[str, Any] | None = None,
+        metadata: Dict[str, Optional[Any]] = None,
     ) -> LLMGatewayCall:
         selected_provider_key, selected_model = self._resolve_provider_and_model(
             provider_key=provider_key,
             model=model,
+        )
+
+        logger.info(
+            f"[LLM GATEWAY] Invoking provider: {selected_provider_key} | "
+            f"model: {selected_model}"
         )
         if not selected_provider_key:
             raise ModelProviderConfigError("provider_key must not be empty")
 
         tool = self._tools.get(selected_provider_key)
         if tool is None:
-            raise ModelProviderConfigError(
-                f"Unknown provider tool: {selected_provider_key}. Available={sorted(self._tools)}"
-            )
+            raise ModelProviderConfigError(f"Unknown provider tool: {selected_provider_key}")
 
-        effective_system_prompt = system_prompt or (
-            "You are a JSON generator. Output a single JSON object and nothing else."
-        )
-        invocation_metadata = {
-            **(metadata or {}),
-            "source_module": caller_context.source_module,
-            "invocation_phase": caller_context.invocation_phase,
-            "decision_id": caller_context.decision_id,
-        }
-        invocation = self._build_invocation(
+        rendered_context = json.dumps(context, ensure_ascii=False, separators=(",", ":"), sort_keys=True)
+        user_prompt = "\n\n".join([
+            "Return only a valid JSON object.",
+            f"Task:\n{prompt}",
+            f"Context JSON:\n{rendered_context}",
+        ])
+        
+        from zentex.plugins.service import ToolInvocationRequest
+        invocation = ToolInvocationRequest(
             model=selected_model,
-            prompt=prompt,
-            context=context,
-            system_prompt=effective_system_prompt,
+            prompt=user_prompt,
+            system_prompt=system_prompt or "You are a JSON generator.",
             temperature=temperature,
             max_output_tokens=max_output_tokens,
-            metadata=invocation_metadata,
+            metadata={**(metadata or {}), "require_json_format": True},
         )
 
-        self._increment_request_attempt()
         try:
-            response: ToolInvocationResponse = tool.call(invocation)  # type: ignore[assignment]
+            response = tool.call(invocation)
+            usage = LLMTokenUsage.from_optional_mapping(response.usage)
+            self._record_usage(selected_provider_key, usage)
+
+            try:
+                output = self._parse_json_output(response.output_text)
+            except Exception as exc:
+                logger.error(
+                    "[LLM GATEWAY] Provider returned non-JSON output | provider=%s model=%s error=%s",
+                    selected_provider_key,
+                    selected_model,
+                    str(exc),
+                )
+                last_error: Exception = exc
+                invalid_output = response.output_text
+                for attempt in range(1, 4):
+                    repair_prompt = "\n\n".join([
+                        "Your previous answer was not valid JSON.",
+                        "Return ONLY one valid JSON object that satisfies the original task.",
+                        "No markdown, no prose, no code fence, no explanation.",
+                        f"Repair attempt: {attempt}",
+                        f"Original task:\n{prompt}",
+                        f"Context JSON:\n{rendered_context}",
+                        f"Previous invalid output:\n{invalid_output}",
+                    ])
+                    repair_invocation = ToolInvocationRequest(
+                        model=selected_model,
+                        prompt=repair_prompt,
+                        system_prompt=system_prompt or "You are a strict JSON generator.",
+                        temperature=0.0,
+                        max_output_tokens=max_output_tokens,
+                        metadata={
+                            **(metadata or {}),
+                            "require_json_format": True,
+                            "json_repair_retry": True,
+                            "json_repair_attempt": attempt,
+                        },
+                    )
+                    try:
+                        repair_response = tool.call(repair_invocation)
+                        repair_usage = LLMTokenUsage.from_optional_mapping(repair_response.usage)
+                        self._record_usage(selected_provider_key, repair_usage)
+                        output = self._parse_json_output(repair_response.output_text)
+                        response = repair_response
+                        usage = repair_usage
+                        logger.warning(
+                            "[LLM GATEWAY] Provider JSON repair retry succeeded | provider=%s model=%s attempt=%d",
+                            selected_provider_key,
+                            selected_model,
+                            attempt,
+                        )
+                        break
+                    except Exception as repair_exc:
+                        last_error = repair_exc
+                        invalid_output = getattr(locals().get("repair_response"), "output_text", invalid_output)
+                else:
+                    raise ModelProviderParseError(
+                        f"Provider {selected_provider_key} returned non-JSON output and repair failed: {str(last_error)}"
+                    ) from last_error
+            return LLMGatewayCall(
+                provider_key=selected_provider_key,
+                model=selected_model,
+                output=output,
+                usage=usage,
+                raw_response=response.raw_response,
+            )
         except Exception as exc:
-            if self._should_retry_with_compact_context(
+            with self._lock:
+                p_stats = self._provider_stats.setdefault(selected_provider_key, {
+                    "request_count": 0,
+                    "input_tokens": 0,
+                    "output_tokens": 0,
+                    "total_tokens": 0,
+                    "error_count": 0
+                })
+                p_stats["error_count"] += 1
+            categorized_error, category, root = self._map_provider_error(
                 exc=exc,
                 provider_key=selected_provider_key,
-                caller_context=caller_context,
-            ):
-                compact_context = self._compact_context_payload(context)
-                retry_invocation = self._build_invocation(
-                    model=selected_model,
-                    prompt=prompt,
-                    context=compact_context,
-                    system_prompt=effective_system_prompt,
-                    temperature=temperature,
-                    max_output_tokens=max_output_tokens,
-                    metadata={
-                        **invocation_metadata,
-                        "context_compacted": True,
-                    },
-                )
-                self._increment_request_attempt()
-                try:
-                    response = tool.call(retry_invocation)  # type: ignore[assignment]
-                except Exception as retry_exc:
-                    raise self._map_tool_error(retry_exc, provider_key=selected_provider_key) from retry_exc
-            else:
-                raise self._map_tool_error(exc, provider_key=selected_provider_key) from exc
+                model=selected_model,
+                metadata=metadata or {},
+            )
+            logger.error(
+                "[LLM GATEWAY] Provider call failed | provider=%s model=%s category=%s root_type=%s root_message=%s",
+                selected_provider_key,
+                selected_model,
+                category,
+                root.__class__.__name__,
+                str(root),
+            )
+            raise categorized_error from exc
 
-        usage = LLMTokenUsage.from_optional_mapping(response.usage)
-        self._increment_usage(usage)
+    def get_aggregated_stats(self) -> Dict[str, Any]:
+        """Return global and per-provider stats."""
+        with self._lock:
+            return {
+                "total_request_count": self._request_count,
+                "total_input_tokens": self._input_tokens,
+                "total_output_tokens": self._output_tokens,
+                "total_tokens": self._input_tokens + self._output_tokens,
+                "providers": self._provider_stats.copy()
+            }
 
-        try:
-            output = _parse_json_object(response.output_text)
-        except ValueError as exc:
-            raise ModelProviderParseError(
-                f"Provider {selected_provider_key} returned non-JSON output"
-            ) from exc
+    def _resolve_provider_and_model(self, *, provider_key: Optional[str], model: Optional[str]) -> tuple[str, str]:
+        selected_provider_key = (provider_key or self._default_provider_key).strip()
+        selected_model = str(model or "").strip()
+        if not selected_model:
+            tool = self._tools.get(selected_provider_key)
+            selected_model = str(getattr(tool, "default_model", "") or "").strip()
+        if not selected_model:
+            selected_model = "default-model"
+        return selected_provider_key, selected_model
 
-        return LLMGatewayCall(
-            provider_key=selected_provider_key,
-            model=selected_model,
-            output=output,
-            usage=usage,
-            raw_response=response.raw_response,
-        )
-
-    @staticmethod
-    def _build_invocation(
-        *,
-        model: str,
-        prompt: str,
-        context: Dict[str, Any],
-        system_prompt: str,
-        temperature: float,
-        max_output_tokens: int,
-        metadata: Dict[str, Any],
-    ) -> ToolInvocationRequest:
-        rendered_context = json.dumps(context, ensure_ascii=False, separators=(",", ":"), sort_keys=True)
-        user_prompt = "\n\n".join(
-            [
-                "Return only a valid JSON object. Do not wrap it in markdown.",
-                f"Task:\n{prompt}",
-                f"Context JSON:\n{rendered_context}",
-            ]
-        )
-        return ToolInvocationRequest(
-            model=model,
-            prompt=user_prompt,
-            system_prompt=system_prompt,
-            temperature=temperature,
-            max_output_tokens=max_output_tokens,
-            metadata=metadata,
-        )
-
-    @staticmethod
-    def _should_retry_with_compact_context(
+    def _map_provider_error(
+        self,
         *,
         exc: Exception,
         provider_key: str,
-        caller_context: ModelProviderCallerContext,
-    ) -> bool:
-        if provider_key != "openai_compat":
-            return False
-        phase = str(caller_context.invocation_phase or "")
-        source = str(caller_context.source_module or "")
-        is_nine_question_tail = any(
-            marker in phase or marker in source
-            for marker in ("q4", "q5", "q6", "q7", "q8", "q9")
-        )
-        if not is_nine_question_tail:
-            return False
-        message = str(exc).lower()
-        return "500" in message or "status 500" in message or "remote provider" in message
-
-    @classmethod
-    def _compact_context_payload(cls, context: Dict[str, Any]) -> Dict[str, Any]:
-        def _compact(value: Any, *, depth: int) -> Any:
-            if value is None or isinstance(value, (int, float, bool)):
-                return value
-            if isinstance(value, str):
-                text = value.strip()
-                if len(text) <= 240:
-                    return text
-                return f"{text[:240]}...[truncated]"
-            if isinstance(value, list):
-                items = [_compact(item, depth=depth + 1) for item in value[:8]]
-                if len(value) > 8:
-                    items.append(f"...[{len(value) - 8} more items truncated]")
-                return items
-            if isinstance(value, dict):
-                compacted: Dict[str, Any] = {}
-                for index, (key, item) in enumerate(value.items()):
-                    if index >= 20:
-                        compacted["__truncated_keys__"] = len(value) - 20
-                        break
-                    normalized_key = str(key)
-                    if normalized_key in {"raw_response", "reasoning_content"}:
-                        continue
-                    if normalized_key in {"reasoning_summary", "summary", "introduction", "function_description"}:
-                        compacted[normalized_key] = _compact(item, depth=depth + 1)
-                        continue
-                    if depth >= 3 and isinstance(item, (dict, list)):
-                        compacted[normalized_key] = "[nested structure omitted]"
-                        continue
-                    compacted[normalized_key] = _compact(item, depth=depth + 1)
-                return compacted
-            return str(value)
-
-        compacted = _compact(context, depth=0)
-        return compacted if isinstance(compacted, dict) else {"context": compacted}
-
-    def _increment_request_attempt(self) -> None:
-        with self._lock:
-            self._request_count += 1
-
-    def _increment_usage(self, usage: LLMTokenUsage) -> None:
-        if usage.total_tokens <= 0 and usage.input_tokens <= 0 and usage.output_tokens <= 0:
-            return
-        with self._lock:
-            self._input_tokens += max(0, usage.input_tokens)
-            self._output_tokens += max(0, usage.output_tokens)
-
-    def _map_tool_error(self, exc: Exception, *, provider_key: str) -> Exception:
-        if isinstance(exc, ConfigError):
-            return ModelProviderConfigError(str(exc))
-        if isinstance(exc, AuthError):
-            return ModelProviderAuthError(str(exc))
-        if isinstance(exc, RateLimitError):
-            return ModelProviderRateLimitError(str(exc))
-        if isinstance(exc, RemoteTimeoutError):
-            return ModelProviderTimeoutError(str(exc))
-        if isinstance(exc, RemoteServiceError):
-            return ModelProviderRemoteError(str(exc))
-        if isinstance(exc, ResponseParseError):
-            return ModelProviderParseError(str(exc))
-        return ModelProviderRemoteError(
-            f"Unexpected provider failure for {provider_key}: {exc.__class__.__name__}"
-        )
-
-    def _resolve_provider_and_model(
-        self,
-        *,
-        provider_key: Optional[str],
-        model: Optional[str],
-    ) -> tuple[str, str]:
-        if provider_key is not None and not provider_key.strip():
-            return "", ""
-
-        requested_provider_key = (provider_key or "").strip()
-        requested_model = (model or "").strip()
-
-        if requested_provider_key:
-            selected_provider_key = requested_provider_key
-        else:
-            selected_provider_key = self._default_provider_key.strip()
-
-        if not selected_provider_key:
-            return "", ""
-
-        tool = self._tools.get(selected_provider_key)
-        if tool is None:
-            return selected_provider_key, requested_model
-
-        default_model = self._tool_default_model(tool)
-        selected_model = requested_model or default_model
-        selected_model = self._normalize_model_for_provider(
-            provider_key=selected_provider_key,
-            model=selected_model,
-            default_model=default_model,
-        )
-        if not selected_model:
-            raise ModelProviderConfigError("model must not be empty")
-        return selected_provider_key, selected_model
-
-    def _normalize_model_for_provider(
-        self,
-        *,
-        provider_key: str,
         model: str,
-        default_model: str,
-    ) -> str:
-        normalized = model.strip()
-        # Strip the "(auto)" routing hint regardless of provider — it is a
-        # config-level annotation that must never reach the actual API endpoint.
-        if normalized.endswith("(auto)"):
-            normalized = normalized.removesuffix("(auto)").strip()
-        return normalized
+        metadata: Dict[str, Any],
+    ) -> tuple[Exception, str, Exception]:
+        from zentex.llm.providers.base import (
+            AuthError,
+            ConfigError,
+            RateLimitError,
+            RemoteServiceError,
+            RemoteTimeoutError,
+            ResponseParseError,
+        )
+
+        root = self._root_cause(exc)
+        timeout_hint = metadata.get("request_timeout_seconds")
+        timeout_text = f", timeout={timeout_hint}s" if timeout_hint not in (None, "", 0) else ""
+        base_message = (
+            f"provider={provider_key}, model={model}{timeout_text}, "
+            f"root={root.__class__.__name__}: {str(root)}"
+        )
+
+        if isinstance(exc, ModelProviderError):
+            return exc, self._category_for_exception(exc), root
+        if isinstance(exc, RemoteTimeoutError):
+            return ModelProviderTimeoutError(f"LLM timeout ({base_message})"), "timeout", root
+        if isinstance(exc, RateLimitError):
+            return ModelProviderRateLimitError(f"LLM rate_limited ({base_message})"), "rate_limit", root
+        if isinstance(exc, AuthError):
+            return ModelProviderAuthError(f"LLM auth_failed ({base_message})"), "auth", root
+        if isinstance(exc, ConfigError):
+            return ModelProviderConfigError(f"LLM config_error ({base_message})"), "config", root
+        if isinstance(exc, ResponseParseError):
+            return ModelProviderParseError(f"LLM parse_error ({base_message})"), "parse", root
+        if isinstance(exc, RemoteServiceError):
+            return ModelProviderRemoteError(f"LLM remote_service_error ({base_message})"), "remote_service", root
+        if isinstance(root, TimeoutError):
+            return ModelProviderTimeoutError(f"LLM timeout ({base_message})"), "timeout", root
+        return ModelProviderRemoteError(f"LLM remote_error ({base_message})"), "remote", root
 
     @staticmethod
-    def _tool_default_model(tool: Any) -> str:
-        return str(getattr(getattr(tool, "config", None), "default_model", "") or "").strip()
+    def _root_cause(exc: Exception) -> Exception:
+        current: Exception = exc
+        seen: set[int] = set()
+        while True:
+            marker = id(current)
+            if marker in seen:
+                return current
+            seen.add(marker)
+            cause = getattr(current, "__cause__", None) or getattr(current, "__context__", None)
+            if not isinstance(cause, Exception):
+                return current
+            current = cause
 
-
-def _parse_json_object(text: str) -> Dict[str, Any]:
-    raw = (text or "").strip()
-    if not raw:
-        raise ValueError("empty output")
-    try:
-        parsed = json.loads(raw)
-    except json.JSONDecodeError:
-        # Best-effort extraction when providers wrap output with extra text.
-        start = raw.find("{")
-        end = raw.rfind("}")
-        if start < 0 or end < 0 or end <= start:
-            raise
-        parsed = json.loads(raw[start : end + 1])
-    if not isinstance(parsed, dict):
-        raise ValueError("output is not a JSON object")
-    return parsed
+    @staticmethod
+    def _category_for_exception(exc: Exception) -> str:
+        if isinstance(exc, ModelProviderTimeoutError):
+            return "timeout"
+        if isinstance(exc, ModelProviderRateLimitError):
+            return "rate_limit"
+        if isinstance(exc, ModelProviderAuthError):
+            return "auth"
+        if isinstance(exc, ModelProviderConfigError):
+            return "config"
+        if isinstance(exc, ModelProviderParseError):
+            return "parse"
+        return "remote"

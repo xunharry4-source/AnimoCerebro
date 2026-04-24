@@ -1,3 +1,4 @@
+from __future__ import annotations
 """Migration-safe plugin registry compat layer.
 
 This module restores the historical `zentex.common.plugin_registry` public
@@ -5,11 +6,10 @@ surface while routing new code toward the `zentex.plugins` contract layer.
 It is a transitional boundary and should remain fail-closed.
 """
 
-from __future__ import annotations
 
 from contextlib import contextmanager
 from datetime import datetime, timezone
-from typing import Any, Generic, Iterator, TypeVar
+from typing import Any, Generic, Iterator, TypeVar, Dict, List, Optional, Union
 
 from pydantic import BaseModel, ConfigDict
 
@@ -90,8 +90,8 @@ class AbstractPluginRegistry(Generic[PluginSpecT]):
         self,
         plugin: PluginSpecT,
         *,
-        lifecycle_status: PluginLifecycleStatus | None = None,
-        revocation_reason: str | None = None,
+        lifecycle_status: Optional[PluginLifecycleStatus] = None,
+        revocation_reason: Optional[str] = None,
     ) -> PluginSpecT:
         updates: dict[str, Any] = {}
         if lifecycle_status is not None:
@@ -113,7 +113,7 @@ class AbstractPluginRegistry(Generic[PluginSpecT]):
         )
         return plugin
 
-    def _effective_lifecycle_status(self, plugin: Any) -> PluginLifecycleStatus | Any:
+    def _effective_lifecycle_status(self, plugin: Any) -> Union[PluginLifecycleStatus, Any]:
         status = getattr(plugin, "lifecycle_status", None)
         if status is None:
             status = getattr(plugin, "status", None)
@@ -128,10 +128,10 @@ class AbstractPluginRegistry(Generic[PluginSpecT]):
         self._record_audit(normalized.plugin_id, "registered", "registered_as_candidate")
         return normalized
 
-    def get_registered_plugin(self, plugin_id: str) -> PluginSpecT | None:
+    def get_registered_plugin(self, plugin_id: str) -> Optional[PluginSpecT]:
         return self._plugins.get(plugin_id)
 
-    def get_registration(self, plugin_id: str) -> PluginRegistration | None:
+    def get_registration(self, plugin_id: str) -> Optional[PluginRegistration]:
         return self._registrations.get(plugin_id)
 
     def list_registrations(self) -> list[PluginRegistration]:
@@ -174,7 +174,7 @@ class AbstractPluginRegistry(Generic[PluginSpecT]):
         self._record_audit(plugin_id, "revoked", reason)
         return updated
 
-    def get_active_plugins(self, feature_code: str | None = None) -> list[PluginSpecT]:
+    def get_active_plugins(self, feature_code: Optional[str] = None) -> list[PluginSpecT]:
         active_plugins: list[PluginSpecT] = []
         for plugin in self._plugins.values():
             if self._effective_lifecycle_status(plugin) != PluginLifecycleStatus.ACTIVE:

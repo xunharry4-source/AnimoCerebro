@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from typing import Any
 
-from plugins.nine_questions.prompt_sections import (
+from zentex.common.nine_questions_prompts import (
     assemble_prompt_sections,
     build_prompt_section,
 )
@@ -53,14 +53,37 @@ def build_q9_llm_request(
         ),
         build_prompt_section(
             key="output_contract",
-            title="Task",
+            title="Output Contract",
             intent="Define the required output shape.",
             purpose="Prevent drift away from the three Q9 posture profiles.",
             content=(
-                "只有输出以下 3 个对象：\n"
+                "输出严格 JSON，顶层只能包含以下 3 个对象：\n"
                 "- `evaluation_profile`\n"
                 "- `evolution_profile`\n"
-                "- `escalation_profile`"
+                "- `escalation_profile`\n\n"
+                "`evaluation_profile` 必须包含：\n"
+                "- `role_context`\n"
+                "- `resource_context`\n"
+                "- `risk_level`\n"
+                "- `evaluation_weights`\n"
+                "- `conservative_mode_triggered`\n"
+                "- `evaluation_style`\n"
+                "- `action_rhythm_hint`\n\n"
+                "`evolution_profile` 必须包含：\n"
+                "- `allowed_directions`\n"
+                "- `risk_threshold`\n"
+                "- `forbidden_directions`\n"
+                "- `validation_requirements`\n\n"
+                "`escalation_profile` 必须包含：\n"
+                "- `pause_conditions`\n"
+                "- `help_request_conditions`\n"
+                "- `confirmation_required_conditions`\n"
+                "- `revisit_conditions`\n"
+                "- `rollback_conditions`\n\n"
+                "禁止返回 Q8 结构或其他无关结构：\n"
+                "- 不要输出 `objective_profile`\n"
+                "- 不要输出 `task_queue`\n"
+                "- 不要输出解释文字、markdown、代码块"
             ),
         ),
     ]

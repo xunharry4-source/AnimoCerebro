@@ -1,3 +1,4 @@
+from __future__ import annotations
 """
 Phase D1/D2: 任务监督系统 - Task Supervision System
 
@@ -5,7 +6,6 @@ Phase D1/D2: 任务监督系统 - Task Supervision System
 支持多种行动类型：重试、降级、升级、中止、人工干预。
 """
 
-from __future__ import annotations
 from datetime import datetime, timezone
 from enum import Enum
 from typing import Any, Dict, List, Optional, Callable

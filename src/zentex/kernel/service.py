@@ -1,3 +1,4 @@
+from __future__ import annotations
 """
 Public service boundary for zentex.kernel.
 
@@ -9,16 +10,20 @@ External module services are injected via attach_dependencies() — kernel
 never imports external service modules directly.
 """
 
-from __future__ import annotations
 
 import json
+import logging
 import os
 import threading
 from datetime import datetime, timezone
+from copy import deepcopy
 from pathlib import Path
-from typing import Any
+from typing import Any, Optional, Union, Optional, Union, Dict, List
 from uuid import uuid4
 
+logger = logging.getLogger(__name__)
+
+from zentex.common.storage_paths import get_storage_paths
 from zentex.foundation.contracts import (
     PhaseResult,
     ServiceResponse,
@@ -57,14 +62,15 @@ from zentex.kernel.session_domain import (
 )
 from zentex.kernel.state_domain import (
     CognitiveTemporalEngine,
+    NullTranscriptStore,
     SelfModelEngine,
     TranscriptEntry,
     TranscriptEntryType,
     TranscriptStore,
     WorkingMemoryController,
 )
-from zentex.kernel.state_domain.brain_transcript import BrainTranscriptStore
 from zentex.kernel.state_domain.brain_transcript_models import BrainTranscriptEntryType
+from zentex.nine_questions.query import build_question_record
 
 UTC = timezone.utc
 
@@ -80,8 +86,16 @@ class _SessionState:
         self.working_memory = WorkingMemoryController(max_slots=WORKING_MEMORY_MAX_SLOTS)
         self.self_model = SelfModelEngine(session_id=session_id)
         self.temporal = CognitiveTemporalEngine(session_id=session_id)
-        self.transcript = TranscriptStore(session_id=session_id, db_dir=db_dir)
-        self.nine_q_state = NineQuestionStateManager(session_id=session_id)
+        transcript_enabled = str(os.environ.get("ZENTEX_ENABLE_TRANSCRIPTS", "")).strip().lower() in {
+            "1",
+            "true",
+            "yes",
+            "on",
+        }
+        if transcript_enabled:
+            self.transcript = TranscriptStore(session_id=session_id, db_dir=db_dir)
+        else:
+            self.transcript = NullTranscriptStore(session_id=session_id)
 
 
 # ---------------------------------------------------------------------------
@@ -94,10 +108,10 @@ class KernelService:
 
     def __init__(
         self,
-        transcript_db_dir: str = "app_data/transcripts",
+        transcript_db_dir: Optional[str] = None,
     ) -> None:
         # --- infrastructure ---
-        self._transcript_db_dir = transcript_db_dir
+        self._transcript_db_dir = transcript_db_dir or str(get_storage_paths().transcript_dir)
         self._lock = threading.Lock()
 
         # --- session management ---
@@ -112,7 +126,11 @@ class KernelService:
         self._think_loop = ThinkLoop(bridge=self, registry=self._phase_registry)  # type: ignore[arg-type]
         self._turn_protocol = TurnProtocol(bridge=self, think_loop=self._think_loop)  # type: ignore[arg-type]
 
-        # --- nine-question components ---
+        # --- nine-question components (shared baseline) ---
+        # NOTE: Cognitive baseline (Nine-Questions) is now GLOBAL and shared across all sessions.
+        # Partitioning by Session ID was an architectural error that led to identity fragmentation.
+        self._nq_shared_state = NineQuestionStateManager(session_id="zentex-global-baseline")
+        self._nq_shared_lock = threading.Lock()
         self._nq_router = NineQuestionRouter()
         self._nq_executor = NineQuestionExecutor(bridge=self)
         self._nq_snapshot_builder = StartupSnapshotBuilder(bridge=self)
@@ -128,12 +146,15 @@ class KernelService:
         self._safety_service: Any = None
         self._plugins_service: Any = None
         self._memory_service: Any = None
+        self._audit_service: Any = None
         self._llm_service: Any = None
         self._foundation_service: Any = None
         self._agent_service: Any = None
         self._cli_service: Any = None
         self._mcp_service: Any = None
-        self._task_service: Any = None
+        self._nq_plugin_service: Any = None
+        self._reflection_service: Any = None
+        self._learning_service: Any = None
 
         self._initialized = True
 
@@ -142,7 +163,7 @@ class KernelService:
     # ------------------------------------------------------------------
 
     @property
-    def temporal_engine(self) -> Any | None:
+    def temporal_engine(self) -> Any:
         """Return the temporal engine for the default session."""
         default_session_id = "zentex-default-session"
         state = self._session_states.get(default_session_id)
@@ -151,12 +172,13 @@ class KernelService:
             try:
                 state = _SessionState(default_session_id, self._transcript_db_dir)
                 self._session_states[default_session_id] = state
-            except Exception:
-                return None
+            except Exception as e:
+                logger.exception(f"Failed to initialize engine state for {default_session_id}")
+                raise e
         return state.temporal
 
     @property
-    def conflict_engine(self) -> Any | None:
+    def conflict_engine(self) -> Any:
         """Return the conflict engine (self-model) for the default session."""
         default_session_id = "zentex-default-session"
         state = self._session_states.get(default_session_id)
@@ -164,66 +186,54 @@ class KernelService:
             try:
                 state = _SessionState(default_session_id, self._transcript_db_dir)
                 self._session_states[default_session_id] = state
-            except Exception:
-                return None
+            except Exception as e:
+                logger.exception(f"Failed to initialize engine state for {default_session_id}")
+                raise e
         return state.self_model
 
     @property
-    def simulation_engine(self) -> Any | None:
+    def simulation_engine(self) -> Any:
         """Return the counterfactual simulation engine for the default session."""
         default_session_id = "zentex-default-session"
         state = self._session_states.get(default_session_id)
         if state is None:
-             try:
-                 state = _SessionState(default_session_id, self._transcript_db_dir)
-                 self._session_states[default_session_id] = state
-             except Exception:
-                 return None
+            try:
+                state = _SessionState(default_session_id, self._transcript_db_dir)
+                self._session_states[default_session_id] = state
+            except Exception as e:
+                logger.exception(f"Failed to initialize engine state for {default_session_id}")
+                raise e
         # Shim for simulation - in this version, it's provided by cognition_service 
         # but the router expects a stateful domain object. 
         return getattr(self._cognition_service, "simulation_engine", None)
 
     @property
-    def interaction_mind_engine(self) -> Any | None:
+    def interaction_mind_engine(self) -> Any:
         """Return the interaction mind engine for the default session."""
         return getattr(self._cognition_service, "interaction_mind_engine", None)
 
     @property
-    def consolidation_engine(self) -> Any | None:
+    def consolidation_engine(self) -> Any:
         """Return the memory consolidation engine."""
         return getattr(self._memory_service, "consolidation_engine", None)
 
     @property
-    def transcript_store(self) -> Any | None:
+    def transcript_store(self) -> Any:
         """Return the transcript store for the default session."""
         default_session_id = "zentex-default-session"
         state = self._session_states.get(default_session_id)
         if state is None:
-             try:
-                 state = _SessionState(default_session_id, self._transcript_db_dir)
-                 self._session_states[default_session_id] = state
-             except Exception:
-                 return None
+            try:
+                state = _SessionState(default_session_id, self._transcript_db_dir)
+                self._session_states[default_session_id] = state
+            except Exception as e:
+                logger.exception(f"Failed to initialize engine state for {default_session_id}")
+                raise e
         return state.transcript
 
-    def get_transcript_store(self) -> Any | None:
-        """Compatibility method for web console — returns transcript_store property."""
-        return self.transcript_store
-
-    def get_session_transcript_store(self, session_id: str) -> TranscriptStore | None:
-        """Return the per-session transcript store when the session exists."""
-        state = self._session_states.get(session_id)
-        return state.transcript if state is not None else None
-
-    @staticmethod
-    def _nine_question_audit_db_path(session_id: str) -> Path:
-        return Path(".zentex") / "nine_question_audit" / f"{session_id}.sqlite3"
-
-    def get_nine_question_audit_store(self, session_id: str) -> BrainTranscriptStore | None:
-        """Return the session-scoped nine-question audit store."""
-        if not session_id:
-            return None
-        return BrainTranscriptStore(self._nine_question_audit_db_path(session_id))
+    def get_nine_question_audit_store(self, session_id: str) -> None:
+        """Nine-question side audit stores are forbidden; use the canonical session transcript."""
+        return None
 
     # ------------------------------------------------------------------
     # Dependency injection (called by launcher)
@@ -237,29 +247,67 @@ class KernelService:
         safety_service: Any = None,
         plugins_service: Any = None,
         memory_service: Any = None,
+        audit_service: Any = None,
         llm_service: Any = None,
         foundation_service: Any = None,
         agent_service: Any = None,
         cli_service: Any = None,
         mcp_service: Any = None,
-        task_service: Any = None,
+        reflection_service: Any = None,
+        learning_service: Any = None,
     ) -> None:
         """Inject all external service references.
 
         Called by launcher.assembly.assembler after all services are initialised.
         Kernel never imports these services directly — they are always injected.
         """
-        self._environment_service = environment_service
-        self._cognition_service = cognition_service
-        self._safety_service = safety_service
-        self._plugins_service = plugins_service
-        self._memory_service = memory_service
-        self._llm_service = llm_service
-        self._foundation_service = foundation_service
-        self._agent_service = agent_service
-        self._cli_service = cli_service
-        self._mcp_service = mcp_service
-        self._task_service = task_service
+        if environment_service is not None:
+            self._environment_service = environment_service
+        if cognition_service is not None:
+            self._cognition_service = cognition_service
+        if safety_service is not None:
+            self._safety_service = safety_service
+        if plugins_service is not None:
+            self._plugins_service = plugins_service
+        if memory_service is not None:
+            self._memory_service = memory_service
+        if audit_service is not None:
+            self._audit_service = audit_service
+        if llm_service is not None:
+            self._llm_service = llm_service
+        if foundation_service is not None:
+            self._foundation_service = foundation_service
+        if agent_service is not None:
+            self._agent_service = agent_service
+        if cli_service is not None:
+            self._cli_service = cli_service
+        if mcp_service is not None:
+            self._mcp_service = mcp_service
+        if reflection_service is not None:
+            self._reflection_service = reflection_service
+        if learning_service is not None:
+            self._learning_service = learning_service
+
+        # Initialize Nine-Question implementation service
+        if plugins_service is not None:
+            # Wire up cognitive services for authentic plugin integration
+            if callable(getattr(plugins_service, "attach_cognitive_services", None)):
+                plugins_service.attach_cognitive_services(
+                    audit_service=self._audit_service,
+                    memory_service=self._memory_service,
+                    reflection_service=self._reflection_service,
+                    learning_service=self._learning_service,
+                    transcript_store=self.transcript_store,
+                    llm_service=self._llm_service,
+                    foundation_service=self._foundation_service,
+                    environment_service=self._environment_service,
+                )
+
+            try:
+                from zentex.plugins.service import get_nq_service as get_nq_plugin_service
+                self._nq_plugin_service = get_nq_plugin_service(plugins_service=plugins_service)
+            except ImportError:
+                logger.warning("Could not initialize NineQuestionPluginService: module not found")
 
     # ------------------------------------------------------------------
     # Session management (public API)
@@ -276,7 +324,7 @@ class KernelService:
             self._session_states[session.session_id] = state
         return session.session_id
 
-    def get_session_meta(self, session_id: str) -> dict | None:
+    def get_session_meta(self, session_id: str) -> Optional[dict]:
         """Return session metadata dict, or None if not found."""
         session = self._registry.get(session_id)
         if session is None:
@@ -324,25 +372,30 @@ class KernelService:
     # Turn execution (public API)
     # ------------------------------------------------------------------
 
-    def start_turn(self, session_id: str, user_input: str, context: dict | None = None) -> TurnResult:
+    def start_turn(self, session_id: str, user_input: str, context: Optional[dict] = None) -> TurnResult:
         """Execute a full 9-phase turn for the given session.
 
         Returns a TurnResult. Raises ValueError if session not found.
         """
-        session = self._lifecycle.get_session(session_id)
-        if session is None:
-            raise ValueError(f"Session not found: {session_id}")
-
         state = self._get_state(session_id)
         if state is None:
             raise ValueError(f"Session state missing for: {session_id}")
 
-        turn_id = str(uuid4())
+        base_context = context or {}
+        # AUTHENTIC GROUNDING: Inject Nine-Question baseline into the turn context.
+        # This ensures all Turn phases (Drive, Frame, Synthesis) are grounded in 
+        # the established cognitive identity and boundaries.
+        enriched_context = self._build_grounded_context(
+            base_context=base_context,
+            nine_question_state_payload=self._nq_shared_state.to_dict(),
+            trigger="turn_start"
+        )
+
         request = TurnRequest(
             turn_id=turn_id,
             session_id=session_id,
             user_input=user_input,
-            context=context or {},
+            context=enriched_context,
         )
 
         state.working_memory.clear()
@@ -361,83 +414,192 @@ class KernelService:
     # Nine-question bootstrap (public API)
     # ------------------------------------------------------------------
 
+    # ------------------------------------------------------------------
+    # Nine-question bootstrap (global — no session_id in public API)
+    # ------------------------------------------------------------------
+
+    _DEFAULT_SESSION_ID = "zentex-default-session"
+
+    def _get_or_create_default_state(self) -> "_SessionState":
+        """Return the default session state, creating it if necessary."""
+        state = self._session_states.get(self._DEFAULT_SESSION_ID)
+        if state is None:
+            state = _SessionState(self._DEFAULT_SESSION_ID, self._transcript_db_dir)
+            self._session_states[self._DEFAULT_SESSION_ID] = state
+        return state
+
+    def _persist_incremental_nine_question_record(self, response: NineQuestionResponse) -> None:
+        return None
+
+    def _persist_incremental_nine_question_module_output(
+        self,
+        question_id: str,
+        module_id: str,
+        payload: dict[str, Any],
+    ) -> None:
+        return None
+
     def ensure_nine_questions_bootstrap(
-        self, session_id: str, *, force: bool = False
+        self,
+        force: bool = False,
+        max_retries: int = 1,
+        rollback_on_failure: bool = False,
+        merge_on_partial: bool = False,
     ) -> BootstrapStatus:
-        """Run or resume the nine-question cold-start for the given session.
+        """Ensure the shared nine-question baseline is initialized.
 
-        Args:
-            session_id: Target session.
-            force: If True, re-run even when bootstrap_status is already 'completed'.
-
-        Returns the resulting BootstrapStatus.
-        Raises ValueError if session not found.
+        Nine-questions are a global cognitive baseline — not scoped to any
+        individual session.  The default session provides the transcript context
+        needed by the coordinator.
         """
-        state = self._get_state(session_id)
-        if state is None:
-            raise ValueError(f"Session state missing for: {session_id}")
+        default_state = self._get_or_create_default_state()
+        with self._nq_shared_lock:
+            current_status = self._nq_shared_state.get_state().bootstrap_status
+            if not force and current_status in (
+                BootstrapStatus.completed,
+                BootstrapStatus.partial_failed,
+            ):
+                logger.debug(
+                    f"Skipping Nine-Questions bootstrap; shared baseline already exists (status: {current_status})"
+                )
+                return current_status
 
-        current_status = state.nine_q_state.get_state().bootstrap_status
-        if current_status == BootstrapStatus.completed and not force:
-            return BootstrapStatus.completed
+            logger.info("[COGNITIVE BASELINE] Initializing shared nine-question bootstrap")
+            self._nq_shared_state.set_bootstrap_status(BootstrapStatus.in_progress)
 
-        # Reset bootstrap status before re-run when forced.
-        if force:
-            state.nine_q_state.set_bootstrap_status(BootstrapStatus.in_progress)
+            try:
+                final_status = self._nq_coordinator.coordinate(
+                    session_id=self._DEFAULT_SESSION_ID,
+                    state_manager=self._nq_shared_state,
+                    transcript=default_state.transcript,
+                    max_retries=max_retries,
+                    rollback_on_failure=rollback_on_failure,
+                    merge_on_partial=merge_on_partial,
+                    response_updated_callback=self._persist_incremental_nine_question_record,
+                )
+                return final_status
+            except Exception as exc:
+                logger.exception(f"[COGNITIVE BASELINE] Shared bootstrap failed: {exc}")
+                self._nq_shared_state.set_bootstrap_status(BootstrapStatus.failed)
+                raise exc
 
-        result = self._nq_coordinator.coordinate(
-            session_id=session_id,
-            state_manager=state.nine_q_state,
-            transcript=state.transcript,
-        )
-        self._persist_nine_question_memory(session_id, trigger="bootstrap")
-        return result
+    def rerun_nine_questions_from(
+        self,
+        question_id: str,
+        max_retries: int = 1,
+        rollback_on_failure: bool = False,
+        merge_on_partial: bool = False,
+    ) -> BootstrapStatus:
+        """Rerun specific question and all downstream dependencies in the shared baseline."""
+        default_state = self._get_or_create_default_state()
+        with self._nq_shared_lock:
+            logger.info(f"[COGNITIVE BASELINE] Rerunning shared questions from {question_id}")
+            self._nq_shared_state.set_bootstrap_status(BootstrapStatus.in_progress)
 
-    def rerun_nine_questions_from(self, session_id: str, question_id: str) -> BootstrapStatus:
-        """Re-execute one question and all downstream dependent questions."""
-        state = self._get_state(session_id)
-        if state is None:
-            raise ValueError(f"Session state missing for: {session_id}")
+            try:
+                final_status = self._nq_coordinator.coordinate(
+                    session_id=self._DEFAULT_SESSION_ID,
+                    state_manager=self._nq_shared_state,
+                    transcript=default_state.transcript,
+                    max_retries=max_retries,
+                    rollback_on_failure=rollback_on_failure,
+                    merge_on_partial=merge_on_partial,
+                    response_updated_callback=self._persist_incremental_nine_question_record,
+                )
+                return final_status
+            except Exception as exc:
+                logger.exception(f"[COGNITIVE BASELINE] Shared rerun failed: {exc}")
+                self._nq_shared_state.set_bootstrap_status(BootstrapStatus.failed)
+                raise exc
 
-        ordered_ids = [question.question_id for question in DEFAULT_NINE_QUESTIONS]
-        if question_id not in ordered_ids:
-            raise ValueError(f"Unknown nine-question id: {question_id}")
+    def get_nine_question_state(self) -> Optional[dict]:
+        """Return the shared Nine-Question baseline state."""
+        return self._nq_shared_state.to_dict()
 
-        start_index = ordered_ids.index(question_id)
-        questions = [question for question in DEFAULT_NINE_QUESTIONS[start_index:]]
+    def run_single_nine_question(
+        self,
+        question_id: str,
+        max_retries: int = 1,
+        rollback_on_failure: bool = False,
+        merge_on_partial: bool = False,
+    ) -> BootstrapStatus:
+        """Execute a single question in isolation within the shared baseline context."""
+        default_state = self._get_or_create_default_state()
+        with self._nq_shared_lock:
+            logger.info(f"[COGNITIVE BASELINE] Running single shared question {question_id}")
+            self._nq_shared_state.set_bootstrap_status(BootstrapStatus.in_progress)
 
-        state.nine_q_state.set_bootstrap_status(BootstrapStatus.in_progress)
-        context = self._nq_snapshot_builder.build(session_id)
-        responses = self._nq_executor.execute(
-            questions=questions,
-            context=context,
-            state_manager=state.nine_q_state,
-            transcript=state.transcript,
-        )
+            # Find the specific question
+            question = next((q for q in DEFAULT_NINE_QUESTIONS if q.question_id == question_id), None)
+            if not question:
+                raise ValueError(f"Unknown nine-question ID: {question_id}")
 
-        failure_count = sum(1 for response in responses if response.error)
-        final_status = BootstrapStatus.failed if responses and failure_count == len(responses) else BootstrapStatus.completed
-        state.nine_q_state.set_bootstrap_status(final_status)
-        self._persist_nine_question_memory(
-            session_id,
-            trigger=f"rerun_from:{question_id}",
-        )
-        # Sync Q8 task queue to task_service when available (internal path).
-        self._sync_q8_to_task_service(session_id, state)
-        return final_status
+            # Build startup snapshot context
+            context: dict = self._nq_coordinator._snapshot_builder.build(self._DEFAULT_SESSION_ID)
 
-    def get_nine_question_state(self, session_id: str) -> dict | None:
-        """Return the current nine-question state dict for a session."""
-        state = self._get_state(session_id)
-        if state is None:
-            return None
-        return state.nine_q_state.to_dict()
+            # Execute single question via executor directly
+            responses = self._nq_coordinator._executor.execute(
+                questions=[question],
+                context=context,
+                state_manager=self._nq_shared_state,
+                transcript=default_state.transcript,
+                max_retries=max_retries,
+            )
+
+            current_state = self._nq_shared_state.get_state()
+            for response in responses:
+                is_failed = bool(response.error)
+                is_partial = bool(response.is_partial)
+                existing_resp = current_state.responses.get(response.question_id)
+
+                should_update_state = True
+                if is_failed and rollback_on_failure and existing_resp and not existing_resp.error:
+                    should_update_state = False
+
+                if should_update_state:
+                    # P3-Fix-D: mirror coordinator._commit_response() guard —
+                    # a failed re-run must NOT overwrite a previously good answer.
+                    existing_has_good_answer = (
+                        existing_resp is not None
+                        and bool(existing_resp.answer)
+                        and not existing_resp.error
+                    )
+                    if is_failed and existing_has_good_answer:
+                        use_merge = True  # preserve existing answer; merge diagnostics only
+                    else:
+                        use_merge = merge_on_partial and response.is_partial
+                    self._nq_shared_state.update_response(response, merge_partial=use_merge)
+                    self._persist_incremental_nine_question_record(response)
+                    default_state.transcript.append(
+                        TranscriptEntry(
+                            entry_type=TranscriptEntryType.nine_q_update,
+                            session_id=self._DEFAULT_SESSION_ID,
+                            payload={
+                                "question_id": response.question_id,
+                                "status": "failed" if is_failed else "partial_failed" if is_partial else "success",
+                            },
+                        )
+                    )
+
+            failure_count = sum(1 for r in responses if r.error)
+            partial_count = sum(1 for r in responses if r.is_partial and not r.error)
+            if not responses:
+                status = BootstrapStatus.failed
+            elif failure_count == len(responses):
+                status = BootstrapStatus.failed
+            elif failure_count > 0 or partial_count > 0:
+                status = BootstrapStatus.partial_failed
+            else:
+                status = BootstrapStatus.completed
+
+            self._nq_shared_state.set_bootstrap_status(status)
+            return status
 
     # ------------------------------------------------------------------
     # State queries (public API)
     # ------------------------------------------------------------------
 
-    def get_session_state(self, session_id: str) -> dict | None:
+    def get_session_state(self, session_id: str) -> Optional[dict]:
         """
         Return comprehensive session state including all domains.
 
@@ -453,10 +615,10 @@ class KernelService:
             "working_memory": state.working_memory.snapshot(),
             "self_model": state.self_model.snapshot(),
             "temporal": state.temporal.snapshot(),
-            "nine_question_state": state.nine_q_state.to_dict(),
+            "nine_question_state": self._nq_shared_state.to_dict(),
         }
 
-    def get_working_memory(self, session_id: str) -> list[dict] | None:
+    def get_working_memory(self, session_id: str) -> list[Optional[dict]]:
         """
         Return the working memory slots for a session.
 
@@ -466,15 +628,15 @@ class KernelService:
         state = self._get_state(session_id)
         return state.working_memory.snapshot() if state else None
 
-    def get_working_memory_snapshot(self, session_id: str) -> list[dict] | None:
+    def get_working_memory_snapshot(self, session_id: str) -> list[Optional[dict]]:
         """Deprecated: use get_working_memory() instead."""
         return self.get_working_memory(session_id)
 
-    def get_self_model_snapshot(self, session_id: str) -> dict | None:
+    def get_self_model_snapshot(self, session_id: str) -> Optional[dict]:
         state = self._get_state(session_id)
         return state.self_model.snapshot() if state else None
 
-    def get_temporal_snapshot(self, session_id: str) -> dict | None:
+    def get_temporal_snapshot(self, session_id: str) -> Optional[dict]:
         state = self._get_state(session_id)
         return state.temporal.snapshot() if state else None
 
@@ -546,7 +708,7 @@ class KernelService:
             "trace_ids": [str(e.entry_id) for e in entries[:20]],  # Recent 20 trace IDs
         }
 
-    def get_turn_summary(self, session_id: str, turn_id: str) -> dict | None:
+    def get_turn_summary(self, session_id: str, turn_id: str) -> Optional[dict]:
         state = self._get_state(session_id)
         if state is None:
             return None
@@ -574,10 +736,11 @@ class KernelService:
         """
         # 1. Runtime Foundation State
         runtime_id = self._svc_call(self._foundation_service, "get_runtime_id") or "zentex-kernel"
+        start_time = self._svc_call(self._foundation_service, "get_start_time") or datetime.now(timezone.utc)
         
         runtime_payload = {
             "runtime_id": runtime_id,
-            "started_at": datetime.now(timezone.utc).isoformat(), # Placeholder
+            "started_at": start_time.isoformat() if hasattr(start_time, "isoformat") else str(start_time),
             "active_session_ids": self.list_active_sessions(),
             "default_workspace": getattr(self.get_config(), "default_workspace", "unknown") if hasattr(self, 'get_config') else "unknown",
             "identity_kernel_ref": "v1",
@@ -608,7 +771,7 @@ class KernelService:
         
         return {
             "runtime": runtime_payload,
-            "session": session_snapshot.get("session_meta"),
+            "session": session_snapshot.get("session_meta") or {},
             "working_memory": {"slots": session_snapshot.get("working_memory", [])},
             "metacognition": session_snapshot.get("metacognition", {}),
             "living_self_model": session_snapshot.get("self_model", {}),
@@ -627,24 +790,79 @@ class KernelService:
     # ------------------------------------------------------------------
 
     def observe_environment(self, session_id: str, turn_id: str) -> dict:
-        """Phase 1: Observe — gather environment state."""
-        result = self._svc_call(self._environment_service, "get_current_state", session_id=session_id)
-        return result or {"session_id": session_id, "turn_id": turn_id, "observations": []}
+        """Phase 1: Observe — gather raw environmental observations.
+        
+        Policy: Eradicate 'environment: ok' stubs. Observation must be 
+        authentic host sampling or sensory ingestion.
+        """
+        # AUTHENTIC GROUNDING: Pass the cognitive baseline to ensure impact is 
+        # interpreted through the lens of identity and existing knowledge.
+        identity = self.get_system_identity()
+        nine_q_state = self._nq_shared_state.to_dict()
+
+        result = self._svc_call(
+            self._environment_service, "sample_and_interpret",
+            current_role=identity.get("role_name"),
+            identity=identity,
+            nine_question_state=nine_q_state
+        )
+        
+        if result is None or not isinstance(result, (list, tuple)) or len(result) < 2:
+             raise RuntimeError(f"Environmental Observation failed for session {session_id}: Environment service returned invalid or empty state.")
+        
+        host_state, impact = result
+             
+        return {
+            "physical_state": host_state.model_dump() if hasattr(host_state, "model_dump") else host_state,
+            "situation_impact": impact.model_dump() if hasattr(impact, "model_dump") else impact,
+            "observed_at": datetime.now(timezone.utc).isoformat()
+        }
+
+    def evaluate_drive(self, session_id: str, turn_id: str, context: dict) -> dict:
+        """Phase 1.5: Drive — determine situational motivation.
+        
+        Policy: Mission-Driven Integrity. If the drive cannot be evaluated,
+        the cognitive turn is compromised and must be halted.
+        """
+        result = self._svc_call(
+            self._cognition_service, "evaluate_drive",
+            session_id=session_id, turn_id=turn_id, context=context
+        )
+        if not result or not isinstance(result, dict):
+             raise RuntimeError(f"Cognitive Drive failed for session {session_id}: Service returned invalid or empty result.")
+             
+        return result
 
     def evaluate_cognition(self, session_id: str, turn_id: str, context: dict) -> dict:
-        """Phase 2: Frame — primary cognition and framing pass."""
+        """Phase 2: Frame — primary cognition and framing pass.
+        
+        Policy: Eradicate 'framing: default' stubs. Failure to frame context
+        is a fatal cognitive error.
+        """
         result = self._svc_call(self._cognition_service, "frame", session_id=session_id, context=context)
-        return result or {"framing": "default", "context_summary": str(context)[:200]}
+        if not result or not isinstance(result, dict):
+            raise RuntimeError(f"Cognitive Framing failed for session {session_id}: Service returned invalid or empty result.")
+        return result
 
     def detect_conflicts(self, session_id: str, context: dict) -> dict:
-        """Phase 4: CognitiveRisks — safety and conflict detection."""
+        """Phase 4: CognitiveRisks — safety and conflict detection.
+        
+        Policy: Hard failure on conflict detection failure.
+        """
         result = self._svc_call(self._safety_service, "detect_conflicts", session_id=session_id, context=context)
-        return result or {"conflicts": [], "risk_level": "low"}
+        if result is None:
+            raise RuntimeError("Conflict detection failed: Safety service unavailable or returned None.")
+        return result
 
     def run_simulation(self, session_id: str, context: dict) -> dict:
-        """Phase 5: Simulate — counterfactual scenario simulation."""
+        """Phase 5: Simulate — counterfactual scenario simulation.
+        
+        Policy: Simulation failure disables decision synthesis.
+        """
         result = self._svc_call(self._cognition_service, "simulate", session_id=session_id, context=context)
-        return result or {"simulations": [], "recommended": ""}
+        if result is None:
+            raise RuntimeError("Counterfactual simulation failed: Decision space remains unexplored.")
+        return result
 
     def run_metacognition(self, session_id: str, context: dict) -> dict:
         """Phase 6: Metacognition — internal reasoning decisions."""
@@ -660,17 +878,28 @@ class KernelService:
         return result or {"tool_results": []}
 
     def synthesize_decision(self, session_id: str, context: dict) -> dict:
-        """Phase 8: DecisionSynthesis — produce the final response."""
+        """Phase 8: DecisionSynthesis — produce the final response.
+        
+        Policy: Eradicate 'Mock Echo' fallbacks. Failure to generate an authentic
+        response must result in a system-wide cognitive halt.
+        """
         result = self._svc_call(self._llm_service, "generate_response", session_id=session_id, context=context)
-        if result:
+        if result and isinstance(result, dict) and result.get("response"):
             return result
-        user_input = context.get("user_input", context.get("observations", ""))
-        return {"response": f"[kernel] Received: {str(user_input)[:200]}"}
+            
+        logger.critical(f"Decision Failure for session {session_id}: LLM Service failed to return an authentic solution.")
+        # POLICY: Fail-Closed. Never returning the input as an echo.
+        raise RuntimeError(f"Cognitive Turn Halt: Decision synthesis failed for session {session_id}. Check upstream framing and simulation logs.")
 
     def consolidate_memory(self, session_id: str, turn_id: str, context: dict) -> dict:
-        """Phase 9: Consolidate — persist important memories."""
+        """Phase 9: Consolidate — persist important memories.
+        
+        Policy: Memory loss is unacceptable.
+        """
         result = self._svc_call(self._memory_service, "consolidate", session_id=session_id, turn_id=turn_id, context=context)
-        return result or {"consolidated": False}
+        if result is None:
+            raise RuntimeError("Memory consolidation failed: Cognitive amnesia risk detected.")
+        return result
 
     # ------------------------------------------------------------------
     # Bridge methods used by cognition_flow (snapshot_builder + executor)
@@ -680,13 +909,41 @@ class KernelService:
         return self.observe_environment(session_id, turn_id="bootstrap")
 
     def get_registered_plugins(self) -> list[dict]:
+        result = self._svc_call(
+            self._plugins_service,
+            "query_plugins_by_operational_status",
+            operational_status="enabled",
+            limit=500,
+        )
+        if isinstance(result, list):
+            return result
+
+        result = self._svc_call(self._plugins_service, "get_active_inventory")
+        if isinstance(result, list):
+            return result
+
         result = self._svc_call(self._plugins_service, "list_plugins")
         return result if isinstance(result, list) else []
 
     def get_system_identity(self) -> dict:
         identity = self._svc_call(self._foundation_service, "get_identity_snapshot")
         if identity is not None:
-            return {"role_name": identity.role_name, "mission": identity.mission}
+            # Sync with Q2 plugin expectations: needs identity_kernel_snapshot key
+            return {
+                "role_name": identity.role_name,
+                "mission": identity.mission,
+                "core_values": list(identity.core_values) if hasattr(identity, "core_values") else [],
+                "identity_kernel_snapshot": {
+                    "role_name": identity.role_name,
+                    "mission": identity.mission,
+                    "meta_motivation": identity.mission,  # Alias for evidence handler
+                    "meta_drives": [identity.mission],     # Alias for evidence handler
+                    "core_values": list(identity.core_values) if hasattr(identity, "core_values") else [],
+                    "values_prohibition": " / ".join(identity.core_values) if hasattr(identity, "core_values") else "",
+                    "value_vetoes": list(identity.core_values) if hasattr(identity, "core_values") else [],
+                    "non_bypassable_constraints": list(identity.core_values) if hasattr(identity, "core_values") else [],
+                }
+            }
         return {"role_name": "Zentex Agent", "mission": ""}
 
     def get_capability_directory(self) -> list[dict]:
@@ -711,40 +968,72 @@ class KernelService:
             try:
                 from zentex.llm import get_llm_service
                 llm_service = get_llm_service()
-            except Exception:
-                llm_service = None
+            except Exception as e:
+                logger.exception("Failed to initialize LLM service for nine-question execution")
+                raise e
 
-        plugin_audit_store = None
-        if session_id:
-            plugin_audit_store = BrainTranscriptStore(
-                Path(".zentex") / "nine_question_audit" / f"{session_id}.sqlite3"
+        plugin_audit_store = transcript_store
+
+        nine_question_state_payload = self._nq_shared_state.to_dict()
+        base_grounded_context = self._build_grounded_context(
+            base_context=context,
+            nine_question_state_payload=nine_question_state_payload,
+            trigger=f"answer_nine_question:{question.question_id}"
+        )
+        
+        def _persist_module_runs(question_id: str, module_runs: list[dict[str, Any]]) -> None:
+            diagnosis_key = f"{question_id}_execution_diagnosis"
+            payload_runs = deepcopy(module_runs) if isinstance(module_runs, list) else []
+            partial_response = NineQuestionResponse(
+                question_id=question_id,
+                answer="",
+                confidence=0.0,
+                tool_id=f"nine_questions.{question_id}",
+                trace_id=trace_id,
+                timestamp=datetime.now(UTC).isoformat(),
+                is_partial=True,
+                context_updates={
+                    diagnosis_key: {
+                        "module_runs": payload_runs,
+                    }
+                },
+                result_payload={
+                    "context_updates": {
+                        diagnosis_key: {
+                            "module_runs": payload_runs,
+                        }
+                    }
+                },
             )
+            self._nq_shared_state.update_response(partial_response, merge_partial=True)
+            self._persist_incremental_nine_question_record(partial_response)
 
-        nine_question_state_payload = state.nine_q_state.to_dict() if state is not None else {}
-        merged_context_snapshot = self._build_nine_question_context_snapshot(
-            base_context=context,
-            nine_question_state_payload=nine_question_state_payload,
-        )
-        merged_nine_question_summaries = self._build_nine_question_summaries(
-            base_context=context,
-            nine_question_state_payload=nine_question_state_payload,
-        )
+        def _persist_module_output(question_id: str, module_id: str, payload: dict[str, Any]) -> None:
+            self._persist_incremental_nine_question_module_output(question_id, module_id, payload)
+
         plugin_context = {
-            **context,
+            **base_grounded_context,
             "session_id": session_id,
             "turn_id": turn_id,
             "trace_id": trace_id,
             "llm_service": llm_service,
+            "audit_store": plugin_audit_store,
             "transcript_store": plugin_audit_store,
-            "nine_question_state": nine_question_state_payload,
-            "context_snapshot": merged_context_snapshot,
-            "nine_questions": merged_nine_question_summaries,
+            "root_audit_store": transcript_store,
+            "root_transcript_store": transcript_store,
+            "plugin_service": self._plugins_service,  # ESSENTIAL: needed for sensory chain
             "agent_service": context.get("agent_service") or self._agent_service,
             "cli_service": context.get("cli_service") or self._cli_service,
             "mcp_service": context.get("mcp_service") or self._mcp_service,
             "environment_service": context.get("environment_service") or self._environment_service,
             "memory_service": context.get("memory_service") or self._memory_service,
+            "audit_service": context.get("audit_service") or self._audit_service,
+            "reflection_service": context.get("reflection_service") or self._reflection_service,
+            "learning_service": context.get("learning_service") or self._learning_service,
             "foundation_service": context.get("foundation_service") or self._foundation_service,
+            "module_run_persistor": _persist_module_runs,
+            "module_output_persistor": _persist_module_output,
+            "nine_question_storage_root": str(get_storage_paths().nine_questions_dir),
         }
 
         def _write_plugin_audit(payload: dict[str, Any]) -> None:
@@ -778,20 +1067,56 @@ class KernelService:
             }
         )
 
-        raw = self._svc_call(
-            self._plugins_service,
-            "execute_cognitive_plugin",
-            plugin_id=question.plugin_id,
-            context={
-                **plugin_context,
-                "question_id": question.question_id,
-                "question_text": question.text,
-            },
-            session_id=session_id,
-            turn_id=turn_id,
-            trace_id=trace_id,
-            originator_id=session_id or "kernel",
-        )
+        # Use the implementation service for executing the nine-question implementation
+        # This ensures all implementation-specific context and logic is contained
+        # within the plugins module boundary.
+        if self._nq_plugin_service is not None:
+            response = self._nq_plugin_service.execute_question(
+                question=question,
+                context=plugin_context,
+                session_id=session_id,
+                turn_id=turn_id,
+                trace_id=trace_id,
+            )
+            # Re-enrich with snapshot artifacts if they were built locally
+            # or if the response needs kernel-side metadata augmentation.
+            snapshot_artifacts = self._build_snapshot_artifacts(
+                plugin_audit_store=plugin_audit_store,
+                session_id=session_id,
+                trace_id=str(response.trace_id or trace_id),
+                plugin_context=plugin_context,
+            )
+            response.execution_context = snapshot_artifacts.get("execution_context", response.execution_context)
+            response.execution_result = snapshot_artifacts.get("execution_result", response.execution_result)
+            response.llm_trace_payload = snapshot_artifacts.get("llm_trace_payload", response.llm_trace_payload)
+            _write_plugin_audit(
+                {
+                    "phase": "completed",
+                    "question_id": question.question_id,
+                    "plugin_id": question.plugin_id,
+                    "status": "failed" if response.error else "ok",
+                    "confidence": response.confidence,
+                    "error": response.error or "",
+                    "trace_id": str(response.trace_id or trace_id),
+                }
+            )
+            return response
+        else:
+            # Fallback to direct plugin execution if implementation service is missing
+            raw = self._svc_call(
+                self._plugins_service,
+                "execute_cognitive_plugin",
+                plugin_id=question.plugin_id,
+                context={
+                    **plugin_context,
+                    "question_id": question.question_id,
+                    "question_text": question.text,
+                },
+                session_id=session_id,
+                turn_id=turn_id,
+                trace_id=trace_id,
+                originator_id=session_id or "kernel",
+            )
         duration_ms = (datetime.now(UTC) - start).total_seconds() * 1000
 
         if isinstance(raw, ServiceResponse):
@@ -878,22 +1203,23 @@ class KernelService:
                 llm_trace_payload=snapshot_artifacts["llm_trace_payload"],
             )
 
-        # No real LLM service available — return a placeholder answer
+        # No real implementation available — return an explicit error
         _write_plugin_audit(
             {
                 "phase": "completed",
                 "question_id": question.question_id,
                 "plugin_id": question.plugin_id,
-                "status": "fallback",
-                "reason": "no_plugins_service_response",
+                "status": "failed",
+                "reason": "implementation_missing",
                 "trace_id": trace_id,
             }
         )
         return NineQuestionResponse(
             question_id=question.question_id,
-            answer=f"[no plugin] {question.text}",
+            answer="",
             confidence=0.0,
             duration_ms=duration_ms,
+            error="implementation_missing",
             tool_id=f"nine_questions.{question.question_id}",
             trace_id=trace_id,
             timestamp=datetime.now(UTC).isoformat(),
@@ -904,7 +1230,7 @@ class KernelService:
     # Internal helpers
     # ------------------------------------------------------------------
 
-    def _get_state(self, session_id: str) -> _SessionState | None:
+    def _get_state(self, session_id: str) -> Optional[_SessionState]:
         with self._lock:
             return self._session_states.get(session_id)
 
@@ -1063,6 +1389,32 @@ class KernelService:
                 merged[key] = value
         return merged
 
+    def _build_grounded_context(
+        self,
+        *,
+        base_context: dict[str, Any],
+        nine_question_state_payload: dict[str, Any],
+        identity_payload: Optional[dict[str, Any]] = None,
+        trigger: str = "current_turn",
+    ) -> dict[str, Any]:
+        """Construct a grounded context enriched with Nine-Question baseline results."""
+        identity = identity_payload or self.get_system_identity()
+        return {
+            **base_context,
+            "nine_question_state": nine_question_state_payload,
+            "nine_questions": self._build_nine_question_summaries(
+                base_context=base_context,
+                nine_question_state_payload=nine_question_state_payload
+            ),
+            "context_snapshot": self._build_nine_question_context_snapshot(
+                base_context=base_context,
+                nine_question_state_payload=nine_question_state_payload
+            ),
+            "identity": identity,
+            "timestamp": datetime.now(timezone.utc).isoformat(),
+            "context_trigger": trigger,
+        }
+
     @classmethod
     def _build_nine_question_context_snapshot(
         cls,
@@ -1126,7 +1478,7 @@ class KernelService:
     def _read_plugin_audit_entries(
         self,
         *,
-        plugin_audit_store: BrainTranscriptStore | None,
+        plugin_audit_store: Optional[BrainTranscriptStore],
         session_id: str,
         trace_id: str,
     ) -> list[Any]:
@@ -1139,12 +1491,13 @@ class KernelService:
                 if str(getattr(entry, "trace_id", "") or "") == trace_id
             ]
         except Exception:
+            logger.exception("Failed to read plugin audit entries for session %s, trace %s", session_id, trace_id)
             return []
 
     def _build_snapshot_artifacts(
         self,
         *,
-        plugin_audit_store: BrainTranscriptStore | None,
+        plugin_audit_store: Optional[BrainTranscriptStore],
         session_id: str,
         trace_id: str,
         plugin_context: dict[str, Any],
@@ -1213,7 +1566,7 @@ class KernelService:
         if state is None:
             return
 
-        payload = state.nine_q_state.to_dict()
+        payload = self._nq_shared_state.to_dict()
         snapshots = payload.get("question_snapshots")
         snapshots = snapshots if isinstance(snapshots, dict) else {}
         if not snapshots:
@@ -1305,110 +1658,6 @@ class KernelService:
             )
         )
 
-    def _sync_q8_to_task_service(self, session_id: str, state: Any) -> None:
-        """Sync Q8 task queue to task_service when available (internal execution path).
-
-        Mirrors the sync logic in ``route_handlers._sync_q8_tasks_to_task_service``
-        but operates directly on the injected ``_task_service`` without an HTTP
-        request context.  Called automatically after every nine-question (re-)run.
-        """
-        import logging as _logging
-        _log = _logging.getLogger(__name__)
-
-        task_service = self._task_service
-        if task_service is None:
-            return  # task_service not injected — skip silently
-
-        try:
-            nq_payload = state.nine_q_state.to_dict()
-        except Exception:
-            return
-
-        snapshots = nq_payload.get("question_snapshots") or {}
-        q8_snapshot = snapshots.get("q8")
-        if not isinstance(q8_snapshot, dict):
-            return
-
-        context_updates = q8_snapshot.get("context_updates") or {}
-        result_payload = q8_snapshot.get("result") or {}
-        context_updates = context_updates if isinstance(context_updates, dict) else {}
-        result_payload = result_payload if isinstance(result_payload, dict) else {}
-
-        task_queue = context_updates.get("q8_task_queue") or result_payload.get("task_queue") or {}
-        task_queue = task_queue if isinstance(task_queue, dict) else {}
-        if not task_queue:
-            return
-
-        source_hint = (
-            context_updates.get("q8_objective_profile", {}).get("current_primary_objective")
-            or q8_snapshot.get("summary")
-            or "Q8 generated task"
-        )
-
-        from zentex.tasks.models import TaskStatus, TaskPriority  # local import — no circular dep
-
-        queue_specs = [
-            ("next_self_tasks", TaskStatus.TODO, TaskPriority.HIGH),
-            ("blocked_self_tasks", TaskStatus.BLOCKED, TaskPriority.MEDIUM),
-            ("proactive_actions", TaskStatus.TODO, TaskPriority.MEDIUM),
-        ]
-
-        create_fn = getattr(task_service, "create_task", None)
-        if not callable(create_fn):
-            _log.error(
-                "_sync_q8_to_task_service: task_service has no create_task(); skipping for session %s",
-                session_id,
-            )
-            return
-
-        synced = 0
-        for queue_name, target_status, default_priority in queue_specs:
-            raw_items = task_queue.get(queue_name) or []
-            if not isinstance(raw_items, list):
-                continue
-            for index, item in enumerate(raw_items):
-                try:
-                    if isinstance(item, dict):
-                        title = str(
-                            item.get("title") or item.get("task") or item.get("id") or ""
-                        ).strip()
-                    else:
-                        title = str(item or "").strip()
-                    if not title:
-                        continue
-                    idempotency_key = f"nineq:{session_id}:q8:{queue_name}:{index}"
-                    create_fn(
-                        title=title,
-                        task_type="cognitive_step",
-                        status=target_status,
-                        priority=default_priority,
-                        idempotency_key=idempotency_key,
-                        originator_id=session_id,
-                        remarks=str(item.get("reason", "") if isinstance(item, dict) else ""),
-                        metadata={
-                            "source": "nine_questions_q8",
-                            "queue": queue_name,
-                            "session_id": session_id,
-                            "source_hint": str(source_hint)[:200],
-                        },
-                    )
-                    synced += 1
-                except Exception as exc:
-                    _log.error(
-                        "_sync_q8_to_task_service: failed to create task for %s[%d] session %s: %s",
-                        queue_name,
-                        index,
-                        session_id,
-                        exc,
-                    )
-
-        if synced:
-            _log.info(
-                "_sync_q8_to_task_service: synced %d Q8 tasks to task_service for session %s",
-                synced,
-                session_id,
-            )
-
     def _build_rich_nine_question_response(
         self,
         *,
@@ -1444,29 +1693,29 @@ class KernelService:
 
     @staticmethod
     def _svc_call(service: Any, method: str, *args: Any, **kwargs: Any) -> Any:
-        """Safely call a method on an injected service.
+        """Call a method on an injected service with Fail-Closed integrity.
 
-        Returns None if:
-        - service is None
-        - service doesn't have the method (e.g. it's a stub)
-        - the call raises an exception
+        Standard Redline:
+        - We no longer suppress exceptions into 'None'.
+        - If the service is missing, we raise AttributeError.
+        - If the method call fails, we propagate the exception.
         """
         if service is None:
-            return None
+            raise AttributeError(f"Kernel: Attempted to call {method} on a None service.")
+        
         fn = getattr(service, method, None)
         if not callable(fn):
-            return None
-        try:
-            return fn(*args, **kwargs)
-        except Exception:
-            return None
+            raise AttributeError(f"Kernel: Service {type(service).__name__} does not have a callable method '{method}'.")
+        
+        # Explicit call without catch-all suppression
+        return fn(*args, **kwargs)
 
 
 # ---------------------------------------------------------------------------
 # Module-level lazy singleton
 # ---------------------------------------------------------------------------
 
-_default_service: KernelService | None = None
+_default_service: Optional[KernelService] = None
 
 
 def get_service(**kwargs: Any) -> KernelService:

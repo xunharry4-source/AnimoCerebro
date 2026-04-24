@@ -25,7 +25,7 @@ Hybrid retrieval engine with adaptive query routing.
 import logging
 import re
 from datetime import datetime
-from typing import Any, Protocol
+from typing import Any, Optional, Protocol, Dict, List, Union
 from dataclasses import dataclass, field
 from .deep_recall import DeepRecallEngine, build_engine_from_service
 from .temporal import TemporalEngine, build_temporal_engine
@@ -53,33 +53,33 @@ class QueryType(str):
 
 # Keyword signals per query type (fast heuristic routing — no LLM needed)
 _TEMPORAL_SIGNALS = re.compile(
-    r"\b(when|before|after|during|since|until|at the time|history|was|were|used to|"
-    r"back in|as of|point in time|timeline|event)\b",
+    r"\b(Union[when, Union[before], Union[after], Union[during], Union[since], until]|at the Union[time, Union[history], Union[was], were]|used to|"
+    r"back Union[in, as] Union[of, point] in Union[time, Union[timeline], event])\b",
     re.IGNORECASE,
 )
 _PROCEDURAL_SIGNALS = re.compile(
-    r"\b(how|steps|procedure|workflow|process|way to|guide|tutorial|best practice|"
-    r"method|approach|configure|implement|deploy|run|execute)\b",
+    r"\b(Union[how, Union[steps], Union[procedure], Union[workflow], Union[process], way] Union[to, Union[guide], Union[tutorial], best] practice|"
+    r"Union[method, Union[approach], Union[configure], Union[implement], Union[deploy], Union[run], execute])\b",
     re.IGNORECASE,
 )
 _IDENTITY_SIGNALS = re.compile(
-    r"\b(who am I|my goal|current objective|my identity|my role|my constraint|"
-    r"my strategy|my preference|about me|profile|identity)\b",
+    r"\b(who am Union[I, my] Union[goal, current] Union[objective, my] Union[identity, my] Union[role, my] constraint|"
+    r"my Union[strategy, my] Union[preference, about] Union[me, Union[profile], identity])\b",
     re.IGNORECASE,
 )
 _ANALYTICAL_SIGNALS = re.compile(
-    r"\b(analyze|statistics|distribute|average|mean|median|correlation|trend|pattern|"
-    r"summary of|overview of|performance|metric)\b",
+    r"\b(Union[analyze, Union[statistics], Union[distribute], Union[average], Union[mean], Union[median], Union[correlation], trend]|pattern|"
+    r"summary Union[of, overview] Union[of, Union[performance], metric])\b",
     re.IGNORECASE,
 )
 _COMPARATIVE_SIGNALS = re.compile(
-    r"\b(compare|versus|vs|difference between|similarity|different|same as|better|worse|"
-    r"instead of|relative to)\b",
+    r"\b(Union[compare, Union[versus], Union[vs], difference] Union[between, Union[similarity], Union[different], same] Union[as, better]|worse|"
+    r"instead Union[of, relative] to)\b",
     re.IGNORECASE,
 )
 _SOCIAL_SIGNALS = re.compile(
-    r"\b(friend|colleague|partner|met|introduced|knows|spoke to|talked with|relationship|"
-    r"interaction|together|meeting|shared)\b",
+    r"\b(Union[friend, Union[colleague], Union[partner], Union[met], Union[introduced], knows]|spoke Union[to, talked] Union[with, relationship]|"
+    r"Union[interaction, Union[together], Union[meeting], shared])\b",
     re.IGNORECASE,
 )
 
@@ -130,6 +130,8 @@ class RetrievalResult:
     tags: list[str] = field(default_factory=list)
     source_refs: list[str] = field(default_factory=list)
     explanation: str = ""
+    backend_error: Optional[str] = None # Flag for partial failures
+
 
 
 # ---------------------------------------------------------------------------
@@ -143,8 +145,8 @@ class KeywordSearchBackend(Protocol):
         self,
         query: str,
         limit: int,
-        trace_id: str | None = None,
-        target_id: str | None = None,
+        trace_id: Optional[str] = None,
+        target_id: Optional[str] = None,
     ) -> list[Any]: ...
 
 
@@ -164,15 +166,15 @@ class HybridRetrievalEngine:
     def __init__(
         self,
         *,
-        index: Any | None = None,                   # MultiModalIndex
-        vector_index: Any | None = None,            # VectorSearchEngine
-        semantic_store: Any | None = None,         # Has .search(query, limit, ...)
-        procedural_store: Any | None = None,        # Has .search(query, limit, ...)
-        graph_client: Any | None = None,            # KuzuGraphMemoryClient
-        profile_service: Any | None = None,         # Has .get_active_profile(...)
-        semantic_recall_client: Any | None = None,  # SemanticMemoryRecallClient
-        access_tracker: Any | None = None,          # MemoryAccessTracker
-        memory_service: Any | None = None,          # For deep recall
+        index: Any = None,                   # MultiModalIndex
+        vector_index: Any = None,            # VectorSearchEngine
+        semantic_store: Any = None,         # Has .search(query, limit, ...)
+        procedural_store: Any = None,        # Has .search(query, limit, ...)
+        graph_client: Any = None,            # KuzuGraphMemoryClient
+        profile_service: Any = None,         # Has .get_active_profile(...)
+        semantic_recall_client: Any = None,  # SemanticMemoryRecallClient
+        access_tracker: Any = None,          # MemoryAccessTracker
+        memory_service: Any = None,          # For deep recall
         rrf_k: int = 60,
     ) -> None:
         self._index = index
@@ -191,18 +193,17 @@ class HybridRetrievalEngine:
         self._cache_ttl_sec = 300 # 5 minutes
 
     # ── main entry point ─────────────────────────────────────────────────
-
-    def search(
+    async def search(
         self,
         query: str,
         *,
         limit: int = 10,
-        trace_id: str | None = None,
-        target_id: str | None = None,
-        as_of_time: datetime | None = None,
-        query_type: str | None = None,
+        trace_id: Optional[str] = None,
+        target_id: Optional[str] = None,
+        as_of_time: Optional[datetime] = None,
+        query_type: Optional[str] = None,
         boost_recent: bool = False,
-    ) -> list[RetrievalResult]:
+    ) -> tuple[list[RetrievalResult], Dict[str, str]]:
         """
         Perform adaptive hybrid search.
 
@@ -216,7 +217,7 @@ class HybridRetrievalEngine:
             boost_recent: Apply a small score boost to recently created records.
 
         Returns:
-            Reranked list of RetrievalResult, deduplicated by memory_id.
+            A tuple of (Reranked list of RetrievalResult, Map of backend -> error message).
         """
         # Phase 2.3: Query Result Cache lookup
         cache_key = f"{query}:{trace_id}:{target_id}:{query_type}"
@@ -224,7 +225,7 @@ class HybridRetrievalEngine:
             ts, cached_res = self._query_cache[cache_key]
             if (datetime.now() - ts).total_seconds() < self._cache_ttl_sec:
                 logger.debug("HybridRetrieval: Cache HIT for %r", query[:30])
-                return cached_res
+                return cached_res, {}
 
         qtype = query_type or self._classifier.classify(query)
         
@@ -234,51 +235,57 @@ class HybridRetrievalEngine:
             if not hasattr(self, "_deep_recall_engine"):
                 self._deep_recall_engine = build_engine_from_service(self.memory_service)
             # For simplicity, treat the query as a start node ID; in real use a parser extracts it.
-            start_id = query.strip()
-            bfs_paths = self._deep_recall_engine.bfs(start_id, max_hops=3)
-            # Convert paths to readable results
-            results = []
-            for path in bfs_paths:
-                explanation = self._deep_recall_engine.explain_path(path)
-                results.append({"path": path, "explanation": explanation})
-            return results
+            try:
+                start_id = query.strip()
+                bfs_paths = self._deep_recall_engine.bfs(start_id, max_hops=3)
+                # Convert paths to readable results
+                results = []
+                for path in bfs_paths:
+                    explanation = self._deep_recall_engine.explain_path(path)
+                    results.append({"path": path, "explanation": explanation})
+                return results, {}
+            except Exception as e:
+                logger.error(f"Deep recall failed: {e}")
+                return [], {"deep_recall": str(e)}
 
         logger.debug("HybridRetrieval: query=%r type=%s", query[:50], qtype)
 
         all_results: list[RetrievalResult] = []
+        errors: Dict[str, str] = {}
+
+        def _extend_safe(label: str, fn: Any):
+            try:
+                all_results.extend(fn())
+            except Exception as e:
+                logger.error(f"Backend {label} failed during hybrid retrieval: {e}", exc_info=True)
+                errors[label] = str(e)
 
         if qtype == QueryType.IDENTITY:
-            all_results.extend(self._search_profiles(query, limit=limit))
+            _extend_safe("profile", lambda: self._search_profiles(query, limit=limit))
         elif qtype == QueryType.TEMPORAL:
-            # Temporal reconstruction using TemporalEngine if as_of_time is provided
             if as_of_time:
                 if not hasattr(self, "_temporal_engine"):
                     self._temporal_engine = build_temporal_engine(self.memory_service)
-                temporal_results = self._temporal_engine.snapshot_at(as_of_time, limit=limit)
-                all_results.extend(temporal_results)
-            # Fallback to normal keyword search
-            all_results.extend(self._search_keyword(query, limit=limit, trace_id=trace_id, target_id=target_id))
+                _extend_safe("temporal_graph", lambda: self._temporal_engine.snapshot_at(as_of_time, limit=limit))
+            _extend_safe("keyword", lambda: self._search_keyword(query, limit=limit, trace_id=trace_id, target_id=target_id))
         elif qtype == QueryType.PROCEDURAL:
-            all_results.extend(self._search_procedural(query, limit=limit, trace_id=trace_id, target_id=target_id))
-            all_results.extend(self._search_keyword(query, limit=limit, trace_id=trace_id, target_id=target_id))
+            _extend_safe("procedural", lambda: self._search_procedural(query, limit=limit, trace_id=trace_id, target_id=target_id))
+            _extend_safe("keyword", lambda: self._search_keyword(query, limit=limit, trace_id=trace_id, target_id=target_id))
         elif qtype == QueryType.ANALYTICAL:
-            # Analytical prioritizing broad keyword matching and metadata
-            all_results.extend(self._search_keyword(query, limit=limit * 2, trace_id=trace_id, target_id=target_id))
+            _extend_safe("keyword", lambda: self._search_keyword(query, limit=limit * 2, trace_id=trace_id, target_id=target_id))
         elif qtype == QueryType.COMPARATIVE:
-            # Comparative prioritizing vector similarity for nuance
-            all_results.extend(self._search_vector(query, limit=limit * 2))
-            all_results.extend(self._search_keyword(query, limit=limit, trace_id=trace_id, target_id=target_id))
+            _extend_safe("vector", lambda: self._search_vector(query, limit=limit * 2))
+            _extend_safe("keyword", lambda: self._search_keyword(query, limit=limit, trace_id=trace_id, target_id=target_id))
         elif qtype == QueryType.FACTUAL:
-            all_results.extend(self._search_vector(query, limit=limit, trace_id=trace_id, target_id=target_id))
-            all_results.extend(self._search_keyword(query, limit=limit, trace_id=trace_id, target_id=target_id))
+            _extend_safe("vector", lambda: self._search_vector(query, limit=limit, trace_id=trace_id, target_id=target_id))
+            _extend_safe("keyword", lambda: self._search_keyword(query, limit=limit, trace_id=trace_id, target_id=target_id))
         elif qtype == QueryType.SOCIAL:
-            # Social focuses on people and events — prioritizes keyword for exact names
-            all_results.extend(self._search_keyword(query, limit=limit, trace_id=trace_id, target_id=target_id))
-            all_results.extend(self._search_vector(query, limit=limit))
+            _extend_safe("keyword", lambda: self._search_keyword(query, limit=limit, trace_id=trace_id, target_id=target_id))
+            _extend_safe("vector", lambda: self._search_vector(query, limit=limit))
         else:  # GENERAL — all backends
-            all_results.extend(self._search_keyword(query, limit=limit, trace_id=trace_id, target_id=target_id))
-            all_results.extend(self._search_vector(query, limit=limit, trace_id=trace_id, target_id=target_id))
-            all_results.extend(self._search_graph_temporal(query, limit=limit, as_of_time=as_of_time))
+            _extend_safe("keyword", lambda: self._search_keyword(query, limit=limit, trace_id=trace_id, target_id=target_id))
+            _extend_safe("vector", lambda: self._search_vector(query, limit=limit, trace_id=trace_id, target_id=target_id))
+            _extend_safe("graph", lambda: self._search_graph_temporal(query, limit=limit, as_of_time=as_of_time))
 
         # Phase 2.2: Perform 40/60 weighted fusion if both sources are present,
         # otherwise fall back to RRF for multi-backend consistency.
@@ -292,7 +299,7 @@ class HybridRetrievalEngine:
             self._query_cache.pop(next(iter(self._query_cache)))
         self._query_cache[cache_key] = (datetime.now(), fused[:limit])
 
-        return fused[:limit]
+        return fused[:limit], errors
 
     # ── per-backend search methods ────────────────────────────────────────
 
@@ -300,8 +307,8 @@ class HybridRetrievalEngine:
         self,
         query: str,
         limit: int,
-        trace_id: str | None = None,
-        target_id: str | None = None,
+        trace_id: Optional[str] = None,
+        target_id: Optional[str] = None,
     ) -> list[RetrievalResult]:
         if self._index:
             # Phase 2.1: Use optimized SQLite FTS5 index
@@ -309,20 +316,21 @@ class HybridRetrievalEngine:
             if trace_id: filters["trace_id"] = trace_id
             if target_id: filters["target_id"] = target_id
             hits = self._index.search(query, filters=filters, limit=limit)
-            return [
-                RetrievalResult(
-                    memory_id=h["memory_id"],
-                    score=0.8, # BM25 rank would be better here
-                    source="keyword",
-                    memory_layer=h["memory_layer"],
-                    source_kind=h["source_kind"],
-                    title=h["title"],
-                    summary=h["summary"],
-                    trace_id=h["trace_id"],
-                    explanation="FTS5 binary match",
-                )
-                for h in hits
-            ]
+            if hits:
+                return [
+                    RetrievalResult(
+                        memory_id=h["memory_id"],
+                        score=0.8, # BM25 rank would be better here
+                        source="keyword",
+                        memory_layer=h["memory_layer"],
+                        source_kind=h["source_kind"],
+                        title=h["title"],
+                        summary=h["summary"],
+                        trace_id=h["trace_id"],
+                        explanation="FTS5 binary match",
+                    )
+                    for h in hits
+                ]
         
         # Legacy fallback
         results: list[RetrievalResult] = []
@@ -332,76 +340,73 @@ class HybridRetrievalEngine:
         ]:
             if store is None:
                 continue
-            try:
-                hits = store.search(query, limit, trace_id=trace_id, target_id=target_id)
-                for h in hits:
-                    results.append(RetrievalResult(
-                        memory_id=getattr(h, "memory_id", str(id(h))),
-                        score=float(getattr(h, "score", 0.5)),
-                        source="keyword",
-                        memory_layer=getattr(h, "memory_layer", label),
-                        source_kind=getattr(h, "source_kind", ""),
-                        title=getattr(h, "title", ""),
-                        summary=getattr(h, "summary", ""),
-                        trace_id=getattr(h, "trace_id", ""),
-                        tags=list(getattr(h, "tags", [])),
-                        source_refs=list(getattr(h, "source_refs", [])),
-                        explanation="Legacy keyword match",
-                    ))
-            except Exception as exc:
-                logger.warning("Keyword search (%s) failed: %s", label, exc)
+            hits = store.search(
+                query=query,
+                limit=limit,
+                trace_id=trace_id,
+                target_id=target_id,
+            )
+            for h in hits:
+                results.append(RetrievalResult(
+                    memory_id=getattr(h, "memory_id", str(id(h))),
+                    score=float(getattr(h, "score", 0.5)),
+                    source="keyword",
+                    memory_layer=getattr(h, "memory_layer", label),
+                    source_kind=getattr(h, "source_kind", ""),
+                    title=getattr(h, "title", ""),
+                    summary=getattr(h, "summary", ""),
+                    trace_id=getattr(h, "trace_id", ""),
+                    tags=list(getattr(h, "tags", [])),
+                    source_refs=list(getattr(h, "source_refs", [])),
+                    explanation="Legacy keyword match",
+                ))
         return results
 
     def _search_vector(
         self,
         query: str,
         limit: int,
-        trace_id: str | None = None,
-        target_id: str | None = None,
+        trace_id: Optional[str] = None,
+        target_id: Optional[str] = None,
     ) -> list[RetrievalResult]:
         """Phase 2.2: Semantic similarity search using VectorSearchEngine (FAISS)."""
         if not self._vector_index:
             return self._search_semantic(query, limit, trace_id, target_id)
             
-        try:
-            hits = self._vector_index.search(query, limit=limit)
-            results: list[RetrievalResult] = []
-            for mid, score in hits:
-                # Need metadata for RetrievalResult
-                res_meta = self._index.search("", filters={"memory_id": mid}, limit=1) if self._index else []
-                if res_meta:
-                    m = res_meta[0]
-                    results.append(RetrievalResult(
-                        memory_id=mid,
-                        score=score,
-                        source="vector",
-                        memory_layer=m["memory_layer"],
-                        source_kind=m["source_kind"],
-                        title=m["title"],
-                        summary=m["summary"],
-                        trace_id=m["trace_id"],
-                        explanation=f"FAISS Semantic ({score:.2f})",
-                    ))
-            return results
-        except Exception as exc:
-            logger.warning("Vector search failed: %s", exc)
-            return []
+        hits = self._vector_index.search(query, limit=limit)
+        results: list[RetrievalResult] = []
+        for mid, score in hits:
+            # Need metadata for RetrievalResult
+            res_meta = self._index.search("", filters={"memory_id": mid}, limit=1) if self._index else []
+            if res_meta:
+                m = res_meta[0]
+                results.append(RetrievalResult(
+                    memory_id=mid,
+                    score=score,
+                    source="vector",
+                    memory_layer=m["memory_layer"],
+                    source_kind=m["source_kind"],
+                    title=m["title"],
+                    summary=m["summary"],
+                    trace_id=m["trace_id"],
+                    explanation=f"FAISS Semantic ({score:.2f})",
+                ))
+        return results
 
     def _search_semantic(
         self,
         query: str,
         limit: int,
-        trace_id: str | None = None,
-        target_id: str | None = None,
+        trace_id: Optional[str] = None,
+        target_id: Optional[str] = None,
     ) -> list[RetrievalResult]:
         if not self._semantic_recall:
             return []
-        try:
-            hits = self._semantic_recall.search_memories(
-                query=query, limit=limit, trace_id=trace_id, target_id=target_id
-            )
-            return [
-                RetrievalResult(
+        hits = self._semantic_recall.search_memories(
+            query=query, limit=limit, trace_id=trace_id, target_id=target_id
+        )
+        return [
+            RetrievalResult(
                     memory_id=h.memory_id,
                     score=min(1.0, h.score * 1.15),  # Slight boost for semantic
                     source="semantic",
@@ -416,72 +421,66 @@ class HybridRetrievalEngine:
                 )
                 for h in hits
             ]
-        except Exception as exc:
-            logger.warning("Semantic search failed: %s", exc)
-            return []
 
     def _search_graph_temporal(
         self,
         query: str,
         limit: int,
-        as_of_time: datetime | None = None,
+        as_of_time: Optional[datetime] = None,
     ) -> list[RetrievalResult]:
         if not self._graph:
             return []
-        try:
-            if as_of_time:
-                rows = self._graph.query_at_time_point(query, as_of_time=as_of_time, limit=limit)
-            else:
-                raw_hits = self._graph.search(query, limit=limit)
-                rows = [
-                    {"id": getattr(h, "uuid", ""), "name": getattr(h, "name", ""),
-                     "summary": getattr(h, "summary", "")}
-                    for h in raw_hits
-                ]
-            return [
-                RetrievalResult(
-                    memory_id=str(row.get("id", "")),
-                    score=0.8,
-                    source="graph",
-                    memory_layer="episodic",
-                    source_kind="graph",
-                    title=str(row.get("name", "")),
-                    summary=str(row.get("summary", "")),
-                    explanation="Graph traversal",
-                )
-                for row in rows if row.get("id")
+        if as_of_time:
+            rows = self._graph.query_at_time_point(query, as_of_time=as_of_time, limit=limit)
+        else:
+            raw_hits = self._graph.search(query, limit=limit)
+            rows = [
+                {"id": getattr(h, "uuid", ""), "name": getattr(h, "name", ""),
+                 "summary": getattr(h, "summary", "")}
+                for h in raw_hits
             ]
-        except Exception as exc:
-            logger.warning("Graph search failed: %s", exc)
-            return []
+        return [
+            RetrievalResult(
+                memory_id=str(row.get("id", "")),
+                score=0.8,
+                source="graph",
+                memory_layer="episodic",
+                source_kind="graph",
+                title=str(row.get("name", "")),
+                summary=str(row.get("summary", "")),
+                explanation="Graph traversal",
+            )
+            for row in rows if row.get("id")
+        ]
 
     def _search_procedural(
         self,
         query: str,
         limit: int,
-        trace_id: str | None = None,
-        target_id: str | None = None,
+        trace_id: Optional[str] = None,
+        target_id: Optional[str] = None,
     ) -> list[RetrievalResult]:
         if not self._procedural_store:
             return []
-        try:
-            hits = self._procedural_store.search(query, limit, trace_id=trace_id, target_id=target_id)
-            return [
-                RetrievalResult(
-                    memory_id=getattr(h, "memory_id", str(id(h))),
-                    score=float(getattr(h, "score", 0.6)),
-                    source="keyword",
-                    memory_layer="procedural",
-                    source_kind=getattr(h, "source_kind", ""),
-                    title=getattr(h, "title", ""),
-                    summary=getattr(h, "summary", ""),
-                    explanation="Procedural store match",
-                )
-                for h in hits
-            ]
-        except Exception as exc:
-            logger.warning("Procedural search failed: %s", exc)
-            return []
+        hits = self._procedural_store.search(
+            query=query,
+            limit=limit,
+            trace_id=trace_id,
+            target_id=target_id,
+        )
+        return [
+            RetrievalResult(
+                memory_id=getattr(h, "memory_id", str(id(h))),
+                score=float(getattr(h, "score", 0.6)),
+                source="keyword",
+                memory_layer="procedural",
+                source_kind=getattr(h, "source_kind", ""),
+                title=getattr(h, "title", ""),
+                summary=getattr(h, "summary", ""),
+                explanation="Procedural store match",
+            )
+            for h in hits
+        ]
 
     def _search_profiles(self, query: str, limit: int) -> list[RetrievalResult]:
         """
@@ -511,7 +510,8 @@ class HybridRetrievalEngine:
                         explanation="Direct profile lookup",
                     ))
             except Exception:
-                pass
+                # POLICY[no-silent-except]: log profile retrieval failure; return partial results.
+                logger.warning("Profile retrieval failed during hybrid search — skipping profiles", exc_info=True)
         return results[:limit]
 
     def _weighted_fuse(self, results: list[RetrievalResult], keyword_weight: float, vector_weight: float) -> list[RetrievalResult]:
@@ -594,3 +594,66 @@ class HybridRetrievalEngine:
             ))
         fused.sort(key=lambda r: r.score, reverse=True)
         return fused
+
+    def search_sync(
+        self,
+        query: str,
+        *,
+        limit: int = 10,
+        trace_id: Optional[str] = None,
+        target_id: Optional[str] = None,
+        as_of_time: Optional[datetime] = None,
+        query_type: Optional[str] = None,
+        boost_recent: bool = False,
+    ) -> list[RetrievalResult]:
+        """Synchronous wrapper for the async ``search()`` method.
+
+        Called from sync contexts (e.g. ``EnhancedMemoryService.recall()`` which
+        is invoked by sync FastAPI route handlers).  Runs the coroutine in a
+        dedicated thread with its own event loop so the call is safe even when
+        an ASGI event loop is already running on the calling thread.
+
+        Returns the result list only (the error-map second element is discarded;
+        errors are already logged inside ``search()``).
+
+        # POLICY[no-silent-except]: any failure is logged with exc_info before
+        # returning an empty list — callers receive a gracefully degraded result
+        # rather than an unhandled exception propagating through the route.
+        """
+        import asyncio
+        import concurrent.futures
+
+        coro = self.search(
+            query,
+            limit=limit,
+            trace_id=trace_id,
+            target_id=target_id,
+            as_of_time=as_of_time,
+            query_type=query_type,
+            boost_recent=boost_recent,
+        )
+        try:
+            # Run in a new thread so asyncio.run() can create a fresh event loop.
+            # The ASGI server already owns the event loop on the main thread —
+            # calling run_until_complete() there raises "This event loop is
+            # already running", hence the thread-based approach.
+            with concurrent.futures.ThreadPoolExecutor(max_workers=1) as executor:
+                outcome = executor.submit(asyncio.run, coro).result()
+            if isinstance(outcome, tuple) and len(outcome) == 2:
+                results, _errors = outcome
+                return results
+            if isinstance(outcome, list):
+                return outcome
+            logger.error(
+                "HybridRetrievalEngine.search_sync received unexpected outcome type %s for query %r",
+                type(outcome).__name__,
+                query[:60],
+            )
+            return []
+        except Exception:
+            logger.error(
+                "HybridRetrievalEngine.search_sync failed for query %r",
+                query[:60],
+                exc_info=True,
+            )
+            return []

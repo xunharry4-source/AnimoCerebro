@@ -15,7 +15,7 @@ def build_semantic_kernel_request(
     kernel_config: dict[str, Any],
     strategy: str,
     model: str,
-    context: dict[str, Any] | None,
+    context: dict[str, Optional[Any]],
     mission_title: str,
     mission_content: str,
 ) -> dict[str, Any]:
@@ -178,7 +178,7 @@ def _build_strategy_prompt(strategy: str) -> str:
     return prompts.get(strategy, prompts["hybrid"])
 
 
-def _build_context_info(context: dict[str, Any] | None) -> str:
+def _build_context_info(context: dict[str, Optional[Any]]) -> str:
     if not context:
         return "- 附加上下文: [未提供]"
     fields = [
@@ -196,7 +196,7 @@ def _build_context_info(context: dict[str, Any] | None) -> str:
     return "\n".join(lines) if lines else "- 附加上下文: [未提供]"
 
 
-def _clip_text(value: str | None, limit: int) -> str:
+def _clip_text(value: Optional[str], limit: int) -> str:
     text = (value or "").strip()
     if not text:
         return "[未提供]"

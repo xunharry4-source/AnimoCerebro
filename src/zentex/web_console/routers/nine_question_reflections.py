@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from datetime import datetime, timezone
 from threading import Lock
-from typing import Any
+from typing import Any, Optional
 
 from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel, Field
@@ -11,7 +11,6 @@ from zentex.reflection.nine_question_effectiveness import (
     dependent_questions,
     run_question_reflection,
 )
-from zentex.reflection.service_facade import ReflectionServiceFacade
 from zentex.web_console.dependencies import (
     get_reflection_service,
     get_runtime,
@@ -74,25 +73,19 @@ def force_reflect_question(
 
 @router.get("")
 def list_nine_question_reflections(
-    q_id: str | None = None,
+    q_id: Optional[str] = None,
     limit: int = 50,
     reflection_service: Any = Depends(get_reflection_service),
 ) -> dict[str, Any]:
     capped = max(1, min(limit, 200))
-    try:
-        reflections = reflection_service.list_reflections(limit=capped)
-    except TypeError:
-        reflections = reflection_service.list_reflections(filters={"limit": capped})
-
-    items: list[dict[str, Any]] = []
-    for record in reflections:
-        context = record.context if isinstance(record.context, dict) else {}
-        record_qid = str(context.get("question_id") or "").strip().lower()
-        if q_id and record_qid != str(q_id).strip().lower():
-            continue
-        if not record_qid.startswith("q"):
-            continue
-        items.append(record.model_dump(mode="json"))
+    filters: dict[str, Any] = {
+        "question_scope": "nine_questions",
+        "limit": capped,
+    }
+    if q_id:
+        filters["question_id"] = str(q_id).strip().lower()
+    reflections = reflection_service.list_reflections(filters=filters)
+    items = [record.model_dump(mode="json") for record in reflections]
 
     return {
         "total": len(items),

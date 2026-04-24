@@ -1,6 +1,6 @@
 """Event types and envelope models for the Zentex event bus."""
 
-from enum import StrEnum
+from enum import Enum
 from uuid import uuid4
 
 from pydantic import Field
@@ -8,7 +8,7 @@ from pydantic import Field
 from zentex.foundation.contracts.base_models import AuditableModel, ZentexBaseModel
 
 
-class ZentexEventType(StrEnum):
+class ZentexEventType(str, Enum):
     turn_start = "turn_start"
     turn_end = "turn_end"
     phase_start = "phase_start"

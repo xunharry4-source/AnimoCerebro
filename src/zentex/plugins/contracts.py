@@ -1,15 +1,15 @@
+from __future__ import annotations
 """Public plugin contracts for the migration away from zentex.core.plugin_base.
 
 This file is the stable plugin-facing contract layer owned by zentex.plugins.
 Legacy `zentex.core.plugin_base` imports bridge into this module during migration.
 """
 
-from __future__ import annotations
 
 from abc import ABC, abstractmethod
 from enum import Enum
 from datetime import datetime
-from typing import Any, Dict, List, Literal, Optional
+from typing import Any, Dict, List, Literal, Optional, Union
 
 from pydantic import AliasChoices, BaseModel, ConfigDict, Field, model_validator
 
@@ -49,28 +49,28 @@ class BasePluginSpec(BaseModel):
         serialization_alias="status",
     )
     health_status: PluginHealthStatus = PluginHealthStatus.UNKNOWN
-    health_probe_endpoint: str | None = None
+    health_probe_endpoint: Optional[str] = None
     rollback_conditions: list[str] = Field(default_factory=list)
     revocation_reasons: list[str] = Field(default_factory=list)
     operational_status: str = "enabled"
     category: str = "functional"  # 模块分类：functional(功能模块), cognitive(认知模块), sensory(感知模块) 等
-    behavior_key: str | None = None
+    behavior_key: Optional[str] = None
     plugin_layer: PluginLayer = PluginLayer.FUNCTIONAL
 
     # 新增字段：插件分类（认知插件/功能插件）
-    plugin_category: str | None = Field(
+    plugin_category: Optional[str] = Field(
         default=None,
         description="插件分类：cognitive(认知插件) 或 functional(功能插件)，用于区分插件的业务类型"
     )
 
     # 新增字段：插件地址（URL 或路径）
-    plugin_url: str | None = Field(
+    plugin_url: Optional[str] = Field(
         default=None,
         description="插件地址：可以是 URL、文件路径或模块路径，用于定位插件源码或文档"
     )
 
     # 新增字段：插件说明
-    description: str | None = Field(
+    description: Optional[str] = Field(
         default=None,
         description="插件说明：详细描述插件的功能、用途和使用场景"
     )
@@ -122,7 +122,7 @@ SubjectiveWeightSpec.model_rebuild()
 class ManagedPluginRecord(BaseModel):
     model_config = ConfigDict(frozen=True, arbitrary_types_allowed=True)
 
-    plugin: BasePluginSpec | Any
+    plugin: Union[BasePluginSpec, Any]
     internal_revision_id: int = Field(ge=1)
     source_kind: Literal["builtin", "user", "test_stub"] = "builtin"
     description: str = Field(min_length=1)
@@ -132,9 +132,11 @@ class ManagedPluginRecord(BaseModel):
     is_official_release: bool = True
     created_at: datetime
     updated_at: datetime
-    started_at: datetime | None = None
-    stopped_at: datetime | None = None
+    started_at: Optional[datetime] = None
+    stopped_at: Optional[datetime] = None
 
+
+ManagedPluginRecord.model_rebuild()
 
 # Re-export from models for backward compatibility
 from zentex.plugins.models import PluginFeatureCatalogItem as PluginFeatureCatalogItem

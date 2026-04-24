@@ -15,18 +15,20 @@ auditable and fail-safe without forcing heavyweight third-party runtimes.
 
 from collections.abc import Callable
 import contextlib
+import hashlib
 import json
 import logging
 import os
 import struct
 import sqlite3
 import threading
-from datetime import UTC, datetime
+from datetime import datetime, timezone
+UTC = timezone.utc
 from enum import Enum
 import asyncio
 from pathlib import Path
 from threading import Lock
-from typing import Any, Generator, Protocol, TypeVar, Union, TYPE_CHECKING
+from typing import Any, Generator, Protocol, TypeVar, Union, TYPE_CHECKING, Dict, List, Optional
 from uuid import uuid4
 
 from zentex.common.locking import get_lock_for_resource
@@ -104,10 +106,10 @@ class EnhancedMemoryRecord(BaseModel):
     summary: str = Field(min_length=1)
     content: str = Field(min_length=1)
     trace_id: str = Field(min_length=1)
-    request_id: str | None = None
-    source_event_id: str | None = None
-    target_id: str | None = None
-    version_id: str | None = None
+    request_id: Optional[str] = None
+    source_event_id: Optional[str] = None
+    target_id: Optional[str] = None
+    version_id: Optional[str] = None
     tags: list[str] = Field(default_factory=list)
     evidence_refs: list[str] = Field(default_factory=list)
     source_refs: list[str] = Field(default_factory=list)
@@ -115,10 +117,10 @@ class EnhancedMemoryRecord(BaseModel):
     created_at: datetime = Field(default_factory=utc_now)
     
     # Sub-function 59.5 - Reference Chain & Compression
-    compressed_by: str | None = None
-    compression_summary: str | None = None
+    compressed_by: Optional[str] = None
+    compression_summary: Optional[str] = None
     is_tombstone: bool = False
-    g38_audit_id: str | None = None  # Unified trace ID for audit lifecycle
+    g38_audit_id: Optional[str] = None  # Unified trace ID for audit lifecycle
 
     # ── classification axes (G39 three-tier + affect signal) ────────────
     memory_tier: str = Field(default=MemoryTier.HOT)
@@ -145,6 +147,10 @@ class EnhancedMemoryRecord(BaseModel):
     source_credibility: str = Field(default="direct_observation")
     verification_status: str = Field(default="unverified")
     contradiction_count: int = Field(default=0, ge=0)
+    storage_schema_version: int = Field(default=1, ge=1)
+    record_health_status: str = Field(default="healthy")
+    repair_status: str = Field(default="none")
+    manifest_version: int = Field(default=0, ge=0)
 
     @model_validator(mode="before")
     @classmethod
@@ -182,14 +188,14 @@ class MemoryManagementState(BaseModel):
     status: str = Field(default="active", min_length=1)
     visibility: str = Field(default="internal", min_length=1)
     trust_level: str = Field(default="unverified", min_length=1)
-    management_note: str | None = None
-    correction_note: str | None = None
-    supersedes_memory_id: str | None = None
-    superseded_by_memory_id: str | None = None
+    management_note: Optional[str] = None
+    correction_note: Optional[str] = None
+    supersedes_memory_id: Optional[str] = None
+    superseded_by_memory_id: Optional[str] = None
     operator: str = Field(default="system", min_length=1)
     last_action: str = Field(default="ingested", min_length=1)
     last_action_reason: str = Field(default="Projected from runtime evidence.", min_length=1)
-    last_verified_at: datetime | None = None
+    last_verified_at: Optional[datetime] = None
     updated_at: datetime = Field(default_factory=utc_now)
 
 
@@ -199,14 +205,14 @@ class ManagedEnhancedMemoryRecord(EnhancedMemoryRecord):
     status: str = Field(default="active", min_length=1)
     visibility: str = Field(default="internal", min_length=1)
     trust_level: str = Field(default="unverified", min_length=1)
-    management_note: str | None = None
-    correction_note: str | None = None
-    supersedes_memory_id: str | None = None
-    superseded_by_memory_id: str | None = None
+    management_note: Optional[str] = None
+    correction_note: Optional[str] = None
+    supersedes_memory_id: Optional[str] = None
+    superseded_by_memory_id: Optional[str] = None
     operator: str = Field(default="system", min_length=1)
     last_action: str = Field(default="ingested", min_length=1)
     last_action_reason: str = Field(default="Projected from runtime evidence.", min_length=1)
-    last_verified_at: datetime | None = None
+    last_verified_at: Optional[datetime] = None
     updated_at: datetime = Field(default_factory=utc_now)
 
 
@@ -231,7 +237,7 @@ class MemoryTombstone(BaseModel):
     memory_id: str = Field(min_length=1)
     original_summary: str = Field(min_length=1)
     reason: str = Field(min_length=1)
-    compressed_into_id: str | None = None
+    compressed_into_id: Optional[str] = None
     tombstoned_at: datetime = Field(default_factory=utc_now)
 
 
@@ -249,6 +255,82 @@ class ContaminationTracker(BaseModel):
     source_id: str
     impacted_records: list[str] = Field(default_factory=list)
     confidence_degraded: float = 0.0
+
+
+class MemoryBlockDescriptor(BaseModel):
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    block_id: str = Field(min_length=1)
+    block_kind: str = Field(min_length=1)
+    required: bool = False
+    derived: bool = False
+    codec_chain: list[str] = Field(default_factory=list)
+    content_checksum: str = ""
+    storage_checksum: str = ""
+    status: str = "healthy"
+    repairable: bool = True
+    encryption_context: Optional[str] = None
+    compression_strategy: str = "none"
+    serializer_version: str = "zmem-v1"
+    last_verified_at: Optional[datetime] = None
+
+
+class MemoryRecordManifest(BaseModel):
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    memory_id: str = Field(min_length=1)
+    manifest_version: int = 1
+    descriptors: list[MemoryBlockDescriptor] = Field(default_factory=list)
+    updated_at: datetime = Field(default_factory=utc_now)
+
+
+class MemoryRecordHeader(BaseModel):
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    memory_id: str = Field(min_length=1)
+    memory_layer: str = Field(min_length=1)
+    source_kind: str = Field(min_length=1)
+    trace_id: str = Field(min_length=1)
+    target_id: Optional[str] = None
+    created_at: datetime = Field(default_factory=utc_now)
+    content_hash: str = Field(min_length=1)
+    memory_kind: str = "collection"
+    memory_tier: str = Field(default=MemoryTier.HOT)
+    storage_schema_version: int = 2
+    record_health_status: str = "healthy"
+    repair_status: str = "none"
+    manifest_version: int = 1
+
+
+class MemoryBlockReadResult(BaseModel):
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    descriptor: MemoryBlockDescriptor
+    decoded_value: Any = None
+    readable: bool = False
+    error_message: Optional[str] = None
+
+
+class MemoryProjectionStatus(BaseModel):
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    memory_id: str = Field(min_length=1)
+    projection_kind: str = Field(min_length=1)
+    status: str = "healthy"
+    detail: Optional[str] = None
+    updated_at: datetime = Field(default_factory=utc_now)
+
+
+class MemoryRepairTicket(BaseModel):
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    memory_id: str = Field(min_length=1)
+    record_health_status: str = "healthy"
+    repaired_blocks: list[str] = Field(default_factory=list)
+    quarantined_blocks: list[str] = Field(default_factory=list)
+    projection_repairs: list[str] = Field(default_factory=list)
+    notes: list[str] = Field(default_factory=list)
+    updated_at: datetime = Field(default_factory=utc_now)
 
 
 class MemoryRecallHit(BaseModel):
@@ -273,7 +355,7 @@ class MemoryBackendStatus(BaseModel):
     model_config = ConfigDict(extra="forbid", frozen=True)
 
     backend: str = Field(min_length=1)
-    package_name: str | None = None
+    package_name: Optional[str] = None
     package_installed: bool = False
     write_enabled: bool = False
     recall_enabled: bool = False
@@ -303,8 +385,8 @@ class SemanticMemoryRecallClient(Protocol):
         *,
         query: str,
         limit: int,
-        trace_id: str | None = None,
-        target_id: str | None = None,
+        trace_id: Optional[str] = None,
+        target_id: Optional[str] = None,
     ) -> list[MemoryRecallHit]:
         """Return semantic/procedural recall hits."""
 
@@ -324,8 +406,8 @@ class EpisodicMemoryRecallClient(Protocol):
         *,
         query: str,
         limit: int,
-        trace_id: str | None = None,
-        target_id: str | None = None,
+        trace_id: Optional[str] = None,
+        target_id: Optional[str] = None,
     ) -> list[MemoryRecallHit]:
         """Return graph/provenance recall hits."""
 
@@ -373,8 +455,8 @@ class NamespaceMemoryStoreAdapter(SemanticMemorySink, ProceduralMemorySink, Sema
         *,
         query: str,
         limit: int,
-        trace_id: str | None = None,
-        target_id: str | None = None,
+        trace_id: Optional[str] = None,
+        target_id: Optional[str] = None,
     ) -> list[MemoryRecallHit]:
         items = [
             *self._search_namespace(
@@ -405,8 +487,8 @@ class NamespaceMemoryStoreAdapter(SemanticMemorySink, ProceduralMemorySink, Sema
         *,
         query: str,
         limit: int,
-        trace_id: str | None,
-        target_id: str | None,
+        trace_id: Optional[str],
+        target_id: Optional[str],
     ) -> list[MemoryRecallHit]:
         result = self._store.search(namespace, query=query, limit=limit)
         rows = _run_maybe_awaitable(result) or []
@@ -472,8 +554,8 @@ class EpisodeGraphMemoryAdapter(EpisodicMemorySink, EpisodicMemoryRecallClient):
         *,
         query: str,
         limit: int,
-        trace_id: str | None = None,
-        target_id: str | None = None,
+        trace_id: Optional[str] = None,
+        target_id: Optional[str] = None,
     ) -> list[MemoryRecallHit]:
         result = self._client.search(query, limit=limit)
         rows = _run_maybe_awaitable(result) or []
@@ -517,7 +599,7 @@ class _EnhancedMemorySQLiteStore:
     already been seen via SQL UNIQUE INDEX.
     """
 
-    def __init__(self, file_path: str | Path | None = None) -> None:
+    def __init__(self, file_path: Union[str, Optional[Path]] = None) -> None:
         self._file_path = Path(file_path) if file_path is not None else None
         self._lock = get_lock_for_resource(str(self._file_path)) if self._file_path else Lock()
         if self._file_path is not None:
@@ -581,100 +663,803 @@ class _EnhancedMemorySQLiteStore:
         ''')
         conn.execute('CREATE INDEX IF NOT EXISTS idx_trace_id ON memory_records(trace_id)')
         conn.execute('CREATE INDEX IF NOT EXISTS idx_target_id ON memory_records(target_id)')
+        conn.execute('''
+            CREATE TABLE IF NOT EXISTS memory_record_headers (
+                memory_id TEXT PRIMARY KEY,
+                memory_layer TEXT NOT NULL,
+                source_kind TEXT NOT NULL,
+                trace_id TEXT NOT NULL,
+                target_id TEXT,
+                created_at TEXT NOT NULL,
+                content_hash TEXT UNIQUE NOT NULL,
+                memory_kind TEXT NOT NULL,
+                memory_tier TEXT NOT NULL,
+                storage_schema_version INTEGER NOT NULL DEFAULT 2,
+                record_health_status TEXT NOT NULL DEFAULT 'healthy',
+                repair_status TEXT NOT NULL DEFAULT 'none',
+                manifest_version INTEGER NOT NULL DEFAULT 1,
+                header_json TEXT NOT NULL
+            )
+        ''')
+        conn.execute('CREATE INDEX IF NOT EXISTS idx_memory_headers_trace_id ON memory_record_headers(trace_id)')
+        conn.execute('CREATE INDEX IF NOT EXISTS idx_memory_headers_target_id ON memory_record_headers(target_id)')
+        conn.execute('''
+            CREATE TABLE IF NOT EXISTS memory_manifests (
+                memory_id TEXT PRIMARY KEY,
+                manifest_version INTEGER NOT NULL DEFAULT 1,
+                manifest_json TEXT NOT NULL,
+                updated_at TEXT NOT NULL
+            )
+        ''')
+        conn.execute('''
+            CREATE TABLE IF NOT EXISTS memory_blocks (
+                block_id TEXT PRIMARY KEY,
+                memory_id TEXT NOT NULL,
+                block_kind TEXT NOT NULL,
+                required INTEGER NOT NULL DEFAULT 0,
+                derived INTEGER NOT NULL DEFAULT 0,
+                codec_chain TEXT NOT NULL,
+                content_checksum TEXT NOT NULL,
+                storage_checksum TEXT NOT NULL,
+                status TEXT NOT NULL DEFAULT 'healthy',
+                repairable INTEGER NOT NULL DEFAULT 1,
+                encryption_context TEXT,
+                compression_strategy TEXT NOT NULL DEFAULT 'none',
+                serializer_version TEXT NOT NULL DEFAULT 'zmem-v1',
+                last_verified_at TEXT,
+                payload BLOB,
+                FOREIGN KEY(memory_id) REFERENCES memory_record_headers(memory_id)
+            )
+        ''')
+        conn.execute('CREATE INDEX IF NOT EXISTS idx_memory_blocks_memory_id ON memory_blocks(memory_id)')
+        conn.execute('CREATE INDEX IF NOT EXISTS idx_memory_blocks_kind ON memory_blocks(memory_id, block_kind)')
+        conn.execute('''
+            CREATE TABLE IF NOT EXISTS memory_block_quarantine (
+                quarantine_id TEXT PRIMARY KEY,
+                memory_id TEXT NOT NULL,
+                block_kind TEXT NOT NULL,
+                original_block_id TEXT,
+                payload BLOB,
+                reason TEXT NOT NULL,
+                quarantined_at TEXT NOT NULL,
+                metadata_json TEXT NOT NULL DEFAULT '{}'
+            )
+        ''')
 
     @property
-    def file_path(self) -> Path | None:
+    def file_path(self) -> Optional[Path]:
         return self._file_path
+
+    _REQUIRED_BLOCK_KINDS = {"title_block", "summary_block"}
+
+    def _canonical_bytes(self, value: Any) -> bytes:
+        return json.dumps(value, ensure_ascii=False, sort_keys=True, default=str).encode("utf-8")
+
+    def _build_header(self, record: EnhancedMemoryRecord, *, health_status: str, repair_status: str, manifest_version: int) -> MemoryRecordHeader:
+        return MemoryRecordHeader(
+            memory_id=record.memory_id,
+            memory_layer=record.memory_layer,
+            source_kind=record.source_kind,
+            trace_id=record.trace_id,
+            target_id=record.target_id,
+            created_at=record.created_at,
+            content_hash=record.content_hash,
+            memory_kind=record.memory_kind,
+            memory_tier=record.memory_tier,
+            storage_schema_version=2,
+            record_health_status=health_status,
+            repair_status=repair_status,
+            manifest_version=manifest_version,
+        )
+
+    def _block_value_map(self, record: EnhancedMemoryRecord) -> dict[str, Any]:
+        return {
+            "title_block": record.title,
+            "summary_block": record.summary,
+            "content_block": record.content,
+            "payload_block": dict(record.payload),
+            "refs_block": {
+                "tags": list(record.tags),
+                "evidence_refs": list(record.evidence_refs),
+                "source_refs": list(record.source_refs),
+            },
+        }
+
+    def _prepare_record_persistence(
+        self,
+        record: EnhancedMemoryRecord,
+        *,
+        visibility: str,
+    ) -> tuple[MemoryRecordHeader, MemoryRecordManifest, list[tuple[MemoryBlockDescriptor, Optional[bytes]]], list[dict[str, str]], str, str]:
+        degradation_events: list[dict[str, str]] = []
+        descriptors: list[MemoryBlockDescriptor] = []
+        encoded_blocks: list[tuple[MemoryBlockDescriptor, Optional[bytes]]] = []
+        block_values = self._block_value_map(record)
+        record_health_status = "healthy"
+        repair_status = "none"
+
+        for block_kind, value in block_values.items():
+            try:
+                descriptor, payload, block_degradations = self._encode_block(
+                    block_kind,
+                    value,
+                    record=record,
+                    visibility=visibility,
+                )
+                descriptors.append(descriptor)
+                encoded_blocks.append((descriptor, payload))
+                if block_degradations:
+                    degradation_events.extend(block_degradations)
+                    record_health_status = "degraded"
+                    repair_status = "pending_repair"
+            except Exception as exc:
+                logger.exception(
+                    "Failed to encode block %s for memory record %s: %s",
+                    block_kind,
+                    record.memory_id,
+                    exc,
+                )
+                if block_kind in self._REQUIRED_BLOCK_KINDS:
+                    raise
+                record_health_status = "degraded"
+                repair_status = "pending_repair"
+                degradation_events.append(
+                    {
+                        "stage": block_kind,
+                        "fallback": "block_omitted_pending_repair",
+                    }
+                )
+                descriptor = MemoryBlockDescriptor(
+                    block_id=f"{record.memory_id}:{block_kind}",
+                    block_kind=block_kind,
+                    required=False,
+                    derived=False,
+                    codec_chain=["msgpack"],
+                    content_checksum="",
+                    storage_checksum="",
+                    status="missing",
+                    repairable=True,
+                    serializer_version="zmem-v1",
+                )
+                descriptors.append(descriptor)
+                encoded_blocks.append((descriptor, None))
+
+        descriptors.extend(
+            [
+                MemoryBlockDescriptor(
+                    block_id=f"{record.memory_id}:fts_projection",
+                    block_kind="fts_projection",
+                    required=False,
+                    derived=True,
+                    codec_chain=[],
+                    status="missing_rebuildable",
+                    repairable=True,
+                ),
+                MemoryBlockDescriptor(
+                    block_id=f"{record.memory_id}:vector_projection",
+                    block_kind="vector_projection",
+                    required=False,
+                    derived=True,
+                    codec_chain=[],
+                    status="missing_rebuildable",
+                    repairable=True,
+                ),
+            ]
+        )
+
+        manifest = MemoryRecordManifest(
+            memory_id=record.memory_id,
+            manifest_version=1,
+            descriptors=descriptors,
+            updated_at=utc_now(),
+        )
+        header = self._build_header(
+            record,
+            health_status=record_health_status,
+            repair_status=repair_status,
+            manifest_version=manifest.manifest_version,
+        )
+        return header, manifest, encoded_blocks, degradation_events, record_health_status, repair_status
+
+    def _build_persisted_record(
+        self,
+        record: EnhancedMemoryRecord,
+        *,
+        degradation_events: list[dict[str, str]],
+        record_health_status: str,
+        repair_status: str,
+    ) -> EnhancedMemoryRecord:
+        if degradation_events:
+            return record.model_copy(
+                update={
+                    "payload": {
+                        **record.payload,
+                        "storage_degraded": True,
+                        "storage_degradation_events": degradation_events,
+                    },
+                    "storage_schema_version": 2,
+                    "record_health_status": "degraded",
+                    "repair_status": "pending_repair",
+                    "manifest_version": 1,
+                }
+            )
+
+        return record.model_copy(
+            update={
+                "storage_schema_version": 2,
+                "record_health_status": record_health_status,
+                "repair_status": repair_status,
+                "manifest_version": 1,
+            }
+        )
+
+    def _rewrite_existing_record(
+        self,
+        existing_memory_id: str,
+        record: EnhancedMemoryRecord,
+    ) -> EnhancedMemoryRecord:
+        existing_header = self.read_record_header(existing_memory_id)
+        replacement = record.model_copy(
+            update={
+                "memory_id": existing_memory_id,
+                "created_at": existing_header.created_at if existing_header is not None else record.created_at,
+            }
+        )
+        visibility = str(getattr(record, "visibility", record.payload.get("visibility", "internal")))
+        header, manifest, encoded_blocks, degradation_events, record_health_status, repair_status = self._prepare_record_persistence(
+            replacement,
+            visibility=visibility,
+        )
+        with self._get_connection() as conn:
+            conn.execute("BEGIN")
+            self._persist_header_manifest_blocks(
+                conn,
+                header=header,
+                manifest=manifest,
+                encoded_blocks=encoded_blocks,
+            )
+            conn.execute("COMMIT")
+        return self._build_persisted_record(
+            replacement,
+            degradation_events=degradation_events,
+            record_health_status=record_health_status,
+            repair_status=repair_status,
+        )
+
+    def _block_codec_config(self, block_kind: str, *, visibility: str, record: EnhancedMemoryRecord) -> dict[str, Any]:
+        compression_strategy = "none"
+        encryption_context = None
+        codec_chain = ["msgpack"]
+        if block_kind in {"content_block", "payload_block"}:
+            compression_strategy = "zstd"
+            codec_chain.append("zstd")
+            if visibility != "public" and self._encryption.enabled:
+                encryption_context = f"memory:{record.memory_id}:{block_kind}"
+                codec_chain.append("aesgcm")
+        elif block_kind == "refs_block" and visibility != "public" and False:
+            encryption_context = f"memory:{record.memory_id}:{block_kind}"
+            codec_chain.append("aesgcm")
+        return {
+            "compression_strategy": compression_strategy,
+            "encryption_context": encryption_context,
+            "codec_chain": codec_chain,
+            "serializer_version": "zmem-v1",
+        }
+
+    def _encode_block(
+        self,
+        block_kind: str,
+        value: Any,
+        *,
+        record: EnhancedMemoryRecord,
+        visibility: str,
+    ) -> tuple[MemoryBlockDescriptor, bytes, list[dict[str, str]]]:
+        config = self._block_codec_config(block_kind, visibility=visibility, record=record)
+        canonical = self._canonical_bytes(value)
+        wrapper = {
+            "block_kind": block_kind,
+            "value": value,
+            "record_id": record.memory_id,
+        }
+        degradation_events: list[dict[str, str]] = []
+        try:
+            payload = self._serializer.serialize(wrapper, compressed=False, encrypted=False, dual_write=False)
+        except Exception as exc:
+            logger.exception(
+                "❌ SERIALIZATION FAILED for memory block %s on %s: %s",
+                block_kind,
+                record.memory_id,
+                exc,
+            )
+            try:
+                payload = self._serializer.serialize(wrapper, compressed=False, encrypted=False, dual_write=False)
+                degradation_events.append(
+                    {
+                        "stage": "serialization",
+                        "block_kind": block_kind,
+                        "fallback": "retry_without_block_mutation",
+                    }
+                )
+            except Exception as exc2:
+                logger.exception("❌ CRITICAL: Fallback serialization also failed for %s:%s: %s", record.memory_id, block_kind, exc2)
+                raise
+        compression_strategy = str(config["compression_strategy"])
+        if compression_strategy != "none":
+            try:
+                strategies = getattr(self._compression, "_strategies", None)
+                if strategies is not None:
+                    strategy = strategies.get(
+                        "zstd_3" if compression_strategy == "zstd" else compression_strategy,
+                        strategies["none"],
+                    )
+                    payload = strategy.compress(payload)
+                else:
+                    payload = self._compression.compress_for_tier(payload, compression_strategy)
+            except Exception as exc:
+                logger.exception("❌ COMPRESSION FAILED for memory block %s on %s: %s", block_kind, record.memory_id, exc)
+                degradation_events.append(
+                    {
+                        "stage": "compression",
+                        "block_kind": block_kind,
+                        "fallback": "store_uncompressed",
+                    }
+                )
+                compression_strategy = "none"
+        encryption_context = config["encryption_context"]
+        if encryption_context:
+            try:
+                payload = self._encryption.encrypt(payload, context=encryption_context)
+            except Exception as exc:
+                logger.exception("❌ ENCRYPTION FAILED for memory block %s on %s: %s", block_kind, record.memory_id, exc)
+                degradation_events.append(
+                    {
+                        "stage": "encryption",
+                        "block_kind": block_kind,
+                        "fallback": "store_unencrypted",
+                    }
+                )
+                encryption_context = None
+                config["codec_chain"] = [item for item in config["codec_chain"] if item != "aesgcm"]
+        descriptor = MemoryBlockDescriptor(
+            block_id=f"{record.memory_id}:{block_kind}",
+            block_kind=block_kind,
+            required=block_kind in self._REQUIRED_BLOCK_KINDS,
+            derived=False,
+            codec_chain=list(config["codec_chain"]),
+            content_checksum=hashlib.sha256(canonical).hexdigest(),
+            storage_checksum=hashlib.sha256(payload).hexdigest(),
+            status="healthy",
+            repairable=True,
+            encryption_context=encryption_context,
+            compression_strategy=compression_strategy,
+            serializer_version=str(config["serializer_version"]),
+            last_verified_at=utc_now(),
+        )
+        return descriptor, payload, degradation_events
+
+    def _decode_block(self, descriptor: MemoryBlockDescriptor, payload: Optional[bytes]) -> MemoryBlockReadResult:
+        if payload is None:
+            return MemoryBlockReadResult(descriptor=descriptor, decoded_value=None, readable=False, error_message="missing_payload")
+        try:
+            working = payload
+            if descriptor.encryption_context:
+                working = self._encryption.decrypt(working, context=descriptor.encryption_context)
+            if descriptor.compression_strategy == "zstd":
+                working = (self._compression._strategies.get("zstd_3") or self._compression._strategies["none"]).decompress(working)
+            elif descriptor.compression_strategy == "lz4":
+                working = (self._compression._strategies.get("lz4") or self._compression._strategies["none"]).decompress(working)
+            data = self._serializer.deserialize(working)
+            decoded_value = data.get("value") if isinstance(data, dict) else data
+            if hashlib.sha256(payload).hexdigest() != descriptor.storage_checksum:
+                raise ValueError("storage_checksum_mismatch")
+            if hashlib.sha256(self._canonical_bytes(decoded_value)).hexdigest() != descriptor.content_checksum:
+                raise ValueError("content_checksum_mismatch")
+            return MemoryBlockReadResult(descriptor=descriptor, decoded_value=decoded_value, readable=True)
+        except Exception as exc:
+            return MemoryBlockReadResult(
+                descriptor=descriptor.model_copy(update={"status": "corrupted"}),
+                decoded_value=None,
+                readable=False,
+                error_message=f"{exc.__class__.__name__}: {exc}",
+            )
+
+    def _persist_header_manifest_blocks(
+        self,
+        conn: sqlite3.Connection,
+        *,
+        header: MemoryRecordHeader,
+        manifest: MemoryRecordManifest,
+        encoded_blocks: list[tuple[MemoryBlockDescriptor, Optional[bytes]]],
+    ) -> None:
+        conn.execute("DELETE FROM memory_record_headers WHERE memory_id = ?", (header.memory_id,))
+        conn.execute("DELETE FROM memory_manifests WHERE memory_id = ?", (header.memory_id,))
+        conn.execute("DELETE FROM memory_blocks WHERE memory_id = ?", (header.memory_id,))
+        conn.execute(
+            """
+            INSERT INTO memory_record_headers (
+                memory_id, memory_layer, source_kind, trace_id, target_id, created_at,
+                content_hash, memory_kind, memory_tier, storage_schema_version,
+                record_health_status, repair_status, manifest_version, header_json
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                header.memory_id,
+                header.memory_layer,
+                header.source_kind,
+                header.trace_id,
+                header.target_id,
+                header.created_at.isoformat(),
+                header.content_hash,
+                header.memory_kind,
+                header.memory_tier,
+                header.storage_schema_version,
+                header.record_health_status,
+                header.repair_status,
+                header.manifest_version,
+                header.model_dump_json(),
+            ),
+        )
+        conn.execute(
+            "INSERT INTO memory_manifests (memory_id, manifest_version, manifest_json, updated_at) VALUES (?, ?, ?, ?)",
+            (manifest.memory_id, manifest.manifest_version, manifest.model_dump_json(), manifest.updated_at.isoformat()),
+        )
+        for descriptor, payload in encoded_blocks:
+            conn.execute(
+                """
+                INSERT INTO memory_blocks (
+                    block_id, memory_id, block_kind, required, derived, codec_chain,
+                    content_checksum, storage_checksum, status, repairable, encryption_context,
+                    compression_strategy, serializer_version, last_verified_at, payload
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    descriptor.block_id,
+                    manifest.memory_id,
+                    descriptor.block_kind,
+                    int(descriptor.required),
+                    int(descriptor.derived),
+                    json.dumps(descriptor.codec_chain, ensure_ascii=False),
+                    descriptor.content_checksum,
+                    descriptor.storage_checksum,
+                    descriptor.status,
+                    int(descriptor.repairable),
+                    descriptor.encryption_context,
+                    descriptor.compression_strategy,
+                    descriptor.serializer_version,
+                    descriptor.last_verified_at.isoformat() if descriptor.last_verified_at else None,
+                    payload,
+                ),
+            )
+
+    def read_record_header(self, memory_id: str) -> Optional[MemoryRecordHeader]:
+        with self._get_connection() as conn:
+            row = conn.execute("SELECT header_json FROM memory_record_headers WHERE memory_id = ?", (memory_id,)).fetchone()
+        if not row:
+            return None
+        return MemoryRecordHeader.model_validate(json.loads(row[0]))
+
+    def read_memory_id_by_content_hash(self, content_hash: str) -> Optional[str]:
+        with self._get_connection() as conn:
+            row = conn.execute(
+                "SELECT memory_id FROM memory_record_headers WHERE content_hash = ?",
+                (content_hash,),
+            ).fetchone()
+            if row:
+                return str(row[0])
+            row = conn.execute(
+                "SELECT memory_id FROM memory_records WHERE content_hash = ?",
+                (content_hash,),
+            ).fetchone()
+        if not row:
+            return None
+        return str(row[0])
+
+    def query_memory_ids(
+        self,
+        *,
+        trace_id: Optional[str] = None,
+        target_id: Optional[str] = None,
+        tag: Optional[str] = None,
+        allowed_ids: Optional[list[str]] = None,
+        memory_tier: Optional[str] = None,
+        limit: int = 50,
+    ) -> list[str]:
+        sql = """
+            SELECT h.memory_id
+            FROM memory_record_headers h
+            JOIN memory_records r ON r.memory_id = h.memory_id
+            WHERE 1=1
+        """
+        params: list[Any] = []
+        if trace_id is not None:
+            sql += " AND h.trace_id = ?"
+            params.append(trace_id)
+        if target_id is not None:
+            sql += " AND h.target_id = ?"
+            params.append(target_id)
+        if memory_tier is not None:
+            sql += " AND h.memory_tier = ?"
+            params.append(memory_tier)
+        if tag is not None:
+            sql += " AND EXISTS (SELECT 1 FROM json_each(r.tags) WHERE value = ?)"
+            params.append(tag)
+        if allowed_ids is not None:
+            if not allowed_ids:
+                return []
+            placeholders = ",".join("?" for _ in allowed_ids)
+            sql += f" AND h.memory_id IN ({placeholders})"
+            params.extend(allowed_ids)
+        sql += " ORDER BY h.created_at DESC LIMIT ?"
+        params.append(limit)
+        with self._get_connection() as conn:
+            rows = conn.execute(sql, tuple(params)).fetchall()
+        return [str(row[0]) for row in rows]
+
+    def read_manifest(self, memory_id: str) -> Optional[MemoryRecordManifest]:
+        with self._get_connection() as conn:
+            row = conn.execute("SELECT manifest_json FROM memory_manifests WHERE memory_id = ?", (memory_id,)).fetchone()
+        if not row:
+            return None
+        return MemoryRecordManifest.model_validate(json.loads(row[0]))
+
+    def read_block(self, memory_id: str, block_kind: str) -> Optional[MemoryBlockReadResult]:
+        with self._get_connection() as conn:
+            row = conn.execute(
+                """
+                SELECT block_id, required, derived, codec_chain, content_checksum, storage_checksum,
+                       status, repairable, encryption_context, compression_strategy,
+                       serializer_version, last_verified_at, payload
+                FROM memory_blocks
+                WHERE memory_id = ? AND block_kind = ?
+                """,
+                (memory_id, block_kind),
+            ).fetchone()
+        if not row:
+            return None
+        descriptor = MemoryBlockDescriptor(
+            block_id=row[0],
+            block_kind=block_kind,
+            required=bool(row[1]),
+            derived=bool(row[2]),
+            codec_chain=json.loads(row[3]),
+            content_checksum=row[4],
+            storage_checksum=row[5],
+            status=row[6],
+            repairable=bool(row[7]),
+            encryption_context=row[8],
+            compression_strategy=row[9],
+            serializer_version=row[10],
+            last_verified_at=datetime.fromisoformat(row[11]) if row[11] else None,
+        )
+        return self._decode_block(descriptor, row[12])
+
+    def _load_modular_record(self, memory_id: str) -> Optional[EnhancedMemoryRecord]:
+        header = self.read_record_header(memory_id)
+        manifest = self.read_manifest(memory_id)
+        if header is None or manifest is None:
+            return None
+
+        decoded: dict[str, MemoryBlockReadResult] = {}
+        health = header.record_health_status
+        for descriptor in manifest.descriptors:
+            result = self.read_block(memory_id, descriptor.block_kind)
+            if result is None:
+                result = MemoryBlockReadResult(
+                    descriptor=descriptor.model_copy(update={"status": "missing"}),
+                    decoded_value=None,
+                    readable=False,
+                    error_message="missing_block",
+                )
+            if not result.readable and descriptor.required:
+                health = "degraded"
+            decoded[descriptor.block_kind] = result
+
+        if health != header.record_health_status:
+            header = header.model_copy(update={"record_health_status": health})
+        return MemoryAssembler.assemble(header, decoded)
+
+    def _write_manifest(self, conn: sqlite3.Connection, manifest: MemoryRecordManifest) -> None:
+        conn.execute(
+            """
+            INSERT OR REPLACE INTO memory_manifests (memory_id, manifest_version, manifest_json, updated_at)
+            VALUES (?, ?, ?, ?)
+            """,
+            (manifest.memory_id, manifest.manifest_version, manifest.model_dump_json(), manifest.updated_at.isoformat()),
+        )
+
+    def _update_manifest_descriptor(
+        self,
+        memory_id: str,
+        block_kind: str,
+        *,
+        status: str,
+        detail_descriptor: Optional[MemoryBlockDescriptor] = None,
+    ) -> None:
+        manifest = self.read_manifest(memory_id)
+        if manifest is None:
+            return
+        descriptors = []
+        updated = False
+        for descriptor in manifest.descriptors:
+            if descriptor.block_kind == block_kind:
+                descriptors.append(
+                    detail_descriptor
+                    or descriptor.model_copy(update={"status": status, "last_verified_at": utc_now()})
+                )
+                updated = True
+            else:
+                descriptors.append(descriptor)
+        if not updated and detail_descriptor is not None:
+            descriptors.append(detail_descriptor)
+        updated_manifest = manifest.model_copy(update={"descriptors": descriptors, "updated_at": utc_now()})
+        with self._get_connection() as conn:
+            self._write_manifest(conn, updated_manifest)
+
+    def mark_projection_status(self, memory_id: str, projection_kind: str, status: str) -> None:
+        self._update_manifest_descriptor(memory_id, projection_kind, status=status)
+
+    def quarantine_block(
+        self,
+        memory_id: str,
+        block_kind: str,
+        *,
+        payload: Optional[bytes],
+        reason: str,
+        metadata: dict[str, Any] = None,
+    ) -> None:
+        with self._get_connection() as conn:
+            conn.execute(
+                """
+                INSERT INTO memory_block_quarantine (
+                    quarantine_id, memory_id, block_kind, original_block_id, payload, reason, quarantined_at, metadata_json
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    str(uuid4()),
+                    memory_id,
+                    block_kind,
+                    f"{memory_id}:{block_kind}",
+                    payload,
+                    reason,
+                    utc_now().isoformat(),
+                    json.dumps(metadata or {}, ensure_ascii=False, default=str),
+                ),
+            )
+        self._update_manifest_descriptor(memory_id, block_kind, status="quarantined")
+
+    def replace_block(self, memory_id: str, block_kind: str, value: Any) -> None:
+        header = self.read_record_header(memory_id)
+        if header is None:
+            raise KeyError(memory_id)
+        pseudo_record = EnhancedMemoryRecord(
+            memory_id=header.memory_id,
+            memory_layer=header.memory_layer,
+            source_kind=header.source_kind,
+            title=value if block_kind == "title_block" else "placeholder-title",
+            summary=value if block_kind == "summary_block" else "placeholder-summary",
+            content=value if block_kind == "content_block" else "placeholder-content",
+            trace_id=header.trace_id,
+            target_id=header.target_id,
+            content_hash=header.content_hash,
+            memory_kind=header.memory_kind,
+            memory_tier=header.memory_tier,
+            created_at=header.created_at,
+        )
+        descriptor, payload, _ = self._encode_block(block_kind, value, record=pseudo_record, visibility="internal")
+        with self._get_connection() as conn:
+            conn.execute("DELETE FROM memory_blocks WHERE memory_id = ? AND block_kind = ?", (memory_id, block_kind))
+            conn.execute(
+                """
+                INSERT INTO memory_blocks (
+                    block_id, memory_id, block_kind, required, derived, codec_chain,
+                    content_checksum, storage_checksum, status, repairable, encryption_context,
+                    compression_strategy, serializer_version, last_verified_at, payload
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    descriptor.block_id,
+                    memory_id,
+                    descriptor.block_kind,
+                    int(descriptor.required),
+                    int(descriptor.derived),
+                    json.dumps(descriptor.codec_chain, ensure_ascii=False),
+                    descriptor.content_checksum,
+                    descriptor.storage_checksum,
+                    "healthy",
+                    int(descriptor.repairable),
+                    descriptor.encryption_context,
+                    descriptor.compression_strategy,
+                    descriptor.serializer_version,
+                    utc_now().isoformat(),
+                    payload,
+                ),
+            )
+        self._update_manifest_descriptor(memory_id, block_kind, status="healthy", detail_descriptor=descriptor)
+
+    def _list_modular_records(self) -> list[EnhancedMemoryRecord]:
+        with self._get_connection() as conn:
+            rows = conn.execute("SELECT memory_id FROM memory_record_headers ORDER BY created_at DESC").fetchall()
+        records: list[EnhancedMemoryRecord] = []
+        for row in rows:
+            record = self._load_modular_record(row[0])
+            if record is not None:
+                records.append(record)
+        return records
 
     def append(self, record: EnhancedMemoryRecord) -> EnhancedMemoryRecord:
         with self._lock:
-            use_compression = True
-            rec_dict = record.model_dump(mode="json")
             visibility = str(getattr(record, "visibility", record.payload.get("visibility", "internal")))
-            encrypt_this = (visibility != "public") and self._encryption.enabled
-            
-            try:
-                payload = self._serializer.serialize(
-                    rec_dict, 
-                    compressed=use_compression, 
-                    encrypted=encrypt_this,
-                    dual_write=False
-                )
-            except Exception as e:
-                logger.exception(
-                    f"❌ SERIALIZATION FAILED for memory record {record.memory_id}:\n"
-                    f"   Layer: {record.memory_layer}\n"
-                    f"   Source: {record.source_kind}\n"
-                    f"   Error: {type(e).__name__}: {str(e)}"
-                )
-                # Fallback: store uncompressed/unencrypted
-                try:
-                    payload = self._serializer.serialize(
-                        rec_dict,
-                        compressed=False,
-                        encrypted=False,
-                        dual_write=False
-                    )
-                    use_compression = False
-                    encrypt_this = False
-                    logger.warning(f"Fallback: Storing record {record.memory_id} without compression/encryption")
-                except Exception as e2:
-                    logger.exception(f"❌ CRITICAL: Fallback serialization also failed for {record.memory_id}: {e2}")
-                    return record  # Return early, unable to save
-            
-            try:
-                data_to_write = self._compression.compress_for_tier(payload, record.memory_tier) if use_compression else payload
-            except Exception as e:
-                logger.exception(
-                    f"❌ COMPRESSION FAILED for memory record {record.memory_id}:\n"
-                    f"   Tier: {record.memory_tier}\n"
-                    f"   Error: {type(e).__name__}: {str(e)}"
-                )
-                # Fallback: skip compression
-                data_to_write = payload
-                use_compression = False
-                logger.warning(f"Fallback: Skipping compression for record {record.memory_id}")
-            
-            if encrypt_this:
-                try:
-                    data_to_write = self._encryption.encrypt(data_to_write, context=record.memory_layer)
-                except Exception as e:
-                    logger.exception(
-                        f"❌ ENCRYPTION FAILED for memory record {record.memory_id}:\n"
-                        f"   Layer: {record.memory_layer}\n"
-                        f"   Error: {type(e).__name__}: {str(e)}"
-                    )
-                    # Fallback: skip encryption
-                    encrypt_this = False
-                    logger.warning(f"Fallback: Skipping encryption for record {record.memory_id}")
+            header, manifest, encoded_blocks, degradation_events, record_health_status, repair_status = self._prepare_record_persistence(
+                record,
+                visibility=visibility,
+            )
 
             try:
                 with self._get_connection() as conn:
-                    conn.execute('''
-                        INSERT INTO memory_records 
-                        (memory_id, content_hash, memory_layer, source_kind, trace_id, target_id, tags, payload)
-                        VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-                    ''', (
-                        record.memory_id,
-                        record.content_hash,
-                        record.memory_layer,
-                        record.source_kind,
-                        record.trace_id,
-                        record.target_id,
-                        json.dumps(record.tags),
-                        data_to_write
-                    ))
-            except sqlite3.IntegrityError as e:
-                logger.debug(f"Duplicate record (expected): {record.memory_id}")
+                    conn.execute("BEGIN")
+                    self._persist_header_manifest_blocks(
+                        conn,
+                        header=header,
+                        manifest=manifest,
+                        encoded_blocks=encoded_blocks,
+                    )
+                    conn.execute("COMMIT")
+            except sqlite3.IntegrityError:
+                existing_memory_id = self.read_memory_id_by_content_hash(record.content_hash)
+                if existing_memory_id:
+                    existing_record = self._load_modular_record(existing_memory_id)
+                    if existing_record is None:
+                        existing_record = next(
+                            (
+                                item
+                                for item in self._list_modular_records()
+                                if item.memory_id == existing_memory_id
+                            ),
+                            None,
+                        )
+                    if existing_record is not None:
+                        logger.debug(
+                            "Duplicate record resolved to existing persisted record: requested=%s existing=%s",
+                            record.memory_id,
+                            existing_memory_id,
+                        )
+                        if (
+                            existing_record.record_health_status != "healthy"
+                            or existing_record.title != record.title
+                            or existing_record.summary != record.summary
+                            or existing_record.content != record.content
+                            or existing_record.payload != record.payload
+                            or existing_record.tags != record.tags
+                            or existing_record.evidence_refs != record.evidence_refs
+                            or existing_record.source_refs != record.source_refs
+                        ):
+                            logger.warning(
+                                "Duplicate content hash matched degraded or mismatched persisted memory; rewriting existing record %s",
+                                existing_memory_id,
+                            )
+                            return self._rewrite_existing_record(existing_memory_id, record)
+                        return existing_record
+                logger.debug("Duplicate record (expected) but existing persisted record was not recoverable: %s", record.memory_id)
             except Exception as e:
                 logger.exception(
                     f"❌ DATABASE INSERTION FAILED for memory record {record.memory_id}:\n"
                     f"   Error: {type(e).__name__}: {str(e)}"
                 )
-                
-        return record
+                try:
+                    with self._get_connection() as conn:
+                        conn.execute("ROLLBACK")
+                except Exception:
+                    pass
+                raise
 
-    def list_records(self) -> list[EnhancedMemoryRecord]:
+        return self._build_persisted_record(
+            record,
+            degradation_events=degradation_events,
+            record_health_status=record_health_status,
+            repair_status=repair_status,
+        )
+
+    def _list_legacy_records(self) -> list[EnhancedMemoryRecord]:
         """List all memory records with robust error handling for corrupted data.
         
         Implements degraded-mode recovery with explicit error reporting:
@@ -758,24 +1543,16 @@ class _EnhancedMemorySQLiteStore:
         
         return records
 
-    def search(
+    def _search_legacy_records(
         self,
         *,
         query: str,
-        limit: int,
-        trace_id: str | None = None,
-        target_id: str | None = None,
-    ) -> list[MemoryRecallHit]:
-        """Search memory records with robust error handling for corrupted data.
-        
-        Uses same degraded-mode recovery as list_records() with explicit error reporting
-        to ensure search doesn't fail due to corrupted records in the database.
-        """
-        needle = query.strip().lower()
+        trace_id: Optional[str] = None,
+        target_id: Optional[str] = None,
+    ) -> list[EnhancedMemoryRecord]:
         records = []
         corruption_count = 0
         corrupted_ids = []
-        
         sql = "SELECT memory_id, payload FROM memory_records WHERE 1=1"
         params = []
         if trace_id is not None:
@@ -784,36 +1561,32 @@ class _EnhancedMemorySQLiteStore:
         if target_id is not None:
             sql += " AND target_id = ?"
             params.append(target_id)
-            
+
         with self._get_connection() as conn:
             cursor = conn.execute(sql, params)
             for row in cursor:
                 memory_id, payload = row[0], row[1]
-                
-                # === ATTEMPT 1: Standard decompression path ===
                 try:
                     decrypted = self._encryption.decrypt(payload)
                     decompressed = self._compression.decompress(decrypted)
                     parts = decompressed.split(self._serializer.MAGIC)
                     for part in parts:
-                        if not part: 
+                        if not part:
                             continue
                         full_part = self._serializer.MAGIC + part
                         rec_data = self._serializer.deserialize(full_part)
                         records.append(EnhancedMemoryRecord.model_validate(rec_data))
                 except Exception as e:
-                    # === ATTEMPT 2: Try direct deserialization ===
                     try:
                         rec_data = self._serializer.deserialize(payload)
                         records.append(EnhancedMemoryRecord.model_validate(rec_data))
-                        logger.info(f"Recovered record {memory_id} during search via direct deserialization (fallback)")
+                        logger.info("Recovered record %s during search via direct deserialization (fallback)", memory_id)
                     except Exception as e2:
-                        # === ATTEMPT 3: Try raw decryption only ===
                         try:
                             decrypted = self._encryption.decrypt(payload)
                             rec_data = self._serializer.deserialize(decrypted)
                             records.append(EnhancedMemoryRecord.model_validate(rec_data))
-                            logger.info(f"Recovered record {memory_id} during search via direct decryption (fallback)")
+                            logger.info("Recovered record %s during search via direct decryption (fallback)", memory_id)
                         except Exception as e3:
                             corruption_count += 1
                             corrupted_ids.append(memory_id)
@@ -826,24 +1599,66 @@ class _EnhancedMemorySQLiteStore:
                                 f"   Fallback 3: {type(e3).__name__}: {str(e3)}\n"
                                 f"   Record will be SKIPPED from search results"
                             )
-                            logger.debug(f"Search exception traceback:", exc_info=e3)
-        
+                            logger.exception(
+                                "Search recovery exhausted for corrupted record %s",
+                                memory_id,
+                                exc_info=e3,
+                            )
         if corruption_count > 0:
-            logger.warning(
+            logger.error(
                 f"⚠️  Search degradation: {corruption_count} corrupted records skipped\n"
                 f"   Corrupted IDs: {corrupted_ids}\n"
                 f"   Valid results returned: {len(records)}"
             )
+        return records
+
+    def list_records(self) -> list[EnhancedMemoryRecord]:
+        modular_records = self._list_modular_records()
+        modular_ids = {record.memory_id for record in modular_records}
+        legacy_records = [
+            record for record in self._list_legacy_records()
+            if record.memory_id not in modular_ids
+        ]
+        return [*modular_records, *legacy_records]
+
+    def search(
+        self,
+        *,
+        query: str,
+        limit: int,
+        trace_id: Optional[str] = None,
+        target_id: Optional[str] = None,
+    ) -> list[MemoryRecallHit]:
+        """Search memory records with graceful degradation for partial records."""
+        needle = query.strip().lower()
+        modular_records = self._list_modular_records()
+        legacy_records = self._search_legacy_records(query=query, trace_id=trace_id, target_id=target_id)
+        modular_ids = {record.memory_id for record in modular_records}
+        records = [
+            *[
+                record for record in modular_records
+                if (trace_id is None or record.trace_id == trace_id)
+                and (target_id is None or record.target_id == target_id)
+            ],
+            *[record for record in legacy_records if record.memory_id not in modular_ids],
+        ]
                     
         hits: list[MemoryRecallHit] = []
         for record in records:
             haystack = " ".join([
-                record.title, record.summary, record.content, " ".join(record.tags),
+                record.title,
+                record.summary,
+                record.content or "",
+                " ".join(record.tags),
                 record.trace_id, record.target_id or ""
             ]).lower()
             if needle and needle not in haystack:
                 continue
-            score = 1.0 if not needle else min(1.0, 0.35 + (haystack.count(needle) * 0.2))
+            base_score = 1.0 if not needle else min(1.0, 0.35 + (haystack.count(needle) * 0.2))
+            if record.record_health_status != "healthy":
+                base_score = max(0.1, base_score * 0.7)
+            if not (record.content or "").strip():
+                base_score = max(0.1, base_score * 0.75)
             hits.append(
                 MemoryRecallHit(
                     memory_id=record.memory_id,
@@ -852,7 +1667,7 @@ class _EnhancedMemorySQLiteStore:
                     title=record.title,
                     summary=record.summary,
                     trace_id=record.trace_id,
-                    score=score,
+                    score=base_score,
                     tags=list(record.tags),
                     source_refs=list(record.source_refs),
                 )
@@ -1005,55 +1820,125 @@ class _MemoryManagementStateStore:
                     merged[memory_id] = MemoryManagementState.model_validate(state)
         return merged
 
-    def __init__(self, file_path: str | Path | None = None) -> None:
+    def __init__(self, file_path: Union[str, Optional[Path]] = None) -> None:
         self._file_path = Path(file_path) if file_path is not None else None
         self._lock = Lock()
         if self._file_path is not None:
             self._file_path.parent.mkdir(parents=True, exist_ok=True)
+        self._sqlite_path = self._file_path
         self._states: dict[str, MemoryManagementState] = {}
-        if self._file_path is not None and self._file_path.exists():
-            raw = self._file_path.read_text(encoding="utf-8").strip()
-            if raw:
+        self._sqlite_conn: Optional[sqlite3.Connection] = None
+        if self._sqlite_path is not None:
+            self._sqlite_conn = sqlite3.connect(str(self._sqlite_path), check_same_thread=False)
+            self._sqlite_conn.row_factory = sqlite3.Row
+            self._sqlite_conn.execute(
+                """
+                CREATE TABLE IF NOT EXISTS memory_management_state (
+                    memory_id TEXT PRIMARY KEY,
+                    status TEXT NOT NULL,
+                    visibility TEXT NOT NULL,
+                    trust_level TEXT NOT NULL,
+                    updated_at TEXT NOT NULL,
+                    state_json TEXT NOT NULL
+                )
+                """
+            )
+            self._sqlite_conn.execute(
+                "CREATE INDEX IF NOT EXISTS idx_memory_mgmt_status ON memory_management_state(status)"
+            )
+            self._sqlite_conn.execute(
+                "CREATE INDEX IF NOT EXISTS idx_memory_mgmt_visibility ON memory_management_state(visibility)"
+            )
+            self._sqlite_conn.execute(
+                "CREATE INDEX IF NOT EXISTS idx_memory_mgmt_trust ON memory_management_state(trust_level)"
+            )
+            self._sqlite_conn.commit()
+            rows = self._sqlite_conn.execute(
+                """
+                SELECT state_json
+                FROM memory_management_state
+                ORDER BY updated_at DESC
+                """
+            ).fetchall()
+            for row in rows:
                 try:
-                    self._states = self._load_states_from_raw(raw)
+                    state = MemoryManagementState.model_validate(json.loads(str(row[0])))
                 except Exception:
-                    logger.exception(
-                        "Failed to parse memory management state store %s; falling back to empty state",
-                        self._file_path,
-                    )
-                    self._states = {}
+                    logger.exception("Failed to hydrate memory management state row")
+                    continue
+                self._states[state.memory_id] = state
 
     @property
-    def file_path(self) -> Path | None:
+    def file_path(self) -> Optional[Path]:
         return self._file_path
 
-    def get(self, memory_id: str) -> MemoryManagementState | None:
+    def get(self, memory_id: str) -> Optional[MemoryManagementState]:
         with self._lock:
             return self._states.get(memory_id)
 
     def upsert(self, state: MemoryManagementState) -> MemoryManagementState:
         with self._lock:
             self._states[state.memory_id] = state
-            if self._file_path is not None:
-                self._file_path.write_text(
-                    json.dumps(
-                        {
-                            memory_id: item.model_dump(mode="json")
-                            for memory_id, item in self._states.items()
-                        },
-                        ensure_ascii=False,
-                        indent=2,
-                        sort_keys=True,
+            if self._sqlite_conn is not None:
+                self._sqlite_conn.execute(
+                    """
+                    INSERT OR REPLACE INTO memory_management_state
+                    (memory_id, status, visibility, trust_level, updated_at, state_json)
+                    VALUES (?, ?, ?, ?, ?, ?)
+                    """,
+                    (
+                        state.memory_id,
+                        state.status,
+                        state.visibility,
+                        state.trust_level,
+                        state.updated_at.isoformat(),
+                        json.dumps(state.model_dump(mode="json"), ensure_ascii=False),
                     ),
-                    encoding="utf-8",
                 )
+                self._sqlite_conn.commit()
         return state
+
+    def query_memory_ids(
+        self,
+        *,
+        status: Optional[str] = None,
+        visibility: Optional[str] = None,
+        trust_level: Optional[str] = None,
+        limit: int = 10000,
+    ) -> list[str]:
+        if self._sqlite_conn is None:
+            with self._lock:
+                states = list(self._states.values())
+            filtered = [
+                state.memory_id
+                for state in states
+                if (status is None or state.status == status)
+                and (visibility is None or state.visibility == visibility)
+                and (trust_level is None or state.trust_level == trust_level)
+            ]
+            return filtered[:limit]
+        sql = "SELECT memory_id FROM memory_management_state WHERE 1=1"
+        params: list[Any] = []
+        if status is not None:
+            sql += " AND status = ?"
+            params.append(status)
+        if visibility is not None:
+            sql += " AND visibility = ?"
+            params.append(visibility)
+        if trust_level is not None:
+            sql += " AND trust_level = ?"
+            params.append(trust_level)
+        sql += " ORDER BY updated_at DESC LIMIT ?"
+        params.append(limit)
+        with self._lock:
+            rows = self._sqlite_conn.execute(sql, tuple(params)).fetchall()
+        return [str(row[0]) for row in rows]
 
 
 class _MemoryAuditStore:
     """Append-only JSONL store for memory audit events."""
 
-    def __init__(self, file_path: str | Path | None = None) -> None:
+    def __init__(self, file_path: Union[str, Optional[Path]] = None) -> None:
         self._file_path = Path(file_path) if file_path is not None else None
         self._lock = Lock()
         if self._file_path is not None:
@@ -1068,7 +1953,7 @@ class _MemoryAuditStore:
                     self._events.append(MemoryAuditEvent.model_validate(json.loads(raw)))
 
     @property
-    def file_path(self) -> Path | None:
+    def file_path(self) -> Optional[Path]:
         return self._file_path
 
     def append(self, event: MemoryAuditEvent) -> MemoryAuditEvent:
@@ -1083,8 +1968,8 @@ class _MemoryAuditStore:
     def list_events(
         self,
         *,
-        memory_id: str | None = None,
-        limit: int | None = None,
+        memory_id: Optional[str] = None,
+        limit: Optional[int] = None,
     ) -> list[MemoryAuditEvent]:
         with self._lock:
             events = list(self._events)
@@ -1092,6 +1977,189 @@ class _MemoryAuditStore:
             events = [event for event in events if event.memory_id == memory_id]
         events = sorted(events, key=lambda item: item.created_at, reverse=True)
         return events if limit is None else events[:limit]
+
+
+class MemoryAssembler:
+    """Assemble a backward-compatible EnhancedMemoryRecord from modular storage."""
+
+    @staticmethod
+    def assemble(
+        header: MemoryRecordHeader,
+        decoded_blocks: dict[str, MemoryBlockReadResult],
+    ) -> EnhancedMemoryRecord:
+        health = header.record_health_status
+        title_result = decoded_blocks.get("title_block")
+        summary_result = decoded_blocks.get("summary_block")
+        content_result = decoded_blocks.get("content_block")
+        payload_result = decoded_blocks.get("payload_block")
+        refs_result = decoded_blocks.get("refs_block")
+        if not (title_result and title_result.readable):
+            health = "degraded"
+        if not (summary_result and summary_result.readable):
+            health = "degraded"
+        if not (content_result and content_result.readable):
+            health = "degraded"
+        refs_value = refs_result.decoded_value if refs_result and refs_result.readable else {}
+        payload_value = payload_result.decoded_value if payload_result and payload_result.readable else {}
+        title_value = title_result.decoded_value if title_result and title_result.readable else f"[corrupted:{header.memory_id}]"
+        summary_value = summary_result.decoded_value if summary_result and summary_result.readable else title_value
+        content_value = (
+            content_result.decoded_value
+            if content_result and content_result.readable
+            else f"[degraded-content:{header.memory_id}]"
+        )
+        return EnhancedMemoryRecord(
+            memory_id=header.memory_id,
+            memory_layer=header.memory_layer,
+            source_kind=header.source_kind,
+            title=str(title_value),
+            summary=str(summary_value),
+            content=str(content_value or ""),
+            trace_id=header.trace_id,
+            target_id=header.target_id,
+            tags=list((refs_value or {}).get("tags", [])),
+            evidence_refs=list((refs_value or {}).get("evidence_refs", [])),
+            source_refs=list((refs_value or {}).get("source_refs", [])),
+            payload=dict(payload_value or {}),
+            created_at=header.created_at,
+            content_hash=header.content_hash,
+            memory_kind=header.memory_kind,
+            memory_tier=header.memory_tier,
+            storage_schema_version=header.storage_schema_version,
+            record_health_status=health,
+            repair_status=header.repair_status,
+            manifest_version=header.manifest_version,
+        )
+
+
+class MemoryRepairEngine:
+    """Repair modular memory records and rebuild derived projections."""
+
+    def __init__(self, service: "EnhancedMemoryService") -> None:
+        self._service = service
+
+    def verify_record(self, memory_id: str) -> MemoryRepairTicket:
+        store = self._service._resolve_store_for_memory_id(memory_id)
+        if store is None:
+            raise KeyError(memory_id)
+        manifest = store.read_manifest(memory_id)
+        if manifest is None:
+            raise KeyError(memory_id)
+        notes: list[str] = []
+        quarantined: list[str] = []
+        health = "healthy"
+        for descriptor in manifest.descriptors:
+            if descriptor.derived:
+                continue
+            result = store.read_block(memory_id, descriptor.block_kind)
+            if result is None or not result.readable:
+                health = "degraded"
+                quarantined.append(descriptor.block_kind)
+                notes.append(f"{descriptor.block_kind}: unreadable")
+        return MemoryRepairTicket(
+            memory_id=memory_id,
+            record_health_status=health,
+            quarantined_blocks=quarantined,
+            notes=notes,
+        )
+
+    def rebuild_projection(self, memory_id: str, projection_kind: str) -> MemoryRepairTicket:
+        record = self._service.get_managed_record(memory_id)
+        if record is None:
+            raise KeyError(memory_id)
+        if projection_kind == "fts_projection":
+            self._service._index_record(record)
+        elif projection_kind == "vector_projection":
+            self._service._index_record(record)
+        else:
+            raise ValueError(f"Unsupported projection_kind: {projection_kind}")
+        self._service._audit_store.append(
+            MemoryAuditEvent(
+                memory_id=memory_id,
+                action="repair_projection",
+                reason=f"Rebuilt {projection_kind}.",
+                operator="system",
+                details={"projection_kind": projection_kind},
+            )
+        )
+        return MemoryRepairTicket(
+            memory_id=memory_id,
+            record_health_status=record.record_health_status,
+            projection_repairs=[projection_kind],
+            notes=[f"{projection_kind} rebuilt"],
+        )
+
+    def repair_record(self, memory_id: str) -> MemoryRepairTicket:
+        store = self._service._resolve_store_for_memory_id(memory_id)
+        record = self._service.get_managed_record(memory_id)
+        if store is None or record is None:
+            raise KeyError(memory_id)
+        repaired_blocks: list[str] = []
+        quarantined: list[str] = []
+        notes: list[str] = []
+
+        content_result = store.read_block(memory_id, "content_block")
+        summary_result = store.read_block(memory_id, "summary_block")
+        payload_result = store.read_block(memory_id, "payload_block")
+        refs_result = store.read_block(memory_id, "refs_block")
+        if content_result is None or not content_result.readable:
+            if content_result is not None:
+                store.quarantine_block(
+                    memory_id,
+                    "content_block",
+                    payload=None,
+                    reason=content_result.error_message or "content_block_unreadable",
+                    metadata={"repair_source": "derived_reconstruction"},
+                )
+                quarantined.append("content_block")
+            reconstructed_parts = []
+            if summary_result and summary_result.readable:
+                reconstructed_parts.append(f"summary: {summary_result.decoded_value}")
+            if refs_result and refs_result.readable:
+                reconstructed_parts.append(
+                    "refs: "
+                    + json.dumps(refs_result.decoded_value, ensure_ascii=False, sort_keys=True, default=str)
+                )
+            if payload_result and payload_result.readable:
+                reconstructed_parts.append(
+                    "payload: "
+                    + json.dumps(payload_result.decoded_value, ensure_ascii=False, sort_keys=True, default=str)
+                )
+            if reconstructed_parts:
+                store.replace_block(memory_id, "content_block", "\n".join(reconstructed_parts))
+                repaired_blocks.append("content_block")
+                notes.append("content_block reconstructed from summary/refs/payload")
+
+        self.rebuild_projection(memory_id, "fts_projection")
+        self.rebuild_projection(memory_id, "vector_projection")
+        self._service._audit_store.append(
+            MemoryAuditEvent(
+                memory_id=memory_id,
+                action="repair_record",
+                reason="Repaired modular memory record.",
+                operator="system",
+                details={
+                    "repaired_blocks": repaired_blocks,
+                    "quarantined_blocks": quarantined,
+                },
+            )
+        )
+        return MemoryRepairTicket(
+            memory_id=memory_id,
+            record_health_status="healthy" if not quarantined else "degraded",
+            repaired_blocks=repaired_blocks,
+            quarantined_blocks=quarantined,
+            projection_repairs=["fts_projection", "vector_projection"],
+            notes=notes,
+        )
+
+    def repair_all(self) -> list[MemoryRepairTicket]:
+        tickets: list[MemoryRepairTicket] = []
+        for record in self._service._all_base_records():
+            if record.storage_schema_version < 2:
+                continue
+            tickets.append(self.repair_record(record.memory_id))
+        return tickets
 
 
 class EnhancedMemoryService:
@@ -1107,22 +2175,22 @@ class EnhancedMemoryService:
     def __init__(
         self,
         *,
-        semantic_store_path: str | Path | None = None,
-        procedural_store_path: str | Path | None = None,
-        episodic_store_path: str | Path | None = None,
-        management_store_path: str | Path | None = None,
-        audit_store_path: str | Path | None = None,
-        semantic_sink: SemanticMemorySink | None = None,
-        procedural_sink: ProceduralMemorySink | None = None,
-        semantic_recall_client: SemanticMemoryRecallClient | None = None,
-        episodic_sink: EpisodicMemorySink | None = None,
-        episodic_recall_client: EpisodicMemoryRecallClient | None = None,
-        on_projection_error: Callable[[str], None] | None = None,
-        cold_storage_path: str | Path | None = None,
-        nine_question_executor: Any | None = None,
-        storage_manager: Any | None = None,
-        access_tracker: Any | None = None,
-        lock_provider: Callable[[str], Any] | None = None,
+        semantic_store_path: Union[str, Optional[Path]] = None,
+        procedural_store_path: Union[str, Optional[Path]] = None,
+        episodic_store_path: Union[str, Optional[Path]] = None,
+        management_store_path: Union[str, Optional[Path]] = None,
+        audit_store_path: Union[str, Optional[Path]] = None,
+        semantic_sink: Optional[SemanticMemorySink] = None,
+        procedural_sink: Optional[ProceduralMemorySink] = None,
+        semantic_recall_client: Optional[SemanticMemoryRecallClient] = None,
+        episodic_sink: Optional[EpisodicMemorySink] = None,
+        episodic_recall_client: Optional[EpisodicMemoryRecallClient] = None,
+        on_projection_error: Callable[[str], Optional[None]] = None,
+        cold_storage_path: Union[str, Optional[Path]] = None,
+        nine_question_executor: Any = None,
+        storage_manager: Any = None,
+        access_tracker: Any = None,
+        lock_provider: Callable[[str], Any] = None,
     ) -> None:
         self._nine_question_executor = nine_question_executor
         # Initialize stores with tiered compression (automatic selection)
@@ -1152,6 +2220,8 @@ class EnhancedMemoryService:
         self._episodic_sink = episodic_sink
         self._episodic_recall_client = episodic_recall_client
         self._projection_failures: list[str] = []
+        self._initialization_failures: list[str] = []
+        self._governance_failures: list[str] = []
         self._failure_lock = Lock()
         self._on_projection_error = on_projection_error
         self._seen_projection_keys: set[tuple[str, str]] = set()
@@ -1165,6 +2235,8 @@ class EnhancedMemoryService:
         # when a new one with the same semantic key arrives.
         self._profile_index: dict[tuple[str, str, str], str] = {}
         self._profile_lock = Lock()
+        self._index_rebuild_lock = Lock()
+        self._index_rebuild_in_progress = False
         
         # Phase 2.1 & 2.2: Search Engine Initializations
         index_path = None
@@ -1185,10 +2257,12 @@ class EnhancedMemoryService:
             procedural_store=self._procedural_store,
             semantic_recall_client=self._semantic_recall_client
         )
+        self._repair_engine = MemoryRepairEngine(self)
 
         # Optimization: Move heavy scans out of __init__
         self._is_ready = False
         self._init_progress = 0.0 # 0 to 1.0
+        self._initialization_degraded = False
         self._init_lock = Lock()
 
     @property
@@ -1198,6 +2272,10 @@ class EnhancedMemoryService:
     @property
     def initialization_progress(self) -> float:
         return self._init_progress
+
+    @property
+    def initialization_degraded(self) -> bool:
+        return self._initialization_degraded
 
     async def initialize_background(self) -> None:
         """
@@ -1221,7 +2299,14 @@ class EnhancedMemoryService:
                     try:
                         # Use to_thread for the blocking database scan
                         await asyncio.to_thread(store.diagnose_and_repair)
-                    except Exception:
+                    except Exception as exc:
+                        failure_entry = f"background_init:repair:{store}:{str(exc).strip() or exc.__class__.__name__}"
+                        with self._failure_lock:
+                            self._initialization_failures.append(failure_entry)
+                        self._initialization_degraded = True
+                        # Forbidden: background repair failure must not remain a
+                        # log-only event while the runtime later reports itself
+                        # as fully initialized. Persist the degraded state.
                         logger.exception(f"Memory store repair failed for {store} during background init")
                     self._init_progress = 0.1 + (i * 0.1)
 
@@ -1234,11 +2319,23 @@ class EnhancedMemoryService:
                 self._init_progress = 1.0
                 
                 self._is_ready = True
-                logger.info("Memory Engine background initialization completed successfully.")
+                if self._initialization_degraded:
+                    logger.error(
+                        "Memory Engine background initialization completed in degraded mode. "
+                        "Structured failures: %s",
+                        self._initialization_failures,
+                    )
+                else:
+                    logger.info("Memory Engine background initialization completed successfully.")
                 
             except Exception as e:
                 logger.error(f"Memory Engine background initialization failed: {e}", exc_info=True)
                 # We don't mark as ready, but service remains partially functional (degraded)
+                with self._failure_lock:
+                    self._initialization_failures.append(
+                        f"background_init:fatal:{str(e).strip() or e.__class__.__name__}"
+                    )
+                self._initialization_degraded = True
                 self._init_progress = -1.0 
 
     def _backfill_index(self):
@@ -1262,6 +2359,44 @@ class EnhancedMemoryService:
         if total_indexed > 0:
             logger.info(f"Memory Engine v2.0 index backfilled with {total_indexed} records.")
 
+    @staticmethod
+    def _is_recoverable_index_error(exc: Exception) -> bool:
+        message = str(exc or "").lower()
+        return (
+            "vtable constructor failed: memory_fts" in message
+            or "fts5: corruption" in message
+            or "database disk image is malformed" in message
+            or "malformed" in message
+        )
+
+    def _rebuild_corrupted_index(self, exc: Exception) -> bool:
+        if not self._index:
+            return False
+
+        lock = getattr(self, "_index_rebuild_lock", None)
+        if lock is None:
+            lock = Lock()
+            self._index_rebuild_lock = lock
+
+        with lock:
+            if getattr(self, "_index_rebuild_in_progress", False):
+                return False
+            self._index_rebuild_in_progress = True
+
+        try:
+            logger.error(
+                "Memory search index corruption detected; rebuilding derived index storage: %s",
+                exc,
+                exc_info=True,
+            )
+            self._index.rebuild_storage()
+            self._backfill_index()
+            logger.info("Memory search index rebuild completed successfully after corruption detection.")
+            return True
+        finally:
+            with lock:
+                self._index_rebuild_in_progress = False
+
     def _index_record(self, record: EnhancedMemoryRecord):
         """Internal helper to push a record into the inverted index."""
         if not self._index:
@@ -1282,41 +2417,99 @@ class EnhancedMemoryService:
             "valence": record.emotional_valence,
             "tags": list(record.tags)
         }
-        self._index.add_record(
-            record.memory_id,
-            safe_title,
-            safe_summary,
-            safe_content,
-            metadata
-        )
+        try:
+            self._index.add_record(
+                record.memory_id,
+                safe_title,
+                safe_summary,
+                safe_content,
+                metadata
+            )
+            store = self._resolve_store_for_memory_id(record.memory_id)
+            if store is not None:
+                store.mark_projection_status(record.memory_id, "fts_projection", "healthy")
+        except sqlite3.DatabaseError as exc:
+            store = self._resolve_store_for_memory_id(record.memory_id)
+            if store is not None:
+                store.mark_projection_status(record.memory_id, "fts_projection", "missing_rebuildable")
+            if self._is_recoverable_index_error(exc) and self._rebuild_corrupted_index(exc):
+                return
+            raise
+        except sqlite3.OperationalError as exc:
+            store = self._resolve_store_for_memory_id(record.memory_id)
+            if store is not None:
+                store.mark_projection_status(record.memory_id, "fts_projection", "missing_rebuildable")
+            if self._is_recoverable_index_error(exc) and self._rebuild_corrupted_index(exc):
+                return
+            raise
         if self._vector_index:
             # Semantic bundle for vector search
             vector_text = f"{safe_title} {safe_summary} {safe_content}"
             self._vector_index.add_record(record.memory_id, vector_text)
+            store = self._resolve_store_for_memory_id(record.memory_id)
+            if store is not None:
+                store.mark_projection_status(record.memory_id, "vector_projection", "healthy")
 
     @property
-    def semantic_store_path(self) -> Path | None:
+    def semantic_store_path(self) -> Optional[Path]:
         return self._semantic_store.file_path
 
     @property
-    def procedural_store_path(self) -> Path | None:
+    def procedural_store_path(self) -> Optional[Path]:
         return self._procedural_store.file_path
 
     @property
-    def episodic_store_path(self) -> Path | None:
+    def episodic_store_path(self) -> Optional[Path]:
         return self._episodic_store.file_path
 
     @property
-    def management_store_path(self) -> Path | None:
+    def management_store_path(self) -> Optional[Path]:
         return self._management_store.file_path
 
     @property
-    def audit_store_path(self) -> Path | None:
+    def audit_store_path(self) -> Optional[Path]:
         return self._audit_store.file_path
 
     def list_projection_failures(self) -> list[str]:
         with self._failure_lock:
             return list(self._projection_failures)
+
+    def list_initialization_failures(self) -> list[str]:
+        with self._failure_lock:
+            return list(self._initialization_failures)
+
+    def list_governance_failures(self) -> list[str]:
+        with self._failure_lock:
+            return list(self._governance_failures)
+
+    def get_health_snapshot(self) -> dict[str, Any]:
+        projection_failures = self.list_projection_failures()
+        initialization_failures = self.list_initialization_failures()
+        governance_failures = self.list_governance_failures()
+
+        health_status = "healthy"
+        if self.initialization_progress < 0 or not self.is_ready:
+            health_status = "unhealthy"
+        elif (
+            self.initialization_degraded
+            or projection_failures
+            or initialization_failures
+            or governance_failures
+            or self._contamination_tracker
+        ):
+            health_status = "degraded"
+
+        return {
+            "health_status": health_status,
+            "is_ready": self.is_ready,
+            "initialization_progress": self.initialization_progress,
+            "initialization_degraded": self.initialization_degraded,
+            "projection_failures": projection_failures,
+            "initialization_failures": initialization_failures,
+            "governance_failures": governance_failures,
+            "package_imports": len(self._package_registry),
+            "contamination_events": len(self._contamination_tracker),
+        }
 
     def promote_from_quarantine(self, memory_id: str, operator: str = "system") -> ManagedEnhancedMemoryRecord:
         """Move a memory record from QUARANTINED to ACTIVE with G38 check (Sub-function 59.3)."""
@@ -1374,7 +2567,8 @@ class EnhancedMemoryService:
             status=MemoryManagementStatus.ACTIVE,
             trust_level="verified",
             operator=operator,
-            reason="Validated via Real G38 nine-question validation engine integration."
+            management_note=f"G38 Forensic Promotion. AuditID: {audit_id}. Results: {json.dumps(results)}",
+            reason="Validated via Real G38 nine-question validation engine integration (G38 Compliance)."
         )
 
     def ingest_candidate(self, candidate_data: dict[str, Any], operator: str = "consolidation") -> str:
@@ -1517,72 +2711,146 @@ class EnhancedMemoryService:
     def list_episodic_records(self) -> list[EnhancedMemoryRecord]:
         return self._episodic_store.list_records()
 
+    def query_managed_records(
+        self,
+        *,
+        layer: str = "all",
+        limit: int = 50,
+        status: Optional[str] = None,
+        visibility: Optional[str] = None,
+        trust_level: Optional[str] = None,
+        trace_id: Optional[str] = None,
+        target_id: Optional[str] = None,
+        tag: Optional[str] = None,
+        memory_tier: Optional[str] = None,
+        emotional_valence: Optional[str] = None,
+        min_affect_intensity: Optional[float] = None,
+    ) -> list[ManagedEnhancedMemoryRecord]:
+        normalized = layer.lower()
+        candidate_ids = self._management_store.query_memory_ids(
+            status=status,
+            visibility=visibility,
+            trust_level=trust_level,
+            limit=max(limit * 5, limit),
+        )
+        index_filters: dict[str, Any] = {}
+        if normalized in {"semantic", "procedural", "episodic"}:
+            index_filters["memory_layer"] = normalized
+        if trace_id is not None:
+            index_filters["trace_id"] = trace_id
+        if target_id is not None:
+            index_filters["target_id"] = target_id
+        if memory_tier is not None:
+            index_filters["tier"] = memory_tier
+        if tag is not None:
+            index_filters["tag"] = tag
+        if self._index is not None and index_filters:
+            try:
+                indexed_rows = self._index.search("", filters=index_filters, limit=max(limit * 5, limit))
+            except sqlite3.DatabaseError as exc:
+                if not self._is_recoverable_index_error(exc) or not self._rebuild_corrupted_index(exc):
+                    raise
+                indexed_rows = self._index.search("", filters=index_filters, limit=max(limit * 5, limit))
+            except sqlite3.OperationalError as exc:
+                if not self._is_recoverable_index_error(exc) or not self._rebuild_corrupted_index(exc):
+                    raise
+                indexed_rows = self._index.search("", filters=index_filters, limit=max(limit * 5, limit))
+            indexed_ids = [str(row.get("memory_id") or "") for row in indexed_rows if row.get("memory_id")]
+            if candidate_ids:
+                candidate_id_set = set(candidate_ids)
+                candidate_ids = [memory_id for memory_id in indexed_ids if memory_id in candidate_id_set]
+            else:
+                candidate_ids = indexed_ids
+        stores: list[_EnhancedMemorySQLiteStore]
+        if normalized == "semantic":
+            stores = [self._semantic_store]
+        elif normalized == "procedural":
+            stores = [self._procedural_store]
+        elif normalized == "episodic":
+            stores = [self._episodic_store]
+        else:
+            stores = [self._semantic_store, self._procedural_store, self._episodic_store]
+
+        managed: list[ManagedEnhancedMemoryRecord] = []
+        if candidate_ids:
+            for memory_id in candidate_ids:
+                store = self._resolve_store_for_memory_id(memory_id)
+                if store is None:
+                    continue
+                record = store._load_modular_record(memory_id)
+                if record is None:
+                    continue
+                if normalized in {"semantic", "procedural", "episodic"} and record.memory_layer != normalized:
+                    continue
+                if trace_id is not None and record.trace_id != trace_id:
+                    continue
+                if target_id is not None and record.target_id != target_id:
+                    continue
+                if tag is not None and tag not in record.tags:
+                    continue
+                if memory_tier is not None and record.memory_tier != memory_tier:
+                    continue
+                if emotional_valence is not None and record.emotional_valence != emotional_valence:
+                    continue
+                if min_affect_intensity is not None and record.affect_intensity < min_affect_intensity:
+                    continue
+                state = self._management_store.get(memory_id)
+                managed.append(self._to_managed_record(record, state=state))
+            managed.sort(key=lambda item: item.created_at, reverse=True)
+            return managed[:limit]
+
+        for store in stores:
+            memory_ids = store.query_memory_ids(
+                trace_id=trace_id,
+                target_id=target_id,
+                tag=tag,
+                allowed_ids=candidate_ids,
+                memory_tier=memory_tier,
+                limit=max(limit, 200),
+            )
+            for memory_id in memory_ids:
+                record = store._load_modular_record(memory_id)
+                if record is None:
+                    continue
+                if emotional_valence is not None and record.emotional_valence != emotional_valence:
+                    continue
+                if min_affect_intensity is not None and record.affect_intensity < min_affect_intensity:
+                    continue
+                state = self._management_store.get(memory_id)
+                managed.append(self._to_managed_record(record, state=state))
+        managed.sort(key=lambda item: item.created_at, reverse=True)
+        return managed[:limit]
+
     def list_managed_records(
         self,
         *,
         layer: str = "all",
         limit: int = 50,
-        status: str | None = None,
-        visibility: str | None = None,
-        trust_level: str | None = None,
-        trace_id: str | None = None,
-        target_id: str | None = None,
-        tag: str | None = None,
-        memory_tier: str | None = None,
-        emotional_valence: str | None = None,
-        min_affect_intensity: float | None = None,
+        status: Optional[str] = None,
+        visibility: Optional[str] = None,
+        trust_level: Optional[str] = None,
+        trace_id: Optional[str] = None,
+        target_id: Optional[str] = None,
+        tag: Optional[str] = None,
+        memory_tier: Optional[str] = None,
+        emotional_valence: Optional[str] = None,
+        min_affect_intensity: Optional[float] = None,
     ) -> list[ManagedEnhancedMemoryRecord]:
-        """Return managed memory records with optional classification filters.
+        return self.query_managed_records(
+            layer=layer,
+            limit=limit,
+            status=status,
+            visibility=visibility,
+            trust_level=trust_level,
+            trace_id=trace_id,
+            target_id=target_id,
+            tag=tag,
+            memory_tier=memory_tier,
+            emotional_valence=emotional_valence,
+            min_affect_intensity=min_affect_intensity,
+        )
 
-        New filter parameters
-        ---------------------
-        memory_tier          : "hot" | "warm" | "cold" — filter by lifecycle tier.
-        emotional_valence    : filter by affect category (e.g. "triumph", "concern").
-        min_affect_intensity : float in [0, 1] — only return records at or above
-                               this intensity; useful for surfacing high-signal
-                               memories (e.g. >= 0.5 to skip neutral log-level records).
-        """
-        normalized = layer.lower()
-        if normalized == "semantic":
-            records = self.list_semantic_records()
-        elif normalized == "procedural":
-            records = self.list_procedural_records()
-        elif normalized == "episodic":
-            records = self.list_episodic_records()
-        else:
-            records = self._all_base_records()
-        
-        # Degradation Fallback: If external layers are missing or local records 
-        # are corrupted, fallback to basic retrieval patterns.
-        if not records and layer == "all":
-            # Implementation of fallback lookup: return empty for now but 
-            # ensure it doesn't crash the loop.
-            return []
-
-        managed = [self._to_managed_record(record) for record in records]
-        if status is not None:
-            managed = [record for record in managed if record.status == status]
-        if visibility is not None:
-            managed = [record for record in managed if record.visibility == visibility]
-        if trust_level is not None:
-            managed = [record for record in managed if record.trust_level == trust_level]
-        if trace_id is not None:
-            managed = [record for record in managed if record.trace_id == trace_id]
-        if target_id is not None:
-            managed = [record for record in managed if record.target_id == target_id]
-        if tag is not None:
-            managed = [record for record in managed if tag in record.tags]
-        if memory_tier is not None:
-            managed = [record for record in managed if record.memory_tier == memory_tier]
-        if emotional_valence is not None:
-            managed = [record for record in managed if record.emotional_valence == emotional_valence]
-        if min_affect_intensity is not None:
-            managed = [
-                record for record in managed if record.affect_intensity >= min_affect_intensity
-            ]
-        return sorted(managed, key=lambda item: item.created_at, reverse=True)[:limit]
-
-    def get_managed_record(self, memory_id: str) -> ManagedEnhancedMemoryRecord | None:
+    def get_managed_record(self, memory_id: str) -> Optional[ManagedEnhancedMemoryRecord]:
         record = self._get_base_record(memory_id)
         if record is None:
             return None
@@ -1591,7 +2859,7 @@ class EnhancedMemoryService:
     def list_audit_events(
         self,
         *,
-        memory_id: str | None = None,
+        memory_id: Optional[str] = None,
         limit: int = 100,
     ) -> list[MemoryAuditEvent]:
         return self._audit_store.list_events(memory_id=memory_id, limit=limit)
@@ -1601,42 +2869,65 @@ class EnhancedMemoryService:
         record = self._get_base_record(memory_id)
         if record is None:
             raise KeyError(memory_id)
-        
-        # 1. Update management state
-        self.update_management_state(
-            memory_id, 
-            status=MemoryManagementStatus.COLD,
-            operator=operator,
-            reason="Physically moved to cold storage."
+
+        previous_state = self._get_or_create_management_state(record)
+        updated_state = previous_state.model_copy(
+            update={
+                "status": MemoryManagementStatus.COLD,
+                "operator": operator,
+                "last_action": self._derive_management_action(
+                    current=previous_state,
+                    status=MemoryManagementStatus.COLD,
+                    visibility=None,
+                    trust_level=None,
+                    correction_note=None,
+                    management_note=None,
+                ),
+                "last_action_reason": "Physically moved to cold storage.",
+                "updated_at": utc_now(),
+            }
         )
-        
-        # 2. Append to physical cold store
-        self._cold_store.append(record)
-        
-        # 3. Clean up audit Trail
-        self._audit_store.append(
-            MemoryAuditEvent(
-                memory_id=memory_id,
-                action="archived_cold",
-                reason="Memory optimization and cold storage transition.",
-                operator=operator,
-                details={"target_path": str(self._cold_store.file_path)}
+
+        try:
+            # Forbidden: do not mark memory as cold before the physical move is durable.
+            # If cold storage append fails and we keep the new status, the system will
+            # pretend the archive succeeded while the data never actually moved.
+            self._cold_store.append(record)
+            self._management_store.upsert(updated_state)
+
+            self._audit_store.append(
+                MemoryAuditEvent(
+                    memory_id=memory_id,
+                    action=updated_state.last_action,
+                    reason="Memory optimization and cold storage transition.",
+                    operator=operator,
+                    details={
+                        "previous_status": previous_state.status,
+                        "current_status": updated_state.status,
+                        "target_path": str(self._cold_store.file_path),
+                    }
+                )
             )
-        )
+        except Exception as exc:
+            # Forbidden: swallowing archive failures here would silently lose the
+            # distinction between governance state and physical storage reality.
+            self._management_store.upsert(previous_state)
+            logger.exception("archive_cold failed for %s: %s", memory_id, exc)
+            raise
 
     def update_management_state(
         self,
         memory_id: str,
         *,
-        status: str | None = None,
-        visibility: str | None = None,
-        trust_level: str | None = None,
-        management_note: str | None = None,
-        correction_note: str | None = None,
+        status: Optional[str] = None,
+        visibility: Optional[str] = None,
+        trust_level: Optional[str] = None,
+        management_note: Optional[str] = None,
+        correction_note: Optional[str] = None,
         operator: str = "operator",
         reason: str = "Memory governance updated.",
-        supersedes_memory_id: str | None = None,
-        superseded_by_memory_id: str | None = None,
+        supersedes_memory_id: Optional[str] = None,
+        superseded_by_memory_id: Optional[str] = None,
         mark_verified: bool = False,
     ) -> ManagedEnhancedMemoryRecord:
         record = self._get_base_record(memory_id)
@@ -1659,7 +2950,7 @@ class EnhancedMemoryService:
                 "operator": operator,
                 "last_action": self._derive_management_action(
                     current=current,
-                    lifecycle_status=lifecycle_status,
+                    status=status,
                     visibility=visibility,
                     trust_level=trust_level,
                     correction_note=correction_note,
@@ -1693,6 +2984,57 @@ class EnhancedMemoryService:
             )
         )
         return self._to_managed_record(record, state=updated)
+
+    def batch_update_management_state(
+        self,
+        updates: List[Dict[str, Any]],
+        *,
+        operator: str = "batch_operator",
+        reason: str = "Batch memory governance update.",
+    ) -> List[ManagedEnhancedMemoryRecord]:
+        """Apply multiple governance updates in a single batch (Sub-function 59.5 resilience).
+        
+        Args:
+            updates: List of dicts with 'memory_id' and optional 'status', 'visibility', etc.
+            operator: Common operator for all updates.
+            reason: Common reason for all updates.
+        """
+        results = []
+        # Group into a single high-level audit for the batch
+        batch_id = f"batch-{uuid4().hex[:8]}"
+        
+        for update_item in updates:
+            m_id = update_item.get("memory_id")
+            if not m_id:
+                continue
+            
+            # Re-use single update logic for each item but with batch-context
+            # Note: A real implementation might use a database transaction here.
+            try:
+                res = self.update_management_state(
+                    m_id,
+                    status=update_item.get("status"),
+                    visibility=update_item.get("visibility"),
+                    trust_level=update_item.get("trust_level"),
+                    management_note=update_item.get("management_note"),
+                    correction_note=update_item.get("correction_note"),
+                    operator=operator,
+                    reason=f"{reason} (Batch ID: {batch_id})",
+                    supersedes_memory_id=update_item.get("supersedes_memory_id"),
+                    superseded_by_memory_id=update_item.get("superseded_by_memory_id"),
+                    mark_verified=update_item.get("mark_verified", False),
+                )
+                results.append(res)
+            except Exception as e:
+                failure_entry = f"batch_update:{m_id}:{str(e).strip() or e.__class__.__name__}"
+                with self._failure_lock:
+                    self._governance_failures.append(failure_entry)
+                # Forbidden: batch governance failure must not degrade into a
+                # single-line error with no traceback or state trail. The batch
+                # may continue, but each failed item must stay auditable.
+                logger.exception(f"Failed to apply batch update for memory {m_id}: {e}")
+                
+        return results
 
     def ingest_transcript_entry(self, entry: BrainTranscriptEntry, *, skip_seen_check: bool = False) -> None:
         """Project one append-only transcript entry into enhanced memory layers.
@@ -1907,18 +3249,21 @@ class EnhancedMemoryService:
         *,
         query: str,
         limit: int = 10,
-        trace_id: str | None = None,
-        target_id: str | None = None,
+        trace_id: Optional[str] = None,
+        target_id: Optional[str] = None,
     ) -> list[MemoryRecallHit]:
         """Return merged local + adapter recall hits using HybridRetrievalEngine."""
-        # Phase 2.3: Delegate to centralized engine
-        retrieval_results = self._retrieval_engine.search(
-            query=query,
+        # Phase 2.3: Delegate to centralized engine.
+        # HybridRetrievalEngine.search() is async; recall() is sync (called from
+        # sync route handlers).  Use search_sync() which runs the coroutine in a
+        # dedicated thread to avoid "This event loop is already running" in ASGI.
+        retrieval_results = self._retrieval_engine.search_sync(
+            query,
             limit=limit,
             trace_id=trace_id,
-            target_id=target_id
+            target_id=target_id,
         )
-        
+
         # Convert RetrievalResult -> MemoryRecallHit
         hits = []
         for r in retrieval_results:
@@ -1942,6 +3287,27 @@ class EnhancedMemoryService:
             for hit in hits
             if self._is_recallable(hit.memory_id)
         ][:limit]
+
+    def get_record_manifest(self, memory_id: str) -> Optional[MemoryRecordManifest]:
+        store = self._resolve_store_for_memory_id(memory_id)
+        if store is None:
+            return None
+        return store.read_manifest(memory_id)
+
+    def get_record_header(self, memory_id: str) -> Optional[MemoryRecordHeader]:
+        store = self._resolve_store_for_memory_id(memory_id)
+        if store is None:
+            return None
+        return store.read_record_header(memory_id)
+
+    def verify_record(self, memory_id: str) -> MemoryRepairTicket:
+        return self._repair_engine.verify_record(memory_id)
+
+    def repair_record(self, memory_id: str) -> MemoryRepairTicket:
+        return self._repair_engine.repair_record(memory_id)
+
+    def repair_all(self) -> list[MemoryRepairTicket]:
+        return self._repair_engine.repair_all()
 
     def backfill_transcript_entries(self, entries: list[BrainTranscriptEntry]) -> None:
         """Project historical transcript entries once during startup or recovery."""
@@ -2090,7 +3456,7 @@ class EnhancedMemoryService:
 
     # ── internal append helpers ──────────────────────────────────────────
 
-    def _append_semantic(self, record: EnhancedMemoryRecord) -> None:
+    def _append_semantic(self, record: EnhancedMemoryRecord) -> EnhancedMemoryRecord:
         stored = self._semantic_store.append(record)
         self._get_or_create_management_state(stored)
         # Phase 2.1: Indexing
@@ -2100,10 +3466,13 @@ class EnhancedMemoryService:
             self._auto_supersede_profile(stored)
         if self._semantic_sink is not None:
             self._safe_projection(
-                lambda: self._semantic_sink.store_semantic_memory(stored)
+                lambda: self._semantic_sink.store_semantic_memory(stored),
+                operation_name="semantic_projection",
+                memory_id=stored.memory_id,
             )
+        return stored
 
-    def _append_procedural(self, record: EnhancedMemoryRecord) -> None:
+    def _append_procedural(self, record: EnhancedMemoryRecord) -> EnhancedMemoryRecord:
         stored = self._procedural_store.append(record)
         self._get_or_create_management_state(stored)
         # Phase 2.1: Indexing
@@ -2112,10 +3481,13 @@ class EnhancedMemoryService:
             self._auto_supersede_profile(stored)
         if self._procedural_sink is not None:
             self._safe_projection(
-                lambda: self._procedural_sink.store_procedural_memory(stored)
+                lambda: self._procedural_sink.store_procedural_memory(stored),
+                operation_name="procedural_projection",
+                memory_id=stored.memory_id,
             )
+        return stored
 
-    def _append_episode(self, record: EnhancedMemoryRecord) -> None:
+    def _append_episode(self, record: EnhancedMemoryRecord) -> EnhancedMemoryRecord:
         stored = self._episodic_store.append(record)
         self._get_or_create_management_state(stored)
         # Phase 2.1: Indexing
@@ -2123,17 +3495,38 @@ class EnhancedMemoryService:
         if stored.memory_id == record.memory_id:
             self._auto_supersede_profile(stored)
         if self._episodic_sink is not None:
-            self._safe_projection(lambda: self._episodic_sink.add_episode(stored))
+            self._safe_projection(
+                lambda: self._episodic_sink.add_episode(stored),
+                operation_name="episodic_projection",
+                memory_id=stored.memory_id,
+            )
+        return stored
 
-    def _safe_projection(self, operation: Callable[[], None]) -> None:
+    def _safe_projection(
+        self,
+        operation: Callable[[], None],
+        *,
+        operation_name: str,
+        memory_id: str,
+    ) -> None:
         try:
             operation()
         except Exception as exc:  # pragma: no cover - defensive compatibility path
             message = str(exc).strip() or exc.__class__.__name__
+            failure_entry = f"{operation_name}:{memory_id}:{message}"
             with self._failure_lock:
-                self._projection_failures.append(message)
+                self._projection_failures.append(failure_entry)
+            # Forbidden: projection failure must not disappear into an in-memory
+            # counter only. Operators need a real traceback when external sinks
+            # are unhealthy, otherwise the system looks normal while writes are degraded.
+            logger.exception(
+                "Projection failed for %s on %s: %s",
+                operation_name,
+                memory_id,
+                exc,
+            )
             if self._on_projection_error is not None:
-                self._on_projection_error(message)
+                self._on_projection_error(failure_entry)
 
     def _mark_projection_seen(self, source_kind: str, source_id: str) -> bool:
         with self._seen_lock:
@@ -2191,7 +3584,28 @@ class EnhancedMemoryService:
         """List all memory fragments currently in the quarantine layer (Sub-function 59 gap)."""
         return self._quarantine_store.list_records()
 
-    def _get_base_record(self, memory_id: str) -> EnhancedMemoryRecord | None:
+    def _candidate_stores(self) -> list[_EnhancedMemorySQLiteStore]:
+        return [
+            self._semantic_store,
+            self._procedural_store,
+            self._episodic_store,
+            self._cold_store,
+            self._quarantine_store,
+        ]
+
+    def _resolve_store_for_memory_id(self, memory_id: str) -> Optional[_EnhancedMemorySQLiteStore]:
+        for store in self._candidate_stores():
+            header = store.read_record_header(memory_id)
+            if header is not None:
+                return store
+        return None
+
+    def _get_base_record(self, memory_id: str) -> Optional[EnhancedMemoryRecord]:
+        store = self._resolve_store_for_memory_id(memory_id)
+        if store is not None:
+            record = store._load_modular_record(memory_id)
+            if record is not None:
+                return record
         for record in self._all_base_records():
             if record.memory_id == memory_id:
                 return record
@@ -2234,7 +3648,7 @@ class EnhancedMemoryService:
         self,
         record: EnhancedMemoryRecord,
         *,
-        state: MemoryManagementState | None = None,
+        state: Optional[MemoryManagementState] = None,
     ) -> ManagedEnhancedMemoryRecord:
         resolved = state or self._get_or_create_management_state(record)
         return ManagedEnhancedMemoryRecord.model_validate(
@@ -2248,11 +3662,11 @@ class EnhancedMemoryService:
         self,
         *,
         current: MemoryManagementState,
-        status: str | None,
-        visibility: str | None,
-        trust_level: str | None,
-        correction_note: str | None,
-        management_note: str | None,
+        status: Optional[str],
+        visibility: Optional[str],
+        trust_level: Optional[str],
+        correction_note: Optional[str],
+        management_note: Optional[str],
     ) -> str:
         if status is not None and status != current.status:
             return f"status_changed:{status}"
@@ -2284,10 +3698,10 @@ class EnhancedMemoryService:
         content: str,
         layer: str = "semantic",
         source_kind: str = "external",
-        trace_id: str | None = None,
-        target_id: str | None = None,
-        tags: list[str] | None = None,
-        payload: dict[str, Any] | None = None,
+        trace_id: Optional[str] = None,
+        target_id: Optional[str] = None,
+        tags: list[Optional[str]] = None,
+        payload: dict[str, Any] = None,
     ) -> EnhancedMemoryRecord:
         """
         通用的记忆写入入口。
@@ -2326,11 +3740,11 @@ class EnhancedMemoryService:
 
         normalized = layer.lower()
         if normalized == "procedural":
-            self._append_procedural(record)
+            record = self._append_procedural(record)
         elif normalized == "episodic":
-            self._append_episode(record)
+            record = self._append_episode(record)
         else:
-            self._append_semantic(record)
+            record = self._append_semantic(record)
 
         return record
 
@@ -2339,9 +3753,9 @@ class EnhancedMemoryService:
         query: str,
         *,
         limit: int = 10,
-        layer: str | None = None,
-        trace_id: str | None = None,
-        target_id: str | None = None,
+        layer: Optional[str] = None,
+        trace_id: Optional[str] = None,
+        target_id: Optional[str] = None,
     ) -> list[MemoryRecallHit]:
         """
         通用的记忆检索入口。
@@ -2388,6 +3802,8 @@ class EnhancedMemoryService:
             status_dist[m.status] = status_dist.get(m.status, 0) + 1
             trust_dist[m.trust_level] = trust_dist.get(m.trust_level, 0) + 1
 
+        health_snapshot = self.get_health_snapshot()
+
         return {
             "total_records": len(semantic_records) + len(procedural_records) + len(episodic_records),
             "semantic_count": len(semantic_records),
@@ -2395,7 +3811,16 @@ class EnhancedMemoryService:
             "episodic_count": len(episodic_records),
             "status_distribution": status_dist,
             "trust_distribution": trust_dist,
-            "projection_failures": len(self.list_projection_failures()),
+            "health_status": health_snapshot["health_status"],
+            "health_snapshot": health_snapshot,
+            "projection_failures": len(health_snapshot["projection_failures"]),
+            "initialization_failures": len(health_snapshot["initialization_failures"]),
+            "governance_failures": len(health_snapshot["governance_failures"]),
+            "initialization_degraded": health_snapshot["initialization_degraded"],
+            "initialization_progress": health_snapshot["initialization_progress"],
+            "is_ready": health_snapshot["is_ready"],
+            "package_imports": health_snapshot["package_imports"],
+            "contamination_events": health_snapshot["contamination_events"],
             "backends": [b.model_dump(mode="json") for b in self.get_backend_status()],
         }
 
@@ -2457,7 +3882,7 @@ class EnhancedMemoryService:
         memory_id: str,
         *,
         correction_note: str,
-        superseded_by: str | None = None,
+        superseded_by: Optional[str] = None,
         reason: str = "Corrected by operator.",
         operator: str = "operator",
     ) -> ManagedEnhancedMemoryRecord:
@@ -2532,41 +3957,93 @@ class EnhancedMemoryService:
 # ════════════════════════════════════════════════════════════════════
     def import_experience_package(self, package_data: bytes, origin: str) -> str:
         """Import and verify an encrypted experience package (Sub-function 59.5)."""
-        # 1. Decrypt and verify signature
-        decrypted = self._decrypt_package(package_data)
-        package_id = f"pkg-{uuid4().hex[:8]}"
-        
-        registry = PackageImportRegistry(
-            package_id=package_id,
-            source_origin=origin,
-            signature_verified=True,
-            is_encrypted=True
-        )
-        self._package_registry.append(registry)
-        
-        # 2. Ingest records into quarantined layer for G38 audit
-        # (Real implementation would parse the decrypted JSON and ingest)
-        return package_id
+        try:
+            decrypted = self._decrypt_package(package_data)
+            records = decrypted.get("records", [])
+            if not isinstance(records, list):
+                raise ValueError("records payload must be a list")
+
+            package_id = f"pkg-{uuid4().hex[:8]}"
+            operator = f"package-import:{package_id}"
+
+            # Forbidden: registering a package without ingesting its payload is a
+            # fake implementation. The import must either ingest real records or fail.
+            for item in records:
+                if not isinstance(item, dict):
+                    raise ValueError("package record entries must be objects")
+                self.ingest_candidate(item, operator=operator)
+
+            registry = PackageImportRegistry(
+                package_id=package_id,
+                source_origin=origin,
+                signature_verified=True,
+                is_encrypted=True
+            )
+            self._package_registry.append(registry)
+            self._audit_store.append(
+                MemoryAuditEvent(
+                    memory_id=package_id,
+                    action="experience_package_imported",
+                    reason=f"Imported experience package from {origin}.",
+                    operator=operator,
+                    details={
+                        "origin": origin,
+                        "package_id": package_id,
+                        "record_count": len(records),
+                    },
+                )
+            )
+            return package_id
+        except Exception as exc:
+            logger.exception(
+                "import_experience_package failed for origin %s: %s",
+                origin,
+                exc,
+            )
+            raise
 
     def detect_data_contamination(self, source_id: str) -> list[str]:
         """Track and isolate memory records impacted by a contaminated source (Sub-function 59.5)."""
-        impacted_records = []
-        # Simulation: find all records where source_id is in source_refs
-        all_hits = self.recall(query=source_id, limit=1000)
-        impacted_records = [hit.memory_id for hit in all_hits]
-        
-        tracker = ContaminationTracker(
-            source_id=source_id,
-            impacted_records=impacted_records,
-            confidence_degraded=0.5
-        )
-        self._contamination_tracker.append(tracker)
-        
-        # Mark records as quarantined or degraded
-        for mid in impacted_records:
-             self.update_management_state(mid, trust_level="degraded", reason=f"Contamination from {source_id}")
-             
-        return impacted_records
+        try:
+            # Forbidden: contamination detection must inspect the real source_refs
+            # chain. Using recall keyword hits here is a fake implementation that
+            # can miss impacted records or flag unrelated ones by text similarity.
+            impacted_records = [
+                record.memory_id
+                for record in self._all_base_records()
+                if source_id in record.source_refs
+            ]
+
+            for mid in impacted_records:
+                self.update_management_state(
+                    mid,
+                    trust_level="degraded",
+                    reason=f"Contamination from {source_id}",
+                )
+
+            tracker = ContaminationTracker(
+                source_id=source_id,
+                impacted_records=impacted_records,
+                confidence_degraded=0.5
+            )
+            self._contamination_tracker.append(tracker)
+            self._audit_store.append(
+                MemoryAuditEvent(
+                    memory_id=source_id,
+                    action="contamination_detected",
+                    reason=f"Detected contamination impact from source {source_id}.",
+                    operator="system",
+                    details={
+                        "source_id": source_id,
+                        "impacted_records": impacted_records,
+                        "confidence_degraded": tracker.confidence_degraded,
+                    },
+                )
+            )
+            return impacted_records
+        except Exception as exc:
+            logger.exception("detect_data_contamination failed for %s: %s", source_id, exc)
+            raise
 
     def _encrypt_package(self, data: dict[str, Any]) -> bytes:
         """Helper to encrypt experience packages before export (Placeholder)."""

@@ -1,3 +1,4 @@
+from __future__ import annotations
 """
 Web Entrypoint — create_web_app() for the launcher layer.
 
@@ -36,7 +37,6 @@ KEY DESIGN DECISIONS:
     hard-crashing uvicorn, matching the existing launcher_asgi.py contract.
 """
 
-from __future__ import annotations
 
 import logging
 import asyncio
@@ -109,6 +109,7 @@ def _create_full_app(registry: ServiceRegistry) -> object:
     cli_service = registry.get("cli")
     reflection_service = registry.get("reflection")
     learning_service = registry.get("learning")
+    audit_service = registry.get("audit")
     
     # Engines are part of kernel state domain locally or provided by registry stubs
     kernel = registry.get("kernel")
@@ -145,36 +146,38 @@ def _create_full_app(registry: ServiceRegistry) -> object:
                 safety_service=registry.get("safety"),
                 plugins_service=plugin_service,
                 memory_service=registry.get("memory"),
+                audit_service=audit_service,
                 llm_service=registry.get("llm"),
                 foundation_service=registry.get("foundation"),
+                reflection_service=reflection_service,
+                learning_service=learning_service,
                 agent_service=agent_service,
                 cli_service=cli_service,
                 mcp_service=mcp_service,
-                task_service=task_service,
             )
-
-    enhanced_memory_service = (
-        memory if isinstance(memory, EnhancedMemoryService) else None
-    )
 
     try:
-        asyncio.run(
-            seed_task_and_agent_runtime_state(
-                task_service=task_service,
-                agent_service=agent_service,
-            )
-        )
-    except RuntimeError:
+        asyncio.get_running_loop()
         logger.warning("web_dev: skipped task/agent runtime seeding because an event loop is already running")
+    except RuntimeError:
+        try:
+            asyncio.run(
+                seed_task_and_agent_runtime_state(
+                    task_service=task_service,
+                    agent_service=agent_service,
+                )
+            )
+        except Exception:
+            logger.exception("web_dev: failed to seed task/agent runtime state")
     except Exception:
-        logger.exception("web_dev: failed to seed task/agent runtime state")
+        logger.exception("web_dev: failed to inspect event loop for task/agent runtime seeding")
     
     # --- Create full app ----------------------------------------------------
     app = create_app(
         plugin_service=plugin_service,
         managed_plugin_records=managed_plugin_records,
         plugin_feature_catalog=plugin_feature_catalog,
-        enhanced_memory_service=enhanced_memory_service,
+        memory_service=memory,
         agent_coordination_service=agent_service,
         task_service=task_service,
         mcp_service=mcp_service,
@@ -185,6 +188,7 @@ def _create_full_app(registry: ServiceRegistry) -> object:
         consolidation_engine=consolidation_engine,
         reflection_service=reflection_service,
         learning_service=learning_service,
+        audit_service=audit_service,
     )
     
     # Inject engines into app state for cognition router
@@ -195,6 +199,7 @@ def _create_full_app(registry: ServiceRegistry) -> object:
     app.state.consolidation_engine = consolidation_engine
     app.state.reflection_service = reflection_service
     app.state.learning_service = learning_service
+    app.state.audit_service = audit_service
 
     logger.info("web_dev: full web console app created successfully.")
     return app

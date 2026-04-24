@@ -62,11 +62,28 @@ class SafetyService:
         }
 
     def get_audit_trail(self, limit: int = 50) -> List[Dict[str, Any]]:
-        """Retrieve recent safety audit logs from the manager."""
-        # SafetyManager status includes aggregate metrics; 
-        # for specific logs we might need direct engine access if exposed.
-        # For now, return a placeholder or implement specific log retrieval if needed.
-        return []
+        """Retrieve the most recent *limit* safety decisions from the SafetyGate audit log.
+
+        # POLICY[no-fake-impl]: returning [] here was a placeholder that made every
+        # audit trail query silently return nothing, masking all safety decisions.
+        # The SafetyGate already maintains a real in-memory _audit_log — query it.
+        """
+        decisions = self._manager.safety_gate.get_audit_log()
+        # Return the last *limit* entries (most recent last in the list).
+        recent = decisions[-limit:] if len(decisions) > limit else decisions
+        result: List[Dict[str, Any]] = []
+        for d in recent:
+            result.append({
+                "decision_id": d.decision_id,
+                "action_type": d.action_type,
+                "status": d.status.value if hasattr(d.status, "value") else str(d.status),
+                "allowed": d.allowed,
+                "risk_level": d.risk_level.value if hasattr(d.risk_level, "value") else str(d.risk_level),
+                "reason": d.reason,
+                "created_at": d.created_at.isoformat() if hasattr(d.created_at, "isoformat") else str(d.created_at),
+                "bypass_attempts": len(d.bypass_attempts),
+            })
+        return result
 
     def update_policy(self, policy_name: str, policy_config: Dict[str, Any]) -> bool:
         """Update a specific safety policy configuration via the manager."""

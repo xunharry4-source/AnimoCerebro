@@ -8,13 +8,17 @@ upgrade memory snapshots. The stores are used to keep real, queryable evidence
 for why an upgrade started, what changed, how it progressed, and why it ended.
 """
 
-from datetime import UTC, datetime
+from datetime import datetime, timezone
+UTC = timezone.utc
 import json
+import logging
 import sqlite3
 from pathlib import Path
 from threading import Lock
-from typing import Any
+from typing import Any, Dict, List, Optional, Union
 from uuid import uuid4
+
+logger = logging.getLogger(__name__)
 
 from pydantic import BaseModel, ConfigDict, Field
 
@@ -32,8 +36,8 @@ class UpgradeAuditEvent(BaseModel):
     record_id: str = Field(min_length=1)
     trace_id: str = Field(min_length=1)
     request_id: str = Field(min_length=1)
-    source_event_id: str | None = None
-    parent_record_id: str | None = None
+    source_event_id: Optional[str] = None
+    parent_record_id: Optional[str] = None
     target_kind: str = Field(min_length=1)
     action: str = Field(min_length=1)
     target_id: str = Field(min_length=1)
@@ -43,28 +47,28 @@ class UpgradeAuditEvent(BaseModel):
     summary: str = Field(min_length=1)
     current_status: str = Field(min_length=1)
     current_progress: int = Field(ge=0, le=100)
-    previous_version: str | None = None
+    previous_version: Optional[str] = None
     current_version: str = Field(min_length=1)
-    candidate_version: str | None = None
-    success_stage: str | None = None
-    success_summary: str | None = None
-    reusable_insight: str | None = None
-    successful_command: str | None = None
+    candidate_version: Optional[str] = None
+    success_stage: Optional[str] = None
+    success_summary: Optional[str] = None
+    reusable_insight: Optional[str] = None
+    successful_command: Optional[str] = None
     success_artifact_refs: list[str] = Field(default_factory=list)
-    promotion_hint: str | None = None
+    promotion_hint: Optional[str] = None
     success_tags: list[str] = Field(default_factory=list)
-    failure_reason: str | None = None
-    failure_stage: str | None = None
-    failure_code: str | None = None
-    failure_summary: str | None = None
-    root_cause_hypothesis: str | None = None
-    failed_command: str | None = None
+    failure_reason: Optional[str] = None
+    failure_stage: Optional[str] = None
+    failure_code: Optional[str] = None
+    failure_summary: Optional[str] = None
+    root_cause_hypothesis: Optional[str] = None
+    failed_command: Optional[str] = None
     failed_artifact_refs: list[str] = Field(default_factory=list)
-    retryable: bool | None = None
-    prevention_hint: str | None = None
+    retryable: Optional[bool] = None
+    prevention_hint: Optional[str] = None
     learning_tags: list[str] = Field(default_factory=list)
-    source_path: str | None = None
-    candidate_path: str | None = None
+    source_path: Optional[str] = None
+    candidate_path: Optional[str] = None
     evidence_refs: list[str] = Field(default_factory=list)
     payload: dict[str, Any] = Field(default_factory=dict)
     created_at: datetime = Field(default_factory=utc_now)
@@ -79,8 +83,8 @@ class UpgradeMemoryRecord(BaseModel):
     record_id: str = Field(min_length=1)
     trace_id: str = Field(min_length=1)
     request_id: str = Field(min_length=1)
-    source_event_id: str | None = None
-    parent_record_id: str | None = None
+    source_event_id: Optional[str] = None
+    parent_record_id: Optional[str] = None
     target_kind: str = Field(min_length=1)
     action: str = Field(min_length=1)
     target_id: str = Field(min_length=1)
@@ -90,25 +94,25 @@ class UpgradeMemoryRecord(BaseModel):
     summary: str = Field(min_length=1)
     current_status: str = Field(min_length=1)
     current_progress: int = Field(ge=0, le=100)
-    previous_version: str | None = None
+    previous_version: Optional[str] = None
     current_version: str = Field(min_length=1)
-    candidate_version: str | None = None
-    success_stage: str | None = None
-    success_summary: str | None = None
-    reusable_insight: str | None = None
-    successful_command: str | None = None
+    candidate_version: Optional[str] = None
+    success_stage: Optional[str] = None
+    success_summary: Optional[str] = None
+    reusable_insight: Optional[str] = None
+    successful_command: Optional[str] = None
     success_artifact_refs: list[str] = Field(default_factory=list)
-    promotion_hint: str | None = None
+    promotion_hint: Optional[str] = None
     success_tags: list[str] = Field(default_factory=list)
-    failure_reason: str | None = None
-    failure_stage: str | None = None
-    failure_code: str | None = None
-    failure_summary: str | None = None
-    root_cause_hypothesis: str | None = None
-    failed_command: str | None = None
+    failure_reason: Optional[str] = None
+    failure_stage: Optional[str] = None
+    failure_code: Optional[str] = None
+    failure_summary: Optional[str] = None
+    root_cause_hypothesis: Optional[str] = None
+    failed_command: Optional[str] = None
     failed_artifact_refs: list[str] = Field(default_factory=list)
-    retryable: bool | None = None
-    prevention_hint: str | None = None
+    retryable: Optional[bool] = None
+    prevention_hint: Optional[str] = None
     learning_tags: list[str] = Field(default_factory=list)
     evidence_refs: list[str] = Field(default_factory=list)
     payload: dict[str, Any] = Field(default_factory=dict)
@@ -116,7 +120,7 @@ class UpgradeMemoryRecord(BaseModel):
 
 
 class _SQLiteStore:
-    def __init__(self, file_path: str | Path | None = None) -> None:
+    def __init__(self, file_path: Union[str, Optional[Path]] = None) -> None:
         self._file_path = Path(file_path) if file_path is not None else None
         self._lock = Lock()
         if self._file_path is not None:
@@ -162,7 +166,7 @@ class _SQLiteStore:
         conn.execute('CREATE INDEX IF NOT EXISTS idx_trace_id ON ledger_records(trace_id)')
 
     @property
-    def file_path(self) -> Path | None:
+    def file_path(self) -> Optional[Path]:
         return self._file_path
 
     def _insert_payload(self, pk: str, record_id: str, trace_id: str, created_at: datetime, payload: dict[str, Any]) -> None:
@@ -173,7 +177,7 @@ class _SQLiteStore:
                     (pk, record_id, trace_id, created_at.isoformat(), json.dumps(payload, ensure_ascii=False))
                 )
 
-    def _select_payloads(self, record_id: str | None = None) -> list[dict[str, Any]]:
+    def _select_payloads(self, record_id: Optional[str] = None) -> list[dict[str, Any]]:
         sql = "SELECT payload FROM ledger_records"
         params = []
         if record_id is not None:
@@ -188,14 +192,15 @@ class _SQLiteStore:
                 try:
                     results.append(json.loads(row[0]))
                 except Exception:
-                    pass
+                    # POLICY[no-silent-except]: log corrupted DB row and skip it.
+                    logger.warning("Skipping corrupted ledger row — invalid JSON", exc_info=True)
         return results
 
 
 class UpgradeAuditStore(_SQLiteStore):
     """Append-only store for upgrade audit events."""
 
-    def __init__(self, file_path: str | Path | None = None) -> None:
+    def __init__(self, file_path: Union[str, Optional[Path]] = None) -> None:
         super().__init__(file_path)
 
     def append_event(self, event: UpgradeAuditEvent) -> UpgradeAuditEvent:
@@ -208,14 +213,14 @@ class UpgradeAuditStore(_SQLiteStore):
         )
         return event
 
-    def list_events(self, *, record_id: str | None = None) -> list[UpgradeAuditEvent]:
+    def list_events(self, *, record_id: Optional[str] = None) -> list[UpgradeAuditEvent]:
         return [UpgradeAuditEvent.model_validate(row) for row in self._select_payloads(record_id)]
 
 
 class UpgradeMemoryStore(_SQLiteStore):
     """Append-only store for upgrade memory snapshots."""
 
-    def __init__(self, file_path: str | Path | None = None) -> None:
+    def __init__(self, file_path: Union[str, Optional[Path]] = None) -> None:
         super().__init__(file_path)
 
     def append_record(self, record: UpgradeMemoryRecord) -> UpgradeMemoryRecord:
@@ -228,5 +233,5 @@ class UpgradeMemoryStore(_SQLiteStore):
         )
         return record
 
-    def list_records(self, *, record_id: str | None = None) -> list[UpgradeMemoryRecord]:
+    def list_records(self, *, record_id: Optional[str] = None) -> list[UpgradeMemoryRecord]:
         return [UpgradeMemoryRecord.model_validate(row) for row in self._select_payloads(record_id)]

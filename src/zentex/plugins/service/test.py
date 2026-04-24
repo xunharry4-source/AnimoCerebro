@@ -1,3 +1,4 @@
+from __future__ import annotations
 """
 Test Service: Plugin Health Checks and Compatibility Testing
 
@@ -9,7 +10,6 @@ Handles:
 - Test report generation
 """
 
-from __future__ import annotations
 
 import logging
 import asyncio
@@ -27,9 +27,10 @@ class HealthReport:
     timestamp: str
     plugin_id: Optional[str]
     status: str  # healthy, degraded, failed
-    checks_passed: int
-    checks_failed: int
-    checks_total: int
+    checks_passed: int = 0
+    checks_failed: int = 0
+    checks_total: int = 0
+    lifecycle_status: Optional[str] = None
     details: Dict[str, Any] = field(default_factory=dict)
     errors: List[str] = field(default_factory=list)
 
@@ -197,6 +198,7 @@ class TestService:
             return HealthReport(
                 timestamp=timestamp,
                 plugin_id=plugin_id,
+                status=status,
                 lifecycle_status=lifecycle_status,
                 checks_passed=checks_passed,
                 checks_failed=checks_failed,

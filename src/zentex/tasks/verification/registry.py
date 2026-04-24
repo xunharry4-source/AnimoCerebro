@@ -12,6 +12,7 @@ from zentex.tasks.verification.verifiers import (
     AutomatedTestVerifier,
     BaseVerifier,
     LLMEvaluationVerifier,
+    LogAuditVerifier,
     RuleBasedVerifier,
 )
 
@@ -44,6 +45,7 @@ class VerifierRegistry:
             VerificationType.LLM_EVALUATION, LLMEvaluationVerifier
         )
         self.register_verifier_type(VerificationType.RULE_BASED, RuleBasedVerifier)
+        self.register_verifier_type(VerificationType.LOG_AUDIT, LogAuditVerifier)
         logger.info("Built-in verifiers registered successfully")
 
     def register_verifier_type(

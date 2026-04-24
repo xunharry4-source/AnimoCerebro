@@ -4,7 +4,8 @@ import os
 import shutil
 import time
 import logging
-from datetime import UTC, datetime
+from datetime import datetime, timezone
+UTC = timezone.utc
 from threading import Thread
 from zentex.upgrade.management import UpgradeManagementStore, UpgradeLifecycleStatus
 

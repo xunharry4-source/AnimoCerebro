@@ -13,6 +13,11 @@ class IdentityKernel(Protocol):
     meta_motivation: str
 
 
+class DataDeprivationError(RuntimeError):
+    """Raised when motivation cannot be derived due to missing cognitive inputs."""
+    pass
+
+
 class NineQuestionStateLike(Protocol):
     def __getattr__(self, name: str) -> Any: ...
 
@@ -56,43 +61,81 @@ class MotivationEngine:
     ) -> List[Motivation]:
         """
         Derives situational motivations from the identity kernel and nine questions.
+        
+        Fail-Closed Policy: 
+        1. If identity mission is missing, raises RuntimeError.
+        2. If required NQ data (e.g., confidence) is missing, raises DataDeprivationError.
         """
+        if not getattr(identity, "mission_baseline", None):
+            raise RuntimeError("MotivationEngine: Identity mission baseline is missing. Cannot derive authentic drivers.")
+            
         motivations: List[Motivation] = []
         
         # 1. Base motivation from identity mission (Q8 link)
+        # Policy: No default confidence. Must be provided by the cognition layer.
+        q1_certainty = getattr(nine_q_state, "q1_confidence", None)
+        if q1_certainty is None:
+            raise DataDeprivationError("MotivationEngine: q1_confidence is missing. Cannot evaluate mission strength.")
+            
+        # Strength is a non-linear function of certainty
+        mission_strength = 0.5 + (0.5 * q1_certainty)
+        
         motivations.append(Motivation(
             id=f"mission-{identity.identity_id}",
             title="Core Mission Pursuit",
-            strength=0.9,
+            strength=mission_strength,
             source_identity_ref=identity.identity_id,
-            source_nine_q_ref=["Q8"],
+            source_nine_q_ref=["Q8", "Q1"],
             description=f"Driven by core mission: {identity.mission_baseline}"
         ))
+        
+        # 2. Situational Curiosity (Proactive bias)
+        if self.drive_config.proactive_bias > 0.0:
+            knowledge_gap = 1.0 - q1_certainty
+            curiosity_strength = self.drive_config.proactive_bias * (knowledge_gap ** 2) # Penalize low gaps
+            
+            if curiosity_strength > 0.1:
+                motivations.append(Motivation(
+                    id="proactive-exploration",
+                    title="Proactive Exploration",
+                    strength=min(0.95, curiosity_strength),
+                    source_identity_ref=identity.identity_id,
+                    source_nine_q_ref=["Q4", "Q1"],
+                    description="Proactively seeking to expand situational knowledge based on observed gaps."
+                ))
+                
+        # 3. Defensive Bias (Safety drive)
+        risk_level = getattr(nine_q_state, "risk_level", None)
+        if risk_level is None:
+             raise DataDeprivationError("MotivationEngine: risk_level is missing. Cannot evaluate safety drive.")
 
-        # 2. Meta-motivation (Evolution/Drive)
-        motivations.append(Motivation(
-            id=f"meta-{identity.identity_id}",
-            title="Sovereign Drive",
-            strength=0.7,
-            source_identity_ref=identity.identity_id,
-            source_nine_q_ref=[],
-            description=f"Internal driver: {identity.meta_motivation}"
-        ))
-
-        # 3. Situational Curiosity (Proactive bias)
-        # If Q4 (Ability) or Q3 (Assets) shows uncertainty, curiosity might trigger evidence gathering.
-        if self.drive_config.proactive_bias > 0.5:
-             motivations.append(Motivation(
-                id="proactive-exploration",
-                title="Proactive Exploration",
-                strength=self.drive_config.proactive_bias,
+        if risk_level > self.drive_config.safety_threshold:
+            motivations.append(Motivation(
+                id="safety-preservation",
+                title="Safety Preservation",
+                strength=risk_level,
                 source_identity_ref=identity.identity_id,
-                source_nine_q_ref=["Q4"],
-                description="Proactively seeking to expand situational knowledge."
+                source_nine_q_ref=["Q5", "Q6"],
+                description=f"High risk detected ({risk_level:.2f}); prioritizing safety over efficiency."
             ))
 
         # 4. Filter or Adjust based on Vetoes
-        # (Implementation of veto checking logic would go here)
+        veto_active = getattr(nine_q_state, "q6_veto_active", False)
+        if veto_active:
+            veto_reason = getattr(nine_q_state, "q6_veto_reason", "Ethics/Safety Veto")
+            logger.warning(f"Cognitive Veto active: {veto_reason}. Filtering conflicting drives.")
+            # Policy: Only safety preservation is allowed to persist during an active veto
+            motivations = [m for m in motivations if m.id == "safety-preservation"]
+            if not motivations:
+                # If no safety-preservation exists but veto is active, create an emergency drive
+                motivations.append(Motivation(
+                    id="emergency-halt",
+                    title="Cognitive Halt",
+                    strength=1.0,
+                    source_identity_ref=identity.identity_id,
+                    source_nine_q_ref=["Q6"],
+                    description=f"Emergency halt triggered by veto: {veto_reason}"
+                ))
 
-        logger.info(f"MotivationEngine generated {len(motivations)} active drivers.")
+        logger.info(f"MotivationEngine generated {len(motivations)} authentic active drivers.")
         return motivations

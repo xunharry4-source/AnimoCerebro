@@ -1,0 +1,72 @@
+{
+  "report_metadata": {
+    "generated_at": "2026-04-19T16:43:53.517565+00:00",
+    "test_script": "test_posting_evidence.py",
+    "agent_id": "agent-self-promotion",
+    "environment": {
+      "llm_available": true,
+      "browser_available": true
+    }
+  },
+  "test_summary": {
+    "total_tests": 5,
+    "passed": 4,
+    "failed": 1,
+    "skipped": 0
+  },
+  "test_results": [
+    {
+      "test": "LLM Weekly Plan Generation",
+      "status": "PASSED",
+      "plan_id": "plan-71959aaa",
+      "days_count": 7,
+      "evidence": {
+        "llm_called": true,
+        "plan_structure_valid": true,
+        "content_generated": true
+      }
+    },
+    {
+      "test": "Content Optimization",
+      "status": "FAILED",
+      "error": "ContentStrategyEngine.optimize_for_platform() got an unexpected keyword argument 'max_length'"
+    },
+    {
+      "test": "Community Rules Check",
+      "status": "PASSED",
+      "evidence": {
+        "subreddit": "MachineLearning",
+        "rule_count": 5,
+        "source": "default_template"
+      }
+    },
+    {
+      "test": "Post Validation",
+      "status": "PASSED",
+      "evidence": {
+        "valid": false,
+        "rules_checked": 5,
+        "violations_count": 2,
+        "suggestions_count": 0
+      }
+    },
+    {
+      "test": "Audit Log Verification",
+      "status": "PASSED",
+      "evidence": {
+        "total_logs": 2,
+        "recent_actions": [
+          "validate_post_rules",
+          "generate_weekly_plan"
+        ]
+      }
+    }
+  ],
+  "completion_gate": {
+    "RCA": "N/A - 新功能测试，非缺陷修复",
+    "验证状态": "部分验证",
+    "物理证据": "有 - 见 test_results 中的 evidence 字段",
+    "回滚路径": "git checkout Agent/self_promotion_agent.py config/provider_tools.yml",
+    "最终判定": "未完成"
+  }
+}

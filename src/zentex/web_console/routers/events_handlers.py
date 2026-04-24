@@ -1,10 +1,10 @@
+from __future__ import annotations
 """
 Events Handlers Module
 Event operations and message handling for WebSocket streams
 Extracted from events.py for Facade-First architecture
 """
 
-from __future__ import annotations
 
 import asyncio
 import logging
@@ -13,10 +13,10 @@ from typing import Optional, Any
 from fastapi import WebSocket, WebSocketDisconnect
 from fastapi.exceptions import WebSocketException
 
-from zentex.web_console.contracts.runtime import TranscriptStreamMessage
+from zentex.web_console.contracts.runtime import AuditEventStreamMessage
 from zentex.web_console.dependencies import get_weight_assembler
 from zentex.web_console.services.overview import build_overview_payload
-from zentex.web_console.transcript_serialization import serialize_transcript_entry
+from zentex.web_console.audit_event_serialization import serialize_audit_event
 from .events_commons import EventStreamSession
 
 logger = logging.getLogger(__name__)
@@ -33,20 +33,20 @@ async def validate_event_stream_session(session: EventStreamSession) -> bool:
             logger.error("Runtime not available in session")
             return False
             
-        if session.transcript_store is None:
-            logger.error("TranscriptStore not available in session")
+        if session.audit_service is None:
+            logger.error("AuditService not available in session")
             return False
         
         return True
         
     except Exception as e:
-        logger.error(f"Session validation failed: {e}")
+        logger.exception("Session validation failed")
         return False
 
 
 async def send_event_message(
     websocket: WebSocket,
-    message: TranscriptStreamMessage
+    message: AuditEventStreamMessage
 ) -> bool:
     """Send event message through WebSocket"""
     try:
@@ -58,18 +58,18 @@ async def send_event_message(
         return False
         
     except Exception as e:
-        logger.error(f"Failed to send event message: {e}")
+        logger.exception("Failed to send event message")
         raise WebSocketException(code=1011, reason=str(e))
 
 
-async def process_transcript_entries(
+async def process_audit_events(
     websocket: WebSocket,
     session: EventStreamSession,
     start_index: int,
     end_index: int,
     overview: Any
 ) -> int:
-    """Process and send multiple transcript entries
+    """Process and send multiple audit events
     
     Args:
         websocket: WebSocket connection
@@ -82,13 +82,13 @@ async def process_transcript_entries(
         Number of entries sent successfully
     """
     try:
-        current_entries = session.transcript_store.get_entries_snapshot()
+        current_entries = session.audit_service.list_recent_events()
         entries_sent = 0
         
         for entry in current_entries[start_index + 1 : end_index + 1]:
             try:
-                message = TranscriptStreamMessage(
-                    event=serialize_transcript_entry(entry),
+                message = AuditEventStreamMessage(
+                    event=serialize_audit_event(entry),
                     overview=overview,
                 )
                 success = await send_event_message(websocket, message)
@@ -98,28 +98,28 @@ async def process_transcript_entries(
                 entries_sent += 1
                 
             except Exception as e:
-                logger.error(f"Error processing entry: {e}")
+                logger.exception("Error processing audit event")
                 break
         
-        logger.info(f"Processed {entries_sent} transcript entries")
+        logger.info(f"Processed {entries_sent} audit events")
         return entries_sent
         
     except Exception as e:
-        logger.error(f"Failed to process transcript entries: {e}")
+        logger.exception("Failed to process audit events")
         return 0
 
 
 async def wait_for_new_entries(
     websocket: WebSocket,
-    transcript_store: Any,
+    audit_service: Any,
     current_revision: int,
     timeout: float = 3.0
 ) -> bool:
-    """Wait for new entries in transcript store
+    """Wait for new audit events.
     
     Args:
         websocket: WebSocket connection
-        transcript_store: Transcript store to monitor
+        audit_service: Audit service to monitor
         current_revision: Current revision to check against
         timeout: Timeout in seconds
         
@@ -130,7 +130,7 @@ async def wait_for_new_entries(
         disconnect_task = asyncio.create_task(_receive_disconnect_signal(websocket))
         revision_wait_task = asyncio.create_task(
             asyncio.to_thread(
-                transcript_store.wait_for_revision_after,
+                audit_service.wait_for_new_events,
                 current_revision,
                 timeout,
             )
@@ -153,11 +153,11 @@ async def wait_for_new_entries(
             result = revision_wait_task.result()
             return result
         except Exception as e:
-            logger.warning(f"Wait for revision failed: {e}")
+            logger.exception("Wait for revision failed")
             return False
             
     except Exception as e:
-        logger.error(f"Failed to wait for new entries: {e}")
+        logger.exception("Failed to wait for new entries")
         return False
 
 
@@ -181,14 +181,17 @@ async def build_overview_update(
         overview = build_overview_payload(
             session.runtime,
             session.session,
-            session.transcript_store,
+            session.audit_service,
             get_weight_assembler(websocket.app),
         )
         return overview
         
     except Exception as e:
-        logger.error(f"Failed to build overview update: {e}")
-        return None
+        # Do not hide overview assembly failures behind a None sentinel. That makes
+        # the stream look like it merely skipped one refresh while the runtime
+        # overview is actually broken.
+        logger.exception("Failed to build overview update")
+        raise
 
 
 async def handle_stream_error(
@@ -213,5 +216,5 @@ async def handle_stream_error(
         return False
         
     except Exception as e:
-        logger.error(f"Error handler failed: {e}")
+        logger.exception("Error handler failed")
         return False

@@ -1,3 +1,4 @@
+from __future__ import annotations
 """
 ZMSP: Zentex Memory Sharing Protocol
 
@@ -11,13 +12,15 @@ Features:
 - AI-native (LLM can directly generate/parse)
 """
 
-from __future__ import annotations
 
+import logging
 import struct
 import time
 import hashlib
 import mmh3  # MurmurHash3 for fast hashing
 from dataclasses import dataclass, field
+
+logger = logging.getLogger(__name__)
 from typing import List, Optional
 from pathlib import Path
 
@@ -294,6 +297,8 @@ class ZMSPEncoder:
             hex_str = uuid_str.replace("-", "")
             return bytes.fromhex(hex_str)
         except Exception:
+            # POLICY[no-silent-except]: log malformed UUID; return null-bytes as safe default.
+            logger.debug("Could not convert UUID %r to bytes — using null bytes", uuid_str, exc_info=True)
             return b"\x00" * 16
     
     def _layer_to_code(self, layer: str) -> int:
@@ -345,6 +350,8 @@ class ZMSPEncoder:
             dt = datetime.fromisoformat(ts_str.replace("Z", "+00:00"))
             return int(dt.timestamp())
         except Exception:
+            # POLICY[no-silent-except]: log malformed timestamp; fall back to now().
+            logger.debug("Could not parse timestamp %r — using current time", ts_str, exc_info=True)
             return int(time.time())
 
 

@@ -1,3 +1,4 @@
+from __future__ import annotations
 """
 Base Plugin Service: Initialization and Bootstrap
 
@@ -9,7 +10,6 @@ Handles:
 - Category determination
 """
 
-from __future__ import annotations
 
 import logging
 import json
@@ -21,7 +21,7 @@ from typing import Dict, Any, Optional, Callable
 from zentex.plugins.models import PluginLifecycleStatus
 from zentex.plugins.storage import PluginStorage
 from zentex.plugins.manager import PluginManager
-from zentex.plugins.plugin_ids import iter_plugin_id_aliases
+from zentex.plugins.plugin_ids import iter_plugin_id_aliases, canonicalize_plugin_id
 from zentex.common.plugin_ids import NINE_QUESTION_Q1
 
 logger = logging.getLogger(__name__)
@@ -63,7 +63,7 @@ def _load_module_from_file(module_name: str, file_path: Path):
     return module
 
 
-def _read_plugin_metadata(plugin_dir: Path) -> dict[str, str] | None:
+def _read_plugin_metadata(plugin_dir: Path) -> dict[str, Optional[str]]:
     metadata_path = plugin_dir / "plugin.json"
     if not metadata_path.exists():
         return None
@@ -133,12 +133,16 @@ def _build_dynamic_factory(plugin_dir: Path, plugin_id: str) -> Callable:
 
 def _get_plugin_factories() -> Dict[str, Callable]:
     factories: Dict[str, Callable] = {}
-    for plugin_dir in _discover_plugin_unit_directories():
+    discovered_dirs = _discover_plugin_unit_directories()
+    logger.info(f"[DEBUG] Discovered plugin dirs: {discovered_dirs}")
+    for plugin_dir in discovered_dirs:
         metadata = _read_plugin_metadata(plugin_dir)
         if metadata is None:
             continue
         plugin_id = metadata["plugin_id"]
+        logger.info(f"[DEBUG] Found metadata for plugin_id={plugin_id} in {plugin_dir}")
         factories[plugin_id] = _build_dynamic_factory(plugin_dir, plugin_id)
+    logger.info(f"[DEBUG] Final factory keys: {list(factories.keys())}")
     return factories
 
 
@@ -208,17 +212,22 @@ class BasePluginService:
         self,
         plugin_id: str,
         *,
-        instance: Any | None = None,
-        spec_dict: Dict[str, Any] | None = None,
-        execution_stats: Dict[str, Any] | None = None,
+        instance: Optional[Any] = None,
+        spec_dict: Dict[str, Optional[Any]] = None,
+        execution_stats: Dict[str, Optional[Any]] = None,
     ) -> None:
-        for alias in iter_plugin_id_aliases(plugin_id):
+        canonical_id = canonicalize_plugin_id(plugin_id)
+        aliases = set(iter_plugin_id_aliases(plugin_id))
+        aliases.add(canonical_id)
+        aliases.add(plugin_id)
+        
+        for identifier in aliases:
             if instance is not None:
-                self._plugin_instances[alias] = instance
+                self._plugin_instances[identifier] = instance
             if spec_dict is not None:
-                self._plugin_specs[alias] = spec_dict
+                self._plugin_specs[identifier] = spec_dict
             if execution_stats is not None:
-                self._execution_stats[alias] = execution_stats
+                self._execution_stats[identifier] = execution_stats
 
     def bootstrap(self) -> None:
         """
@@ -296,7 +305,14 @@ class BasePluginService:
         This is a write operation owned by the plugins module itself. Callers
         that only need a service handle must not use this API implicitly.
         """
-        return self._load_and_instantiate_plugins()
+        summary = self._load_and_instantiate_plugins()
+        # Keep discovery registration on the canonical relation graph.
+        # This prevents callers that only invoke register+rehydrate from
+        # accidentally running cognitive plugins without required functional
+        # bindings.
+        relation_summary = self._seed_default_relationships()
+        summary["default_relations_added"] = relation_summary.get("created_count", 0)
+        return summary
 
     def ensure_default_relationships(self) -> Dict[str, int]:
         """
@@ -374,6 +390,8 @@ class BasePluginService:
         }
 
     def _seed_default_relationships(self) -> Dict[str, int]:
+        from zentex.common.plugin_ids import NINE_QUESTION_Q2, NINE_QUESTION_Q6
+        
         q1_cognitive_id = NINE_QUESTION_Q1
         q1_functional_bindings = [
             ("sensory_webhook", "primary", 1),
@@ -382,22 +400,39 @@ class BasePluginService:
             ("sensory_telemetry", "support", 4),
         ]
 
-        if not self._storage.get_plugin(q1_cognitive_id):
-            return {"created_count": 0}
+        q2_cognitive_id = NINE_QUESTION_Q2
+        q2_functional_bindings = [
+            ("weight_assembler", "governance", 1),
+            ("oracle_redline", "functional", 2),
+        ]
+
+        q6_cognitive_id = NINE_QUESTION_Q6
+        q6_functional_bindings = [
+            ("oracle_redline", "functional", 1),
+        ]
+
+        all_bindings = [
+            (q1_cognitive_id, q1_functional_bindings),
+            (q2_cognitive_id, q2_functional_bindings),
+            (q6_cognitive_id, q6_functional_bindings),
+        ]
 
         created_count = 0
-        for functional_plugin_id, role, priority in q1_functional_bindings:
-            if not self._storage.get_plugin(functional_plugin_id):
+        for cognitive_id, bindings in all_bindings:
+            if not self._storage.get_plugin(cognitive_id):
                 continue
-            if self._storage.get_relation(q1_cognitive_id, functional_plugin_id):
-                continue
-            self._storage.create_relation(
-                cognitive_plugin_id=q1_cognitive_id,
-                functional_plugin_id=functional_plugin_id,
-                role=role,
-                priority=priority,
-            )
-            created_count += 1
+            for functional_id, role, priority in bindings:
+                if not self._storage.get_plugin(functional_id):
+                    continue
+                if self._storage.get_relation(cognitive_id, functional_id):
+                    continue
+                self._storage.create_relation(
+                    cognitive_plugin_id=cognitive_id,
+                    functional_plugin_id=functional_id,
+                    role=role,
+                    priority=priority,
+                )
+                created_count += 1
 
         return {"created_count": created_count}
 

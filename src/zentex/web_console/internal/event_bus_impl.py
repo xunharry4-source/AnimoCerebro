@@ -1,6 +1,6 @@
+from __future__ import annotations
 """In-Process Event Bus Implementation"""
 
-from __future__ import annotations
 
 import uuid
 from typing import Any, Awaitable, Callable, Dict, List
@@ -29,7 +29,7 @@ class InProcessEventBus(EventBus):
         self,
         event_type: str,
         payload: Dict[str, Any],
-        session_id: str | None = None,
+        session_id: Optional[str] = None,
     ) -> EventPublishResult:
         """Publish event to all subscribers"""
         event_id = str(uuid.uuid4())

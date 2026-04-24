@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from typing import Any, Dict, List, Optional, Union
+
 """
 Cross-layer memory consistency checker.
 
@@ -21,7 +23,8 @@ Cross-layer memory consistency checker.
 
 import logging
 import re
-from datetime import UTC, datetime
+from datetime import datetime, timezone
+UTC = timezone.utc
 from uuid import uuid4
 
 from pydantic import BaseModel, ConfigDict, Field
@@ -103,7 +106,7 @@ def _title_overlap(title_a: str, title_b: str) -> float:
     words_b = set(_normalize(title_b).split())
     if not words_a or not words_b:
         return 0.0
-    return len(words_a & words_b) / len(words_a | words_b)
+    return len(words_a & words_b) / len(Union[words_a, words_b])
 
 
 def _content_contradiction_heuristic(content_a: str, content_b: str) -> bool:

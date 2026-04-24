@@ -1,11 +1,20 @@
 from __future__ import annotations
 
-"""Public learning facade for cross-module access."""
+"""Public learning service for cross-module access."""
 
-from typing import Any, Dict, Optional
+import asyncio
+import os
+import threading
+from collections import Counter
+from datetime import datetime, timezone
+from pathlib import Path
+from typing import Any, Dict, Optional, List, Union
+from uuid import uuid4
 
 from pydantic import BaseModel, ConfigDict, Field
 
+from zentex.common.flow_audit import FlowAudit
+from zentex.common.storage_paths import get_storage_paths
 from zentex.learning.budget import ReasoningBudget
 from zentex.learning.directions import LearningDirection, describe_direction
 from zentex.learning.engine import (
@@ -16,6 +25,7 @@ from zentex.learning.engine import (
     run_learning_cycle,
     start_learning,
 )
+from zentex.learning.store import LEARNING_EVENT_TYPE, LEARNING_OVERALL_EVENT_TYPE, LearningStore
 
 
 class LearningRecord(BaseModel):
@@ -38,23 +48,77 @@ class LearningOutcome(BaseModel):
     detail: Dict[str, Any] = Field(default_factory=dict)
 
 
-class LearningServiceFacade:
-    """Thin facade that delegates to the learning engine public API."""
+class LearningOverallRecord(BaseModel):
+    """Normalized overall learning record for timeline-style queries."""
+
+    model_config = ConfigDict(extra="allow")
+
+    trace_id: str = Field(min_length=1)
+    status: str = Field(min_length=1)
+    direction: str = Field(min_length=1)
+    summary: str = Field(min_length=1)
+    detail: Dict[str, Any] = Field(default_factory=dict)
+    timestamp: str = Field(min_length=1)
+
+
+class LearningMaintenanceResult(BaseModel):
+    """Result of learning-maintenance cleanup and synthesis."""
+
+    model_config = ConfigDict(extra="allow")
+
+    trigger: str = Field(min_length=1)
+    trace_id: str = Field(min_length=1)
+    used_memory_count: int = Field(ge=0)
+    used_reflection_count: int = Field(ge=0)
+    deleted_entry_count: int = Field(ge=0)
+    top_tags: List[str] = Field(default_factory=list)
+    summary: str = Field(min_length=1)
+
+
+class LearningService:
+    """Single public learning service backed by its own canonical store."""
+
+    def __init__(self, storage_root: Optional[Union[str, Path]] = None) -> None:
+        if storage_root is None:
+            env_root = os.environ.get("ZENTEX_LEARNING_ROOT")
+            if env_root:
+                storage_root = Path(env_root)
+            else:
+                storage_root = get_storage_paths().data_root / "learning.sqlite3"
+        candidate = Path(storage_root)
+        if candidate.suffix.lower() in {".db", ".sqlite", ".sqlite3"}:
+            db_path = candidate
+        else:
+            db_path = candidate / "learning.sqlite3"
+        self.storage_root = db_path.parent
+        self.storage_root.mkdir(parents=True, exist_ok=True)
+        self._store = LearningStore(db_path=db_path, session_id=LEARNING_SESSION_ID)
+        self._maintenance_lock = threading.Lock()
+        self._maintenance_thread: Optional[threading.Thread] = None
+        self._maintenance_stop = threading.Event()
+        self._maintenance_interval_seconds = 3600
+        self._last_maintenance_at: Optional[datetime] = None
+        # P3-L3: idempotency guard — hash of the last processed memory_id set
+        self._last_maintenance_memory_hash: Optional[str] = None
+
+    @property
+    def store(self) -> LearningStore:
+        return self._store
 
     async def start_cycle(
         self,
         *,
-        direction: str | LearningDirection,
+        direction: Union[str, LearningDirection],
         provider: Any = None,
         llm_service: Any = None,
-        model_provider_key: str | None = None,
-        doc_url: str | None = None,
+        model_provider_key: Optional[str] = None,
+        doc_url: Optional[str] = None,
         dry_run: bool = False,
         load_factor: float = 0.0,
         store: Any = None,
     ) -> LearningOutcome:
         result = await start_learning(
-            store=store,
+            store=store or self._store,
             direction=direction,
             provider=provider,
             llm_service=llm_service,
@@ -72,23 +136,399 @@ class LearningServiceFacade:
         trace_id: Optional[str] = None,
         limit: int = 20,
     ) -> Dict[str, Any]:
-        return get_learning_status(store, trace_id=trace_id, limit=limit)
+        return get_learning_status(store or self._store, trace_id=trace_id, limit=limit)
+
+    def list_history_entries(self, *, limit: int = 200) -> list[Any]:
+        return list(self._store.query_by_session(LEARNING_SESSION_ID, limit=limit))
+
+    def query_history_entries(self, *, limit: int = 200) -> list[Any]:
+        return list(
+            self._store.query_history_entries(
+                session_id=LEARNING_SESSION_ID,
+                entry_type=LEARNING_EVENT_TYPE,
+                limit=limit,
+            )
+        )
+
+    def query_overall_records(
+        self,
+        *,
+        limit: int = 200,
+        trace_id: Optional[str] = None,
+        status: Optional[str] = None,
+    ) -> list[LearningOverallRecord]:
+        rows = self._store.query_history_entries(
+            session_id=LEARNING_SESSION_ID,
+            entry_type=LEARNING_OVERALL_EVENT_TYPE,
+            limit=limit * 4 if (trace_id or status) else limit,
+        )
+        result: list[LearningOverallRecord] = []
+        for row in rows:
+            payload = dict(row.payload or {})
+            record = LearningOverallRecord(
+                trace_id=str(row.trace_id or payload.get("trace_id") or ""),
+                status=str(payload.get("status") or "unknown"),
+                direction=str(payload.get("direction") or "unknown"),
+                summary=str(payload.get("summary") or ""),
+                detail=dict(payload.get("detail") or {}),
+                timestamp=str(row.timestamp or ""),
+            )
+            if trace_id and record.trace_id != trace_id:
+                continue
+            if status and record.status != status:
+                continue
+            result.append(record)
+            if len(result) >= limit:
+                break
+        return result
 
     def list_directions(self) -> list[Dict[str, Any]]:
         return list_available_directions()
 
+    def record_nine_question_learning(
+        self,
+        *,
+        question_id: str,
+        learning_kind: str,
+        detail: Dict[str, Any],
+        trace_id: str,
+        store: Any = None,
+        audit: Optional[FlowAudit] = None,
+    ) -> LearningRecord:
+        effective_store = store or self._store
+        if not callable(getattr(effective_store, "write_entry", None)):
+            raise RuntimeError("store is required for nine-question learning persistence")
 
-_default_service: LearningServiceFacade | None = None
+        learning_detail = {
+            "question_id": question_id,
+            "learning_kind": learning_kind,
+            **detail,
+        }
+        flow_audit = audit or FlowAudit.new(
+            "learning",
+            source_module="zentex.learning.service",
+            question_driver_refs=[question_id],
+        )
+        result = _run_coroutine_sync(
+            run_learning_cycle(
+                store=effective_store,
+                direction=LearningDirection.NINE_QUESTION_INTEGRATION,
+                dry_run=False,
+                load_factor=0.0,
+                extra_context=learning_detail,
+                audit=flow_audit,
+            )
+        )
+        record = LearningRecord(
+            trace_id=str(result.get("trace_id") or trace_id),
+            status=str(result.get("status") or "unknown"),
+            detail=dict(result.get("detail") or learning_detail),
+        )
+        return record
+
+    def trigger_memory_aware_maintenance(
+        self,
+        *,
+        operator: str = "learning_service_manual",
+        trigger: str = "manual",
+        memory_limit: int = 50,
+        reflection_limit: int = 50,
+        cleanup_limit: int = 500,
+    ) -> LearningMaintenanceResult:
+        from zentex.memory.service import get_service as get_memory_service
+        from zentex.reflection.service import get_service as get_reflection_service
+
+        with self._maintenance_lock:
+            memory_service = get_memory_service()
+            reflection_service = get_reflection_service()
+
+            if callable(getattr(memory_service, "trigger_automatic_consolidation_check", None)):
+                try:
+                    memory_service.trigger_automatic_consolidation_check()
+                except Exception:
+                    logger.warning("Memory consolidation pre-check failed in learning maintenance", exc_info=True)
+
+            memory_records = memory_service.query_managed_records(
+                limit=max(1, memory_limit),
+                status="active",
+            )
+            reflection_records = reflection_service.list_overall_records(limit=max(1, reflection_limit))
+
+            # P3-L3: idempotency guard — skip if same memory batch was already processed
+            import hashlib as _hashlib
+            memory_ids_sorted = sorted(
+                str(getattr(r, "memory_id", "") or "") for r in memory_records
+            )
+            batch_hash = _hashlib.sha256(",".join(memory_ids_sorted).encode()).hexdigest()[:16]
+            if self._last_maintenance_memory_hash == batch_hash and memory_records:
+                logger.info(
+                    "Learning maintenance skipped — same memory batch as last run (idempotency key=%s)", batch_hash
+                )
+                # Still run cleanup so stale entries don't accumulate indefinitely
+                self._cleanup_low_value_learning_entries(limit=max(50, cleanup_limit))
+                return LearningMaintenanceResult(
+                    trigger=trigger,
+                    trace_id=f"learning-maintenance:idempotent-{batch_hash}",
+                    used_memory_count=len(memory_records),
+                    used_reflection_count=len(reflection_records),
+                    deleted_entry_count=0,
+                    top_tags=[],
+                    summary="Skipped: identical memory batch already processed.",
+                )
+
+            deleted_entry_count = self._cleanup_low_value_learning_entries(limit=max(50, cleanup_limit))
+            snapshot = self._summarize_maintenance_inputs(
+                memory_records=memory_records,
+                reflection_records=reflection_records,
+            )
+
+            trace_id = f"learning-maintenance:{uuid4().hex[:12]}"
+            turn_id = "cycle_" + trace_id.split(":")[-1]
+            now = datetime.now(timezone.utc).isoformat()
+            detail = {
+                "operator": operator,
+                "maintenance_kind": "memory_aware_cleanup",
+                "used_memory_count": len(memory_records),
+                "used_reflection_count": len(reflection_records),
+                "deleted_entry_count": deleted_entry_count,
+                "top_tags": snapshot["top_tags"],
+                "focus_topics": snapshot["focus_topics"],
+                "source_memory_ids": snapshot["memory_ids"],
+            }
+            summary = snapshot["summary"] or "Learning maintenance found no reusable memory or reflection context."
+
+            self._store.write_entry(
+                session_id=LEARNING_SESSION_ID,
+                turn_id=turn_id,
+                entry_type=LEARNING_EVENT_TYPE,
+                payload={
+                    "kind": "maintenance_cycle_completed",
+                    "direction": "memory_maintenance",
+                    "status": "completed",
+                    "summary": summary,
+                    "detail": detail,
+                    "trigger": trigger,
+                    "timestamp": now,
+                },
+                source="zentex.learning.service",
+                trace_id=trace_id,
+            )
+            self._store.write_entry(
+                session_id=LEARNING_SESSION_ID,
+                turn_id=turn_id,
+                entry_type=LEARNING_OVERALL_EVENT_TYPE,
+                payload={
+                    "kind": "overall_record",
+                    "direction": "memory_maintenance",
+                    "status": "completed",
+                    "summary": summary,
+                    "detail": detail,
+                    "trigger": trigger,
+                },
+                source="zentex.learning.service",
+                trace_id=trace_id,
+            )
+            self._last_maintenance_at = datetime.now(timezone.utc)
+            self._last_maintenance_memory_hash = batch_hash  # P3-L3: record processed batch
+
+            return LearningMaintenanceResult(
+                trigger=trigger,
+                trace_id=trace_id,
+                used_memory_count=len(memory_records),
+                used_reflection_count=len(reflection_records),
+                deleted_entry_count=deleted_entry_count,
+                top_tags=snapshot["top_tags"],
+                summary=summary,
+            )
+
+    def run_scheduled_maintenance_if_due(
+        self,
+        *,
+        interval_seconds: Optional[int] = None,
+        operator: str = "learning_service_scheduler",
+    ) -> Optional[LearningMaintenanceResult]:
+        effective_interval = max(60, int(interval_seconds or self._maintenance_interval_seconds))
+        now = datetime.now(timezone.utc)
+        if self._last_maintenance_at is not None:
+            elapsed = (now - self._last_maintenance_at).total_seconds()
+            if elapsed < effective_interval:
+                return None
+        return self.trigger_memory_aware_maintenance(
+            operator=operator,
+            trigger="scheduled",
+        )
+
+    def start_background_maintenance(
+        self,
+        *,
+        interval_seconds: int = 3600,
+        operator: str = "learning_service_scheduler",
+    ) -> bool:
+        if self._maintenance_thread is not None and self._maintenance_thread.is_alive():
+            return False
+
+        self._maintenance_interval_seconds = max(60, int(interval_seconds))
+        self._maintenance_stop.clear()
+
+        def _worker() -> None:
+            while not self._maintenance_stop.wait(self._maintenance_interval_seconds):
+                try:
+                    self.run_scheduled_maintenance_if_due(
+                        interval_seconds=self._maintenance_interval_seconds,
+                        operator=operator,
+                    )
+                except Exception:
+                    logger.warning("Learning background maintenance cycle failed", exc_info=True)
+
+        self._maintenance_thread = threading.Thread(
+            target=_worker,
+            name="learning-maintenance",
+            daemon=True,
+        )
+        self._maintenance_thread.start()
+        return True
+
+    def stop_background_maintenance(self) -> None:
+        self._maintenance_stop.set()
+
+    def _cleanup_low_value_learning_entries(self, *, limit: int) -> int:
+        rows = self._store.query_by_session(LEARNING_SESSION_ID, limit=limit)
+        now = datetime.now(timezone.utc)
+        stale_entry_ids: list[str] = []
+        seen_overall_summaries: set[str] = set()
+
+        for row in rows:
+            payload = dict(row.payload or {})
+            age_seconds = 0.0
+            try:
+                age_seconds = max(0.0, (now - datetime.fromisoformat(row.timestamp)).total_seconds())
+            except Exception:
+                logger.warning("Failed to parse timestamp for learning entry %s; treating as age=0", row.entry_id, exc_info=True)
+                age_seconds = 0.0
+
+            status = str(payload.get("status") or "")
+            kind = str(payload.get("kind") or "")
+            direction = str(payload.get("direction") or "")
+
+            if row.entry_type == LEARNING_OVERALL_EVENT_TYPE and direction == "memory_maintenance":
+                summary = str(payload.get("summary") or "").strip().lower()
+                if summary in seen_overall_summaries and age_seconds > 3600:
+                    stale_entry_ids.append(row.entry_id)
+                    continue
+                seen_overall_summaries.add(summary)
+
+            if status in {"dry_run", "budget_hold", "unknown_direction"} and age_seconds > 86400:
+                stale_entry_ids.append(row.entry_id)
+                continue
+            if kind == "aborted" and age_seconds > 86400:
+                stale_entry_ids.append(row.entry_id)
+
+        return self._store.delete_entries(stale_entry_ids)
+
+    def _summarize_maintenance_inputs(
+        self,
+        *,
+        memory_records: List[Any],
+        reflection_records: List[Any],
+    ) -> Dict[str, Any]:
+        """Build a cross-module maintenance summary.
+
+        Phase 1 — counter-based baseline (always runs).
+        Phase 2 — LLM semantic synthesis (runs when records are available;
+                   falls back silently to Phase 1 output on any failure).
+        """
+        tag_counter: Counter[str] = Counter()
+        layer_counter: Counter[str] = Counter()
+        focus_topics: List[str] = []
+        memory_ids: List[str] = []
+
+        for record in memory_records:
+            layer_counter[str(getattr(record, "memory_layer", "unknown") or "unknown")] += 1
+            memory_ids.append(str(getattr(record, "memory_id", "") or ""))
+            for tag in list(getattr(record, "tags", []) or []):
+                normalized = str(tag or "").strip()
+                if normalized:
+                    tag_counter[normalized] += 1
+
+        for record in reflection_records:
+            subject = str(getattr(record, "subject", "") or "").strip()
+            if subject:
+                focus_topics.append(subject)
+            for tag in list(getattr(record, "tags", []) or []):
+                normalized = str(tag or "").strip()
+                if normalized:
+                    tag_counter[normalized] += 1
+
+        top_tags = [tag for tag, _count in tag_counter.most_common(5)]
+        summary_parts: List[str] = []
+        if layer_counter:
+            summary_parts.append(
+                "memory layers=" + ", ".join(f"{layer}:{count}" for layer, count in dict(layer_counter).items())
+            )
+        if top_tags:
+            summary_parts.append("top tags=" + ", ".join(top_tags[:3]))
+        if focus_topics:
+            summary_parts.append("reflection focus=" + "; ".join(focus_topics[:2]))
+
+        baseline_summary = "Learning maintenance: " + "; ".join(summary_parts) if summary_parts else ""
+
+        result: Dict[str, Any] = {
+            "summary": baseline_summary,
+            "top_tags": top_tags,
+            "focus_topics": focus_topics[:5],
+            "memory_ids": [memory_id for memory_id in memory_ids if memory_id][:10],
+        }
+
+        # Phase 2 — LLM semantic synthesis (P2-L2)
+        if memory_records or reflection_records:
+            from zentex.learning.llm_prompt import build_learning_maintenance_synthesis_prompt
+            from zentex.foundation.specs.model_provider import ModelProviderCallerContext
+            try:
+                from zentex.llm import get_llm_service
+                llm_service = get_llm_service()
+                prompt = build_learning_maintenance_synthesis_prompt(
+                    top_tags=top_tags,
+                    focus_topics=focus_topics[:5],
+                    layer_distribution=dict(layer_counter),
+                )
+                caller_context = ModelProviderCallerContext(
+                    source_module="learning_service.maintenance",
+                    invocation_phase="learning_maintenance_synthesis",
+                    decision_id="learning-maintenance-synthesis",
+                )
+                llm_result = llm_service.generate_json(
+                    prompt=prompt,
+                    context={},
+                    caller_context=caller_context,
+                    source_module=caller_context.source_module,
+                    invocation_phase=caller_context.invocation_phase,
+                    decision_id=caller_context.decision_id,
+                )
+                output = llm_result.output if llm_result is not None else {}
+                if isinstance(output, dict):
+                    if output.get("summary"):
+                        result["summary"] = str(output["summary"])
+                    if output.get("top_learning_themes"):
+                        result["top_learning_themes"] = [str(t) for t in output["top_learning_themes"]]
+                    if output.get("recommended_directions"):
+                        result["recommended_directions"] = [str(d) for d in output["recommended_directions"]]
+            except Exception:
+                logger.warning("LLM synthesis failed in _summarize_maintenance_inputs; using counter-based summary", exc_info=True)
+
+        return result
 
 
-def get_learning_service() -> LearningServiceFacade:
+_default_service: Optional[LearningService] = None
+
+
+def get_learning_service() -> LearningService:
     global _default_service
     if _default_service is None:
-        _default_service = LearningServiceFacade()
+        _default_service = LearningService()
     return _default_service
 
 
-def get_service() -> LearningServiceFacade:
+def get_service() -> LearningService:
     """Standard service factory function for launcher assembly.
     
     Alias for get_learning_service() to maintain compatibility
@@ -110,10 +550,38 @@ def _to_learning_outcome(result: Any) -> LearningOutcome:
     )
 
 
+def _run_coroutine_sync(coro: Any) -> Any:
+    try:
+        loop = asyncio.get_running_loop()
+    except RuntimeError:
+        return asyncio.run(coro)
+    
+    # If we are already in an event loop, we cannot use asyncio.run().
+    # We must run the coroutine in a separate thread to avoid blocking or re-entrance issues.
+    import threading
+    from concurrent.futures import Future
+
+    result_future: Future[Any] = Future()
+
+    def _thread_target() -> None:
+        try:
+            # Create a new loop for the background thread
+            res = asyncio.run(coro)
+            result_future.set_result(res)
+        except Exception as exc:
+            result_future.set_exception(exc)
+
+    thread = threading.Thread(target=_thread_target, daemon=True)
+    thread.start()
+    return result_future.result()
+
+
 __all__ = [
-    "LearningServiceFacade",
+    "LearningService",
     "LearningRecord",
     "LearningOutcome",
+    "LearningOverallRecord",
+    "LearningMaintenanceResult",
     "LearningCycleResult",
     "ReasoningBudget",
     "LearningDirection",

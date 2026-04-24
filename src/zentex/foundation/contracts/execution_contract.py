@@ -1,13 +1,13 @@
 """Execution action contracts — intent, result and safety decision models."""
 
-from enum import StrEnum
+from enum import Enum
 
 from pydantic import Field
 
 from zentex.foundation.contracts.base_models import ZentexBaseModel
 
 
-class ActionStatus(StrEnum):
+class ActionStatus(str, Enum):
     pending = "pending"
     running = "running"
     succeeded = "succeeded"

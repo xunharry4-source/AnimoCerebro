@@ -1,3 +1,4 @@
+from __future__ import annotations
 """
 Priority Task Queue - 优先级任务队列
 
@@ -5,7 +6,6 @@ Priority Task Queue - 优先级任务队列
 此模块独立于具体业务逻辑，仅提供通用的队列管理能力。
 """
 
-from __future__ import annotations
 
 import logging
 import threading
@@ -153,7 +153,7 @@ class PriorityTaskQueue:
                 logger.debug(f"Task queued: {task_id} (priority={priority.name})")
                 return True
             except Exception as e:
-                logger.error(f"Failed to queue task {task_id}: {e}")
+                logger.error(f"Failed to queue task {task_id}: {e}", exc_info=True)
                 return False
 
     def get(self, timeout: float = 1.0) -> Optional[Tuple[str, Dict[str, Any]]]:
@@ -255,7 +255,7 @@ class PriorityTaskQueue:
                 time.sleep(self._aging_interval)
                 self._perform_aging()
             except Exception as e:
-                logger.error(f"Aging loop error: {e}")
+                logger.error(f"Aging loop error: {e}", exc_info=True)
 
     def _perform_aging(self) -> None:
         """执行老化检查"""

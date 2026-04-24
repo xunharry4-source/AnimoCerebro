@@ -1,11 +1,12 @@
+from __future__ import annotations
+
 """
 Q7 (我还可以做什么) evidence extraction.
 
 Contains functions for building and extracting EVIDENCE_Q7 evidence.
 """
 
-import logging
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Union
 
 from zentex.web_console.contracts.nine_questions import (
     Q7PreprocessedEvidence,
@@ -14,10 +15,8 @@ from zentex.web_console.contracts.nine_questions import (
 
 from .helpers import _coerce_string_list
 
-logger = logging.getLogger(__name__)
 
-
-def _extract_q7_preprocessed_evidence(context_payload: object) -> Q7PreprocessedEvidence | None:
+def _extract_q7_preprocessed_evidence(context_payload: object) -> Optional[Q7PreprocessedEvidence]:
     if not isinstance(context_payload, dict):
         return None
     q4 = context_payload.get("q4_capability_boundary_profile") or {}
@@ -26,12 +25,6 @@ def _extract_q7_preprocessed_evidence(context_payload: object) -> Q7Preprocessed
     q3 = context_payload.get("q3_resource_evaluation") or {}
     q7_baseline = context_payload.get("q7_alternative_strategy_baseline") or {}
     if not q4 and not q5 and not q6:
-        logger.error(
-            "Q7 evidence extraction: upstream Q4/Q5/Q6 data unavailable — "
-            "q4_capability_boundary_profile=%s, q5_authorization_boundary_profile=%s, q6_forbidden_zone_profile=%s. "
-            "Q7 无法生成替代策略证据，请检查 Q4/Q5/Q6 执行结果。",
-            bool(q4), bool(q5), bool(q6),
-        )
         return None
 
     resource_bottlenecks = _coerce_string_list(
@@ -57,6 +50,8 @@ def _extract_q7_preprocessed_evidence(context_payload: object) -> Q7Preprocessed
         or []
     )
     historical_failure_patches = _coerce_string_list(
+        context_payload.get("q7_historical_failure_patches")
+        or
         q7_baseline.get("fallback_plans")
     )
 
@@ -69,7 +64,7 @@ def _extract_q7_preprocessed_evidence(context_payload: object) -> Q7Preprocessed
     )
 
 
-def _extract_q7_inference_result(result_payload: object) -> Q7AlternativeStrategyInferenceView | None:
+def _extract_q7_inference_result(result_payload: object) -> Optional[Q7AlternativeStrategyInferenceView]:
     if not isinstance(result_payload, dict):
         return None
     profile_raw = result_payload.get("q7_alternative_strategy_profile") or result_payload.get("alternative_strategy_profile") or result_payload
@@ -77,12 +72,6 @@ def _extract_q7_inference_result(result_payload: object) -> Q7AlternativeStrateg
         key in profile_raw
         for key in ("fallback_plans", "degradation_strategies", "collaboration_switches", "exploratory_actions")
     ):
-        logger.error(
-            "Q7 inference result extraction: alternative strategy profile missing expected keys "
-            "(fallback_plans / degradation_strategies / collaboration_switches / exploratory_actions). "
-            "插件可能未返回有效策略，结果将显示为空。result_payload keys: %s",
-            list(result_payload.keys()) if isinstance(result_payload, dict) else "non-dict",
-        )
         return None
     return Q7AlternativeStrategyInferenceView(
         fallback_plans=_coerce_string_list(profile_raw.get("fallback_plans")),
@@ -90,5 +79,3 @@ def _extract_q7_inference_result(result_payload: object) -> Q7AlternativeStrateg
         collaboration_switches=_coerce_string_list(profile_raw.get("collaboration_switches")),
         exploratory_actions=_coerce_string_list(profile_raw.get("exploratory_actions")),
     )
-
-

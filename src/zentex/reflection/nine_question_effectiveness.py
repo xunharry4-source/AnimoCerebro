@@ -3,10 +3,11 @@ from __future__ import annotations
 from datetime import datetime, timezone
 from typing import Any, Dict, List
 
-from zentex.reflection.prompt_upgrade_registry import get_any_prompt_upgrade_contract
-from zentex.reflection.service_facade import ReflectionServiceFacade
+from zentex.reflection.service import ReflectionService
+from zentex.reflection.nine_question_prompt_upgrade import get_prompt_upgrade_contract
 from zentex.upgrade.models import LLMUpgradeIntentRequest
 from zentex.upgrade.llm.models import LLMUpgradeRequest
+from zentex.common.startup_markers import log_once
 
 
 QUESTION_DEPENDENCIES: dict[str, list[str]] = {
@@ -103,13 +104,19 @@ def analyze_question_effectiveness(question_id: str, snapshot: dict[str, Any], s
 
 def run_question_reflection(
     *,
-    reflection_service: ReflectionServiceFacade,
+    reflection_service: ReflectionService,
     question_id: str,
     state_payload: dict[str, Any],
     scope: str,
     trigger: str,
-    upgrade_execution_service: Any | None = None,
+    upgrade_execution_service: Optional[Any] = None,
 ) -> dict[str, Any]:
+    log_once(
+        "reflection.invoked",
+        question_id=question_id,
+        scope=scope,
+        trigger=trigger,
+    )
     snapshots = state_payload.get("question_snapshots") if isinstance(state_payload, dict) else {}
     if not isinstance(snapshots, dict):
         snapshots = {}
@@ -131,7 +138,7 @@ def run_question_reflection(
     }
 
     reflection = None
-    reflection_error: str | None = None
+    reflection_error: Optional[str] = None
     try:
         reflection = reflection_service.reflect(
             subject=f"Nine Question {question_id} effectiveness reflection",
@@ -142,33 +149,29 @@ def run_question_reflection(
     except Exception as exc:
         reflection_error = str(exc)
 
-    upgrade_result: dict[str, Any] | None = None
+    upgrade_result: dict[str, Optional[Any]] = None
     if analysis.get("need_upgrade") and upgrade_execution_service is not None:
         try:
-            prompt_upgrade_contract = get_any_prompt_upgrade_contract(question_id)
+            contract = get_prompt_upgrade_contract(question_id)
             request = LLMUpgradeIntentRequest(
                 reason=f"{question_id} effectiveness reflection requested auto-upgrade",
                 change_signals=["nine_question_effectiveness_low"],
                 upgrade_required=True,
                 upgrade_request=LLMUpgradeRequest(
                     program_id=f"nine-question-{question_id}",
-                    target_component=prompt_upgrade_contract.target_component,
-                    baseline_version="1.0.0",
+                    target_component=contract.target_component,
+                    baseline_version="v1.0.0",
                     target_metric="effectiveness_score",
                     dataset_refs=[f"reflection:{question_id}", "nine-questions"],
-                    objective_summary=(
-                        f"{analysis.get('upgrade_reason') or 'improve question effectiveness'}; "
-                        f"optimize only the {question_id} prompt wording while preserving the original intent: "
-                        f"{prompt_upgrade_contract.immutable_intent}"
-                    ),
-                    validation_commands=list(prompt_upgrade_contract.validation_commands),
+                    objective_summary=str(analysis.get("upgrade_reason") or "improve question effectiveness"),
+                    validation_commands=list(contract.validation_commands) or ["make test"],
                     upgrade_kind="prompt_optimization",
-                    prompt_file_path=prompt_upgrade_contract.prompt_file_path,
-                    prompt_builder_symbol=prompt_upgrade_contract.prompt_builder_symbol,
-                    prompt_contract=prompt_upgrade_contract.to_prompt_contract(),
-                    immutable_intent=prompt_upgrade_contract.immutable_intent,
-                    forbidden_prompt_changes=list(prompt_upgrade_contract.forbidden_prompt_changes),
-                    allowed_prompt_change_scope=list(prompt_upgrade_contract.allowed_prompt_change_scope),
+                    prompt_file_path=contract.prompt_file_path,
+                    prompt_builder_symbol=contract.prompt_builder_symbol,
+                    prompt_contract=contract.to_prompt_contract(),
+                    immutable_intent=contract.immutable_intent,
+                    forbidden_prompt_changes=list(contract.forbidden_prompt_changes),
+                    allowed_prompt_change_scope=list(contract.allowed_prompt_change_scope),
                 ),
             )
             record = upgrade_execution_service.execute_llm_upgrade(request)

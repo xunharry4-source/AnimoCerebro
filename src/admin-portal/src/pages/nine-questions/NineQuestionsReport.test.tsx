@@ -52,7 +52,6 @@ const mockQ1PreprocessedEvidence = {
 };
 
 const mockReport = {
-  session_id: "test-session-123",
   status: "ready",
   status_message: null,
   last_turn_id: "turn-9",
@@ -125,7 +124,6 @@ describe("NineQuestions routing", () => {
     mockFetch.mockResolvedValueOnce({
       ok: true,
       json: async () => ({
-        session_id: "cold-start-session",
         status: "initializing",
         status_message: "大脑冷启动中：正在执行全量九问推演...",
         last_turn_id: "0",
@@ -141,7 +139,7 @@ describe("NineQuestions routing", () => {
     renderNineQuestionRoutes("/console/nine-questions");
 
     expect(await screen.findAllByText("大脑冷启动中：正在执行全量九问推演...")).toHaveLength(2);
-    expect(screen.queryByText("当前 session 里还没有九问结果。运行一次九问后再刷新查看。")).not.toBeInTheDocument();
+    expect(screen.queryByText("当前还没有九问结果。运行一次九问后再回到监控页刷新查看。")).not.toBeInTheDocument();
   });
 
   it("renders real list rows and drills into detail page on row click", async () => {
@@ -193,6 +191,9 @@ describe("NineQuestions routing", () => {
       expect(screen.getByText("Q1_Where_Am_I")).toBeInTheDocument();
     });
 
+    expect(screen.getByText(/该页面只是九问运行结果的监控与审计视图/)).toBeInTheDocument();
+    expect(screen.getByText("当前最新快照: v9 / rev 9")).toBeInTheDocument();
+    expect(screen.queryByText(/Session:/)).not.toBeInTheDocument();
     expect(screen.getAllByText("provider-tools-default")).toHaveLength(2);
     expect(screen.getByText("当前运行域是本地 Web Console 验收环境。")).toBeInTheDocument();
 

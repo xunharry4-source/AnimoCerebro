@@ -86,7 +86,7 @@ class EnterpriseEncryptionService:
     SALT = b"zentex_memory_v2_encryption_salt"
     _missing_key_logged = False
 
-    def __init__(self, master_key_str: str | None = None):
+    def __init__(self, master_key_str: Optional[str] = None):
         self._master_key = master_key_str or os.environ.get("MEMORY_MASTER_KEY")
         self.enabled = (self._master_key is not None)
         self._cache: dict[str, AESGCMEncryptionStrategy] = {}

@@ -1,3 +1,4 @@
+from __future__ import annotations
 """
 Task Decomposition LLM Prompt Builder — zentex.tasks.core.llm_prompt
 
@@ -29,11 +30,10 @@ DOES NOT:
   - Import from zentex.llm (avoids circular dependency).
 """
 
-from __future__ import annotations
 
 import logging
 from dataclasses import dataclass
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Union
 
 logger = logging.getLogger(__name__)
 
@@ -191,12 +191,12 @@ def _build_constraints_segment() -> str:
         "  - `local_id`：唯一标识，格式 step-1, step-2, …（不可重复）\n"
         "  - `title`：子任务标题（简洁，不超过 50 字）\n"
         "  - `task_type`：枚举之一 — "
-        "cognitive_step | agent_delegation | system_action | intervention | mission\n"
+        "Union[cognitive_step, Union[agent_delegation], Union[system_action], intervention] | mission\n"
         "  - `content`：子任务描述（具体可执行，不超过 200 字）\n"
         "  - `objective`：成功标准（不超过 100 字）\n"
         "  - `requirements`：前置条件列表（字符串数组，可为空数组）\n"
         "  - `depends_on`：依赖的 local_id 列表（只能引用本批次 local_id，可为空数组）\n"
-        "  - `coordination_mode`：枚举之一 — parallel | bundle | sequential\n"
+        "  - `coordination_mode`：枚举之一 — Union[parallel, bundle] | sequential\n"
         "- 不得凭空发明能力；requirements 必须是可验证的具体条件\n"
         "- 请直接返回 JSON，不要包含任何额外解释文字"
     )

@@ -1,6 +1,0 @@
-id,name,value,category,status,created_at,score,description,is_valid,priority,tags
-1,Item_ErEqJP,279.1,C,inactive,2026-04-07T02:22:05.912442+00:00,66,Random item 1 - qxtQp8WXNM,True,2,"tag2,tag4,tag5"
-2,Item_EQY0mx,441.98,D,active,2026-04-07T02:22:05.914159+00:00,14,Random item 2 - uyidzMu05w,True,1,"tag1,tag2"
-3,Item_Po3tjC,237.57,A,pending,2026-04-07T02:22:05.914179+00:00,37,Random item 3 - YM0KQjbNoS,True,4,"tag3,tag4"
-4,Item_Z2xeqX,40.32,D,inactive,2026-04-07T02:22:05.914190+00:00,42,Random item 4 - NiO7cjWhg4,False,1,"tag5,tag3"
-5,Item_nB1j2O,849.46,B,inactive,2026-04-07T02:22:05.914199+00:00,35,Random item 5 - etG8SSyPEm,True,2,"tag2,tag1"

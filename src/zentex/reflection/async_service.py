@@ -1,3 +1,4 @@
+from __future__ import annotations
 """
 Async Reflection Service - 异步反思服务
 
@@ -5,12 +6,11 @@ Async Reflection Service - 异步反思服务
 此服务层包装原有的同步服务，不修改原有逻辑。
 """
 
-from __future__ import annotations
 
 import logging
 import threading
 import uuid
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Union
 from datetime import datetime, timezone
 
 from zentex.reflection.models import ReflectionType, ReflectionTrigger
@@ -49,7 +49,7 @@ class AsyncReflectionService:
         thread_pool_size: int = 4,
         task_timeout_seconds: int = 300,
         max_retries: int = 3,
-        workflow_bridge: WorkflowTaskBridge | None = None,
+        workflow_bridge: Optional[WorkflowTaskBridge] = None,
     ):
         """
         初始化异步服务

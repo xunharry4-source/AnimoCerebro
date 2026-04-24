@@ -11,7 +11,7 @@ PROVIDES:
 - Session lifecycle management (create, suspend, terminate)
 - Turn execution (9-phase protocol: observe → perceive → recognize → reason → decide
   → plan → prepare → act → consolidate)
-- Session state queries (working memory, audit log, session meta, transcript)
+- Session state queries (working memory, audit log, session meta, audit events)
 - Nine-question bootstrap and Q1-Q9 cognitive plugin coordination
 - Bridge to external services (environment, cognition, memory, safety, plugins, llm)
 
@@ -25,7 +25,7 @@ DOES NOT:
 ARCHITECTURE:
 - KernelService: public entry point (service-only boundary)
 - session_domain: session registry and lifecycle
-- state_domain: working memory, self-model, temporal state, transcript
+- state_domain: working memory, self-model, temporal state, audit events
 - cognition_flow: 9-phase turn execution engine (router, executor, models)
 - flow_domain: phase definitions and turn protocol
 
@@ -36,6 +36,9 @@ All other submodules are internal to kernel and should not be imported by extern
 
 from zentex.kernel.service import KernelService, get_service
 from zentex.kernel.public import (
+    AuditEvent,
+    AuditEventStore,
+    AuditEventType,
     BrainTranscriptEntry,
     BrainTranscriptEntryType,
     BrainTranscriptStore,
@@ -47,6 +50,9 @@ from zentex.kernel.public import (
 __all__ = [
     "KernelService",
     "get_service",
+    "AuditEvent",
+    "AuditEventStore",
+    "AuditEventType",
     "BrainTranscriptEntry",
     "BrainTranscriptEntryType",
     "BrainTranscriptStore",

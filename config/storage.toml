@@ -1,0 +1,15 @@
+[storage]
+# Canonical default persistence root. Relative paths are resolved from the
+# repository working directory. Override with ZENTEX_DATA_ROOT when needed.
+data_root = "data"
+
+# Derived durable stores. Keep all default write targets under data_root so
+# deleting/recreating runtime data does not fragment state across workspaces.
+session_db = "data/sessions.db"
+transcript_dir = "data/transcripts"
+workspace_db = "data/workspaces.db"
+app_data_dir = "data/app_data"
+runtime_data_dir = "data/runtime"
+nine_questions_dir = "data/runtime/nine_questions"
+core_db = "data/runtime/zentex_core.db"
+mcp_audit_db = "data/mcp_audit.sqlite3"

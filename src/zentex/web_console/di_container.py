@@ -1,13 +1,13 @@
+from __future__ import annotations
 """Unified DI Container for Web Console
 
 Manages object lifecycle and provides FastAPI Depends-friendly factories.
 Replaces scattered get_* functions in dependencies.py.
 """
 
-from __future__ import annotations
 
 import logging
-from typing import TYPE_CHECKING, Callable, Any, Dict
+from typing import TYPE_CHECKING, Callable, Any, Dict, List, Optional, Union
 from functools import lru_cache
 
 if TYPE_CHECKING:
@@ -26,10 +26,7 @@ class WebConsoleContainer:
     
     Usage:
         # At app startup
-        WebConsoleContainer.initialize(
-            session_db_path="./data/sessions.db",
-            transcript_db_path="./data/transcripts.db",
-        )
+        WebConsoleContainer.initialize()
         
         # In route handlers
         @app.get("/api/sessions")
@@ -40,30 +37,26 @@ class WebConsoleContainer:
             return {"sessions": sessions}
     """
 
-    _kernel_service: KernelServiceFacade | None = None
+    _kernel_service: Optional[KernelServiceFacade] = None
     _initialized = False
 
     @classmethod
     def initialize(
         cls,
-        kernel_service: KernelServiceFacade | None = None,
-        session_db_path: str = "./data/sessions.db",
-        transcript_db_path: str = "./data/transcripts.db",
+        kernel_service: Optional[KernelServiceFacade] = None,
     ):
         """Initialize container at application startup
 
-        Args:
-            kernel_service: Optional custom facade (default: DefaultKernelServiceFacade)
-            session_db_path: SQLite DB path
-            transcript_db_path: SQLite DB path
+        Standard Redline:
+        - Fail-Closed: If the KernelServiceFacade fails to initialize, this method
+          must propagate the exception to prevent the system from starting in a
+          zombie state.
         """
         if kernel_service is None:
             from .kernel_service_impl import DefaultKernelServiceFacade
 
-            kernel_service = DefaultKernelServiceFacade(
-                session_db_path=session_db_path,
-                transcript_db_path=transcript_db_path,
-            )
+            # Any initialization failure here correctly propagates up
+            kernel_service = DefaultKernelServiceFacade()
 
         cls._kernel_service = kernel_service
         cls._initialized = True
@@ -84,23 +77,6 @@ class WebConsoleContainer:
         return cls._kernel_service
 
     # ========== Depends Factories ==========
-
-    @staticmethod
-    def get_transcript_store_depends() -> Callable:
-        """FastAPI Depends factory for transcript store
-
-        Returns:
-            Callable suitable for Depends()
-
-        Usage:
-            Depends(WebConsoleContainer.get_transcript_store_depends())
-        """
-
-        async def _get(_ = None):
-            container = WebConsoleContainer.get_kernel_service()
-            return container.get_transcript_store()
-
-        return _get
 
     @staticmethod
     def get_plugin_registry_depends() -> Callable:

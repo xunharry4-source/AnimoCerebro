@@ -5,7 +5,7 @@ import sqlite3
 from datetime import datetime, timezone
 from pathlib import Path
 from threading import Condition
-from typing import Iterable, Optional
+from typing import Iterable, Optional, Any, Dict, List, Union
 from uuid import uuid4
 from collections.abc import Callable
 
@@ -20,9 +20,9 @@ from zentex.kernel.state_domain.brain_transcript_models import (
 class BrainTranscriptStore:
     def __init__(
         self,
-        file_path: str | Path,
+        file_path: Union[str, Path],
         *,
-        entry_listeners: Iterable[Callable[[BrainTranscriptEntry], None]] | None = None,
+        entry_listeners: Iterable[Callable[[BrainTranscriptEntry], Optional[None]]] = None,
     ) -> None:
         self._file_path = Path(file_path)
         if self._file_path.suffix == ".jsonl":
@@ -178,3 +178,25 @@ class BrainTranscriptStore:
             return [self._row_to_entry(row) for row in cursor.fetchall()]
         finally:
             conn.close()
+
+    def read_entries_by_trace_prefix(
+        self,
+        trace_prefix: str,
+    ) -> list[BrainTranscriptEntry]:
+        """
+        Phase F: Query entries by trace_id prefix (e.g. 'task-audit:{task_id}:').
+        Allows efficient retrieval of task-specific audit trails.
+        """
+        query = "SELECT * FROM transcript_entries WHERE trace_id LIKE ? ORDER BY timestamp ASC"
+        params = [f"{trace_prefix}%"]
+        conn = self._get_connection()
+        try:
+            cursor = conn.cursor()
+            cursor.execute(query, params)
+            return [self._row_to_entry(row) for row in cursor.fetchall()]
+        finally:
+            conn.close()
+
+    def close(self) -> None:
+        """Compatibility no-op: connections are opened per operation."""
+        return None

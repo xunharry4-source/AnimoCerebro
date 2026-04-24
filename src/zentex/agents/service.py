@@ -2,12 +2,13 @@ from __future__ import annotations
 import asyncio
 import logging
 from datetime import datetime, timezone
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Union
 from uuid import uuid4
 
 from pydantic import BaseModel, Field
 from zentex.agents.manager import AgentManager, AgentAsset, AgentStatus, AgentTrustLevel
-from zentex.agents.bridge import AgentBridge
+from zentex.agents.bridge import AgentBridge, AgentBridgeError
+from zentex.foundation.contracts.service_response import ServiceResponse, ServiceStatus, ServiceErrorCode
 from zentex.kernel import BrainTranscriptEntryType
 from zentex.tasks.service import TaskStatus, ZentexTask
 
@@ -32,7 +33,7 @@ class AgentCoordinationService:
     Enforces mandatory handshake and security audit before enabling assets.
     """
     
-    def __init__(self, manager: AgentManager | None = None, transcript_store: Any = None) -> None:
+    def __init__(self, manager: Optional[AgentManager] = None, transcript_store: Any = None) -> None:
         self.manager = manager or AgentManager()
         self.transcript_store = transcript_store
         self.bridge = AgentBridge()
@@ -95,13 +96,16 @@ class AgentCoordinationService:
         )
 
     async def register_agent(
-        self, 
-        request: AgentRegistrationRequest, 
+        self,
+        request: AgentRegistrationRequest,
         operator_id: str = "web-console-operator"
     ) -> AgentAsset:
         """
         Mandatory Step 1: Securely register a new agent.
-        Starts as PENDING.
+
+        Fail-closed: the agent endpoint is health-probed before the asset is
+        added to the registry.  An unreachable endpoint raises AgentBridgeError
+        which the router maps to HTTP 400.
         """
         agent_id = str(uuid4())[:8]
         asset = AgentAsset(
@@ -113,37 +117,50 @@ class AgentCoordinationService:
             endpoint=request.endpoint,
             auth_token=request.auth_token,
             role_tag=request.role_tag,
-            trust_level=AgentTrustLevel.PENDING, # Secure redline: Always start as pending
+            trust_level=AgentTrustLevel.PENDING,  # Secure redline: Always start as pending
             status=AgentStatus.OFFLINE,
-            scope=request.scope
+            scope=request.scope,
         )
+
+        # Connectivity check — must pass before we store the asset.
+        is_reachable = await self.bridge.check_health(asset)
+        if not is_reachable:
+            raise AgentBridgeError(
+                f"Agent endpoint '{request.endpoint}' is not reachable. "
+                "Ensure the agent is running and the endpoint is correct before registering."
+            )
+
         self.manager.add_asset(asset)
-        
+
         self.record_audit(agent_id, "REGISTER", {
             "operator_id": operator_id,
-            "request": request.model_dump(exclude={"auth_token"})
+            "request": request.model_dump(exclude={"auth_token"}),
         })
-        
-        # Note: Handshake will be triggered manually via API endpoint
-        # This avoids asyncio.create_task issues in FastAPI context
-        logger.info(f"Agent {agent_id} registered. Trigger handshake via /api/web/agents/{agent_id}/handshake")
-        
+
+        logger.info(
+            "Agent %s registered. Trigger handshake via /api/web/agents/%s/handshake",
+            agent_id, agent_id,
+        )
         return asset
 
-    async def perform_handshake(self, agent_id: str) -> None:
+    async def perform_handshake(self, agent_id: str) -> ServiceResponse:
         """
         Step 2: Capabilities Discovery (Handshake).
         Uses AgentBridge to communicate with external agent.
         """
         asset = self.manager.get_asset(agent_id)
         if not asset:
-            return
+            return ServiceResponse.error(ServiceErrorCode.INVALID_ARGUMENT, f"Agent {agent_id} not found")
 
         logger.info(f"Initiating handshake for agent {agent_id} at {asset.endpoint}")
+        trace_id = str(uuid4())
         
         try:
             # Real network handshake via Bridge
             handshake_data = await self.bridge.perform_handshake(asset)
+            
+            # Audit first: record the discovery before promoting state
+            self.record_audit(agent_id, "HANDSHAKE_SUCCESS", {"data": handshake_data})
             
             self.manager.update_asset(
                 agent_id, 
@@ -153,15 +170,37 @@ class AgentCoordinationService:
                 last_ping_at=datetime.now(timezone.utc)
             )
             
-            self.record_audit(agent_id, "HANDSHAKE_SUCCESS", {"data": handshake_data})
+            # Safety audit is NOT triggered automatically here.
+            # Callers must invoke /agents/{id}/safety-audit explicitly after handshake.
+            return ServiceResponse.ok(data=handshake_data, trace_id=trace_id)
             
-            # Automatically trigger safety audit after successful handshake
-            await self.perform_safety_audit(agent_id)
-            
-        except Exception as exc:
-            logger.error(f"Handshake failed for agent {agent_id}: {exc}")
+        except AgentBridgeError as exc:
+            logger.error(f"Handshake failed for agent {agent_id}: {exc}", exc_info=True)
+            self.record_audit(agent_id, "HANDSHAKE_FAILED", {"error": str(exc), "status_code": exc.status_code})
             self.manager.update_asset(agent_id, status=AgentStatus.HANDSHAKE_FAILED)
-            self.record_audit(agent_id, "HANDSHAKE_FAILED", {"error": str(exc)})
+            return self._map_bridge_error(exc, trace_id)
+        except Exception as exc:
+            logger.error(f"Uncaught exception during handshake for agent {agent_id}: {exc}", exc_info=True)
+            self.record_audit(agent_id, "HANDSHAKE_CRASHED", {"error": str(exc)})
+            self.manager.update_asset(agent_id, status=AgentStatus.HANDSHAKE_FAILED)
+            return ServiceResponse.error(ServiceErrorCode.INTERNAL_UNRECOVERABLE, f"Unexpected failure: {exc}", trace_id=trace_id)
+
+    def _map_bridge_error(self, exc: AgentBridgeError, trace_id: str) -> ServiceResponse:
+        """Map AgentBridgeError to standard ServiceErrorCode."""
+        code = ServiceErrorCode.INTERNAL_UNRECOVERABLE
+        if exc.status_code:
+            if exc.status_code == 401 or exc.status_code == 403:
+                code = ServiceErrorCode.PERMISSION_DENIED
+            elif exc.status_code == 404:
+                code = ServiceErrorCode.NOT_FOUND
+            elif exc.status_code >= 500:
+                code = ServiceErrorCode.DEPENDENCY_UNAVAILABLE
+            elif exc.status_code == 400:
+                code = ServiceErrorCode.INVALID_ARGUMENT
+        elif "transport failure" in str(exc).lower() or "timeout" in str(exc).lower():
+            code = ServiceErrorCode.DEPENDENCY_UNAVAILABLE
+            
+        return ServiceResponse.error(code, str(exc), trace_id=trace_id)
 
     async def perform_safety_audit(self, agent_id: str) -> bool:
         """
@@ -174,14 +213,27 @@ class AgentCoordinationService:
 
         logger.info(f"Running safety audit for agent {agent_id} (trust_level={asset.trust_level})")
         
-        # Check security compliance (mocking the external service, but logic remains firm)
-        # Policy: Agents with restrictive scopes or untrusted origins must remain PENDING.
+        # POLICY: Fail-Closed. Rejection is the default.
+        compliance_check = False
+        rejection_reason = ""
         
-        compliance_check = True # Global policy check
-        
-        # Extreme Redline: If endpoint is on a blocklist or auth_token is expired (simulation)
-        if "malicious" in asset.endpoint:
-            compliance_check = False
+        # 1. Connection Security Constraints
+        if not asset.endpoint:
+            rejection_reason = "Missing endpoint"
+        elif not asset.endpoint.startswith("https://") and "127.0.0.1" not in asset.endpoint and "localhost" not in asset.endpoint:
+            rejection_reason = "Insecure connection: Endpoint violates mandatory HTTPS/Localhost requirement"
+            
+        # 2. Authentication Integrity
+        elif not asset.auth_token:
+             rejection_reason = "Authentication token absent"
+             
+        # 3. Operational Presence
+        elif not asset.scope:
+             rejection_reason = "Agent has no defined operational scope (empty manifest)"
+            
+        else:
+            # Audit Passed: All mandatory security gates cleared.
+            compliance_check = True
             
         if compliance_check:
             # Promotion to TRUSTED is only possible if audit passes
@@ -190,7 +242,8 @@ class AgentCoordinationService:
             return True
         else:
             self.manager.update_asset(agent_id, status=AgentStatus.AUDIT_FAILED, trust_level=AgentTrustLevel.REVOKED)
-            self.record_audit(agent_id, "AUDIT_FAILED", {"reason": "Policy Violation"})
+            self.record_audit(agent_id, "AUDIT_FAILED", {"reason": rejection_reason or "Policy Violation"})
+            logger.warning(f"Safety Audit REJECTED for agent {agent_id}: {rejection_reason}")
             return False
 
     async def update_policy(self, agent_id: str, trust_level: AgentTrustLevel, scope: List[str]) -> AgentAsset:
@@ -201,16 +254,16 @@ class AgentCoordinationService:
         if not asset:
             raise KeyError(f"Agent {agent_id} not found")
             
-        old_state_dict = asset.model_dump()
-        new_asset = self.manager.update_asset(agent_id, trust_level=trust_level, scope=scope)
-        if not new_asset:
-             raise KeyError(f"Agent {agent_id} update failed")
-             
-        # Use a safe way to record audit to avoid serialization issues
+        # Audit first to ensure trace even if manager update fails
         self.record_audit(agent_id, "POLICY_UPDATED", {
             "trust_level_change": f"{asset.trust_level} -> {trust_level}",
             "scope_change": f"{asset.scope} -> {scope}"
         })
+
+        new_asset = self.manager.update_asset(agent_id, trust_level=trust_level, scope=scope)
+        if not new_asset:
+             raise KeyError(f"Agent {agent_id} update failed")
+             
         return new_asset
 
     async def unregister_agent(self, agent_id: str, operator_id: str = "web-console-operator") -> bool:
@@ -297,24 +350,30 @@ class AgentCoordinationService:
                     updated_assets.append(new_asset)
         return updated_assets
 
-    async def dispatch_task(self, agent_id: str, task_payload: Dict[str, Any]) -> Dict[str, Any]:
+    async def dispatch_task(self, agent_id: str, task_payload: Dict[str, Any]) -> ServiceResponse:
         """
         Dispatch a task to an external agent via the Bridge.
         """
         asset = self.manager.get_asset(agent_id)
         if not asset:
-            raise KeyError(f"Agent {agent_id} not found")
+            return ServiceResponse.error(ServiceErrorCode.INVALID_ARGUMENT, f"Agent {agent_id} not found")
         
         if asset.status in [AgentStatus.OFFLINE, AgentStatus.HANDSHAKE_FAILED, AgentStatus.AUDIT_FAILED]:
-            raise ValueError(f"Agent {agent_id} is not available for tasks (Status: {asset.status})")
+            return ServiceResponse.error(ServiceErrorCode.DEPENDENCY_UNAVAILABLE, f"Agent {agent_id} is in status {asset.status}")
 
+        trace_id = str(uuid4())
         try:
             result = await self.bridge.execute_task(asset, task_payload)
             self.record_audit(agent_id, "TASK_DISPATCHED", {"payload": task_payload, "result_summary": str(result)[:100]})
-            return result
-        except Exception as e:
-            self.record_audit(agent_id, "TASK_FAILED", {"error": str(e)})
-            raise
+            return ServiceResponse.ok(data=result, trace_id=trace_id)
+        except AgentBridgeError as exc:
+            logger.error(f"Task dispatch failed for agent {agent_id}: {exc}", exc_info=True)
+            self.record_audit(agent_id, "TASK_FAILED", {"error": str(exc), "status_code": exc.status_code})
+            return self._map_bridge_error(exc, trace_id)
+        except Exception as exc:
+            logger.error(f"Uncaught exception during task dispatch for agent {agent_id}: {exc}", exc_info=True)
+            self.record_audit(agent_id, "TASK_CRASHED", {"error": str(exc)})
+            return ServiceResponse.error(ServiceErrorCode.INTERNAL_UNRECOVERABLE, f"Unexpected failure: {exc}", trace_id=trace_id)
 
     def calculate_credit_score(
         self,
@@ -333,39 +392,66 @@ class AgentCoordinationService:
         total_tasks = len(all_tasks)
         completed_tasks = len([t for t in all_tasks if str(t.status.value).lower() in ["done", "completed"]])
         failed_tasks = len([t for t in all_tasks if str(t.status.value).lower() == "failed"])
-        
+
+        # POLICY[no-fake-impl]: return None total_score when there is no task history.
+        # An agent that has never run a task has no earned score — not a perfect score.
+        if total_tasks == 0:
+            return {
+                "total_score": None,
+                "dimensions": [
+                    {"id": "completion", "label": "Task Completion", "score": None, "weight": 0.30,
+                     "description": "No task history"},
+                    {"id": "latency", "label": "Latency", "score": None, "weight": 0.25,
+                     "description": "No latency data"},
+                    {"id": "error_rate", "label": "Error Rate", "score": None, "weight": 0.20,
+                     "description": "No task history"},
+                    {"id": "audit", "label": "Audit Compliance",
+                     "score": None, "weight": 0.15,
+                     "description": f"Trust Level: {asset.trust_level}"},
+                    {"id": "stability", "label": "Stability", "score": None, "weight": 0.10,
+                     "description": "No task history"},
+                ],
+            }
+
         # Dimension 1: Task Completion Rate (30% weight)
-        completion_rate = (completed_tasks / total_tasks * 100) if total_tasks > 0 else 100
+        completion_rate = completed_tasks / total_tasks * 100
         completion_score = min(completion_rate, 100)
-        
+
         # Dimension 2: Response Latency Score (25% weight)
         latency_ms = asset.latency_ms
         if latency_ms is None:
-            latency_score = 80
+            # No measured latency yet — do not fabricate a score; use 0.
+            latency_score = 0.0
+            latency_desc = "No latency data"
         elif latency_ms < 100:
-            latency_score = 100
+            latency_score = 100.0
+            latency_desc = f"Avg Latency {latency_ms}ms"
         elif latency_ms < 500:
-            latency_score = 80
+            latency_score = 80.0
+            latency_desc = f"Avg Latency {latency_ms}ms"
         else:
-            latency_score = 60
-        
+            latency_score = 60.0
+            latency_desc = f"Avg Latency {latency_ms}ms"
+
         # Dimension 3: Error Rate Score (20% weight)
-        error_rate = (failed_tasks / total_tasks) if total_tasks > 0 else 0
+        error_rate = failed_tasks / total_tasks
         error_score = max((1 - error_rate) * 100, 0)
-        
+
         # Dimension 4: Audit Compliance Score (15% weight)
         trust_level_scores = {
             AgentTrustLevel.TRUSTED.value: 100,
-            AgentTrustLevel.PENDING.value: 70,
+            AgentTrustLevel.PENDING.value: 40,
             AgentTrustLevel.RESTRICTED.value: 50,
-            AgentTrustLevel.REVOKED.value: 20,
-            AgentTrustLevel.UNKNOWN.value: 50,
+            AgentTrustLevel.REVOKED.value: 0,
+            AgentTrustLevel.UNKNOWN.value: 20,
         }
-        audit_score = trust_level_scores.get(str(asset.trust_level.value), 50)
-        
-        # Dimension 5: Historical Stability Score (10% weight)
-        stability_score = asset.success_rate * 100
-        
+        audit_score = trust_level_scores.get(str(asset.trust_level.value), 20)
+
+        # Dimension 5: Historical Stability Score (10% weight).
+        # Only meaningful once there are tasks; we derive from completed/total, not the
+        # default success_rate=1.0 on the asset which is an uninitialised placeholder.
+        stability_score = (completed_tasks / total_tasks) * 100
+
         total_score = (
             completion_score * 0.30 +
             latency_score * 0.25 +
@@ -373,7 +459,7 @@ class AgentCoordinationService:
             audit_score * 0.15 +
             stability_score * 0.10
         )
-        
+
         return {
             "total_score": round(total_score, 2),
             "dimensions": [
@@ -382,37 +468,37 @@ class AgentCoordinationService:
                     "label": "Task Completion",
                     "score": round(completion_score, 2),
                     "weight": 0.30,
-                    "description": f"Completed {completed_tasks}/{total_tasks} tasks"
+                    "description": f"Completed {completed_tasks}/{total_tasks} tasks",
                 },
                 {
                     "id": "latency",
                     "label": "Latency",
                     "score": round(latency_score, 2),
                     "weight": 0.25,
-                    "description": f"Avg Latency {latency_ms or 'N/A'}ms"
+                    "description": latency_desc,
                 },
                 {
                     "id": "error_rate",
                     "label": "Error Rate",
                     "score": round(error_score, 2),
                     "weight": 0.20,
-                    "description": f"Failure rate {error_rate*100:.1f}%"
+                    "description": f"Failure rate {error_rate * 100:.1f}%",
                 },
                 {
                     "id": "audit",
                     "label": "Audit Compliance",
                     "score": round(audit_score, 2),
                     "weight": 0.15,
-                    "description": f"Trust Level: {asset.trust_level}"
+                    "description": f"Trust Level: {asset.trust_level}",
                 },
                 {
                     "id": "stability",
                     "label": "Stability",
                     "score": round(stability_score, 2),
                     "weight": 0.10,
-                    "description": f"Success rate {asset.success_rate*100:.1f}%"
+                    "description": f"Completion rate {stability_score:.1f}%",
                 },
-            ]
+            ],
         }
 
     def get_statistics(
@@ -438,6 +524,8 @@ class AgentCoordinationService:
             if completed_with_time else 0
         )
 
+        # uptime_percentage: not tracked — no server-side heartbeat log available.
+        # Callers must not display this field as if it were real uptime data.
         return {
             "total_tasks": total_tasks,
             "completed_tasks": completed_tasks,
@@ -445,7 +533,7 @@ class AgentCoordinationService:
             "in_progress_tasks": in_progress_tasks,
             "pending_tasks": max(0, pending_tasks),
             "avg_completion_time": round(avg_completion_time, 2),
-            "uptime_percentage": 95.0, # Placeholder
+            "uptime_percentage": None,  # POLICY[no-fake-impl]: real uptime unavailable
         }
 
     def query_agent_tasks(
@@ -534,7 +622,7 @@ __all__ = [
 
 
 # Global singleton instance for agents service
-_default_service: AgentCoordinationService | None = None
+_default_service: Optional[AgentCoordinationService] = None
 
 
 def get_service() -> AgentCoordinationService:

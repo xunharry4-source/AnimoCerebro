@@ -41,6 +41,7 @@ import Q9Test from "./pages/nine-questions/q9/Q9Test";
 
 import NineQuestionDetailPage from "./pages/nine-questions/NineQuestionDetailPage";
 import NineQuestionSandboxPage from "./pages/nine-questions/NineQuestionSandboxPage";
+import NineQuestionWorkflowGraphPage from "./pages/nine-questions/NineQuestionWorkflowGraphPage";
 import AgentAssetManager from "./pages/agents/AgentAssetManager";
 import AgentDetail from "./pages/agents/AgentDetail";
 import ZentexTaskManager from "./pages/tasks/ZentexTaskManager";
@@ -253,6 +254,9 @@ export default function App() {
 
           <Route path="/console/nine-questions/q9" element={<Q9Detail />} />
           <Route path="/console/nine-questions/q9/test" element={<Q9Test />} />
+
+          {/* Workflow graph — shared across all q1-q9 */}
+          <Route path="/console/nine-questions/:q_id/workflow" element={<NineQuestionWorkflowGraphPage />} />
 
           {/* Legacy/Generic routes (deprecated but kept for absolute fallback) */}
           <Route path="/console/nine-questions/:q_id" element={<NineQuestionDetailPage />} />

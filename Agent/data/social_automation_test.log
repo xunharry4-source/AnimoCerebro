@@ -1,0 +1,115 @@
+Traceback (most recent call last):
+  File "/Users/harry/Documents/git/AnimoCerebro-external/Agent/test_social_media_automation.py", line 251, in test_reddit_rules_fetch
+    cached_rule = self.rules_manager.load_rule(subreddit)
+                  ^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+AttributeError: 'CommunityRulesManager' object has no attribute 'load_rule'
+Traceback (most recent call last):
+  File "/Users/harry/Documents/git/AnimoCerebro-external/Agent/test_social_media_automation.py", line 387, in test_reddit_violation_check
+    cached_rule = self.rules_manager.load_rule(subreddit)
+                  ^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+AttributeError: 'CommunityRulesManager' object has no attribute 'load_rule'
+Traceback (most recent call last):
+  File "/Users/harry/Documents/git/AnimoCerebro-external/Agent/test_social_media_automation.py", line 474, in test_reddit_posting_with_flair
+    self.page.goto(f"https://www.reddit.com/r/{subreddit}/submit", wait_until="domcontentloaded", timeout=60000)
+    ~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/Users/harry/Documents/git/AnimoCerebro-external/.venv/lib/python3.14/site-packages/playwright/sync_api/_generated.py", line 9054, in goto
+    self._sync(
+    ~~~~~~~~~~^
+        self._impl_obj.goto(
+        ^^^^^^^^^^^^^^^^^^^^
+            url=url, timeout=timeout, waitUntil=wait_until, referer=referer
+            ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+        )
+        ^
+    )
+    ^
+  File "/Users/harry/Documents/git/AnimoCerebro-external/.venv/lib/python3.14/site-packages/playwright/_impl/_sync_base.py", line 115, in _sync
+    return task.result()
+           ~~~~~~~~~~~^^
+  File "/Users/harry/Documents/git/AnimoCerebro-external/.venv/lib/python3.14/site-packages/playwright/_impl/_page.py", line 552, in goto
+    return await self._main_frame.goto(**locals_to_params(locals()))
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/Users/harry/Documents/git/AnimoCerebro-external/.venv/lib/python3.14/site-packages/playwright/_impl/_frame.py", line 153, in goto
+    await self._channel.send(
+        "goto", self._navigation_timeout, locals_to_params(locals())
+    )
+  File "/Users/harry/Documents/git/AnimoCerebro-external/.venv/lib/python3.14/site-packages/playwright/_impl/_connection.py", line 69, in send
+    return await self._connection.wrap_api_call(
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+    ...<3 lines>...
+    )
+    ^
+  File "/Users/harry/Documents/git/AnimoCerebro-external/.venv/lib/python3.14/site-packages/playwright/_impl/_connection.py", line 559, in wrap_api_call
+    raise rewrite_error(error, f"{parsed_st['apiName']}: {error}") from None
+playwright._impl._errors.TargetClosedError: Page.goto: Target page, context or browser has been closed
+
+================================================================================
+  🎯 综合社交媒体自动化测试
+================================================================================
+
+测试内容:
+  1. X.com 自动发帖
+  2. Reddit 社区规则获取
+  3. Reddit 违规内容检测
+  4. Reddit 自动发帖 + Flair 选择
+
+================================================================================
+
+================================================================================
+  🚀 启动 Stealth Chrome
+================================================================================
+✅ 浏览器启动成功
+
+
+================================================================================
+  📝 测试 1: X.com 自动发帖
+================================================================================
+
+🌐 访问 X.com...
+
+💡 请手动登录 X.com...
+   等待 180 秒...
+   ⏳ 剩余 180s | https://x.com/...   ⏳ 剩余 175s | https://x.com/...   ⏳ 剩余 170s | https://x.com/...   ⏳ 剩余 165s | https://x.com/...   ⏳ 剩余 160s | https://x.com/...   ⏳ 剩余 155s | https://x.com/...   ⏳ 剩余 150s | https://x.com/...   ⏳ 剩余 145s | https://x.com/...   ⏳ 剩余 140s | https://x.com/...   ⏳ 剩余 135s | https://x.com/...   ⏳ 剩余 130s | https://x.com/...   ⏳ 剩余 125s | https://x.com/...   ⏳ 剩余 120s | https://x.com/...   ⏳ 剩余 115s | https://x.com/...   ⏳ 剩余 110s | https://x.com/...   ⏳ 剩余 105s | https://x.com/...   ⏳ 剩余 100s | https://x.com/...   ⏳ 剩余 95s | https://x.com/...   ⏳ 剩余 90s | https://x.com/...   ⏳ 剩余 85s | https://x.com/...   ⏳ 剩余 80s | https://x.com/...   ⏳ 剩余 75s | https://x.com/...   ⏳ 剩余 70s | https://x.com/...   ⏳ 剩余 65s | https://x.com/...   ⏳ 剩余 60s | https://x.com/...   ⏳ 剩余 55s | https://x.com/...   ⏳ 剩余 50s | https://x.com/...   ⏳ 剩余 45s | https://x.com/...   ⏳ 剩余 40s | https://x.com/...   ⏳ 剩余 35s | https://x.com/...   ⏳ 剩余 30s | https://x.com/...   ⏳ 剩余 25s | https://x.com/...   ⏳ 剩余 20s | https://x.com/...   ⏳ 剩余 15s | https://x.com/...   ⏳ 剩余 10s | https://x.com/...   ⏳ 剩余 5s | https://x.com/...
+⚠️  登录超时，跳过 X 发帖测试
+
+================================================================================
+  📋 测试 2: Reddit 社区规则获取 (r/Python)
+================================================================================
+
+❌ Reddit 规则获取失败: 'CommunityRulesManager' object has no attribute 'load_rule'
+
+================================================================================
+  🔍 测试 3: Reddit 违规内容检测 (r/Python)
+================================================================================
+
+❌ 违规检测测试失败: 'CommunityRulesManager' object has no attribute 'load_rule'
+
+================================================================================
+  📤 测试 4: Reddit 自动发帖 + Flair 选择 (r/Python)
+================================================================================
+
+🌐 访问 r/Python 提交页面...
+
+❌ Reddit 发帖测试失败: Page.goto: Target page, context or browser has been closed
+
+================================================================================
+  📊 测试结果汇总
+================================================================================
+  ❌ X.com 自动发帖
+  ❌ Reddit 社区规则获取
+  ❌ Reddit 违规检测
+  ❌ Reddit 自动发帖
+  ❌ Reddit Flair 选择
+
+  成功率: 0/5 (0.0%)
+================================================================================
+
+💾 结果已保存: Agent/test_results_social_automation.json
+
+⏳ 浏览器将在 30 秒后关闭...
+
+✓ 页面已关闭
+✓ 上下文已关闭
+✓ Playwright 已停止
+
+✅ 所有资源已释放

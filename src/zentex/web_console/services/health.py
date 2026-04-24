@@ -1,3 +1,4 @@
+from __future__ import annotations
 """
 System Health Service Thin Adapter — Web Console Layer.
 
@@ -12,7 +13,6 @@ DECOUPLING POLICY (Zentex Codex §2):
 This module must remain a 'Logic-Free Zone'. Any evolution of health check algorithms, 
 module categorization, or status threshold rules must be implemented in `zentex.system.health`.
 """
-from __future__ import annotations
 from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional
 

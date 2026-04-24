@@ -1,3 +1,4 @@
+from __future__ import annotations
 """
 Info Service: Plugin Documentation and Protocol Information
 
@@ -9,7 +10,6 @@ Handles:
 - Compatibility matrix generation
 """
 
-from __future__ import annotations
 
 import logging
 import inspect

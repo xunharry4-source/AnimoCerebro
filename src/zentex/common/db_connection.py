@@ -1,3 +1,4 @@
+from __future__ import annotations
 """
 Unified Database Connection Manager for Zentex.
 
@@ -34,7 +35,6 @@ Usage:
         return rows
 """
 
-from __future__ import annotations
 
 import logging
 import sqlite3
@@ -341,7 +341,7 @@ def get_db_connection() -> UnifiedDatabaseConnection:
         
     Example:
         db = get_db_connection()
-        db.initialize("runtime/data/zentex_core.db")
+        db.initialize(get_storage_paths().core_db)
     """
     return UnifiedDatabaseConnection()
 

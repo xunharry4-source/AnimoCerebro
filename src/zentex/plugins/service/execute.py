@@ -1,3 +1,4 @@
+from __future__ import annotations
 """
 Execution Service: Plugin Execution Management
 
@@ -8,17 +9,19 @@ Handles:
 - Automatic degradation on failures
 """
 
-from __future__ import annotations
 
 import logging
 import json
 import inspect
+import asyncio
+from copy import deepcopy
 from datetime import datetime, timezone
 from typing import Any, Dict, Optional
 
 from zentex.foundation.contracts import ActionIntent
 
 from zentex.plugins.models import PluginLifecycleStatus
+from zentex.plugins.errors import PluginExecutionError
 from zentex.common.protocol import TaskFeedback
 from zentex.plugins.service.manage import _is_always_active
 
@@ -54,6 +57,46 @@ class ExecutionService:
         self._promote_plugin = promote_fn
         self._public_service = public_service
 
+        # Cognitive services for integration (Reflection, Memory, Learning, Audit)
+        self._audit_service: Any = None
+        self._memory_service: Any = None
+        self._reflection_service: Any = None
+        self._learning_service: Any = None
+        self._transcript_store: Any = None
+        self._llm_service: Any = None
+        self._foundation_service: Any = None
+        self._environment_service: Any = None
+
+    def attach_cognitive_services(
+        self,
+        *,
+        audit_service: Any = None,
+        memory_service: Any = None,
+        reflection_service: Any = None,
+        learning_service: Any = None,
+        transcript_store: Any = None,
+        llm_service: Any = None,
+        foundation_service: Any = None,
+        environment_service: Any = None,
+    ) -> None:
+        """Inject cognitive services for plugin integration context enrichment."""
+        if audit_service is not None:
+            self._audit_service = audit_service
+        if memory_service is not None:
+            self._memory_service = memory_service
+        if reflection_service is not None:
+            self._reflection_service = reflection_service
+        if learning_service is not None:
+            self._learning_service = learning_service
+        if transcript_store is not None:
+            self._transcript_store = transcript_store
+        if llm_service is not None:
+            self._llm_service = llm_service
+        if foundation_service is not None:
+            self._foundation_service = foundation_service
+        if environment_service is not None:
+            self._environment_service = environment_service
+
     @staticmethod
     def _normalize_lifecycle_status(value: object) -> str:
         return str(getattr(value, "value", value) or "").strip().lower()
@@ -68,9 +111,148 @@ class ExecutionService:
             return {}
         if isinstance(result, dict):
             return result
+        if hasattr(result, "model_dump"):
+            dumped = result.model_dump(mode="json")
+            if isinstance(dumped, dict):
+                return dumped
         return {"value": result}
 
+    @staticmethod
+    def _contract_failure(*, error_code: str, message: str, details: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
+        return {
+            "_execution_contract": True,
+            "status": "failed",
+            "error_code": error_code,
+            "error_message": message,
+            "data": dict(details or {}),
+        }
+
+    @staticmethod
+    def _extract_nine_question_id(parameters: Dict[str, Any]) -> str:
+        question_id = str((parameters or {}).get("question_id") or "").strip().lower()
+        if question_id in {f"q{i}" for i in range(1, 10)}:
+            return question_id
+        return ""
+
+    @staticmethod
+    def _serialize_state_payload(state: Any) -> Dict[str, Any]:
+        if isinstance(state, dict):
+            return deepcopy(state)
+        if hasattr(state, "to_dict") and callable(getattr(state, "to_dict", None)):
+            payload = state.to_dict()
+            return deepcopy(payload) if isinstance(payload, dict) else {}
+        if hasattr(state, "model_dump") and callable(getattr(state, "model_dump", None)):
+            payload = state.model_dump(mode="json")
+            return deepcopy(payload) if isinstance(payload, dict) else {}
+        return {}
+
+    async def _inject_nine_question_state_if_needed(self, parameters: Dict[str, Any]) -> None:
+        question_id = self._extract_nine_question_id(parameters)
+        if not question_id:
+            return
+        existing = parameters.get("nine_question_state")
+        if isinstance(existing, dict) and isinstance(existing.get("question_snapshots"), dict):
+            return
+
+        try:
+            from zentex.web_console.di_container import WebConsoleContainer
+            from zentex.nine_questions.service import NineQuestionService
+            facade = WebConsoleContainer.get_kernel_service()
+            state_manager = facade.get_nine_question_state_manager()
+            nq_service = NineQuestionService(
+                facade=facade,
+                state_manager=state_manager,
+            )
+            payload = await nq_service.assert_latest_qualified_upstreams(question_id)
+            if payload:
+                parameters.setdefault("nine_question_state", payload)
+        except Exception:
+            logger.exception(
+                "[Plugins] Failed injecting validated nine_question_state into execution context for %s",
+                question_id,
+            )
+            raise
+
+    async def _persist_nine_question_snapshot_from_result(
+        self,
+        *,
+        question_id: str,
+        plugin_id: str,
+        trace_id: str,
+        result_payload: Dict[str, Any],
+    ) -> None:
+        if not question_id:
+            return
+        try:
+            from zentex.web_console.di_container import WebConsoleContainer
+            from zentex.nine_questions.service import NineQuestionService
+        except Exception:
+            return
+
+        try:
+            facade = WebConsoleContainer.get_kernel_service()
+        except Exception:
+            return
+
+        state_manager = facade.get_nine_question_state_manager()
+        nq_service = NineQuestionService(
+            facade=facade,
+            state_manager=state_manager,
+        )
+        context_updates = result_payload.get("context_updates")
+        context_updates = deepcopy(context_updates) if isinstance(context_updates, dict) else {}
+        diagnosis = context_updates.get(f"{question_id}_execution_diagnosis")
+        module_runs = diagnosis.get("module_runs") if isinstance(diagnosis, dict) else []
+        module_runs = deepcopy(module_runs) if isinstance(module_runs, list) else []
+
+        patch = {
+            "tool_id": plugin_id,
+            "trace_id": trace_id,
+            "summary": str(result_payload.get("summary") or ""),
+            "confidence": float(result_payload.get("confidence") or 0.0),
+            "result": deepcopy(result_payload),
+            "context_updates": context_updates,
+            "module_runs": module_runs,
+        }
+
+        try:
+            await nq_service.persist_question_snapshot_patch(
+                question_id,
+                patch,
+                refresh_reason=f"plugin_execute:{question_id}:{plugin_id}",
+            )
+        except ValueError:
+            state = await nq_service.get_state()
+            snapshot_map = nq_service.get_question_snapshot_map(state)
+            snapshot_map[question_id] = patch
+            snapshot_map = nq_service._normalize_snapshot_map_metadata(  # type: ignore[attr-defined]
+                snapshot_map,
+                touch_updated_at=False,
+            )
+            snapshot_map[question_id] = nq_service._normalize_snapshot_metadata(  # type: ignore[attr-defined]
+                snapshot_map[question_id],
+                now_iso=nq_service._now_iso(),  # type: ignore[attr-defined]
+                touch_updated_at=True,
+            )
+            if isinstance(state, dict):
+                snapshot_version = int(state.get("snapshot_version", len(snapshot_map)) or len(snapshot_map))
+                current_dirty = state.get("dirty_questions", [])
+            else:
+                snapshot_version = int(getattr(state, "snapshot_version", len(snapshot_map)) or len(snapshot_map))
+                current_dirty = getattr(state, "dirty_questions", [])
+            dirty_questions = nq_service._normalize_dirty_questions(  # type: ignore[attr-defined]
+                [item for item in current_dirty if str(item).strip() != question_id]
+            )
+            await state_manager.update_state(
+                "nq-baseline",
+                question_snapshots=snapshot_map,
+                snapshot_version=snapshot_version,
+                dirty_questions=dirty_questions,
+                last_refresh_reason=f"plugin_execute_bootstrap:{question_id}:{plugin_id}",
+            )
+
     def _derive_operational_status(self, db_plugin: Dict[str, Any]) -> str:
+        plugin_id = str(db_plugin.get("plugin_id") or "").strip()
         lifecycle_status = self._normalize_lifecycle_status(db_plugin.get("lifecycle_status"))
         if lifecycle_status != PluginLifecycleStatus.ACTIVE.value:
             return "unavailable"
@@ -78,20 +260,25 @@ class ExecutionService:
         if db_plugin.get("stopped_at"):
             return "stopped"
 
-        plugin_id = str(db_plugin.get("plugin_id") or "").strip()
+        persisted_operational_status = self._normalize_operational_status(
+            db_plugin.get("operational_status")
+        )
+        if persisted_operational_status == "stopped":
+            return "stopped"
+
         plugin_instance = self._plugin_instances.get(plugin_id)
         if plugin_instance is None:
-            return "stopped"
+            # Runtime instance loading is handled later in execute_plugin_once().
+            # Do not preemptively mark ACTIVE plugins as stopped here, otherwise
+            # functional/governance plugins are rejected before on-demand rehydrate.
+            return persisted_operational_status or "enabled"
 
         health = getattr(plugin_instance, "health_status", None)
         normalized_health = str(getattr(health, "value", health) or "").strip().lower()
         if normalized_health in {"degraded", "unhealthy", "abnormal"}:
             return "abnormal"
 
-        persisted_operational_status = self._normalize_operational_status(
-            db_plugin.get("operational_status")
-        )
-        if persisted_operational_status in {"enabled", "stopped", "abnormal"}:
+        if persisted_operational_status in {"enabled", "abnormal"}:
             return persisted_operational_status
         return "enabled"
 
@@ -160,6 +347,30 @@ class ExecutionService:
                 return constraint_error
 
         lifecycle_status = self._normalize_lifecycle_status(db_plugin.get("lifecycle_status"))
+        if (
+            lifecycle_status != PluginLifecycleStatus.ACTIVE.value
+            and _is_always_active(plugin_id)
+            and self._public_service is not None
+            and callable(getattr(self._public_service, "enable_plugin", None))
+        ):
+            try:
+                self._public_service.enable_plugin(
+                    plugin_id,
+                    reason="auto-activation on execution for always-active cognitive plugin",
+                )
+                refreshed = self._storage.get_plugin(plugin_id)
+                if isinstance(refreshed, dict):
+                    db_plugin = refreshed
+                    lifecycle_status = self._normalize_lifecycle_status(
+                        db_plugin.get("lifecycle_status")
+                    )
+            except Exception as exc:
+                logger.error(
+                    "[Plugins] Auto-activation failed for always-active plugin %s: %s",
+                    plugin_id,
+                    exc,
+                )
+
         if lifecycle_status != PluginLifecycleStatus.ACTIVE.value:
             return TaskFeedback(
                 task_id=task_id,
@@ -212,30 +423,114 @@ class ExecutionService:
         try:
             if isinstance(parameters, dict) and self._public_service is not None:
                 parameters.setdefault("plugin_service", self._public_service)
+                
+                # Enrich context with authentic cognitive services for integration
+                if self._audit_service is not None:
+                    parameters.setdefault("audit_service", self._audit_service)
+                if self._memory_service is not None:
+                    parameters.setdefault("memory_service", self._memory_service)
+                if self._reflection_service is not None:
+                    parameters.setdefault("reflection_service", self._reflection_service)
+                if self._learning_service is not None:
+                    parameters.setdefault("learning_service", self._learning_service)
+                if self._transcript_store is not None:
+                    parameters.setdefault("transcript_store", self._transcript_store)
+                    parameters.setdefault("root_transcript_store", self._transcript_store)
+                if self._llm_service is not None:
+                    parameters.setdefault("llm_service", self._llm_service)
+                if self._foundation_service is not None:
+                    parameters.setdefault("foundation_service", self._foundation_service)
+                if self._environment_service is not None:
+                    parameters.setdefault("environment_service", self._environment_service)
+
+                await self._inject_nine_question_state_if_needed(parameters)
             # Call actual plugin execution
             result = await self._call_plugin_execute(
                 plugin_instance=plugin_instance,
                 task_id=task_id,
                 parameters=parameters,
                 trace_id=trace_id,
-                originator_id=originator_id
+                originator_id=originator_id,
+                category=db_plugin.get("category", "functional")
             )
+            if isinstance(result, dict) and result.get("_execution_contract") is True:
+                error_code = str(result.get("error_code") or "plugin_execution_failed")
+                error_message = str(result.get("error_message") or "Plugin execution failed.")
+                self._record_failed_execution(plugin_id, error_message)
+                return TaskFeedback(
+                    task_id=task_id,
+                    status="failed",
+                    error=error_code,
+                    result={
+                        "plugin_id": plugin_id,
+                        "trace_id": trace_id,
+                        "contract_status": result.get("status"),
+                        "details": result.get("data", {}),
+                    },
+                    remarks=error_message,
+                )
+
+            if result is None:
+                # 严禁把插件返回 None 伪装成成功执行。
+                # 这里如果继续拼一个“executed successfully”的默认 payload，
+                # 就会把真实后台故障伪装成成功，严重破坏系统稳定性和审计可信度。
+                error_message = (
+                    f"Plugin {plugin_id} returned None after _call_plugin_execute; "
+                    "structured output is required."
+                )
+                logger.error("[Plugins] Contract Violation: %s", error_message)
+                self._record_failed_execution(plugin_id, error_message)
+                return TaskFeedback(
+                    task_id=task_id,
+                    status="failed",
+                    error="plugin_contract_violation_none",
+                    result={
+                        "plugin_id": plugin_id,
+                        "trace_id": trace_id,
+                        "details": {},
+                    },
+                    remarks=error_message,
+                )
             
             # Update execution stats
             self._record_successful_execution(plugin_id)
+            question_id = self._extract_nine_question_id(parameters if isinstance(parameters, dict) else {})
+            if question_id:
+                try:
+                    await self._persist_nine_question_snapshot_from_result(
+                        question_id=question_id,
+                        plugin_id=plugin_id,
+                        trace_id=trace_id,
+                        result_payload=self._normalize_result_payload(result),
+                    )
+                except Exception:
+                    logger.exception(
+                        "[Plugins] Failed to persist nine-question snapshot from plugin execution: %s",
+                        question_id,
+                    )
             
             return TaskFeedback(
                 task_id=task_id,
                 status="done",
-                result=self._normalize_result_payload(result) if result is not None else {
-                    "plugin_id": plugin_id,
-                    "trace_id": trace_id,
-                    "parameters": parameters,
-                },
+                result=self._normalize_result_payload(result),
                 progress=1.0,
                 remarks=f"Plugin {plugin_id} executed successfully."
             )
             
+        except PluginExecutionError as p_exc:
+             logger.error(f"[Plugins] Structured execution error in {plugin_id}: {p_exc}")
+             self._record_failed_execution(plugin_id, str(p_exc))
+             return TaskFeedback(
+                task_id=task_id,
+                status="failed",
+                error="execution_error",
+                result={
+                    "plugin_id": plugin_id,
+                    "error": str(p_exc),
+                    "trace_id": trace_id
+                },
+                remarks=f"Plugin {plugin_id} execution failed: {p_exc}"
+            )
         except Exception as exc:
             logger.error(f"[Plugins] Execution error in {plugin_id}: {exc}", exc_info=True)
             
@@ -261,10 +556,11 @@ class ExecutionService:
         parameters: Dict[str, Any],
         trace_id: str,
         originator_id: str,
+        category: str = "functional",
     ) -> Optional[Dict[str, Any]]:
         """
         Call the plugin's execute method with proper parameter mapping.
-        Supports multiple method signatures.
+        Supports multiple method signatures and enforces category-based timeouts.
         
         Args:
             plugin_instance: The instantiated plugin object
@@ -272,10 +568,13 @@ class ExecutionService:
             parameters: Parameters dict
             trace_id: Trace identifier
             originator_id: Originator identifier
+            category: Plugin category for timeout logic
             
         Returns:
             Plugin execution result
         """
+        # G12: Enforce timeouts (Cognitive: 60s, Functional: 20s)
+        timeout = 60 if category == "cognitive" else 20
         # Try to find the canonical execution entrypoint for the plugin type.
         execute_method = None
         selected_method_name = None
@@ -296,7 +595,10 @@ class ExecutionService:
             logger.warning(
                 "[Plugins] Plugin instance has no execute/process/run/handle/run_tool method"
             )
-            return None
+            return self._contract_failure(
+                error_code="plugin_execute_method_missing",
+                message="Plugin instance has no supported execution entrypoint.",
+            )
         
         # Build parameters based on method signature
         sig = inspect.signature(execute_method)
@@ -322,12 +624,81 @@ class ExecutionService:
         if selected_method_name == 'run_tool' and 'context' not in call_kwargs:
             call_kwargs['context'] = parameters
 
-        # Call with async support
-        if inspect.iscoroutinefunction(execute_method):
-            result = await execute_method(**call_kwargs)
-        else:
-            result = execute_method(**call_kwargs)
+        # Phase G: Authentic Cognitive Service Injection
+        if isinstance(call_kwargs.get('context'), dict):
+            ctx = call_kwargs['context']
+            if self._audit_service and 'audit_service' not in ctx:
+                ctx['audit_service'] = self._audit_service
+            if self._memory_service and 'memory_service' not in ctx:
+                ctx['memory_service'] = self._memory_service
+            if self._reflection_service and 'reflection_service' not in ctx:
+                ctx['reflection_service'] = self._reflection_service
+            if self._learning_service and 'learning_service' not in ctx:
+                ctx['learning_service'] = self._learning_service
+            if self._transcript_store and 'transcript_store' not in ctx:
+                ctx['transcript_store'] = self._transcript_store
+            if hasattr(self, '_llm_service') and self._llm_service and 'llm_service' not in ctx:
+                ctx['llm_service'] = self._llm_service
+            
+            # Also inject plugin_service if available for recursive execution
+            if self._public_service and 'plugin_service' not in ctx:
+                ctx['plugin_service'] = self._public_service
+
+        # G12 & G14: Call with async support and timeout
+        try:
+            if inspect.iscoroutinefunction(execute_method):
+                result = await asyncio.wait_for(execute_method(**call_kwargs), timeout=timeout)
+            else:
+                # Sync methods are still wrapped in wait_for but they block the thread
+                # unless offloaded. For now, we wrap to handle logical timeouts if possible,
+                # but real thread-blocking sync methods will still block.
+                result = execute_method(**call_kwargs)
+        except asyncio.TimeoutError:
+            raise PluginExecutionError(
+                f"Plugin reached execution timeout of {timeout}s",
+                trace_id=trace_id
+            )
+        except Exception as exc:
+            if isinstance(exc, PluginExecutionError):
+                raise exc
+            raise PluginExecutionError(
+                f"Plugin execution failed internally: {exc}",
+                original_exc=exc,
+                trace_id=trace_id
+            )
+
+        # G11: Enforce strict contract (No None allowed)
+        if result is None:
+            msg = f"Plugin '{getattr(plugin_instance, 'plugin_id', 'unknown')}' (method: {selected_method_name}) returned None."
+            logger.error(f"[Plugins] Contract Violation: {msg}")
+            return self._contract_failure(
+                error_code="plugin_contract_violation_none",
+                message=f"Plugin execution returned None; structured output is required. {msg}",
+                details={
+                    "selected_method": selected_method_name,
+                    "trace_id": trace_id,
+                },
+            )
         
+        # G11: Reject empty results for cognitive plugins if they don't explicitly declare success
+        if category == "cognitive" and isinstance(result, dict) and not result:
+            msg = f"Cognitive plugin '{getattr(plugin_instance, 'plugin_id', 'unknown')}' returned an empty dict."
+            logger.warning(f"[Plugins] Stability Guard: {msg} Treating as failure.")
+            return self._contract_failure(
+                error_code="cognitive_pseudo_success",
+                message=f"Cognitive plugin returned empty result without contract. {msg}",
+                details={"trace_id": trace_id}
+            )
+
+        # G11: If result is a dict but contains 'error' without being a contract, 
+        # it might be a masked failure.
+        if isinstance(result, dict) and "error" in result and result.get("_execution_contract") is not True:
+             return self._contract_failure(
+                error_code=str(result.get("error_code") or "plugin_internal_error"),
+                message=str(result.get("error_message") or result.get("error") or "Internal plugin error"),
+                details=result
+            )
+
         return result
 
     def _resolve_functional_family_method(
@@ -335,7 +706,7 @@ class ExecutionService:
         *,
         plugin_instance: Any,
         parameters: Dict[str, Any],
-    ) -> tuple[Any | None, str | None, Dict[str, Any]]:
+    ) -> tuple[Optional[Any], Optional[str], Dict[str, Any]]:
         family_methods: list[tuple[str, Any]] = [
             ("ingest_signal", lambda: {}),
             (

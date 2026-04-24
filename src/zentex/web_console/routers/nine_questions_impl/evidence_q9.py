@@ -1,10 +1,12 @@
+from __future__ import annotations
+
 """
 Q9 (我应该如何行动) evidence building and extraction.
 
 Contains functions for building and extracting EVIDENCE_Q9 evidence.
 """
 
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Union
 
 from zentex.web_console.contracts.nine_questions import (
     Q9PreprocessedEvidence,
@@ -33,15 +35,32 @@ def _extract_q9_snapshot_dict(context_payload: dict[str, Any]) -> dict[str, Any]
 
 def _count_q9_uncertainties(snapshot: dict[str, Any]) -> int:
     q1 = snapshot.get("q1") if isinstance(snapshot.get("q1"), dict) else {}
-    return len(_coerce_string_list(q1.get("uncertainties")))
+    q1_uncertainty_profile = (
+        q1.get("q1_uncertainty_profile")
+        if isinstance(q1.get("q1_uncertainty_profile"), dict)
+        else {}
+    )
+    return len(
+        _coerce_string_list(q1.get("uncertainties") or q1_uncertainty_profile.get("uncertainties"))
+    )
 
 
 def _count_q9_redlines(snapshot: dict[str, Any]) -> int:
     q5 = snapshot.get("q5") if isinstance(snapshot.get("q5"), dict) else {}
     q6 = snapshot.get("q6") if isinstance(snapshot.get("q6"), dict) else {}
+    q5_profile = (
+        q5.get("authorization_boundary_profile")
+        if isinstance(q5.get("authorization_boundary_profile"), dict)
+        else {}
+    )
+    q6_profile = (
+        q6.get("forbidden_zone_profile")
+        if isinstance(q6.get("forbidden_zone_profile"), dict)
+        else {}
+    )
     return len(
-        _coerce_string_list(q5.get("explicitly_forbidden_actions"))
-        + _coerce_string_list(q6.get("absolute_red_lines"))
+        _coerce_string_list(q5.get("explicitly_forbidden_actions") or q5_profile.get("explicitly_forbidden_actions"))
+        + _coerce_string_list(q6.get("absolute_red_lines") or q6_profile.get("absolute_red_lines"))
     )
 
 
@@ -54,7 +73,7 @@ def _normalize_ratio(value: object) -> float:
     return 0.0
 
 
-def _build_q9_preprocessed_evidence(context_payload: dict[str, Any]) -> Q9PreprocessedEvidence | None:
+def _build_q9_preprocessed_evidence(context_payload: dict[str, Any]) -> Optional[Q9PreprocessedEvidence]:
     snapshot = _extract_q9_snapshot_dict(context_payload)
     self_model_raw = (
         context_payload.get("q9_self_model")
@@ -143,7 +162,7 @@ def _build_q9_preprocessed_evidence(context_payload: dict[str, Any]) -> Q9Prepro
     )
 
 
-def _extract_q9_preprocessed_evidence(context_payload: object) -> Q9PreprocessedEvidence | None:
+def _extract_q9_preprocessed_evidence(context_payload: object) -> Optional[Q9PreprocessedEvidence]:
     if not isinstance(context_payload, dict):
         return None
     if not any(key in context_payload for key in (
@@ -155,7 +174,7 @@ def _extract_q9_preprocessed_evidence(context_payload: object) -> Q9Preprocessed
     return _build_q9_preprocessed_evidence(context_payload)
 
 
-def _extract_q9_inference_result(result_payload: object) -> Q9ActionPostureInferenceView | None:
+def _extract_q9_inference_result(result_payload: object) -> Optional[Q9ActionPostureInferenceView]:
     if not isinstance(result_payload, dict):
         return None
     aggregate_raw = result_payload.get("q9_action_posture_profile") or {}

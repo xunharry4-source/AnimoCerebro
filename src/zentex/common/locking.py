@@ -1,10 +1,12 @@
+from __future__ import annotations
+
 import os
 import fcntl
 import time
 import logging
 from uuid import uuid4
 from abc import ABC, abstractmethod
-from typing import Optional
+from typing import Optional, Any, Dict, List, Union
 
 logger = logging.getLogger(__name__)
 
@@ -45,7 +47,7 @@ class FileDistributedLock(AbstractDistributedLock):
                     self._lock_file = open(self.lock_file_path, "w")
                 
                 # Apply an exclusive lock (blocking/non-blocking via flag)
-                # We use LOCK_EX | LOCK_NB for non-blocking attempt
+                # We use Union[LOCK_EX, LOCK_NB] for non-blocking attempt
                 fcntl.flock(self._lock_file, fcntl.LOCK_EX | fcntl.LOCK_NB)
                 return True
             except (IOError, OSError):

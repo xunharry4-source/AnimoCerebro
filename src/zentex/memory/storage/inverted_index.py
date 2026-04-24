@@ -55,7 +55,7 @@ class MultiModalIndex:
     - Metadata Index (B-tree) for trace_id, target_id, timestamps, etc.
     """
 
-    def __init__(self, db_path: str | Path):
+    def __init__(self, db_path: Union[str, Path]):
         self.db_path = Path(db_path)
         self.db_path.parent.mkdir(parents=True, exist_ok=True)
         self._lock = Lock()
@@ -101,6 +101,32 @@ class MultiModalIndex:
             """)
             # Optimization: Set BM25 weights (Title=3.0, Summary=2.0, Content=1.0)
             # This is applied during query time, but can be hinted here if needed.
+
+    def rebuild_storage(self) -> None:
+        """Recreate the derived SQLite index from scratch.
+
+        The FTS database is a projection of canonical memory stores, so when the
+        virtual table becomes unreadable we should discard and rebuild the whole
+        file instead of trying to mutate the corrupted table in place.
+        """
+        with self._lock:
+            try:
+                self._conn.close()
+            except Exception:
+                logger.warning("Failed to close corrupted memory index connection", exc_info=True)
+
+            for suffix in ("", "-wal", "-shm"):
+                target = Path(f"{self.db_path}{suffix}")
+                try:
+                    if target.exists():
+                        target.unlink()
+                except Exception:
+                    logger.warning("Failed to remove corrupted memory index file %s", target, exc_info=True)
+
+            self._conn = sqlite3.connect(str(self.db_path), check_same_thread=False)
+            self._conn.row_factory = sqlite3.Row
+
+        self._init_db()
 
     def _tokenize(self, text: str) -> str:
         """Adaptive tokenizer: uses Jieba for CJK and direct pass-through for Latin."""
@@ -194,7 +220,7 @@ class MultiModalIndex:
             )
             raise
 
-    def search(self, query: str, filters: Dict[str, Any] | None = None, limit: int = 20) -> List[Dict[str, Any]]:
+    def search(self, query: str, filters: Dict[str, Optional[Any]] = None, limit: int = 20) -> List[Dict[str, Any]]:
         """
         Execute hybrid search using BM25 and metadata filters.
         """
@@ -214,6 +240,9 @@ class MultiModalIndex:
         if filters.get("tier"):
             where_clauses.append("m.tier = ?")
             params.append(filters["tier"])
+        if filters.get("tag"):
+            where_clauses.append("EXISTS (SELECT 1 FROM json_each(m.tags_json) WHERE value = ?)")
+            params.append(filters["tag"])
 
         where_stmt = " AND ".join(where_clauses) if where_clauses else "1=1"
         

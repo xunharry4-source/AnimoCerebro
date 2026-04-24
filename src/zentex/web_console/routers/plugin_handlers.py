@@ -1,9 +1,9 @@
+from __future__ import annotations
 """Plugin Handlers - Plugin-Specific Operations
 
 Handles bind, unbind, test, force-enable/disable, and delete operations for plugins.
 """
 
-from __future__ import annotations
 
 import logging
 from typing import Any
@@ -17,6 +17,7 @@ from zentex.web_console.contracts.plugins import (
     PluginTestResponse,
     PluginRelationActionRequest,
     PluginActionRequest,
+    PluginTestRequest,
 )
 from zentex.web_console.routers.plugin_commons import (
     get_or_create_plugin_session,
@@ -92,16 +93,29 @@ async def bind_functional_to_cognitive(
         return await get_cognitive_plugin_detail(request, cognitive_plugin_id)
         
     except KeyError as e:
-        logger.warning(f"Plugin not found during bind: {e}")
-        raise HTTPException(status_code=404, detail=f"Plugin not found: {e}") from e
-    except HTTPException:
-        raise
-    except Exception as e:
-        logger.error(f"Error binding plugins: {e}", exc_info=True)
+        # Do not translate backend/storage KeyError into a fake 404 here. Bind is a
+        # control operation; if the backend explodes, operators must see it as an
+        # execution failure rather than "plugin not found".
+        logger.exception("Error binding plugins")
         raise HTTPException(
             status_code=500,
             detail={
-                "error": "internal_error",
+                "error": "plugin_bind_failed",
+                "message": "Failed to bind plugins",
+                "cognitive_plugin_id": cognitive_plugin_id,
+                "functional_plugin_id": functional_plugin_id,
+                "exception_type": type(e).__name__,
+                "exception_message": str(e),
+            }
+        ) from e
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.exception("Error binding plugins")
+        raise HTTPException(
+            status_code=500,
+            detail={
+                "error": "plugin_bind_failed",
                 "message": "Failed to bind plugins",
                 "cognitive_plugin_id": cognitive_plugin_id,
                 "functional_plugin_id": functional_plugin_id,
@@ -147,16 +161,26 @@ async def unbind_functional_from_cognitive(
         return await get_cognitive_plugin_detail(request, cognitive_plugin_id)
         
     except KeyError as e:
-        logger.warning(f"Plugin not found during unbind: {e}")
-        raise HTTPException(status_code=404, detail=f"Plugin not found: {e}") from e
-    except HTTPException:
-        raise
-    except Exception as e:
-        logger.error(f"Error unbinding plugins: {e}", exc_info=True)
+        logger.exception("Error unbinding plugins")
         raise HTTPException(
             status_code=500,
             detail={
-                "error": "internal_error",
+                "error": "plugin_unbind_failed",
+                "message": "Failed to unbind plugins",
+                "cognitive_plugin_id": cognitive_plugin_id,
+                "functional_plugin_id": functional_plugin_id,
+                "exception_type": type(e).__name__,
+                "exception_message": str(e),
+            }
+        ) from e
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.exception("Error unbinding plugins")
+        raise HTTPException(
+            status_code=500,
+            detail={
+                "error": "plugin_unbind_failed",
                 "message": "Failed to unbind plugins",
                 "cognitive_plugin_id": cognitive_plugin_id,
                 "functional_plugin_id": functional_plugin_id,
@@ -193,7 +217,7 @@ async def test_functional_plugin(
         session = await get_or_create_plugin_session(request)
         
         # Run the test through plugin service
-        result = run_managed_plugin_test(
+        result = await run_managed_plugin_test(
             plugin_service=session.plugin_service,
             plugin_id=functional_plugin_id,
             test_payload=payload.model_dump() if payload else {},
@@ -211,16 +235,25 @@ async def test_functional_plugin(
         )
         
     except KeyError as e:
-        logger.warning(f"Plugin not found during test: {e}")
-        raise HTTPException(status_code=404, detail=f"Plugin not found: {e}") from e
-    except HTTPException:
-        raise
-    except Exception as e:
-        logger.error(f"Error testing plugin: {e}", exc_info=True)
+        logger.exception("Error testing plugin")
         raise HTTPException(
             status_code=500,
             detail={
-                "error": "internal_error",
+                "error": "plugin_test_failed",
+                "message": "Plugin test failed",
+                "plugin_id": functional_plugin_id,
+                "exception_type": type(e).__name__,
+                "exception_message": str(e),
+            }
+        ) from e
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.exception("Error testing plugin")
+        raise HTTPException(
+            status_code=500,
+            detail={
+                "error": "plugin_test_failed",
                 "message": "Plugin test failed",
                 "plugin_id": functional_plugin_id,
                 "exception_type": type(e).__name__,
@@ -252,7 +285,7 @@ async def test_plugin(
         session = await get_or_create_plugin_session(request)
         
         # Run the test through plugin service
-        result = run_managed_plugin_test(
+        result = await run_managed_plugin_test(
             plugin_service=session.plugin_service,
             plugin_id=plugin_id,
             test_payload=payload.model_dump() if payload else {},
@@ -268,16 +301,25 @@ async def test_plugin(
         )
         
     except KeyError as e:
-        logger.warning(f"Plugin not found during test: {e}")
-        raise HTTPException(status_code=404, detail=f"Plugin not found: {e}") from e
-    except HTTPException:
-        raise
-    except Exception as e:
-        logger.error(f"Error testing plugin: {e}", exc_info=True)
+        logger.exception("Error testing plugin")
         raise HTTPException(
             status_code=500,
             detail={
-                "error": "internal_error",
+                "error": "plugin_test_failed",
+                "message": "Plugin test failed",
+                "plugin_id": plugin_id,
+                "exception_type": type(e).__name__,
+                "exception_message": str(e),
+            }
+        ) from e
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.exception("Error testing plugin")
+        raise HTTPException(
+            status_code=500,
+            detail={
+                "error": "plugin_test_failed",
                 "message": "Plugin test failed",
                 "plugin_id": plugin_id,
                 "exception_type": type(e).__name__,
@@ -321,6 +363,7 @@ async def force_enable_plugin(
         force_enable_managed_plugin(
             plugin_service=session.plugin_service,
             plugin_id=plugin_id,
+            reason=payload.audit_reason,
         )
         
         logger.info(f"Force enabled plugin: {plugin_id}")
@@ -333,11 +376,11 @@ async def force_enable_plugin(
     except HTTPException:
         raise
     except Exception as e:
-        logger.error(f"Error force enabling plugin {plugin_id}: {e}", exc_info=True)
+        logger.exception("Error force enabling plugin %s", plugin_id)
         raise HTTPException(
             status_code=500,
             detail={
-                "error": "internal_error",
+                "error": "plugin_force_enable_failed",
                 "message": "Failed to force enable plugin",
                 "plugin_id": plugin_id,
                 "exception_type": type(e).__name__,
@@ -387,11 +430,11 @@ async def force_disable_plugin(
     except HTTPException:
         raise
     except Exception as e:
-        logger.error(f"Error force disabling plugin {plugin_id}: {e}", exc_info=True)
+        logger.exception("Error force disabling plugin %s", plugin_id)
         raise HTTPException(
             status_code=500,
             detail={
-                "error": "internal_error",
+                "error": "plugin_force_disable_failed",
                 "message": "Failed to force disable plugin",
                 "plugin_id": plugin_id,
                 "exception_type": type(e).__name__,
@@ -447,11 +490,11 @@ async def delete_plugin(
     except HTTPException:
         raise
     except Exception as e:
-        logger.error(f"Error deleting plugin {plugin_id}: {e}", exc_info=True)
+        logger.exception("Error deleting plugin %s", plugin_id)
         raise HTTPException(
             status_code=500,
             detail={
-                "error": "internal_error",
+                "error": "plugin_delete_failed",
                 "message": "Failed to delete plugin",
                 "plugin_id": plugin_id,
                 "exception_type": type(e).__name__,

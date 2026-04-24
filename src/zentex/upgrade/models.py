@@ -27,7 +27,7 @@ from zentex.upgrade.base_models import (
     VerificationBundle,
     PromotionDecision,
 )
-from typing import List, Dict, Any, Optional
+from typing import List, Dict, Any, Optional, Union
 from uuid import uuid4
 from datetime import datetime, UTC
 
@@ -59,13 +59,13 @@ class LLMUpgradeIntentRequest(BaseModel):
     model_config = ConfigDict(extra="forbid", str_strip_whitespace=True)
 
     reason: str = Field(min_length=1)
-    trace_id: str | None = None
-    request_id: str | None = None
-    source_event_id: str | None = None
-    parent_record_id: str | None = None
+    trace_id: Optional[str] = None
+    request_id: Optional[str] = None
+    source_event_id: Optional[str] = None
+    parent_record_id: Optional[str] = None
     evidence_refs: list[str] = Field(default_factory=list)
     change_signals: list[str] = Field(default_factory=list)
-    upgrade_required: bool | None = None
+    upgrade_required: Optional[bool] = None
     upgrade_request: LLMUpgradeRequest
 
 
@@ -76,8 +76,8 @@ class LLMUpgradeDecision(BaseModel):
 
     action: UpgradeDecisionAction
     rationale: str = Field(min_length=1)
-    candidate: LLMUpgradeCandidate | None = None
-    memory_context: UpgradeMemoryContext | None = None
+    candidate: Optional[LLMUpgradeCandidate] = None
+    memory_context: Optional[UpgradeMemoryContext] = None
 
 
 class PluginEvolutionIntentRequest(BaseModel):
@@ -86,15 +86,15 @@ class PluginEvolutionIntentRequest(BaseModel):
     model_config = ConfigDict(extra="forbid", str_strip_whitespace=True)
 
     reason: str = Field(min_length=1)
-    trace_id: str | None = None
-    request_id: str | None = None
-    source_event_id: str | None = None
-    parent_record_id: str | None = None
+    trace_id: Optional[str] = None
+    request_id: Optional[str] = None
+    source_event_id: Optional[str] = None
+    parent_record_id: Optional[str] = None
     evidence_refs: list[str] = Field(default_factory=list)
     change_signals: list[str] = Field(default_factory=list)
-    requested_action: PluginEvolutionAction | None = None
-    upgrade_request: PluginUpgradeRequest | None = None
-    creation_request: PluginCreationRequest | None = None
+    requested_action: Optional[PluginEvolutionAction] = None
+    upgrade_request: Optional[PluginUpgradeRequest] = None
+    creation_request: Optional[PluginCreationRequest] = None
 
     @model_validator(mode="after")
     def validate_payload_presence(self) -> "PluginEvolutionIntentRequest":
@@ -116,6 +116,6 @@ class PluginEvolutionDecision(BaseModel):
 
     action: UpgradeDecisionAction
     rationale: str = Field(min_length=1)
-    upgrade_candidate: PluginUpgradeCandidate | None = None
-    creation_candidate: PluginCreationCandidate | None = None
-    memory_context: UpgradeMemoryContext | None = None
+    upgrade_candidate: Optional[PluginUpgradeCandidate] = None
+    creation_candidate: Optional[PluginCreationCandidate] = None
+    memory_context: Optional[UpgradeMemoryContext] = None

@@ -7,7 +7,6 @@ from typing import Any, Dict, List, Optional
 from zentex.tasks.models import ZentexTask, TaskStatus, TaskType, TaskPriority, SuspendedTask
 from zentex.tasks.service import TaskManagementService
 from zentex.tasks.registry import TaskRegistry
-from zentex.tasks.persistence import TaskPersistence
 from zentex.tasks.core.decomposer import TaskDecomposerPlugin
 from zentex.tasks.models.errors import TaskStateError
 from zentex.tasks.core.interface import TaskServiceInterface
@@ -35,7 +34,7 @@ class TaskManager:
         Initialize TaskManager with optional persistence and plugin system.
         
         Args:
-            transcript_store: Brain transcript store for audit logging
+            transcript_store: Audit event store for audit logging
             storage_path: Path for task persistence (defaults to ./task_data)
             enable_persistence: Whether to enable task persistence
             backup_count: Number of backup files to keep
@@ -44,17 +43,7 @@ class TaskManager:
         """
         self.registry = TaskRegistry()
         self.transcript_store = transcript_store
-        
-        # Setup persistence if enabled
-        persistence = None
-        if enable_persistence and storage_path:
-            persistence = TaskPersistence(storage_path, backup_count)
-        elif enable_persistence:
-            # Default storage path
-            default_path = Path("./task_data")
-            default_path.mkdir(exist_ok=True)
-            persistence = TaskPersistence(str(default_path), backup_count)
-        
+
         # Setup plugin system if enabled
         self.plugin_manager = None
         decomposer = None
@@ -74,7 +63,6 @@ class TaskManager:
             registry=self.registry,
             transcript_store=transcript_store,
             decomposer=decomposer,
-            persistence=persistence,
             auto_save=auto_save,
             allow_rule_based_test_stub=False
         )
@@ -82,7 +70,7 @@ class TaskManager:
         # Create unified service interface
         self.interface = TaskServiceInterface(self.service)
         
-        logger.info(f"TaskManager initialized with persistence={enable_persistence}, plugins={enable_plugin_system}")
+        logger.info("TaskManager initialized with database persistence only, plugins=%s", enable_plugin_system)
     
     # === High-level task operations ===
     async def create_mission(self, title: str, content: str, originator_id: str, 
@@ -167,7 +155,6 @@ class TaskManager:
         
         task.priority = priority
         task.last_updated_at = task.last_updated_at  # Trigger update
-        self.service._save_to_persistence()
         return task
     
     def set_task_deadline(self, task_id: str, deadline: Any) -> ZentexTask:
@@ -178,7 +165,6 @@ class TaskManager:
         
         task.deadline = deadline
         task.last_updated_at = task.last_updated_at  # Trigger update
-        self.service._save_to_persistence()
         return task
     
     def get_overdue_tasks(self) -> List[ZentexTask]:

@@ -1,5 +1,3 @@
-from __future__ import annotations
-
 """
 Hierarchical memory storage manager.
 
@@ -9,17 +7,17 @@ Hierarchical memory storage manager.
 
 不负责:
   - 记忆内容的语义理解或分类（由 classification.py 负责）。
-  - 记忆的治理状态管理（由 enhanced.py 负责）。
+  - 记忆治理状态管理（由 enhanced.py 负责）。
 
 Directory structure:
     memory_root/
     ├── partitions.json          # partition registry
     ├── semantic/
     │   ├── user_prefs/
-    │   │   ├── collection_001.sqlite3
-    │   │   └── collection_002.sqlite3
+    │   │   ├── collection_001.jsonl
+    │   │   └── collection_002.jsonl
     │   └── profiles/
-    │       └── profile_001.sqlite3
+    │       └── profile_001.jsonl
     ├── procedural/
     │   └── workflows/
     ├── episodic/
@@ -35,7 +33,7 @@ import logging
 import threading
 from datetime import datetime
 from pathlib import Path
-from typing import Iterator
+from typing import Iterator, Any, Dict, List, Optional, Union
 from uuid import uuid4
 
 from pydantic import BaseModel, ConfigDict, Field
@@ -81,9 +79,9 @@ class HierarchicalMemoryStorage:
 
     def __init__(
         self,
-        root_path: str | Path,
+        root_path: Union[str, Path],
         *,
-        rotation_policy: RotationPolicy | None = None,
+        rotation_policy: Optional[RotationPolicy] = None,
     ) -> None:
         self.root_path = Path(root_path)
         self.root_path.mkdir(parents=True, exist_ok=True)
@@ -101,14 +99,13 @@ class HierarchicalMemoryStorage:
         path = self._partition_registry_path()
         if not path.exists():
             return
-        try:
-            data = json.loads(path.read_text("utf-8"))
-            for item in data.get("partitions", []):
-                p = StoragePartition(**item)
-                key = tuple(p.namespace)
-                self._partitions[key] = p
-        except Exception as exc:
-            logger.warning("Failed to load partition registry: %s", exc)
+        
+        # Redline: No more silent suppression of registry corruption.
+        data = json.loads(path.read_text("utf-8"))
+        for item in data.get("partitions", []):
+            p = StoragePartition(**item)
+            key = tuple(p.namespace)
+            self._partitions[key] = p
 
     def _save_partitions(self) -> None:
         path = self._partition_registry_path()
@@ -137,9 +134,9 @@ class HierarchicalMemoryStorage:
     def active_file(self, namespace: tuple[str, ...], prefix: str = "collection") -> Path:
         """Return the path of the current active shard file for a namespace."""
         d = self.partition_dir(namespace)
-        shards = sorted(d.glob(f"{prefix}_*.sqlite3"))
+        shards = sorted(d.glob(f"{prefix}_*.jsonl"))
         if not shards:
-            return d / f"{prefix}_001.sqlite3"
+            return d / f"{prefix}_001.jsonl"
         latest = shards[-1]
         # Rotate if needed.
         if self._needs_rotation(latest):
@@ -153,27 +150,25 @@ class HierarchicalMemoryStorage:
         if size_mb >= self._rotation.max_size_mb:
             return True
         # Count lines as a proxy for record count.
-        try:
-            lines = sum(1 for _ in path.open("r", encoding="utf-8"))
-            return lines >= self._rotation.max_records
-        except Exception:
-            return False
+        # Redline: No more suppression of unreadable shards.
+        lines = sum(1 for _ in path.open("r", encoding="utf-8"))
+        return lines >= self._rotation.max_records
 
     @staticmethod
     def _next_shard(directory: Path, prefix: str, index: int) -> Path:
         ts = datetime.utcnow().strftime("%Y%m%d_%H%M%S")
-        return directory / f"{prefix}_{index:03d}_{ts}.sqlite3"
+        return directory / f"{prefix}_{index:03d}_{ts}.jsonl"
 
     # ── temporal episodic sharding ───────────────────────────────────────
 
-    def episodic_file_for(self, namespace: tuple[str, ...], dt: datetime | None = None) -> Path:
+    def episodic_file_for(self, namespace: tuple[str, ...], dt: Optional[datetime] = None) -> Path:
         """Return the episodic shard file for a given month (YYYY-MM)."""
         dt = dt or datetime.utcnow()
         month_dir = self.partition_dir(namespace) / dt.strftime("%Y-%m")
         month_dir.mkdir(parents=True, exist_ok=True)
-        shard = month_dir / "episodes_001.sqlite3"
+        shard = month_dir / "episodes_001.jsonl"
         if self._needs_rotation(shard):
-            shards = sorted(month_dir.glob("episodes_*.sqlite3"))
+            shards = sorted(month_dir.glob("episodes_*.jsonl"))
             shard = self._next_shard(month_dir, "episodes", len(shards) + 1)
         return shard
 
@@ -183,21 +178,23 @@ class HierarchicalMemoryStorage:
         self,
         namespace: tuple[str, ...],
         *,
-        pattern: str = "*.sqlite3",
+        pattern: str = "*.jsonl",
     ) -> Iterator[dict]:
-        """Iterate every JSON record across all shards in a partition."""
+        """Iterate every JSON record across all shards in a partition.
+
+        Standard Redline:
+        - If a memory shard is corrupt or unreadable, we no longer silently skip it.
+        - Fail-Closed: Memory loss is a critical system state error.
+        """
         d = self.partition_dir(namespace)
         for shard in sorted(d.rglob(pattern)):
-            try:
-                for line in shard.open("r", encoding="utf-8"):
-                    line = line.strip()
-                    if line:
-                        yield json.loads(line)
-            except Exception as exc:
-                logger.warning("Skipping corrupt shard %s: %s", shard, exc)
+            for line in shard.open("r", encoding="utf-8"):
+                line = line.strip()
+                if line:
+                    yield json.loads(line)
 
     def list_shards(self, namespace: tuple[str, ...]) -> list[Path]:
-        return sorted(self.partition_dir(namespace).rglob("*.sqlite3"))
+        return sorted(self.partition_dir(namespace).rglob("*.jsonl"))
 
     # ── cold-storage archival ────────────────────────────────────────────
 
@@ -242,7 +239,11 @@ class HierarchicalMemoryStorage:
                     try:
                         d.rmdir()
                     except OSError:
-                        pass
+                        logger.debug(
+                            "Failed to remove empty storage partition directory %s; leaving registry cleanup trace",
+                            d,
+                            exc_info=True,
+                        )
                     del self._partitions[ns]
                     removed.append(ns)
             if removed:

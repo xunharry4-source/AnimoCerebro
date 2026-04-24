@@ -13,7 +13,7 @@ logger = logging.getLogger(__name__)
 
 class PluginStorage:
     """Independent storage DAO for system-level native plugins."""
-    def __init__(self, db_path: str | Path):
+    def __init__(self, db_path: Union[str, Path]):
         self.db_path = Path(db_path)
         if str(db_path) != ":memory:":
             self.db_path.parent.mkdir(parents=True, exist_ok=True)
@@ -70,8 +70,14 @@ class PluginStorage:
             try:
                 self._conn.execute("CREATE INDEX IF NOT EXISTS idx_cognitive_plugin ON plugin_relations(cognitive_plugin_id)")
                 self._conn.execute("CREATE INDEX IF NOT EXISTS idx_functional_plugin ON plugin_relations(functional_plugin_id)")
-            except sqlite3.OperationalError:
-                pass  # Indices may already exist
+            except sqlite3.OperationalError as exc:
+                if "already exists" in str(exc).lower():
+                    logger.info("plugin_relations indices already exist; skipping duplicate creation")
+                else:
+                    # Standard redline: never swallow plugin storage migration failures
+                    # and pretend the schema is healthy. Keep traceback.
+                    logger.exception("Failed to initialize plugin_relations indices")
+                    raise
 
     def _ensure_system_plugin_columns(self) -> None:
         cursor = self._conn.execute("PRAGMA table_info(system_plugins)")
@@ -145,8 +151,7 @@ class PluginStorage:
         registration_dict: Dict[str, Any],
         spec_dict: Dict[str, Any],
     ) -> str:
-        if lifecycle_status != "active":
-            return "unavailable"
+        logger.warning(f"[DEBUG] _derive_operational_status input: lifecycle={lifecycle_status}, registration_stopped_at={registration_dict.get('stopped_at')}")
         explicit = str(registration_dict.get("operational_status") or "").strip().lower()
         if explicit in {"enabled", "stopped", "abnormal"}:
             return explicit
@@ -155,7 +160,11 @@ class PluginStorage:
         if normalized_health in {"degraded", "unhealthy", "abnormal"}:
             return "abnormal"
         if registration_dict.get("stopped_at"):
+            logger.warning(f"[DEBUG] _derive_operational_status returning stopped because stopped_at={registration_dict.get('stopped_at')}")
             return "stopped"
+        if lifecycle_status != "active":
+            return "unavailable"
+        logger.warning(f"[DEBUG] _derive_operational_status returning enabled")
         return "enabled"
 
     def upsert_plugin(self, category: Literal["cognitive", "functional"], plugin_id: str, spec_dict: Dict[str, Any], registration_dict: Dict[str, Any]):

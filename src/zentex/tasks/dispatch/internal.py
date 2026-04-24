@@ -1,3 +1,4 @@
+from __future__ import annotations
 """
 Phase B1: Internal executor - handles task dispatch to FUNCTIONAL plugins.
 Implements internal plugin lookup, capability matching, and execution.
@@ -5,8 +6,8 @@ Implements internal plugin lookup, capability matching, and execution.
 Routing Priority: Internal plugins have highest priority (executed before external).
 """
 
-from __future__ import annotations
 import logging
+import inspect
 from typing import Any, Dict, List, Optional
 from zentex.tasks.models import SubtaskIntent
 from zentex.tasks.dispatch.models import (
@@ -44,6 +45,11 @@ class InternalPluginExecutor:
         self._plugin_registry: Dict[str, Dict[str, Any]] = {}  # Plugin cache
         self._plugin_credit_scores: Dict[str, float] = {}  # Plugin reputation
         self._plugin_metrics: Dict[str, Dict[str, Any]] = {}  # Plugin stats
+    
+    def set_plugin_layer(self, plugin_layer: Any) -> None:
+        """Update the plugin layer reference (for late dependency injection)."""
+        self.plugin_layer = plugin_layer
+        logger.debug("InternalPluginExecutor: plugin_layer updated.")
     
     async def get_matching_plugins_for_subtask(
         self,
@@ -182,21 +188,25 @@ class InternalPluginExecutor:
                 result["failure_classification"] = "plugin_not_found"
                 return result
             
-            # Execute plugin with subtask content
-            # (Concrete implementation depends on plugin interface)
-            output = await plugin.execute(
-                input_data={
+            parameters = {
+                "task_id": task_id,
+                "local_id": subtask.local_id,
+                "title": subtask.title,
+                "objective": subtask.objective,
+                "content": subtask.content,
+                "input_data": {
                     "task_id": task_id,
                     "local_id": subtask.local_id,
                     "title": subtask.title,
                     "objective": subtask.objective,
                     "content": subtask.content,
                 },
-                constraints={
+                "constraints": {
                     "timeout_seconds": subtask.execution_timeout_seconds,
                     "required_capabilities": subtask.required_capabilities,
                 },
-            )
+            }
+            output = await self._invoke_plugin(plugin, parameters)
             
             duration = time.time() - start
             
@@ -229,6 +239,69 @@ class InternalPluginExecutor:
             logger.error(f"Plugin {plugin_id} execution failed: {e}")
         
         return result
+
+    async def _invoke_plugin(self, plugin: Any, parameters: Dict[str, Any]) -> Any:
+        """Invoke heterogeneous functional plugin entrypoints using their real signatures."""
+        method = None
+        call_kwargs: Dict[str, Any] = {}
+        for method_name in ("execute", "process", "run", "handle", "run_tool"):
+            candidate = getattr(plugin, method_name, None)
+            if callable(candidate):
+                method = candidate
+                break
+
+        if method is None:
+            method, call_kwargs = self._resolve_family_method(plugin, parameters)
+
+        if method is None:
+            raise AttributeError(f"{plugin.__class__.__name__!s} has no supported execution entrypoint")
+
+        if not call_kwargs:
+            signature = inspect.signature(method)
+            for name, param in signature.parameters.items():
+                if name == "self":
+                    continue
+                if param.kind is inspect.Parameter.VAR_KEYWORD:
+                    call_kwargs.update(parameters)
+                    continue
+                if name in {"parameters", "input", "context"}:
+                    call_kwargs[name] = parameters
+                elif name in {"input_data", "data"}:
+                    call_kwargs[name] = parameters.get("input_data", parameters)
+                elif name == "constraints":
+                    call_kwargs[name] = parameters.get("constraints", {})
+                elif name in parameters:
+                    call_kwargs[name] = parameters[name]
+                elif param.default is inspect.Parameter.empty:
+                    call_kwargs[name] = parameters
+
+        if inspect.iscoroutinefunction(method):
+            return await method(**call_kwargs)
+        result = method(**call_kwargs)
+        if inspect.isawaitable(result):
+            return await result
+        return result
+
+    def _resolve_family_method(self, plugin: Any, parameters: Dict[str, Any]) -> tuple[Any, Dict[str, Any]]:
+        family_methods: list[tuple[str, Dict[str, Any]]] = [
+            ("execute_action", {"intent": parameters.get("input_data", parameters), "context": parameters}),
+            ("refine_task_queue", {"task_queue": [parameters.get("input_data", parameters)], "context": parameters}),
+            ("apply_posture", {"decision_trace": parameters}),
+            ("get_downgrade_options", {"block_context": parameters}),
+            ("check_compliance", {"action_trace": parameters}),
+            ("calculate_weight", {"task_context": parameters}),
+            ("sanitize_signal", {"raw_signal": parameters.get("content", "")}),
+            ("interpret_signal", {"signal": parameters.get("content", "")}),
+            ("capture_host_state", {"context": parameters}),
+            ("get_payload", {}),
+            ("get_forbidden_zones", {}),
+            ("get_whitelist", {}),
+        ]
+        for method_name, kwargs in family_methods:
+            method = getattr(plugin, method_name, None)
+            if callable(method):
+                return method, kwargs
+        return None, {}
     
     def _record_plugin_failure(self, plugin_id: str) -> None:
         """Update metrics after plugin failure."""

@@ -1,3 +1,4 @@
+from __future__ import annotations
 """
 Phase B2: Unified TaskRouter implementation.
 Implements internal FUNCTIONAL plugin priority + external executor fallback.
@@ -9,7 +10,6 @@ Routing Priority:
 4. If no candidates at all, escalate with empty fallback chain
 """
 
-from __future__ import annotations
 import asyncio
 import logging
 import time
@@ -45,6 +45,7 @@ class UnifiedTaskRouter(TaskRouter):
         internal_executor: Optional[InternalPluginExecutor] = None,
         external_executor_registry: Optional[Dict[str, ExecutorCandidate]] = None,
         plugin_layer: Any = None,
+        transcript_store: Any = None,
     ):
         """
         Initialize unified router.
@@ -53,9 +54,11 @@ class UnifiedTaskRouter(TaskRouter):
             internal_executor: InternalPluginExecutor instance (for FUNCTIONAL plugin dispatch)
             external_executor_registry: Dict of external executors (executor_id -> ExecutorCandidate)
             plugin_layer: Reference to PluginLayer (if not provided via internal_executor)
+            transcript_store: Optional audit event store for persistent auditing (Phase F)
         """
         self.internal_executor = internal_executor or InternalPluginExecutor(plugin_layer)
         self.external_executor_registry = external_executor_registry or {}
+        self.transcript_store = transcript_store
         self._execution_history: List[DispatchResult] = []
         self._router_decisions: List[DispatchDecision] = []
     
@@ -97,7 +100,7 @@ class UnifiedTaskRouter(TaskRouter):
                     )
                     
                     # Short-circuit: found internal match, no need to query external
-                    return DispatchDecision(
+                    decision = DispatchDecision(
                         task_id=task_id,
                         selected_executor=selected_executor,
                         candidate_pool=candidate_pool,
@@ -106,6 +109,8 @@ class UnifiedTaskRouter(TaskRouter):
                         allowed_executor_types=subtask.required_capabilities and [ExecutorType.INTERNAL_PLUGIN],
                         required_capabilities=subtask.required_capabilities or [],
                     )
+                    self._record_decision_audit(decision)
+                    return decision
             
             # === PHASE B2+: EXTERNAL FALLBACK ===
             # Step 2: If no internal match, try external executors
@@ -125,7 +130,7 @@ class UnifiedTaskRouter(TaskRouter):
                     f"(type={selected_executor.executor_type}, credit={selected_executor.credit_score:.2f})"
                 )
                 
-                return DispatchDecision(
+                decision = DispatchDecision(
                     task_id=task_id,
                     selected_executor=selected_executor,
                     candidate_pool=candidate_pool,
@@ -134,6 +139,8 @@ class UnifiedTaskRouter(TaskRouter):
                     allowed_executor_types=None,  # No type constraint if external
                     required_capabilities=subtask.required_capabilities or [],
                 )
+                self._record_decision_audit(decision)
+                return decision
             
             # === ESCALATION CASE ===
             # Step 3: No candidates found - escalate to supervision layer
@@ -143,7 +150,7 @@ class UnifiedTaskRouter(TaskRouter):
             )
             
             # Return empty decision for escalation
-            return DispatchDecision(
+            decision = DispatchDecision(
                 task_id=task_id,
                 selected_executor=None,  # type: ignore
                 candidate_pool=[],
@@ -152,6 +159,8 @@ class UnifiedTaskRouter(TaskRouter):
                 allowed_executor_types=None,
                 required_capabilities=subtask.required_capabilities or [],
             )
+            self._record_decision_audit(decision)
+            return decision
         
         except Exception as e:
             logger.error(f"Error in routing decision for task {task_id}: {e}", exc_info=True)
@@ -325,3 +334,22 @@ class UnifiedTaskRouter(TaskRouter):
                 if capability in candidate.required_capabilities:
                     candidate.required_capabilities.remove(capability)
             logger.debug(f"Updated executor {executor_id} capability {capability}: {is_supported}")
+
+    def _record_decision_audit(self, decision: DispatchDecision) -> None:
+        """Phase F: Persistently record dispatch decision logic of a task."""
+        self._router_decisions.append(decision)
+        if self.transcript_store:
+            try:
+                from uuid import uuid4
+                from zentex.kernel import AuditEventType
+                
+                self.transcript_store.write_entry(
+                    session_id="task-routing-audit",
+                    turn_id=str(uuid4()),
+                    entry_type=AuditEventType.PLUGIN_AUDIT_EVENT,
+                    source="UnifiedTaskRouter",
+                    trace_id=f"task-audit:{decision.task_id}:task_dispatched",
+                    payload=decision.model_dump(mode="json")
+                )
+            except Exception as e:
+                logger.error(f"Failed to record dispatch audit for task {decision.task_id}: {e}")

@@ -10,7 +10,7 @@ Counterfactual simulation engine / 多分支世界模型引擎。
 from concurrent.futures import Future, ThreadPoolExecutor
 from datetime import datetime, timezone
 from threading import Lock
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Union
 from uuid import uuid4
 
 from zentex.foundation.specs.model_provider import (
@@ -80,9 +80,9 @@ class CounterfactualSimulationEngine:
     def __init__(
         self,
         *,
-        llm_service: LLMService | None = None,
-        model_provider: ModelProviderSpec | None = None,
-        model_provider_key: str | None = None,
+        llm_service: Optional[LLMService] = None,
+        model_provider: Optional[ModelProviderSpec] = None,
+        model_provider_key: Optional[str] = None,
         simulation_plugins: List[SimulationDomainPlugin],
         max_workers: int = 4,
     ) -> None:
@@ -153,11 +153,6 @@ class CounterfactualSimulationEngine:
         with self._lock:
             return self._bundles_by_goal.get(goal_id)
 
-    def seed_bundle(self, bundle: SimulationBundle) -> None:
-        """为开发态或测试态注入预演结果样本。"""
-        with self._lock:
-            self._bundles_by_goal[bundle.goal_id] = bundle
-
     def _run_bundle_task(
         self,
         goal_id: str,
@@ -186,7 +181,16 @@ class CounterfactualSimulationEngine:
             )
 
         for future in plugin_futures:
-            collected_branches.extend(future.result())
+            try:
+                collected_branches.extend(future.result())
+            except Exception as exc:
+                # POLICY: Fail-Closed on plugin failure. No partial simulations.
+                logger.error(f"Simulation Engine: Critical failure in domain plugin. Aborting bundle {goal_id}: {exc}")
+                raise RuntimeError(f"Simulation failed due to domain plugin crash: {exc}") from exc
+
+        if not collected_branches:
+             logger.warning(f"Simulation Engine: No branches were simulated for {goal_id}. Check plugin domain support.")
+             # We let it proceed to comparison which will honestly report zero branches.
 
         comparison = self._compare_outcomes_with_llm(
             goal_id=goal_id,
@@ -242,7 +246,11 @@ class CounterfactualSimulationEngine:
             )
             result = plugin.simulate_action(intent, {**base_context, **dict(branch.get("context") or {})})
             impacts = list(result.predicted_impacts)
-            risk_score = 0.95 if result.replan_required else 0.35
+            
+            # POLICY: Eradicate hardcoded risk stubs (0.95 / 0.35)
+            # Use the authentic score from the plugin result.
+            risk_score = float(result.risk_score if result.risk_score is not None else (0.95 if result.replan_required else 0.35))
+            
             results.append(
                 ScenarioBranch(
                     branch_id=branch_id,
@@ -283,6 +291,7 @@ class CounterfactualSimulationEngine:
                     "risk_score": branch.risk_score,
                     "catastrophic_failure_risk": branch.failure_cascade,
                     "blocking_reason": branch.veto_reason,
+                    "cognitive_coverage": branch.simulated_by,  # Pass traceability to LLM
                 }
                 for branch in branches
             ],

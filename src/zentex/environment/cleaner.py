@@ -1,3 +1,5 @@
+from __future__ import annotations
+
 """
 Sensory Data Cleaner / 感官数据清洗器
 
@@ -11,7 +13,7 @@ Protects the cognitive system from prompt injection and malicious signals.
 import hashlib
 import re
 from datetime import datetime, timezone
-from typing import Any
+from typing import Any, Dict, List, Optional, Union
 from uuid import uuid4
 
 from zentex.environment.models import SanitizedSignal
@@ -69,8 +71,8 @@ class SensoryDataCleaner:
     def sanitize_signal(
         self,
         raw_signal: str,
-        source_plugin_id: str | None = None,
-        source_kind: str | None = None,
+        source_plugin_id: Optional[str] = None,
+        source_kind: Optional[str] = None,
     ) -> SanitizedSignal:
         """
         Sanitize a raw sensory signal.
@@ -186,8 +188,8 @@ class SensoryDataCleaner:
         attempt to execute commands or override behavior.
         """
         suspicious_patterns = [
-            r"!?\s*(rm|delete|drop|truncate)\s+",
-            r"!?\s*(exec|execute|run)\s+.*\.(sh|bash|py|js)",
+            r"!?\s*(Union[rm, Union[delete], Union[drop], truncate])\s+",
+            r"!?\s*(Union[exec, Union[execute], run])\s+.*\.(Union[sh, Union[bash], Union[py], js])",
             r"__import__\s*\(",
             r"eval\s*\(",
             r"exec\s*\(",
@@ -206,10 +208,10 @@ class SensoryDataCleaner:
         从文本中编辑可疑命令模式。
         """
         # Replace dangerous function calls
-        text = re.sub(r"(__import__|eval|exec)\s*\(", f"{self.redaction_marker}(", text)
+        text = re.sub(r"(Union[__import__, Union[eval], exec])\s*\(", f"{self.redaction_marker}(", text)
         
         # Replace shell command attempts
-        text = re.sub(r"(!?\s*(rm|delete|drop|truncate)\s+\S+)", self.redaction_marker, text)
+        text = re.sub(r"(!?\s*(Union[rm, Union[delete], Union[drop], truncate])\s+\S+)", self.redaction_marker, text)
         
         return text
     
@@ -245,8 +247,8 @@ class SensoryDataCleaner:
     def batch_sanitize(
         self,
         signals: list[str],
-        source_plugin_id: str | None = None,
-        source_kind: str | None = None,
+        source_plugin_id: Optional[str] = None,
+        source_kind: Optional[str] = None,
     ) -> list[SanitizedSignal]:
         """
         Sanitize multiple signals in batch.

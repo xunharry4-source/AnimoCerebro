@@ -3,8 +3,8 @@ providers:
   openai_compat:
     provider_name: openai_compat
     api_base: http://localhost:8317/v1
-    api_key_env: your-api-key
-    default_model: gemini-3-flash(auto)
+    api_key_env: OPENAI_COMPAT_API_KEY
+    default_model: gemini-3-flash
     timeout_seconds: 30
 
   openai:
@@ -25,7 +25,7 @@ providers:
     provider_name: gemini
     api_base: https://generativelanguage.googleapis.com/v1beta
     api_key_env: GEMINI_API_KEY
-    default_model: gemini-1.5-pro
+    default_model: gemma-4-31b-it
     timeout_seconds: 30
 
   claude:

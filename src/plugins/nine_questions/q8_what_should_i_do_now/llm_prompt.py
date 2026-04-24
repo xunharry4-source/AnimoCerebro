@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from typing import Any
 
-from plugins.nine_questions.prompt_sections import (
+from zentex.common.nine_questions_prompts import (
     assemble_prompt_sections,
     build_prompt_section,
 )
@@ -17,10 +17,20 @@ def build_q8_llm_request(
     priority_baseline: dict[str, Any],
     q1_q7_snapshot: dict[str, Any],
     nine_questions: dict[str, Any],
-    persistent_task_state: list[dict[str, Any]],
+    persistent_task_state: Any,
     active_objectives: list[str],
     functional_objectives: list[dict[str, Any]],
 ) -> dict[str, Any]:
+    if isinstance(persistent_task_state, dict):
+        compact_task_state = {
+            str(key): value[:6] if isinstance(value, list) else value
+            for key, value in persistent_task_state.items()
+        }
+    elif isinstance(persistent_task_state, list):
+        compact_task_state = persistent_task_state[:24]
+    else:
+        compact_task_state = []
+
     system_prompt_sections = [
         build_prompt_section(
             key="role",
@@ -61,14 +71,34 @@ def build_q8_llm_request(
         ),
         build_prompt_section(
             key="output_contract",
-            title="Task",
+            title="Output Contract",
             intent="Define the required final response shape.",
             purpose="Prevent summary-only output and enforce objective/task JSON.",
             content=(
                 "综合判断，输出严格 JSON。\n"
                 "顶层只能包含：\n"
                 "- `objective_profile`\n"
-                "- `task_queue`"
+                "- `task_queue`\n\n"
+                "`objective_profile` 必须包含以下字段：\n"
+                "- `current_mission`\n"
+                "- `primary_objectives`\n"
+                "- `secondary_objectives`\n"
+                "- `completion_conditions`\n"
+                "- `pause_conditions`\n"
+                "- `escalation_conditions`\n"
+                "- `current_phase_tasks`\n"
+                "- `priority_order`\n\n"
+                "`task_queue` 必须是对象，且只能包含：\n"
+                "- `next_self_tasks`\n"
+                "- `blocked_self_tasks`\n"
+                "- `proactive_actions`\n\n"
+                "禁止返回旧字段或旧结构：\n"
+                "- 不要使用 `main_objective`\n"
+                "- 不要使用 `rationale`\n"
+                "- 不要使用 `constraints_adherence`\n"
+                "- 不要使用 `derived_capabilities`\n"
+                "- 不要把 `task_queue` 输出成数组\n"
+                "- 不要输出任何解释文字、markdown、代码块"
             ),
         ),
     ]
@@ -76,7 +106,7 @@ def build_q8_llm_request(
     model_context = {
         "q1_q7_snapshot": q1_q7_snapshot,
         "nine_questions": nine_questions,
-        "persistent_task_state": persistent_task_state[:24],
+        "persistent_task_state": compact_task_state,
         "q8_priority_baseline": priority_baseline,
         "active_objectives": active_objectives[:12],
         "functional_objectives": functional_objectives[:12],

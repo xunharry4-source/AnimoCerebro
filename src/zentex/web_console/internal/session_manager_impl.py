@@ -1,29 +1,39 @@
+from __future__ import annotations
 """Session Manager Implementation"""
 
-from __future__ import annotations
 
 from uuid import uuid4
-from datetime import datetime
-from typing import List
+from datetime import datetime, timezone
+UTC = timezone.utc
+from typing import List, Any, Dict, Optional, Protocol, Union
 import logging
 
 from ..contracts.session_manager import SessionManager
 from ..contracts.kernel_service import SessionSnapshot
 from ..contracts.event_bus import EventBus
 from ..cache_manager import CacheNamespace, WebConsoleCacheManager
-from .session_store import SQLiteSessionStore
+
+class SessionStore(Protocol):
+    async def get(self, session_id: str) -> Optional[SessionSnapshot]: ...
+
+    async def save(self, session: SessionSnapshot) -> None: ...
+
+    async def delete(self, session_id: str) -> None: ...
+
+    async def list_active(self) -> List[SessionSnapshot]: ...
+
 
 logger = logging.getLogger(__name__)
 
 
 class SessionManagerImpl(SessionManager):
-    """Implementation of SessionManager using SQLite store"""
+    """Implementation of SessionManager using an injected core store."""
 
     def __init__(
         self,
-        store: SQLiteSessionStore,
+        store: SessionStore,
         event_bus: EventBus,
-        cache_manager: WebConsoleCacheManager | None = None,
+        cache_manager: Optional[WebConsoleCacheManager] = None,
     ):
         self._store = store
         self._event_bus = event_bus
@@ -45,7 +55,7 @@ class SessionManagerImpl(SessionManager):
     async def create_session(
         self,
         workspace: str,
-        session_id: str | None = None,
+        session_id: Optional[str] = None,
     ) -> SessionSnapshot:
         """Create a new session"""
         session_id = session_id or str(uuid4())
@@ -53,7 +63,7 @@ class SessionManagerImpl(SessionManager):
             session_id=session_id,
             state_id=str(uuid4()),
             workspace=workspace,
-            created_at=datetime.utcnow(),
+            created_at=datetime.now(UTC),
         )
 
         await self._store.save(session)

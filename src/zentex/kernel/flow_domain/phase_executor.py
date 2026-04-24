@@ -12,15 +12,13 @@ from zentex.kernel.flow_domain.phase_registry import PhaseConfig
 class PhaseExecutor:
     """Executes a phase function with timeout enforcement and error handling.
 
-    Behaviour summary:
+    Standard Redline (Fail-Closed):
     - The callable is run inside a ThreadPoolExecutor with a hard timeout.
     - If the call returns a dict it is wrapped in PhaseResult.
-    - If the call raises and the phase is *skippable*: returns a skipped
-      PhaseResult regardless of *degradable*.
-    - If the call raises (or times out) and the phase is *degradable* (but not
-      skippable): returns an empty-output PhaseResult with the error recorded.
-    - If the call raises and the phase is neither skippable nor degradable: the
-      exception propagates to the caller.
+    - If the call raises and the phase is *skippable*: returns a skipped PhaseResult.
+    - If the call *times out* and the phase is *degradable*: returns an empty-output PhaseResult.
+    - If the call *crashes* (raises Exception): always propagates unless *skippable*.
+      (Degradable is for environmental timeouts, not for masking code bugs).
     """
 
     def __init__(self, config: PhaseConfig) -> None:
@@ -54,6 +52,7 @@ class PhaseExecutor:
                         duration_ms=0.0,
                     )
                 if config.degradable:
+                    logger.warning(f"Phase '{config.name}' timed out; degrading to empty result (G33).")
                     return PhaseResult(
                         phase_name=config.name,
                         output={},
@@ -66,20 +65,17 @@ class PhaseExecutor:
             except Exception as exc:  # noqa: BLE001
                 duration_ms = time.perf_counter() * 1000.0 - start_ms
                 if config.skippable:
+                    logger.info(f"Phase '{config.name}' failed; skipping per config.")
                     return PhaseResult(
                         phase_name=config.name,
                         skipped=True,
                         error=str(exc),
                         duration_ms=0.0,
                     )
-                if config.degradable:
-                    return PhaseResult(
-                        phase_name=config.name,
-                        output={},
-                        error=str(exc),
-                        duration_ms=duration_ms,
-                    )
-                raise
+                
+                # G33 Resiliency Redline: Never swallow code crashes into 'degradation'.
+                # A code crash is a bug, not a degradable environmental condition.
+                raise exc
 
         duration_ms = time.perf_counter() * 1000.0 - start_ms
 

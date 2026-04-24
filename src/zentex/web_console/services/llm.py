@@ -1,3 +1,4 @@
+from __future__ import annotations
 """
 LLM Service Thin Adapter — Web Console Layer.
 
@@ -12,7 +13,6 @@ DECOUPLING POLICY (Zentex Codex §2):
 This module must remain a 'Logic-Free Zone'. Any evolution of LLM provider detection, 
 token calculation rules, or usage reporting must be implemented in `zentex.llm.service`.
 """
-from __future__ import annotations
 from typing import Any
 from fastapi import Request, HTTPException
 from zentex.llm.service import get_llm_service

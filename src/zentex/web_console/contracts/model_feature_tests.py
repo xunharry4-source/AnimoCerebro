@@ -66,5 +66,5 @@ class ModelFeatureRunLogResponse(BaseModel):
     model_config = ConfigDict(extra="forbid", frozen=True)
 
     test_run_id: str
-    record: Dict[str, Any] | None
+    record: Dict[str, Optional[Any]]
 

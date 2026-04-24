@@ -7,6 +7,123 @@ export interface TraceRelatedEvent {
   payload: any;
 }
 
+// Reflection types
+export interface NineQuestionReflectionResultAnalysis {
+  effective: boolean;
+  effectiveness_score: number;
+  need_upgrade: boolean;
+  missing_data: string[];
+}
+
+export interface NineQuestionReflectionResult {
+  question_id: string;
+  status: string;
+  created_at?: string;
+  analysis: NineQuestionReflectionResultAnalysis;
+  reflection_error?: string | null;
+  score?: number | null;
+  feedback?: string | null;
+  suggestions?: string[];
+}
+
+export interface NineQuestionReflectionRecord {
+  reflection_id: string;
+  created_at: string;
+  context: Record<string, any>;
+  results?: NineQuestionReflectionResult[];
+  [key: string]: any;
+}
+
+// Workflow types
+export interface NineQuestionWorkflowEvent {
+  entry_id?: string;
+  timestamp: string;
+  phase: string;
+  phase_status: string;
+  message: string;
+  error_message?: string | null;
+}
+
+export interface NineQuestionWorkflowPhaseStatus {
+  phase: string;
+  status: string;
+}
+
+export interface NineQuestionWorkflowQuestionStatus {
+  question_id: string;
+  question_title: string;
+  current_status: string;
+  authenticity_status?: string | null;
+  used_fallback?: boolean;
+  latest_trace_id?: string | null;
+  last_event_at?: string | null;
+  latest_error?: string | null;
+  trace_count: number;
+  diagnosis_code: string;
+  diagnosis_message: string;
+  module_runs?: NineQuestionWorkflowModuleRun[];
+  plugin_runs?: NineQuestionWorkflowPluginRun[];
+  upstream_dependencies?: NineQuestionWorkflowDependency[];
+  recovery_plan?: NineQuestionRecoveryPlan | null;
+  phase_statuses: NineQuestionWorkflowPhaseStatus[];
+  events: NineQuestionWorkflowEvent[];
+}
+
+export interface NineQuestionWorkflowPayload {
+  questions: NineQuestionWorkflowQuestionStatus[];
+  events: NineQuestionWorkflowEvent[];
+  session_id?: string;
+  event_count?: number;
+  summary_counts: {
+    completed?: number;
+    running?: number;
+    failed?: number;
+    not_started?: number;
+  };
+}
+
+export interface NineQuestionRecoveryAction {
+  action_id: string;
+  label: string;
+  kind: string;
+  executable: boolean;
+  scope?: string | null;
+  target?: string | null;
+  reason?: string | null;
+  path?: string | null;
+}
+
+export interface NineQuestionRecoveryPlan {
+  question_id?: string;
+  retriable: boolean;
+  rollback_available: boolean;
+  partial_retry_available: boolean;
+  partial_replace_available: boolean;
+  actions: NineQuestionRecoveryAction[];
+}
+
+export interface NineQuestionWorkflowModuleRun {
+  module_id: string;
+  status: string;
+  error_code?: string | null;
+  error_message?: string | null;
+}
+
+export interface NineQuestionWorkflowDependency {
+  dependency_id: string;
+  required: boolean;
+  status: string;
+  message?: string | null;
+}
+
+export interface NineQuestionWorkflowPluginRun {
+  plugin_id: string;
+  feature_code?: string | null;
+  status: string;
+  error_code?: string | null;
+  error_message?: string | null;
+}
+
 /**
  * 九问介绍信息 - 每个问题的目标、期望数据和最终输出
  */
@@ -179,6 +296,26 @@ export interface NineQuestionsRunResponse {
   refresh_reason: string;
   snapshot_version: number;
   revision: number;
+}
+
+const NINE_QUESTION_FETCH_TIMEOUT_MS = 8000;
+
+async function fetchWithTimeout(input: RequestInfo | URL, init?: RequestInit): Promise<Response> {
+  const controller = new AbortController();
+  const timeoutId = window.setTimeout(() => controller.abort(), NINE_QUESTION_FETCH_TIMEOUT_MS);
+  try {
+    return await fetch(input, {
+      ...init,
+      signal: init?.signal ?? controller.signal,
+    });
+  } catch (error) {
+    if ((error as Error)?.name === "AbortError") {
+      throw new Error(`请求超时（>${NINE_QUESTION_FETCH_TIMEOUT_MS}ms）`);
+    }
+    throw error;
+  } finally {
+    window.clearTimeout(timeoutId);
+  }
 }
 
 export interface Q1WorkspaceSampleSummary {
@@ -578,7 +715,6 @@ export interface NineQuestionItem {
   q1_llm_upgrade?: Q1LLMUpgradeView | null;
 }
 export interface ReportPayload {
-  session_id: string;
   status: string;
   status_message: string | null;
   last_turn_id: string;
@@ -678,7 +814,6 @@ export async function fetchNineQuestionsReport(): Promise<{
     if (resp.status === 404 && detail === "No active session") {
       return {
         report: {
-          session_id: "-",
           status: "ready",
           status_message: null,
           last_turn_id: "0",
@@ -782,6 +917,64 @@ export async function runSingleNineQuestion(questionId: string, forceRefresh = t
   return data as NineQuestionsRunResponse;
 }
 
+export async function rollbackSingleNineQuestion(questionId: string): Promise<NineQuestionsRunResponse> {
+  const resp = await fetch(`/api/web/nine-questions/${questionId}/rollback`, {
+    method: "POST",
+  });
+  const data = await readResponseBody(resp);
+  if (!resp.ok) {
+    const detail = extractApiErrorMessage(data, "");
+    throw new Error(detail || `执行 ${questionId} 回滚失败（HTTP ${resp.status}）`);
+  }
+  return data as NineQuestionsRunResponse;
+}
+
+export async function executeNineQuestionRecoveryAction(action: NineQuestionRecoveryAction): Promise<NineQuestionsRunResponse> {
+  if (!action.executable) {
+    throw new Error(`${action.label || action.action_id} 当前只是计划动作，尚未接入执行器`);
+  }
+  if (!action.path) {
+    throw new Error(`${action.label || action.action_id} 缺少后端路径`);
+  }
+  const resp = await fetch(action.path, {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+    },
+    body: JSON.stringify({}),
+  });
+  const data = await readResponseBody(resp);
+  if (!resp.ok) {
+    const detail = extractApiErrorMessage(data, "");
+    throw new Error(detail || `执行恢复动作失败（HTTP ${resp.status}）`);
+  }
+  return data as NineQuestionsRunResponse;
+}
+
+export async function rollbackNineQuestionModule(questionId: string, moduleId: string): Promise<NineQuestionsRunResponse> {
+  const resp = await fetch(`/api/web/nine-questions/${questionId}/modules/${moduleId}/rollback`, {
+    method: "POST",
+  });
+  const data = await readResponseBody(resp);
+  if (!resp.ok) {
+    const detail = extractApiErrorMessage(data, "");
+    throw new Error(detail || `执行 ${questionId}.${moduleId} 模块回滚失败（HTTP ${resp.status}）`);
+  }
+  return data as NineQuestionsRunResponse;
+}
+
+export async function retryNineQuestionModule(questionId: string, moduleId: string): Promise<NineQuestionsRunResponse> {
+  const resp = await fetch(`/api/web/nine-questions/${questionId}/modules/${moduleId}/retry`, {
+    method: "POST",
+  });
+  const data = await readResponseBody(resp);
+  if (!resp.ok) {
+    const detail = extractApiErrorMessage(data, "");
+    throw new Error(detail || `执行 ${questionId}.${moduleId} 模块重试失败（HTTP ${resp.status}）`);
+  }
+  return data as NineQuestionsRunResponse;
+}
+
 export async function fetchNineQuestionTrace(traceId: string): Promise<TraceDetail> {
   // Validate trace ID before making the request
   if (!traceId || traceId === "none" || traceId.endsWith(":no-trace")) {
@@ -824,7 +1017,7 @@ export async function fetchNineQuestionDetail(
     ? `/api/web/nine-questions/${questionId}?trace_id=${encodeURIComponent(traceId)}`
     : `/api/web/nine-questions/${questionId}`;
 
-  const resp = await fetch(url);
+  const resp = await fetchWithTimeout(url);
   const data = await readResponseBody(resp);
 
   if (!resp.ok) {
@@ -849,6 +1042,77 @@ export async function fetchNineQuestionDetail(
   }
 
   return data as NineQuestionItem;
+}
+
+async function _fetchQuestionSubSection(questionId: string, section: string): Promise<Record<string, any>> {
+  const resp = await fetchWithTimeout(`/api/web/nine-questions/${questionId}/${section}`);
+  const data = await readResponseBody(resp);
+  if (!resp.ok) {
+    const detail = extractApiErrorMessage(data, "");
+    throw new Error(detail || `获取 ${questionId} ${section} 失败（HTTP ${resp.status}）`);
+  }
+  return (data as Record<string, any>) ?? {};
+}
+
+export async function fetchNineQuestionSummary(questionId: string): Promise<Record<string, any>> {
+  return _fetchQuestionSubSection(questionId, "summary");
+}
+
+export async function fetchNineQuestionEvidence(questionId: string): Promise<Record<string, any>> {
+  return _fetchQuestionSubSection(questionId, "evidence");
+}
+
+export async function fetchNineQuestionInference(questionId: string): Promise<Record<string, any>> {
+  return _fetchQuestionSubSection(questionId, "inference");
+}
+
+export async function fetchNineQuestionTracePayload(questionId: string): Promise<Record<string, any>> {
+  return _fetchQuestionSubSection(questionId, "trace-payload");
+}
+
+export async function fetchNineQuestionRaw(questionId: string): Promise<Record<string, any>> {
+  return _fetchQuestionSubSection(questionId, "raw");
+}
+
+export async function fetchNineQuestionModules(questionId: string): Promise<Record<string, any>> {
+  return _fetchQuestionSubSection(questionId, "modules");
+}
+
+export async function fetchNineQuestionReflections(
+  questionId?: string,
+): Promise<NineQuestionReflectionRecord[]> {
+  const url = questionId
+    ? `/api/web/reflections?q_id=${encodeURIComponent(questionId)}`
+    : `/api/web/reflections`;
+  const resp = await fetch(url);
+  const data = await readResponseBody(resp);
+  if (!resp.ok) {
+    const detail = extractApiErrorMessage(data, "");
+    throw new Error(detail || `获取反思记录失败（HTTP ${resp.status}）`);
+  }
+  return (data?.items ?? []) as NineQuestionReflectionRecord[];
+}
+
+export async function fetchNineQuestionReflectionDetail(
+  reflectionId: string,
+): Promise<NineQuestionReflectionRecord> {
+  const resp = await fetch(`/api/web/reflections/${encodeURIComponent(reflectionId)}`);
+  const data = await readResponseBody(resp);
+  if (!resp.ok) {
+    const detail = extractApiErrorMessage(data, "");
+    throw new Error(detail || `获取反思详情失败（HTTP ${resp.status}）`);
+  }
+  return data as NineQuestionReflectionRecord;
+}
+
+export async function fetchNineQuestionWorkflow(): Promise<NineQuestionWorkflowPayload> {
+  const resp = await fetch("/api/web/nine-questions/workflow");
+  const data = await readResponseBody(resp);
+  if (!resp.ok) {
+    const detail = extractApiErrorMessage(data, "");
+    throw new Error(detail || `获取九问工作流状态失败（HTTP ${resp.status}）`);
+  }
+  return data as NineQuestionWorkflowPayload;
 }
 
 export function getQuestionDisplayLabel(questionId: string): string {

@@ -8,6 +8,7 @@ Q1 can participate in the new DSPy upgrade flow without forcing the main
 inference path to fail when upgrade planning is not configured.
 """
 
+import logging
 from typing import Any
 
 from plugins.nine_questions.q1_where_am_i.models import WorkspaceDomainInference
@@ -16,6 +17,8 @@ from plugins.nine_questions.q1_where_am_i.upgrade_models import (
     Q1LLMUpgradeProfile,
 )
 from pydantic import BaseModel, ConfigDict, Field
+
+logger = logging.getLogger(__name__)
 
 
 class LLMUpgradeRequest(BaseModel):
@@ -130,6 +133,9 @@ def build_q1_upgrade_payload(
     try:
         candidate = upgrade_service.plan_candidate(request)
     except Exception as exc:
+        # 严禁吞掉 upgrade planning 异常并伪装成“只是没有候选版本”。
+        # 规划链失败必须留下日志，否则后台故障会被误判成正常未触发。
+        logger.warning("Q1 llm upgrade planning failed: %s", exc)
         return Q1LLMUpgradePlanPayload(
             planning_status="planning_failed",
             profile=profile,

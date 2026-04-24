@@ -1,25 +1,23 @@
 from __future__ import annotations
 
 import asyncio
+import inspect
 import logging
 from datetime import datetime, timezone
 from threading import Event, Thread
-from typing import Any, Optional
+from typing import Any, Dict, List, Optional, Union
+
+from zentex.common.startup_markers import log_once
 
 logger = logging.getLogger(__name__)
 
 
 class TaskAutoLoopScheduler:
-    """Background scheduler for task lifecycle maintenance AND execution.
+    """Background scheduler for task lifecycle maintenance.
 
-    The scheduler runs three passes per cycle:
-    1. **Execution pass** — dispatch TODO tasks to plugins via TaskExecutionWorker
-    2. **Auto-resume pass** — wake suspended tasks whose recovery time has arrived
-    3. **Timeout pass** — detect timed-out in-progress tasks, close and republish
-
-    The execution worker is optional: if no worker is provided (e.g. during
-    testing or when no plugin_layer is available) the scheduler falls back to
-    the original maintenance-only behaviour.
+    The scheduler performs two maintenance passes:
+    - auto-resume suspended tasks whose recovery time has arrived
+    - detect timed-out running tasks, close them, and republish eligible ones
     """
 
     def __init__(
@@ -29,19 +27,14 @@ class TaskAutoLoopScheduler:
         interval_seconds: int = 15,
         batch_size: int = 50,
         enabled: bool = True,
-        # --- new: optional execution worker ---
-        execution_worker: Optional[Any] = None,
     ) -> None:
         self._task_service = task_service
         self._interval_seconds = max(5, int(interval_seconds))
         self._batch_size = max(1, int(batch_size))
         self._enabled = bool(enabled)
         self._stop_event = Event()
-        self._thread: Thread | None = None
-        self._last_cycle_at: datetime | None = None
-
-        # TaskExecutionWorker — may be None if not configured
-        self._execution_worker = execution_worker
+        self._thread: Optional[Thread] = None
+        self._last_cycle_at: Optional[datetime] = None
 
     def start(self) -> None:
         if not self._enabled:
@@ -49,14 +42,17 @@ class TaskAutoLoopScheduler:
             return
         if self._thread is not None and self._thread.is_alive():
             return
+        log_once(
+            "tasks.scheduler.started",
+            interval_seconds=self._interval_seconds,
+            batch_size=self._batch_size,
+        )
         self._thread = Thread(target=self._run_loop, name="task-auto-loop", daemon=True)
         self._thread.start()
         logger.info(
-            "Task auto loop scheduler started "
-            "(interval_seconds=%s, batch_size=%s, execution_worker=%s)",
+            "Task auto loop scheduler started (interval_seconds=%s, batch_size=%s)",
             self._interval_seconds,
             self._batch_size,
-            "enabled" if self._execution_worker is not None else "disabled",
         )
 
     def stop(self) -> None:
@@ -64,22 +60,6 @@ class TaskAutoLoopScheduler:
         thread = self._thread
         if thread is not None and thread.is_alive():
             thread.join(timeout=2.0)
-
-    def set_execution_worker(self, worker: Any) -> None:
-        """Attach or replace the execution worker at runtime.
-
-        Useful when the plugin_layer / router become available after the
-        scheduler has already been started (e.g. after plugin bootstrap).
-        """
-        self._execution_worker = worker
-        logger.info(
-            "TaskAutoLoopScheduler: execution worker %s",
-            "attached" if worker is not None else "detached",
-        )
-
-    # ------------------------------------------------------------------
-    # Internal loop
-    # ------------------------------------------------------------------
 
     def _run_loop(self) -> None:
         while not self._stop_event.is_set():
@@ -93,50 +73,45 @@ class TaskAutoLoopScheduler:
         started_at = datetime.now(timezone.utc)
         stats: dict[str, Any] = {
             "cycle_started_at": started_at.isoformat(),
-            "execution_dispatched": 0,
-            "execution_succeeded": 0,
-            "execution_failed": 0,
-            "execution_skipped": 0,
             "auto_resumed_count": 0,
             "timed_out_count": 0,
             "republished_count": 0,
+            "tasks_dispatched": 0,
             "errors": [],
         }
 
-        # ── Pass 1: Execute dispatchable tasks ───────────────────────────
-        if self._execution_worker is not None:
+        # 1. Dispatch Pass: Run the worker logic to execute TODO tasks
+        dispatch_fn = getattr(self._task_service, "run_worker_cycle", None)
+        if callable(dispatch_fn):
             try:
-                worker_stats = await self._execution_worker.run_cycle()
-                stats["execution_dispatched"] = worker_stats.tasks_dispatched
-                stats["execution_succeeded"] = worker_stats.tasks_succeeded
-                stats["execution_failed"] = worker_stats.tasks_failed
-                stats["execution_skipped"] = worker_stats.tasks_skipped
-                if worker_stats.errors:
-                    stats["errors"].extend(worker_stats.errors)
-            except Exception as exc:  # pragma: no cover
-                logger.exception("Execution worker pass failed: %s", exc)
-                stats["errors"].append({"stage": "execution", "error": str(exc)})
+                # The real TaskService methods are async coroutines.  StubService
+                # no-ops are sync lambdas that return None.  Use isawaitable() so
+                # this scheduler works correctly regardless of which is injected.
+                result = dispatch_fn()
+                dispatch_stats = await result if inspect.isawaitable(result) else result
+                stats["tasks_dispatched"] = (dispatch_stats or {}).get("tasks_processed", 0)
+            except Exception as exc:
+                logger.exception("Task dispatch pass failed: %s", exc)
+                stats["errors"].append({"stage": "dispatch", "error": str(exc)})
 
-        # ── Pass 2: Auto-resume suspended tasks ──────────────────────────
         auto_resume_fn = getattr(self._task_service, "check_auto_resume_tasks", None)
         if callable(auto_resume_fn):
             try:
-                resumed_tasks = await auto_resume_fn()
+                result = auto_resume_fn()
+                resumed_tasks = await result if inspect.isawaitable(result) else result
                 stats["auto_resumed_count"] = len(resumed_tasks or [])
-            except Exception as exc:  # pragma: no cover
+            except Exception as exc:  # pragma: no cover - defensive loop guard
                 logger.exception("Task auto-resume pass failed: %s", exc)
                 stats["errors"].append({"stage": "auto_resume", "error": str(exc)})
 
-        # ── Pass 3: Detect and republish timed-out tasks ─────────────────
         timeout_fn = getattr(self._task_service, "check_timeout_and_republish_tasks", None)
         if callable(timeout_fn):
             try:
-                timeout_results = await timeout_fn(limit=self._batch_size)
+                result = timeout_fn(limit=self._batch_size)
+                timeout_results = await result if inspect.isawaitable(result) else result
                 stats["timed_out_count"] = len(timeout_results or [])
-                stats["republished_count"] = sum(
-                    1 for item in timeout_results or [] if item.get("republished")
-                )
-            except Exception as exc:  # pragma: no cover
+                stats["republished_count"] = sum(1 for item in timeout_results or [] if item.get("republished"))
+            except Exception as exc:  # pragma: no cover - defensive loop guard
                 logger.exception("Task timeout pass failed: %s", exc)
                 stats["errors"].append({"stage": "timeout", "error": str(exc)})
 
@@ -144,14 +119,18 @@ class TaskAutoLoopScheduler:
         stats["cycle_duration_ms"] = elapsed_ms
         self._last_cycle_at = started_at
 
-        logger.info(
-            "Task auto loop cycle completed: "
-            "exec_dispatched=%s exec_ok=%s exec_fail=%s exec_skip=%s | "
-            "auto_resumed=%s timed_out=%s republished=%s | duration_ms=%s",
-            stats["execution_dispatched"],
-            stats["execution_succeeded"],
-            stats["execution_failed"],
-            stats["execution_skipped"],
+        did_work = any(
+            (
+                stats["auto_resumed_count"],
+                stats["timed_out_count"],
+                stats["republished_count"],
+                len(stats["errors"]),
+            )
+        )
+        log_fn = logger.info if did_work else logger.debug
+        log_fn(
+            "Task auto loop cycle completed: dispatched=%s auto_resumed=%s timed_out=%s republished=%s duration_ms=%s",
+            stats["tasks_dispatched"],
             stats["auto_resumed_count"],
             stats["timed_out_count"],
             stats["republished_count"],
@@ -159,5 +138,5 @@ class TaskAutoLoopScheduler:
         )
 
     @property
-    def last_cycle_at(self) -> datetime | None:
+    def last_cycle_at(self) -> Optional[datetime]:
         return self._last_cycle_at

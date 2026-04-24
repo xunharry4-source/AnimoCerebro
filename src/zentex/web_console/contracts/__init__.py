@@ -18,7 +18,6 @@ from .kernel_service import (
 from .session_manager import SessionManager
 from .state_manager import NineQuestionStateManager
 from .event_bus import EventBus, EventPublishResult, Subscription
-from .config_manager import ConfigManager
 
 __all__ = [
     "KernelServiceFacade",
@@ -30,6 +29,4 @@ __all__ = [
     "EventBus",
     "EventPublishResult",
     "Subscription",
-    "ConfigManager",
 ]
-

@@ -1,7 +1,10 @@
 from __future__ import annotations
 
+import logging
 import time
 from typing import Any, Dict, List
+
+logger = logging.getLogger(__name__)
 from zentex.memory.consolidation.consolidation import ConsolidationEngine, ConsolidationCycle
 from zentex.memory.management.enhanced import EnhancedMemoryService, MemoryManagementStatus
 
@@ -30,7 +33,15 @@ class ConsolidationToEnhancedBridge:
     
     def update_management_state(self, memory_id: str, status: str, operator: str = "system", reason: str = ""):
         """Public API to update management state."""
-        return self._enhanced_service.update_management_state(memory_id, lifecycle_status=lifecycle_status, operator=operator, reason=reason)
+        # Forbidden: this bridge must forward the real governance status.
+        # Passing an undefined placeholder here is a fake implementation that
+        # makes callers believe memory governance updates work when they do not.
+        return self._enhanced_service.update_management_state(
+            memory_id,
+            status=status,
+            operator=operator,
+            reason=reason,
+        )
     
     def list_audit_events(self, memory_id: str = None) -> list:
         """Public API to list audit events."""
@@ -49,20 +60,25 @@ class ConsolidationToEnhancedBridge:
             # Link back to cycle
             cycle.summary += f"\n- Candidate {candidate.source_ref} ingested as {candidate_id} for G38 audit."
 
-        # 2. Apply compression markers (Sub-function 59.5)
+        # 2. Prepare batch updates for compression and pruning
+        updates = []
         for ref_id in cycle.compressed_refs:
-            self._enhanced_service.update_management_state(
-                ref_id,
-                status=MemoryManagementStatus.COLD,
-                reason=f"Compressed by consolidation cycle {cycle.cycle_id}"
-            )
-
-        # 3. Apply tombstones (Sub-function 59.5)
+            updates.append({
+                "memory_id": ref_id,
+                "status": MemoryManagementStatus.COLD,
+            })
+            
         for ref_id in cycle.pruned_refs:
-            self._enhanced_service.update_management_state(
-                ref_id,
-                status=MemoryManagementStatus.REJECTED,
-                reason=f"Pruned (forgotten) by consolidation cycle {cycle.cycle_id}"
+            updates.append({
+                "memory_id": ref_id,
+                "status": MemoryManagementStatus.REJECTED,
+            })
+            
+        if updates:
+            self._enhanced_service.batch_update_management_state(
+                updates,
+                operator=f"consolidation-cycle-{cycle.cycle_id}",
+                reason=f"Processed by consolidation cycle {cycle.cycle_id} (Governance Batch)."
             )
             
     def archive_cold(self, memory_ids: List[str]):
@@ -109,8 +125,9 @@ class ConsolidationScheduler:
                      cycle = fut.result()
                      self._bridge.process_consolidation_results(cycle)
                  except Exception:
-                     pass
-             
+                     # POLICY[no-silent-except]: log consolidation result processing failure.
+                     logger.warning("Failed to process consolidation cycle results", exc_info=True)
+
              future.add_done_callback(on_complete)
              return handle.cycle_id
         

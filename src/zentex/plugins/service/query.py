@@ -1,3 +1,4 @@
+from __future__ import annotations
 """
 Query Service: Plugin Information Retrieval
 
@@ -9,7 +10,6 @@ Handles:
 - Advanced filtering queries
 """
 
-from __future__ import annotations
 
 import logging
 from uuid import uuid4
@@ -66,10 +66,6 @@ class QueryService:
         - ACTIVE + not instantiated or stopped => stopped
         - ACTIVE + healthy runtime => enabled
         """
-        lifecycle_status = self._normalize_lifecycle_status(record.get("lifecycle_status"))
-        if lifecycle_status != PluginLifecycleStatus.ACTIVE.value:
-            return "unavailable"
-
         plugin_id = str(record.get("plugin_id") or "").strip()
         persisted_operational_status = self._normalize_operational_status(
             record.get("operational_status")
@@ -86,6 +82,9 @@ class QueryService:
 
         if bool(record.get("stopped_at")):
             return "stopped"
+        lifecycle_status = self._normalize_lifecycle_status(record.get("lifecycle_status"))
+        if lifecycle_status != PluginLifecycleStatus.ACTIVE.value:
+            return "unavailable"
         if health_status in {"degraded", "unhealthy"}:
             return "abnormal"
         if persisted_operational_status in {"enabled", "stopped", "abnormal"}:
@@ -523,12 +522,16 @@ class QueryService:
                     "is_instantiated": True,
                 }
             
-            items[plugin_id].update({
+            update_payload = {
                 "is_instantiated": True,
-                "operational_status": self._normalize_operational_status(getattr(instance, "operational_status", "enabled")),
                 "health_status": self._normalize_operational_status(getattr(instance, "health_status", "healthy")),
                 "category": getattr(instance, "category", items[plugin_id].get("category", "unknown")),
-            })
+            }
+            if self._normalize_lifecycle_status(items[plugin_id].get("lifecycle_status")) == PluginLifecycleStatus.ACTIVE.value:
+                update_payload["operational_status"] = self._normalize_operational_status(
+                    getattr(instance, "operational_status", "enabled")
+                )
+            items[plugin_id].update(update_payload)
             
         return sorted(items.values(), key=lambda x: (x.get("category", ""), x["plugin_id"]))
 

@@ -243,19 +243,27 @@ export function Q3EvidencePanel({
 }) {
   const { t } = useTranslation();
   const [activeTab, setActiveTab] = useState<number>(0);
+  const workspacePermission = evidence.workspace_permission || {};
+  const toolsAgents = evidence.tools_agents || {};
+  const memoryStrategy = evidence.memory_strategy || {};
+  const workspaceList = workspacePermission.workspaces || [];
+  const tenantPermissions = workspacePermission.tenant_permissions || [];
+  const executionTokens = workspacePermission.execution_tokens || [];
+  const experienceLogs = memoryStrategy.experience_logs || [];
+  const strategyPatches = memoryStrategy.strategy_patches || [];
 
   const handleTabChange = (_event: React.SyntheticEvent, newValue: number) => {
     setActiveTab(newValue);
   };
 
-  const connectedAgents = evidence.tools_agents.connected_agents.filter(
+  const connectedAgents = (toolsAgents.connected_agents || []).filter(
     (agent) => String(agent.status || "").toLowerCase() !== "offline",
   );
-  const cognitiveToolRows = evidence.tools_agents.cognitive_tool_rows || [];
-  const executionToolRows = evidence.tools_agents.execution_tool_rows || [];
-  const connectedAgentRows = evidence.tools_agents.connected_agent_rows || [];
-  const mcpServers = evidence.tools_agents.mcp_servers || [];
-  const cliTools = evidence.tools_agents.cli_tools || [];
+  const cognitiveToolRows = toolsAgents.cognitive_tool_rows || [];
+  const executionToolRows = toolsAgents.execution_tool_rows || [];
+  const connectedAgentRows = toolsAgents.connected_agent_rows || [];
+  const mcpServers = toolsAgents.mcp_servers || [];
+  const cliTools = toolsAgents.cli_tools || [];
 
   const tabData = [
     {
@@ -316,12 +324,12 @@ export function Q3EvidencePanel({
               {t("nineQuestions.availableWorkspaces")}
             </Typography>
             <List dense sx={{ bgcolor: "action.hover", borderRadius: 1, mb: 2 }}>
-              {evidence.workspace_permission.workspaces.map((ws, i) => (
-                <ListItem key={i} divider={i < evidence.workspace_permission.workspaces.length - 1}>
+              {workspaceList.map((ws, i) => (
+                <ListItem key={i} divider={i < workspaceList.length - 1}>
                   <ListItemText primary={ws} />
                 </ListItem>
               ))}
-              {evidence.workspace_permission.workspaces.length === 0 && (
+              {workspaceList.length === 0 && (
                 <ListItem><ListItemText primary={t("nineQuestions.noAvailableWorkspaces")} /></ListItem>
               )}
             </List>
@@ -329,14 +337,14 @@ export function Q3EvidencePanel({
               {t("nineQuestions.tenantPermissionsTokens")}
             </Typography>
             <Stack direction="row" spacing={1} useFlexGap flexWrap="wrap">
-              {evidence.workspace_permission.tenant_permissions.map((p, i) => (
+              {tenantPermissions.map((p, i) => (
                 <Chip key={`p-${i}`} label={p} size="small" component="span" />
               ))}
-              {evidence.workspace_permission.execution_tokens.map((tToken, i) => (
+              {executionTokens.map((tToken, i) => (
                 <Chip key={`t-${i}`} label={tToken} size="small" color="info" variant="outlined" component="span" />
               ))}
-              {evidence.workspace_permission.tenant_permissions.length === 0 &&
-               evidence.workspace_permission.execution_tokens.length === 0 && (
+              {tenantPermissions.length === 0 &&
+               executionTokens.length === 0 && (
                 <Typography variant="body2" color="text.secondary">{t("nineQuestions.noExplicitTokens")}</Typography>
               )}
             </Stack>
@@ -405,14 +413,14 @@ export function Q3EvidencePanel({
                 </AccordionSummary>
                 <AccordionDetails>
                   <Stack spacing={1}>
-                    {evidence.memory_strategy.experience_logs.map((log, i) => (
+                    {experienceLogs.map((log, i) => (
                       <Box key={i} sx={{ p: 1.5, bgcolor: "action.hover", borderRadius: 1 }}>
                         <Typography variant="body2" sx={{ whiteSpace: "pre-wrap", fontFamily: "monospace", fontSize: "0.85rem" }}>
                           {log}
                         </Typography>
                       </Box>
                     ))}
-                    {evidence.memory_strategy.experience_logs.length === 0 && (
+                    {experienceLogs.length === 0 && (
                       <Typography variant="body2" color="text.secondary">{t("nineQuestions.noExperienceLogs")}</Typography>
                     )}
                   </Stack>
@@ -425,14 +433,14 @@ export function Q3EvidencePanel({
                 </AccordionSummary>
                 <AccordionDetails>
                   <Stack spacing={1}>
-                    {evidence.memory_strategy.strategy_patches.map((patch, i) => (
+                    {strategyPatches.map((patch, i) => (
                       <Box key={i} sx={{ p: 1.5, bgcolor: "action.hover", borderRadius: 1 }}>
                         <Typography variant="body2" sx={{ whiteSpace: "pre-wrap", fontFamily: "monospace", fontSize: "0.85rem" }}>
                           {patch}
                         </Typography>
                       </Box>
                     ))}
-                    {evidence.memory_strategy.strategy_patches.length === 0 && (
+                    {strategyPatches.length === 0 && (
                       <Typography variant="body2" color="text.secondary">{t("nineQuestions.noStrategyPatches")}</Typography>
                     )}
                   </Stack>

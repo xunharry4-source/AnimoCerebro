@@ -1,11 +1,15 @@
 from __future__ import annotations
 
+import logging
 from typing import List, Dict, Any
 
 from fastapi import APIRouter, Depends, HTTPException
 
 from zentex.cli.service import CliIntegrationService
 from zentex.cli.models import CliToolRegistrationConfig
+from zentex.foundation.contracts.service_response import ServiceStatus
+
+logger = logging.getLogger(__name__)
 from zentex.web_console.contracts.cli import (
     CliToolItem,
     CliToolRegistrationRequest,
@@ -37,12 +41,77 @@ def register_cli_tool(
     if service is None:
         raise HTTPException(status_code=503, detail="CLI service is not available")
     try:
-        state = service.register_tool(CliToolRegistrationConfig.model_validate(payload.model_dump(mode="json")))
-        return CliToolItem.model_validate(state.model_dump(mode="json"))
+        response = service.register_tool(CliToolRegistrationConfig.model_validate(payload.model_dump(mode="json")))
+        if response.status != ServiceStatus.ok:
+            raise HTTPException(status_code=400, detail=response.message)
+        
+        # ServiceResponse.data contains the CliToolRuntimeState
+        return CliToolItem.model_validate(response.data.model_dump(mode="json"))
+    except HTTPException:
+        # Re-raise HTTP errors (e.g. 400 from failed health probe) as-is so
+        # they are not swallowed and re-wrapped as 500 by the catch-all below.
+        raise
     except FileNotFoundError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
     except ValueError as exc:
         raise HTTPException(status_code=422, detail=str(exc)) from exc
+    except Exception as exc:
+        logger.exception("CLI tool registration failed")
+        raise HTTPException(status_code=500, detail=str(exc)) from exc
+
+
+@router.get("/cli-tools/{tool_name}/health")
+def get_cli_tool_health(
+    tool_name: str,
+    service: CliIntegrationService = Depends(get_cli_service),
+) -> Dict[str, Any]:
+    if service is None:
+        raise HTTPException(status_code=503, detail="CLI service is not available")
+    try:
+        return service.get_tool_health(tool_name)
+    except KeyError as exc:
+        raise HTTPException(status_code=404, detail=f"CLI tool '{tool_name}' not registered") from exc
+
+
+@router.post("/cli-tools/{tool_name}/activate", response_model=CliToolItem)
+def activate_cli_tool(
+    tool_name: str,
+    service: CliIntegrationService = Depends(get_cli_service),
+) -> CliToolItem:
+    if service is None:
+        raise HTTPException(status_code=503, detail="CLI service is not available")
+    try:
+        return CliToolItem.model_validate(service.activate_tool(tool_name).model_dump(mode="json"))
+    except KeyError as exc:
+        raise HTTPException(status_code=404, detail=f"CLI tool '{tool_name}' not registered") from exc
+    except FileNotFoundError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
+@router.post("/cli-tools/{tool_name}/disable", response_model=CliToolItem)
+def disable_cli_tool(
+    tool_name: str,
+    service: CliIntegrationService = Depends(get_cli_service),
+) -> CliToolItem:
+    if service is None:
+        raise HTTPException(status_code=503, detail="CLI service is not available")
+    try:
+        return CliToolItem.model_validate(service.disable_tool(tool_name).model_dump(mode="json"))
+    except KeyError as exc:
+        raise HTTPException(status_code=404, detail=f"CLI tool '{tool_name}' not registered") from exc
+
+
+@router.delete("/cli-tools/{tool_name}")
+def delete_cli_tool(
+    tool_name: str,
+    service: CliIntegrationService = Depends(get_cli_service),
+) -> Dict[str, Any]:
+    if service is None:
+        raise HTTPException(status_code=503, detail="CLI service is not available")
+    try:
+        return {"success": service.delete_tool(tool_name), "tool_name": tool_name}
+    except KeyError as exc:
+        raise HTTPException(status_code=404, detail=f"CLI tool '{tool_name}' not registered") from exc
 
 
 @router.post("/cli-tools/{tool_name}/test-call", response_model=CliToolTestCallResult)
@@ -54,17 +123,23 @@ def test_cli_tool(
     if service is None:
         raise HTTPException(status_code=503, detail="CLI service is not available")
     try:
-        result = service.test_call(
+        response = service.test_call(
             tool_name,
             arguments=payload.arguments,
             stdin_input=payload.stdin_input,
             working_directory=payload.working_directory,
             timeout_seconds=payload.timeout_seconds,
         )
-        return CliToolTestCallResult.model_validate(result.model_dump(mode="json"))
+        if response.status != ServiceStatus.ok:
+            # For test calls, we still return a 200 with the failure details in the body
+            # per the McpToolTestCallResult / CliToolTestCallResult contract.
+            return CliToolTestCallResult.model_validate(response.data.model_dump(mode="json"))
+        
+        return CliToolTestCallResult.model_validate(response.data.model_dump(mode="json"))
     except KeyError as exc:
         raise HTTPException(status_code=404, detail=f"CLI tool '{tool_name}' not registered") from exc
     except Exception as exc:
+        logger.exception("CLI test call failed")
         raise HTTPException(status_code=400, detail=f"Test call failed: {exc}") from exc
 
 
@@ -154,7 +229,8 @@ def get_cli_tool_tasks(
             )
             tasks.append(task)
         except Exception:
-            # 跳过无法解析的任务
+            # POLICY[no-silent-except]: log malformed task entry and skip it.
+            logger.warning("cli.py: skipping malformed task entry: %r", task_data, exc_info=True)
             continue
     
     return tasks
@@ -182,7 +258,8 @@ def get_cli_tool_execution_history(
             entry = CliExecutionHistory(**entry_data)
             history.append(entry)
         except Exception:
-            # 跳过无法解析的记录
+            # POLICY[no-silent-except]: log malformed history entry and skip it.
+            logger.warning("cli.py: skipping malformed execution history entry: %r", entry_data, exc_info=True)
             continue
     
     return history

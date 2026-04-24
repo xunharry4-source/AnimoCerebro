@@ -51,7 +51,7 @@ def build_plugin_generation_request(*, plugin_id: str, goal: str) -> dict[str, s
     }
 
 
-def _clip_text(value: str | None, limit: int) -> str:
+def _clip_text(value: Optional[str], limit: int) -> str:
     text = (value or "").strip()
     if not text:
         return "[missing]"

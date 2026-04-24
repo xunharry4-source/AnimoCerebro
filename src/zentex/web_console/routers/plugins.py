@@ -1,3 +1,4 @@
+from __future__ import annotations
 """Plugin Routes v2 - Refactored with Facade-First Design
 
 ⚠️  MODULARIZATION CONSTRAINT - MAX 200 LINES
@@ -10,7 +11,6 @@ This file contains ONLY route definitions that delegate to services.
 ════════════════════════════════════════════════════════════════════
 """
 
-from __future__ import annotations
 
 import logging
 from typing import Any, List

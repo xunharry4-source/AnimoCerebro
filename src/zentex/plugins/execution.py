@@ -1,6 +1,6 @@
+from __future__ import annotations
 """Public execution plugin contracts owned by zentex.plugins."""
 
-from __future__ import annotations
 
 from abc import ABC, abstractmethod
 from enum import Enum

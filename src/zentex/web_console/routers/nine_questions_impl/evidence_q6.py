@@ -1,10 +1,12 @@
+from __future__ import annotations
+
 """
 Q6 (我即使能做也不该做什么) evidence extraction.
 
 Contains functions for building and extracting EVIDENCE_Q6 evidence.
 """
 
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Union
 
 from zentex.web_console.contracts.nine_questions import (
     Q6PreprocessedEvidence,
@@ -14,7 +16,7 @@ from zentex.web_console.contracts.nine_questions import (
 from .helpers import _coerce_string_list
 
 
-def _extract_q6_preprocessed_evidence(context_payload: object) -> Q6PreprocessedEvidence | None:
+def _extract_q6_preprocessed_evidence(context_payload: object) -> Optional[Q6PreprocessedEvidence]:
     if not isinstance(context_payload, dict):
         return None
     # 读取实际写入的 key
@@ -47,7 +49,7 @@ def _extract_q6_preprocessed_evidence(context_payload: object) -> Q6Preprocessed
     )
 
 
-def _extract_q6_inference_result(result_payload: object) -> Q6ForbiddenZoneInferenceView | None:
+def _extract_q6_inference_result(result_payload: object) -> Optional[Q6ForbiddenZoneInferenceView]:
     if not isinstance(result_payload, dict):
         return None
     source_payload = (

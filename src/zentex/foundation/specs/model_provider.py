@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from typing import Any, Protocol, runtime_checkable
+from typing import Any, Protocol, runtime_checkable, Dict, List, Optional, Union
 
 from pydantic import BaseModel, ConfigDict, Field
 
@@ -11,8 +11,8 @@ class ModelProviderCallerContext(BaseModel):
     source_module: str
     invocation_phase: str
     question_driver_refs: list[str] = Field(default_factory=list)
-    decision_id: str | None = None
-    trace_id: str | None = None
+    decision_id: Optional[str] = None
+    trace_id: Optional[str] = None
 
 
 @runtime_checkable
@@ -24,7 +24,7 @@ class ModelProviderSpec(Protocol):
         *,
         prompt: str,
         context: dict[str, Any],
-        caller_context: ModelProviderCallerContext | dict[str, Any],
+        caller_context: Union[ModelProviderCallerContext, dict[str], Any],
     ) -> dict[str, Any]: ...
 
 

@@ -2,8 +2,6 @@
 
 __all__ = [
     "InProcessEventBus",
-    "SQLiteSessionStore",
-    "SQLiteStateStore",
     "SessionManagerImpl",
     "NineQuestionStateManagerImpl",
 ]

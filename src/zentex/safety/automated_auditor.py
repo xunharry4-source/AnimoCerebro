@@ -529,28 +529,29 @@ class AutomatedAuditor:
         self,
         events: List[AuditEvent],
     ) -> List[ComplianceCheck]:
-        """Run all compliance checks."""
+        """Run all compliance checks.
+
+        Standard Redline:
+        - Fail-Closed: If any compliance checker crashes, the audit is considered failed
+          and the system must not proceed.
+        """
         results = []
-        
         for rule in self._compliance_rules:
-            try:
-                check_fn = rule['check_fn']
-                status, findings, recommendations = check_fn(events)
-                
-                result = ComplianceCheck(
-                    rule_id=rule['rule_id'],
-                    rule_name=rule['name'],
-                    category=rule['category'],
-                    lifecycle_status=lifecycle_status,
-                    description=rule['description'],
-                    findings=findings,
-                    recommendations=recommendations,
-                    checked_at=time.time(),
-                )
-                
-                results.append(result)
-            except Exception as e:
-                logger.error(f"Compliance check failed: {rule['rule_id']}: {e}")
+            check_fn = rule['check_fn']
+            # Execute check. Any crash here correctly halts the mission.
+            status, findings, recommendations = check_fn(events)
+            
+            result = ComplianceCheck(
+                rule_id=rule['rule_id'],
+                rule_name=rule['name'],
+                category=rule['category'],
+                status=status,
+                description=rule['description'],
+                findings=findings,
+                recommendations=recommendations,
+                checked_at=time.time(),
+            )
+            results.append(result)
         
         return results
     
@@ -558,16 +559,16 @@ class AutomatedAuditor:
         self,
         events: List[AuditEvent],
     ) -> List[AnomalyTrace]:
-        """Detect anomalous behavior patterns."""
+        """Detect anomalous behavior patterns.
+
+        Standard Redline:
+        - Fail-Closed: Infrastructure failures in detection logic must be surfaced.
+        """
         traces = []
-        
         for pattern in self._anomaly_patterns:
-            try:
-                trace = self._check_anomaly_pattern(events, pattern)
-                if trace:
-                    traces.append(trace)
-            except Exception as e:
-                logger.error(f"Anomaly detection failed: {pattern['pattern_id']}: {e}")
+            trace = self._check_anomaly_pattern(events, pattern)
+            if trace:
+                traces.append(trace)
         
         return traces
     

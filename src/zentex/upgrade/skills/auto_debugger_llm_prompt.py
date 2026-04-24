@@ -64,7 +64,7 @@ def build_root_cause_prompt(
     }
 
 
-def _clip_text(value: str | None, limit: int) -> str:
+def _clip_text(value: Optional[str], limit: int) -> str:
     text = (value or "").strip()
     if not text:
         return "[missing]"

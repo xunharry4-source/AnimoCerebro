@@ -1,9 +1,9 @@
+from __future__ import annotations
 """
 Phase B2: ExecutorRegistry for managing external executors.
 Stores and indexes executors by type, capability, and quality metrics.
 """
 
-from __future__ import annotations
 import logging
 from typing import Any, Dict, List, Optional
 from zentex.tasks.dispatch.models import (

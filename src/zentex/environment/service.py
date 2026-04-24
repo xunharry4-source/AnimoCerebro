@@ -1,3 +1,5 @@
+from __future__ import annotations
+
 """
 Environment Awareness Service / 环境感知服务
 
@@ -17,7 +19,7 @@ are internal implementation details.
 
 from datetime import datetime, timezone
 import logging
-from typing import Any, Optional
+from typing import Any, Optional, Dict, List, Union
 from uuid import uuid4
 
 from zentex.environment.cleaner import SensoryDataCleaner
@@ -33,18 +35,19 @@ from zentex.environment.models import (
 )
 from zentex.environment.scouter import EnvironmentScouter
 from zentex.environment.snapshot import ContextSnapshotStore
+from zentex.environment.workspace_scouter import WorkspaceScouter
 
-# G19 - 用户偏好辨析与意图对齐 (v1.0)
+# Alignment - 用户偏好辨析与意图对齐 (v1.0)
 from zentex.environment.preference_engine import PreferenceEngine
 from zentex.environment.preference_manager import PreferenceManager
 from zentex.environment.extreme_signal_interceptor import ExtremeSignalInterceptor
 from zentex.environment.attack_sample_marker import AttackSampleMarker
 from zentex.environment.preference_storage import PreferenceStore
 
-# G19 v2.0 - 新技术栈组件
-from zentex.environment.g19_settings import G19Settings, get_g19_settings
-from zentex.environment.g19_database import G19Database, get_g19_database
-from zentex.environment.g19_judgment_engine import HybridJudgmentEngine
+# Preference Alignment (formerly Alignment)
+from zentex.environment.preference_settings import AlignmentSettings, get_alignment_settings
+from zentex.environment.preference_db import AlignmentDatabase, get_alignment_database
+from zentex.environment.judgment_engine import HybridAlignmentEngine
 
 logger = logging.getLogger(__name__)
 
@@ -92,12 +95,12 @@ class EnvironmentAwarenessService:
         self,
         *,
         scouter_debounce_seconds: float = 5.0,
-        snapshot_storage_path: str | None = None,
+        snapshot_storage_path: Optional[str] = None,
         max_snapshots_in_memory: int = 1000,
         sanitizer_max_length: int = 10000,
         enable_injection_detection: bool = True,
-        # G19 - 用户偏好辨析配置
-        preference_db_path: str | None = None,
+        # Alignment - 用户偏好辨析配置
+        preference_db_path: Optional[str] = None,
         auto_confirm_threshold: float = 0.9,
         confirmation_timeout_hours: int = 24,
     ) -> None:
@@ -110,9 +113,9 @@ class EnvironmentAwarenessService:
             max_snapshots_in_memory: Maximum snapshots to keep in memory
             sanitizer_max_length: Maximum length for sanitized signals
             enable_injection_detection: Whether to enable prompt injection detection
-            preference_db_path: Path to preference database (G19)
-            auto_confirm_threshold: Confidence threshold for auto-confirming preferences (G19)
-            confirmation_timeout_hours: Hours before confirmation expires (G19)
+            preference_db_path: Path to preference database (Alignment)
+            auto_confirm_threshold: Confidence threshold for auto-confirming preferences (Alignment)
+            confirmation_timeout_hours: Hours before confirmation expires (Alignment)
         """
         # Initialize internal components
         self._scouter = EnvironmentScouter(
@@ -128,8 +131,9 @@ class EnvironmentAwarenessService:
             max_in_memory_snapshots=max_snapshots_in_memory,
         )
         self._comparator = MultiSourceComparator()
+        self._workspace_scouter = WorkspaceScouter()
         
-        # G19 - 初始化偏好辨析组件
+        # Preference Alignment - 初始化偏好辨析组件
         self._preference_store = PreferenceStore(
             db_path=preference_db_path
         )
@@ -139,6 +143,15 @@ class EnvironmentAwarenessService:
         self._preference_manager = PreferenceManager(store=self._preference_store)
         self._extreme_signal_interceptor = ExtremeSignalInterceptor()
         self._attack_sample_marker = AttackSampleMarker(store=self._preference_store)
+        
+        # Policy: Mandatory Storage for Context Snapshots
+        # Failure to persist snapshots results in "Environmental Amnesia"
+        if not self._snapshot_store.storage_path:
+            from pathlib import Path
+            default_snap_path = str(Path("./data/environment/snapshots").absolute())
+            self._snapshot_store.storage_path = Path(default_snap_path)
+            self._snapshot_store.storage_path.mkdir(parents=True, exist_ok=True)
+            logger.info(f"Initialized mandatory snapshot storage at: {default_snap_path}")
     
     # =========================================================================
     # Public API - Host State Sampling / 宿主状态采样
@@ -161,7 +174,7 @@ class EnvironmentAwarenessService:
         """
         return self._scouter.sample_host_state()
     
-    def get_last_host_state(self) -> PhysicalHostState | None:
+    def get_last_host_state(self) -> Optional[PhysicalHostState]:
         """
         Get the last sampled host state without triggering a new sample.
         
@@ -179,8 +192,10 @@ class EnvironmentAwarenessService:
     def interpret_environment(
         self,
         host_state: PhysicalHostState,
-        current_role: str | None = None,
-        active_goals: list[str] | None = None,
+        current_role: Optional[str] = None,
+        active_goals: list[Optional[str]] = None,
+        identity: Optional[dict[str, Any]] = None,
+        nine_question_state: Optional[dict[str, Any]] = None,
     ) -> SituationImpact:
         """
         Interpret environmental state and determine impacts on agent operations.
@@ -191,20 +206,18 @@ class EnvironmentAwarenessService:
             host_state: Current physical host state
             current_role: Agent's current role (optional)
             active_goals: List of currently active goal IDs (optional)
+            identity: Agent's identity kernel (optional, for authentic grounding)
+            nine_question_state: Nine-Question baseline (optional, for authentic grounding)
             
         Returns:
             SituationImpact: Interpreted impacts, recommendations, and risk assessment
-            
-        This method analyzes the host state and provides actionable insights
-        including cognitive mode recommendations and risk assessments.
-        
-        该方法分析宿主状态并提供可操作的洞察，
-        包括认知模式建议和风险评估。
         """
         return self._interpreter.interpret_host_state(
             host_state=host_state,
             current_role=current_role,
             active_goals=active_goals,
+            identity=identity,
+            nine_question_state=nine_question_state,
         )
     
     # =========================================================================
@@ -227,8 +240,8 @@ class EnvironmentAwarenessService:
     def sanitize_multiple_signals(
         self,
         signals: list[str],
-        source_plugin_id: str | None = None,
-        source_kind: str | None = None,
+        source_plugin_id: Optional[str] = None,
+        source_kind: Optional[str] = None,
     ) -> list[SanitizedSignal]:
         """
         Sanitize multiple signals in batch.
@@ -253,20 +266,25 @@ class EnvironmentAwarenessService:
         """
         Ingest a raw signal from the currently active ingestion plugin.
         
-        This method encapsulates the internal plugin resolution logic,
-        allowing the caller (e.g., ThinkLoop) to remain agnostic of the 
-        underlying plugin management.
+        Policy: Eradicate "simulated_raw_signal" patterns.
+        If no authentic ingestion plugin is found, this must fail-closed
+        by raising an exception rather than returning fake noise.
         """
-        # In a real implementation, this would look up the active plugin 
-        # from the runtime/registry. For now, we delegate to the registry
-        # attached to the session's runtime if available.
         runtime = getattr(session, "runtime", None)
         if not runtime:
-            return "system_idle_signal"
+            raise RuntimeError("Environment service requires an active runtime for signal ingestion")
             
-        # Note: This logic is moved from ThinkLoop to here to maintain isolation.
-        # We use a simplified version for the facade.
-        return "simulated_raw_signal_from_facade"
+        # Attempt to find the active ingestion plugin from the registry
+        # The registry is usually present in runtime.registry or similar
+        registry = getattr(runtime, "registry", None)
+        if registry and hasattr(registry, "get_active_ingestion_plugin"):
+            plugin = registry.get_active_ingestion_plugin()
+            if plugin and hasattr(plugin, "pull_signal"):
+                return str(plugin.pull_signal())
+        
+        # If no plugin, check for fallback 'system_idle_signal' or fail
+        logger.warning("No active sensory ingestion plugin found - entering fail-closed state")
+        raise RuntimeError("Authentic sensory ingestion failed: No active provider plugin registered.")
 
     def interpret_signal(
         self,
@@ -274,15 +292,24 @@ class EnvironmentAwarenessService:
         current_role: Optional[str] = None,
         active_goals: Optional[list[str]] = None,
     ) -> SituationImpact:
-        """Interpret a sanitized signal into a cognitive situation impact."""
-        # For now, we map this to the host state interpreter
-        # In a full implementation, this would handle broader sensory events
+        """Interpret a sanitized signal into a cognitive situation impact.
+        
+        Policy: Mock interpretation is prohibited.
+        """
         host_state = self._scouter.sample_host_state()
-        return self._interpreter.interpret_host_state(
+        # Merge signal context into host interpretation (Phase 1: Basic content check)
+        impact = self._interpreter.interpret_host_state(
             host_state=host_state,
             current_role=current_role,
             active_goals=active_goals
         )
+        
+        # If signal contains 'critical' or 'emergency' keywords, elevate impact
+        if any(kw in (sanitized_signal.content or "").lower() for kw in ["critical", "emergency", "fatal", "attack"]):
+            impact.risk_assessment["signal_anomaly"] = "High risk signal detected in sensory ingestion"
+            impact.cognitive_mode_recommendation = "EMERGENCY_RESPONSE"
+            
+        return impact
     
     # =========================================================================
     # Public API - Context Snapshots / 上下文快照
@@ -290,15 +317,15 @@ class EnvironmentAwarenessService:
     
     def create_context_snapshot(
         self,
-        host_state: PhysicalHostState | None = None,
-        session_id: str | None = None,
-        turn_id: str | None = None,
-        active_goals: list[str] | None = None,
-        working_memory_summary: str | None = None,
-        current_role: str | None = None,
-        identity_anchor_ref: str | None = None,
-        tags: list[str] | None = None,
-        metadata: dict[str, Any] | None = None,
+        host_state: Optional[PhysicalHostState] = None,
+        session_id: Optional[str] = None,
+        turn_id: Optional[str] = None,
+        active_goals: list[Optional[str]] = None,
+        working_memory_summary: Optional[str] = None,
+        current_role: Optional[str] = None,
+        identity_anchor_ref: Optional[str] = None,
+        tags: list[Optional[str]] = None,
+        metadata: dict[str, Any] = None,
     ) -> ContextSnapshot:
         """
         Create and store a new context snapshot.
@@ -325,6 +352,12 @@ class EnvironmentAwarenessService:
         上下文快照提供系统状态的时间点记录，
         用于历史分析和状态恢复。
         """
+        # Auto-inject workspace data if missing from metadata
+        final_metadata = metadata.copy() if metadata else {}
+        if "workspace_structure_analysis" not in final_metadata:
+            workspace_data = self._workspace_scouter.get_full_analysis()
+            final_metadata.update(workspace_data)
+
         return self._snapshot_store.create_snapshot(
             host_state=host_state,
             session_id=session_id,
@@ -334,13 +367,13 @@ class EnvironmentAwarenessService:
             current_role=current_role,
             identity_anchor_ref=identity_anchor_ref,
             tags=tags,
-            metadata=metadata,
+            metadata=final_metadata,
         )
     
     def get_recent_snapshots(
         self,
         count: int = 10,
-        before_timestamp: datetime | None = None,
+        before_timestamp: Optional[datetime] = None,
     ) -> list[ContextSnapshot]:
         """
         Get the most recent context snapshots.
@@ -361,11 +394,11 @@ class EnvironmentAwarenessService:
     
     def query_snapshots(
         self,
-        session_id: str | None = None,
-        turn_id: str | None = None,
-        tag: str | None = None,
-        start_time: datetime | None = None,
-        end_time: datetime | None = None,
+        session_id: Optional[str] = None,
+        turn_id: Optional[str] = None,
+        tag: Optional[str] = None,
+        start_time: Optional[datetime] = None,
+        end_time: Optional[datetime] = None,
     ) -> list[ContextSnapshot]:
         """
         Query context snapshots with various filters.
@@ -402,7 +435,7 @@ class EnvironmentAwarenessService:
         value_a: Any,
         value_b: Any,
         conflict_type: str = "value_mismatch",
-    ) -> SourceConflictScore | None:
+    ) -> Optional[SourceConflictScore]:
         """
         Compare values from two sources to detect conflicts.
         
@@ -461,8 +494,10 @@ class EnvironmentAwarenessService:
     
     def sample_and_interpret(
         self,
-        current_role: str | None = None,
-        active_goals: list[str] | None = None,
+        current_role: Optional[str] = None,
+        active_goals: list[Optional[str]] = None,
+        identity: Optional[dict[str, Any]] = None,
+        nine_question_state: Optional[dict[str, Any]] = None,
     ) -> tuple[PhysicalHostState, SituationImpact]:
         """
         Convenience method to sample host state and interpret it in one call.
@@ -472,6 +507,8 @@ class EnvironmentAwarenessService:
         Args:
             current_role: Agent's current role (optional)
             active_goals: List of currently active goal IDs (optional)
+            identity: Agent's identity kernel (optional)
+            nine_question_state: Nine-Question baseline (optional)
             
         Returns:
             Tuple of (host_state, situation_impact)
@@ -481,13 +518,15 @@ class EnvironmentAwarenessService:
             host_state=host_state,
             current_role=current_role,
             active_goals=active_goals,
+            identity=identity,
+            nine_question_state=nine_question_state,
         )
         return host_state, impact
     
     def sample_and_snapshot(
         self,
-        session_id: str | None = None,
-        turn_id: str | None = None,
+        session_id: Optional[str] = None,
+        turn_id: Optional[str] = None,
         **snapshot_kwargs: Any,
     ) -> tuple[PhysicalHostState, ContextSnapshot]:
         """
@@ -522,14 +561,14 @@ class EnvironmentAwarenessService:
         }
 
     # =========================================================================
-    # Public API - G19 User Preference & Intent Alignment / 用户偏好辨析与意图对齐
+    # Public API - Preference Alignment / 用户偏好辨析与意图对齐
     # =========================================================================
     
     async def execute_preference_judgment(
         self,
         detected_state: dict[str, Any],
         detection_source: str,
-        context: dict[str, Any] | None = None,
+        context: dict[str, Any] = None,
     ) -> Any:
         """
         Execute the three-step preference judgment process.
@@ -544,10 +583,10 @@ class EnvironmentAwarenessService:
         Returns:
             JudgmentResult with conclusion and required actions
             
-        This is the main entry point for G19 preference discrimination.
+        This is the main entry point for preference alignment.
         It follows the flow: Anomaly Candidate -> Preference Candidate -> Confirmation Required.
         
-        这是 G19 偏好辨析的主要入口点。
+        这是偏好辨析的主要入口点。
         遵循流程：异常候选 -> 偏好候选 -> 需要确认。
         """
         return await self._preference_engine.execute_three_step_judgment(
@@ -561,8 +600,8 @@ class EnvironmentAwarenessService:
         ambiguity_case_id: str,
         user_decision: str,
         user_id: str,
-        confirmation_context: dict[str, Any] | None = None,
-    ) -> Any | None:
+        confirmation_context: dict[str, Any] = None,
+    ) -> Any:
         """
         Confirm a user preference from an ambiguity case.
         
@@ -611,9 +650,9 @@ class EnvironmentAwarenessService:
     
     async def query_preferences(
         self,
-        scope_filter: dict[str, Any] | None = None,
-        source_filter: str | None = None,
-        status_filter: str | None = None,
+        scope_filter: dict[str, Any] = None,
+        source_filter: Optional[str] = None,
+        status_filter: Optional[str] = None,
         limit: int = 100,
         offset: int = 0,
     ) -> list[Any]:
@@ -647,7 +686,7 @@ class EnvironmentAwarenessService:
         self,
         signal_content: str,
         signal_source: str,
-        context: dict[str, Any] | None = None,
+        context: dict[str, Any] = None,
     ) -> Any:
         """
         Assess the risk level of an external signal.
@@ -672,7 +711,7 @@ class EnvironmentAwarenessService:
         self,
         signal_content: str,
         signal_source: str,
-        context: dict[str, Any] | None = None,
+        context: dict[str, Any] = None,
     ) -> tuple[Any, Any]:
         """
         Intercept and handle extreme/high-risk signals.
@@ -717,7 +756,7 @@ class EnvironmentAwarenessService:
         signal_record_id: str,
         attack_type: str,
         confidence: float,
-        analyst_id: str | None = None,
+        analyst_id: Optional[str] = None,
     ) -> Any:
         """
         Mark a signal as a malicious attack sample.
@@ -755,7 +794,7 @@ class EnvironmentAwarenessService:
         self,
         new_signal: str,
         similarity_threshold: float = 0.85,
-    ) -> Any | None:
+    ) -> Any:
         """
         Detect if a new signal matches known attack patterns.
         
@@ -775,7 +814,7 @@ class EnvironmentAwarenessService:
     
     async def get_unresolved_cases(
         self,
-        risk_level_filter: str | None = None,
+        risk_level_filter: Optional[str] = None,
         limit: int = 50,
     ) -> list[Any]:
         """
@@ -800,7 +839,7 @@ class EnvironmentAwarenessService:
 
 
 # Global singleton instance
-_default_service: EnvironmentAwarenessService | None = None
+_default_service: Optional[EnvironmentAwarenessService] = None
 
 
 def get_environment_service() -> EnvironmentAwarenessService:

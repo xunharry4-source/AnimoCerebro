@@ -5,249 +5,170 @@
 `zentex.tasks` 是系统的统一任务管理层，负责：
 
 - 任务创建、状态流转、依赖管理
-- Mission 拆解与分发
-- **任务到插件的调度执行与结果回写（闭环）**
+- mission 拆解与分发
 - 统一任务查询与持久化
 - 对 `reflection`、`upgrade` 等外部工作流提供统一托管入口
 
----
+当前真实核心实现：
 
-## Architecture / 架构总览
+- [service.py](/Users/harry/Documents/git/AnimoCerebro-V2/src/zentex/tasks/service.py)
+- [__init__.py](/Users/harry/Documents/git/AnimoCerebro-V2/src/zentex/tasks/__init__.py)
+- [core/interface.py](/Users/harry/Documents/git/AnimoCerebro-V2/src/zentex/tasks/core/interface.py)
+- [integration/workflow_bridge.py](/Users/harry/Documents/git/AnimoCerebro-V2/src/zentex/tasks/integration/workflow_bridge.py)
 
-```
-外部调用方
-    │
-    ▼
-TaskManagementService          ← 状态机 + 持久化边界
-    │
-    ├── decompose_and_dispatch_mission()   ← Mission 拆解为子任务
-    │
-    └── complete_task_with_verification()  ← 完成时持久化执行结果
-              │
-              └── _persist_execution_result()   ← 写 execution_output 到 DB
+## Current Entry Points / 当前入口
 
+对外主要入口是：
 
-后台调度器 (每 15 秒)
-    │
-    ▼
-TaskAutoLoopScheduler._run_cycle()
-    │
-    ├── Pass 1: TaskExecutionWorker.run_cycle()     ← ★ 核心执行闭环
-    │       │
-    │       ├── 查 TODO 任务 + 检查 depends_on 全部 DONE
-    │       ├── UnifiedTaskRouter.get_dispatch_decision()  ← 选插件
-    │       ├── InternalPluginExecutor.execute_on_plugin() ← 真实执行
-    │       ├── 写 execution_output / dispatch_plugin_id / status
-    │       └── router.record_execution_result()    ← 更新插件信用分
-    │
-    ├── Pass 2: check_auto_resume_tasks()           ← 自动恢复挂起任务
-    └── Pass 3: check_timeout_and_republish_tasks() ← 超时任务重入队列
-```
+- `TaskManagementService`
+- `TaskManager`
+- `TaskServiceInterface`
 
----
+其中：
 
-## 核心文件 / Key Files
+- `TaskManagementService` 是底层真实状态机和持久化边界
+- `TaskManager` 是高层便利封装
+- `TaskServiceInterface` 是给外部模块和 Web/API 用的安全接口层
 
-| 文件 | 职责 |
-|------|------|
-| `service.py` | `TaskManagementService` — 状态机、持久化、验证 |
-| `execution/worker.py` | `TaskExecutionWorker` — 调度→执行→结果回写 |
-| `scheduling/loop_scheduler.py` | `TaskAutoLoopScheduler` — 后台周期驱动 |
-| `dispatch/router_impl.py` | `UnifiedTaskRouter` — 插件路由决策 |
-| `dispatch/internal.py` | `InternalPluginExecutor` — 内部插件调用 |
-| `persistence/dao.py` | `TaskDAO` — SQLite 数据访问 |
-| `schema.py` | Schema 建表 + **自动列迁移** |
-| `models/models.py` | `ZentexTask`, `SubtaskIntent`, `TaskContract` |
-| `core/llm_prompt.py` | 任务拆解 LLM Prompt 构造（分段化） |
-| `verification/llm_prompt.py` | 验证评估 LLM Prompt 构造（分段化） |
+## Current Capabilities / 当前能力
 
----
+### 1. Task Lifecycle / 任务生命周期
 
-## Data Model — ZentexTask 字段
+任务状态模型定义在 [models/models.py](/Users/harry/Documents/git/AnimoCerebro-V2/src/zentex/tasks/models/models.py)：
 
-### 基础字段（原有）
+- `TODO`
+- `IN_PROGRESS`
+- `BLOCKED`
+- `WAITING_CONFIRMATION`
+- `SUSPENDED`
+- `DONE`
+- `FAILED`
+- `ARCHIVED`
 
-| 字段 | 类型 | 说明 |
-|------|------|------|
-| `task_id` | `str` | 主键 |
-| `status` | `TaskStatus` | 状态机枚举 |
-| `priority` | `TaskPriority` | critical / high / medium / low |
-| `task_type` | `TaskType` | cognitive_step / agent_delegation / system_action / intervention / mission |
-| `depends_on` | `List[str]` | 前置任务 ID 列表 |
-| `contract` | `TaskContract` | 含重试预算、验证配置等 |
-| `metadata` | `Dict` | 工作流元数据（不影响状态机） |
+状态流转由 [service.py](/Users/harry/Documents/git/AnimoCerebro-V2/src/zentex/tasks/service.py:462) 强校验，不允许非法跳转。
 
-### 执行结果字段（新增）
+### 2. Query and Filtering / 查询与过滤
 
-| 字段 | 类型 | 说明 |
-|------|------|------|
-| `execution_output` | `Optional[Dict]` | 插件返回的结构化输出（JSON） |
-| `dispatch_plugin_id` | `Optional[str]` | 实际执行该任务的插件 ID |
-| `execution_started_at` | `Optional[datetime]` | 执行开始时间 |
-| `execution_finished_at` | `Optional[datetime]` | 执行结束时间 |
-| `last_error` | `Optional[str]` | 最近一次失败的错误信息 |
-| `attempt_count` | `int` | 已尝试执行次数（默认 0） |
+`list_tasks()` 现在支持：
 
----
+- `status`
+- `priority`
+- `tags`
+- `parent_task_id`
+- `target_id`
+- `overdue_only`
+- `source_module`
+- `metadata_filters`
 
-## Task Status Machine / 状态流转
+这意味着统一任务管理现在可以直接筛出：
 
-```
-TODO ──────────────────────────────────┐
-  │                                    │
-  ▼ (Worker 调度)                      │
-IN_PROGRESS ──► WAITING_CONFIRMATION   │ (验证后重试)
-  │               │                   │
-  │               ▼                   │
-  │             DONE ──► ARCHIVED     │
-  │               │                   │
-  ▼               ▼                   │
-FAILED ──────────────────────────────►┘  (retry: 回 TODO)
-  │
-SUSPENDED ──► TODO / IN_PROGRESS / FAILED / ARCHIVED
-  │
-BLOCKED ──► TODO / IN_PROGRESS / FAILED / SUSPENDED / ARCHIVED
-```
+- `source_module="reflection"`
+- `source_module="upgrade"`
 
-状态流转由 `TaskManagementService.update_task_status()` 强校验，非法跳转抛 `TaskStateError`。
+而不需要上层自己扫描全部任务。
 
----
+### 3. Workflow Integration / 工作流集成
 
-## Execution Worker / 执行 Worker
+[integration/workflow_bridge.py](/Users/harry/Documents/git/AnimoCerebro-V2/src/zentex/tasks/integration/workflow_bridge.py) 负责把外部工作流同步成标准任务。
 
-### 启动方式
+当前已接入：
 
-```python
-from zentex.tasks.execution.worker import TaskExecutionWorker, WorkerConfig
-from zentex.tasks.scheduling.loop_scheduler import TaskAutoLoopScheduler
+- `reflection.async_service`
+- `upgrade.execution`
 
-worker = TaskExecutionWorker(
-    task_dao=task_dao,
-    router=unified_task_router,
-    internal_executor=internal_plugin_executor,
-    config=WorkerConfig(
-        batch_size=20,          # 每轮最多处理 20 个任务
-        max_attempts=3,         # 最多重试 3 次
-        execution_timeout_seconds=300.0,  # 单次执行超时 5 分钟
-    ),
-)
+桥接后会写入统一任务 metadata，例如：
 
-scheduler = TaskAutoLoopScheduler(
-    task_service=task_service,
-    interval_seconds=15,
-    execution_worker=worker,    # 注入 Worker
-)
-scheduler.start()
-```
+- `source_module`
+- `workflow_kind`
+- `workflow_status`
+- `workflow_progress`
+- `upgrade_action`
+- `upgrade_target_kind`
 
-### 运行时热插拔
+### 4. Metadata Tracking / 元数据跟踪
 
-```python
-# 插件层启动完成后再注入 Worker（避免启动顺序死锁）
-scheduler.set_execution_worker(worker)
-```
+[service.py](/Users/harry/Documents/git/AnimoCerebro-V2/src/zentex/tasks/service.py) 已提供 `update_task_metadata()`，用于在不改变状态机语义的前提下，持续写入工作流阶段数据。
 
-### Worker 处理流程
-
-```
-1. 查询 status='todo' 的任务（批量）
-2. 过滤：depends_on 全部 DONE + attempt_count < max_attempts
-3. 标记 IN_PROGRESS，attempt_count += 1
-4. router.get_dispatch_decision(subtask_intent) → 选择最优插件
-5. executor.execute_on_plugin(plugin_id, subtask, task_id)
-6a. 成功 → status=done, execution_output=结果JSON, dispatch_plugin_id=插件ID
-6b. 失败 & 未耗尽次数 → status=todo（回队列重试），last_error=错误信息
-6c. 失败 & 耗尽次数 → status=failed, last_error=最终错误
-7. router.record_execution_result() → 更新插件信用分
-```
-
-### WorkerCycleStats（每轮返回）
-
-```python
-@dataclass
-class WorkerCycleStats:
-    tasks_dispatched: int     # 本轮尝试处理的任务数
-    tasks_succeeded: int      # 成功完成数
-    tasks_failed: int         # 永久失败数
-    tasks_skipped: int        # 无插件匹配，跳过数
-    tasks_retried: int        # 暂时失败，重入队列数
-    errors: List[Dict]        # 不可恢复的 Worker 级错误
-    cycle_duration_ms: int    # 本轮耗时（毫秒）
-```
-
----
-
-## Schema Migration / 数据库自动迁移
-
-`tasks/schema.py` 提供幂等安全的自动迁移，每次 `TaskDAO` 初始化时自动调用：
-
-```python
-from zentex.tasks.schema import migrate_task_schema
-migrate_task_schema(db)  # 只添加缺失列，不删除或修改现有数据
-```
-
-**当前 tasks 表结构（v2 + 执行字段）：**
-
-```
-task_id, parent_task_id, subtask_ids, depends_on, bundle_id, subtask_id,
-idempotency_key, title, task_type, status, priority, progress,
-originator_id, target_id, remarks, started_at, completed_at,
-deadline, estimated_duration, tags, contract, metadata,
-last_updated_at, created_at,
-── 新增 ──
-execution_output, dispatch_plugin_id, execution_started_at,
-execution_finished_at, last_error, attempt_count
-```
-
----
+这一步是后续控制台展示 `reflection / upgrade` 阶段细节的基础。
 
 ## LLM Prompt Structure / LLM 提问结构
 
-任务模块内的所有 LLM 提问已拆出为独立文件，禁止在业务文件中内联 prompt 字符串。
+任务模块内的 LLM 提问已经从执行器中拆出，不再允许在业务文件里内联大段 prompt。
 
-| 文件 | 用途 |
-|------|------|
-| `core/llm_prompt.py` | 任务拆解（`DecompositionPromptSegments`，6 段，60/40 截断） |
-| `verification/llm_prompt.py` | LLM 评估验证（5 段结构化输出） |
+当前关键文件：
 
-每个 prompt 文件遵循分离合同：
+- [core/simple_llm_prompt.py](/Users/harry/Documents/git/AnimoCerebro-V2/src/zentex/tasks/core/simple_llm_prompt.py)
+- [core/semantic_kernel_llm_prompt.py](/Users/harry/Documents/git/AnimoCerebro-V2/src/zentex/tasks/core/semantic_kernel_llm_prompt.py)
+- [verification/llm_prompt.py](/Users/harry/Documents/git/AnimoCerebro-V2/src/zentex/tasks/verification/llm_prompt.py)
 
-| 文件 | 职责 | 禁止 |
-|------|------|------|
-| `llm_prompt.py` | 构造分段 prompt，预处理输入 | 调用 LLM，写数据库 |
-| 调用方（decomposer / verifier） | 调用 LLM，处理结果 | 内联 prompt 字符串 |
+这些 builder 已统一支持 section 化输出：
 
----
+- `system_prompt`
+- `prompt`
+- `system_prompt_sections`
+- `prompt_sections`
+
+每个 section 至少包含：
+
+- `key`
+- `title`
+- `intent`
+- `purpose`
+- `content`
+
+## Prompt Upgrade Contracts / Prompt 升级合同
+
+任务模块的 prompt 升级合同不再散落在各文件中，而是按模块 service 暴露：
+
+- [core/service.py](/Users/harry/Documents/git/AnimoCerebro-V2/src/zentex/tasks/core/service.py)
+- [verification/service.py](/Users/harry/Documents/git/AnimoCerebro-V2/src/zentex/tasks/verification/service.py)
+
+合同使用 [common/prompt_upgrade_contract.py](/Users/harry/Documents/git/AnimoCerebro-V2/src/zentex/common/prompt_upgrade_contract.py)，明确声明：
+
+- `immutable_intent`
+- `editable_prompt_sections`
+- `immutable_prompt_sections`
+- `section_change_policy`
+- `allowed_prompt_change_scope`
+- `forbidden_prompt_changes`
+
+## Persistence / 持久化
+
+任务模块支持两种运行形态：
+
+- 数据库模式
+- 本地共享状态回退模式
+
+数据库启用时，底层由 DAO 层负责持久化。  
+统一查询与状态机仍由 `TaskManagementService` 控制，不允许外部直接绕过服务写库。
 
 ## Integration Contract / 集成边界
 
 其他模块接入任务系统时，必须遵守：
 
-- **不直接写任务内部共享状态**
-- **不直接操作 DAO 或数据库表**
-- **统一通过** `TaskManagementService` / `TaskServiceInterface`
+- 不直接写任务内部共享状态
+- 不直接操作 DAO 或数据库表
+- 统一通过 `TaskManagementService` / `TaskServiceInterface`
 - 工作流同步统一经由 `WorkflowTaskBridge`
-- 读取执行结果通过 `task.execution_output` 字段（DB 层持久化）
 
----
+当前推荐模式：
+
+1. 外部模块保留自己的内部队列或管理账本
+2. 同时把关键生命周期同步进 `zentex.tasks`
+3. 在 `metadata` 中保留模块来源和阶段信息
 
 ## What Changed Recently / 最近更新
 
-| 变更 | 文件 |
-|------|------|
-| ★ 新建执行闭环：`TaskExecutionWorker` | `execution/worker.py` |
-| ★ 调度器集成执行 Worker（Pass 1） | `scheduling/loop_scheduler.py` |
-| ★ Schema 自动迁移：`migrate_task_schema()` | `schema.py` |
-| ★ 6 个新执行结果字段 | `models/models.py` + `tasks` 表 |
-| ★ `complete_task_with_verification()` 持久化结果 | `service.py` |
-| LLM prompt 拆分为独立文件（分段化） | `core/llm_prompt.py`, `verification/llm_prompt.py` |
-| 按 `source_module` / `metadata_filters` 查询 | `service.py` |
-| `WorkflowTaskBridge` 接入 reflection / upgrade | `integration/workflow_bridge.py` |
+最近与本模块相关的关键变化：
 
----
+- 新增按 `source_module` / `metadata_filters` 查询统一任务
+- 新增 `update_task_metadata()`，支持持续写入阶段元数据
+- 新增 `WorkflowTaskBridge.list_reflection_tasks()` / `list_upgrade_tasks()`
+- `reflection` 和 `upgrade` 已自动同步到统一任务管理
+- workflow bridge 会把 upgrade 阶段状态同步到任务 metadata 与 supervision record
 
 ## Limitations / 当前限制
 
-- `InternalPluginExecutor` 的 `plugin_layer` 需在应用启动后通过 `scheduler.set_execution_worker()` 注入，首次调度周期前插件层必须已完成注册
-- 当前 Worker 基于轮询（每 15 秒），高并发场景可考虑改为事件驱动（任务创建时主动触发一次 cycle）
-- `reflection` / `upgrade` 的内部子步骤目前以 `workflow_status` + supervision note 为主，尚未完全重建为子任务树
+- `reflection` 和 `upgrade` 目前是“同步进统一任务管理”，不是把全部内部子步骤完全重建成任务树
+- 更细粒度的 upgrade 子阶段监督目前仍以 `workflow_status` + supervision note 为主
+- 仓库内仍有部分历史文档和旧接口名未完全清理，阅读时以本 README 和源码为准

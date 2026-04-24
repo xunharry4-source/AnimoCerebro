@@ -24,6 +24,7 @@ logger = logging.getLogger(__name__)
 sys.path.insert(0, str(Path.cwd() / 'src'))
 
 from zentex.common.database import DatabaseConnection
+from zentex.common.storage_paths import get_storage_paths
 from zentex.tasks.persistence.dao import TaskDAO
 from zentex.tasks.models import TaskStatus
 
@@ -31,10 +32,10 @@ from zentex.tasks.models import TaskStatus
 class TaskArchiveManager:
     """任务归档管理器"""
     
-    def __init__(self, db_path: str = "runtime/data/zentex_core.db"):
+    def __init__(self, db_path: Optional[str] = None):
         """初始化管理器"""
-        self.db_path = db_path
-        self.db = DatabaseConnection(db_path)
+        self.db_path = db_path or str(get_storage_paths().core_db)
+        self.db = DatabaseConnection(self.db_path)
         self.task_dao = TaskDAO(self.db)
     
     def create_archive_table(self):

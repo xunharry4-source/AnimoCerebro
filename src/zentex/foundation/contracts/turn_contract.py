@@ -1,7 +1,7 @@
 """Turn lifecycle contracts — request, phase results and turn result models."""
 
 from datetime import datetime, timezone
-from enum import StrEnum
+from enum import Enum
 from uuid import uuid4
 
 from pydantic import Field
@@ -11,10 +11,11 @@ from zentex.foundation.contracts.base_models import ZentexBaseModel
 UTC = timezone.utc
 
 
-class TurnStatus(StrEnum):
+class TurnStatus(str, Enum):
     pending = "pending"
     running = "running"
     completed = "completed"
+    partial_failed = "partial_failed"
     failed = "failed"
     aborted = "aborted"
 

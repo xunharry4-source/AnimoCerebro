@@ -20,7 +20,7 @@ class PluginManager:
     `zentex.plugins.service.SystemPluginService`.
     """
 
-    def __init__(self, plugins_root: str | Path, asset_store: Any | None = None) -> None:
+    def __init__(self, plugins_root: Union[str, Path], asset_store: Optional[Any] = None) -> None:
         self.plugins_root = Path(plugins_root)
         self.asset_store = asset_store
         self._discovered_specs: Dict[str, Type[BasePluginSpec]] = {}
@@ -31,7 +31,8 @@ class PluginManager:
         """
         self._discovered_specs.clear()
         
-        for _, name, is_pkg in pkgutil.walk_packages([str(self.plugins_root)], prefix="plugins."):
+        prefix = "zentex.plugins."
+        for _, name, is_pkg in pkgutil.walk_packages([str(self.plugins_root)], prefix=prefix):
             if is_pkg:
                 continue
             try:

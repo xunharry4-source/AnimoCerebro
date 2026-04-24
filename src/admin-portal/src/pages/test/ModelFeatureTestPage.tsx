@@ -12,6 +12,7 @@ import {
 } from "@mui/material";
 import { type ModelFeatureCatalogItem } from "./TestPage";
 import { fetchLlmStatus, type LLMStatus } from "../../api/llmStatus";
+import { extractApiErrorMessage, readResponseBody } from "../../api/httpError";
 
 type InvokeResponse = {
   feature_id: string;
@@ -92,7 +93,12 @@ export default function ModelFeatureTestPage({ featureId, onBack }: ModelFeature
         try {
           setLlmStatus(await fetchLlmStatus(true));
         } catch {
-          setLlmStatus({ available: false, reason: "status_check_failed", hint: "LLM 状态检查失败" });
+          setLlmStatus({
+            available: false,
+            probe_checked: true,
+            reason: "status_check_failed",
+            hint: "LLM 状态检查失败",
+          });
         }
 
         const response = await fetch("/api/web/tests/model-features", {
@@ -179,7 +185,8 @@ export default function ModelFeatureTestPage({ featureId, onBack }: ModelFeature
         }),
       });
       if (!response.ok) {
-        throw new Error(await response.text());
+        const data = await readResponseBody(response);
+        throw new Error(extractApiErrorMessage(data, `调用失败（HTTP ${response.status}）`));
       }
       setInvokeResult((await response.json()) as InvokeResponse);
       setInvokeError(null);

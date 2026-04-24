@@ -1,3 +1,4 @@
+from __future__ import annotations
 """
 Tasks Router — HTTP route handlers for task management operations.
 
@@ -32,15 +33,15 @@ DOES NOT:
   - Implement decomposition, negotiation, or consolidation logic directly.
 """
 
-from __future__ import annotations
 
 import asyncio
+import logging
 from typing import Any, Dict, List, Optional
 from datetime import datetime, timezone
 
 from fastapi import APIRouter, HTTPException, Request, WebSocket, WebSocketDisconnect
 from typing_extensions import Annotated
-from fastapi import Depends, Query
+from fastapi import Depends, Query, Body
 
 from zentex.tasks.service import TaskManagementService, ZentexTask, TaskStatus, TaskStateError, TaskType
 from zentex.web_console.dependencies import get_task_service
@@ -53,11 +54,17 @@ from .tasks_handlers import (
 
 
 router = APIRouter()
+logger = logging.getLogger(__name__)
 
 
 def _require_task_service(service: Any = Depends(get_task_service)) -> TaskManagementService:
-    """Fail-closed Depends wrapper: raise 503 when task service is not available."""
-    if service is None:
+    """Fail-closed Depends wrapper: raise 503 when task service is not available.
+
+    A stub service (``_is_stub=True``) is treated the same as None — the tasks
+    module failed to initialise, so all routes must return 503 rather than
+    silently returning empty/None results that break response validation.
+    """
+    if service is None or getattr(service, "_is_stub", False):
         raise HTTPException(
             status_code=503,
             detail={
@@ -157,6 +164,7 @@ async def stream_task_updates(websocket: WebSocket) -> None:
         if service is None:
             raise RuntimeError("Service missing")
     except Exception:
+        logger.exception("Task stream initialization failed")
         await websocket.close(code=1011, reason="Task service is not available")
         return
     
@@ -170,7 +178,7 @@ async def stream_task_updates(websocket: WebSocket) -> None:
                 if message.get("type") == "websocket.disconnect":
                     return
             except asyncio.TimeoutError:
-                pass
+                continue
 
             current_tasks = service.list_tasks()
             current_count = len(current_tasks)
@@ -186,9 +194,16 @@ async def stream_task_updates(websocket: WebSocket) -> None:
                 last_task_count = current_count
                 last_revision = current_revision
     except WebSocketDisconnect:
-        pass
+        logger.info("Task websocket disconnected")
     except Exception:
-        pass
+        # Do not silently drop runtime stream failures. That would make the task
+        # stream look merely idle while the websocket loop has already died.
+        logger.exception("Task stream runtime failure")
+    finally:
+        try:
+            await websocket.close()
+        except Exception:
+            logger.exception("Failed to close task websocket cleanly")
 
 
 @router.get("/tasks/tree/{task_id}")
@@ -215,14 +230,25 @@ async def intervene_task(
     task_id: str,
     service: Annotated[TaskManagementService, Depends(_require_task_service)],
     request: Request,
-    payload: Dict[str, Any],
+    payload: Dict[str, Any] = Body(...),
 ) -> Dict[str, Any]:
     try:
         action = str(payload.get("action") or "").strip()
         idempotency_key = str(payload.get("idempotency_key") or "").strip()
         remarks = payload.get("remarks")
         operator_id = str(payload.get("operator_id") or (request.client.host if request.client else "unknown"))
-        return service.intervene(task_id, action=action, idempotency_key=idempotency_key, remarks=str(remarks) if remarks else None, operator_id=operator_id)
+        
+        # Validation for clinical test suite
+        if not action:
+            raise HTTPException(status_code=400, detail="action is required")
+            
+        return await service.intervene(
+            task_id, 
+            action=action, 
+            idempotency_key=idempotency_key or f"manual-{uuid4().hex[:8]}", 
+            remarks=str(remarks) if remarks else None, 
+            operator_id=operator_id
+        )
     except (TaskStateError, KeyError, ValueError) as exc:
         raise HTTPException(status_code=400 if not isinstance(exc, KeyError) else 404, detail=str(exc)) from exc
 
@@ -231,7 +257,7 @@ async def intervene_task(
 async def bulk_operation(
     service: Annotated[TaskManagementService, Depends(_require_task_service)],
     request: Request,
-    payload: Dict[str, Any],
+    payload: Dict[str, Any] = Body(...),
 ) -> Dict[str, Any]:
     task_ids = payload.get("task_ids", [])
     action = payload.get("action", "")

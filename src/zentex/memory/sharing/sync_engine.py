@@ -1,10 +1,10 @@
+from __future__ import annotations
 """
 ZMSP Sync Engine: Memory synchronization between Zentex instances.
 
 Handles push/pull/conflict resolution for distributed memory sharing.
 """
 
-from __future__ import annotations
 
 import asyncio
 import logging
@@ -261,6 +261,8 @@ class SyncEngine:
             response = await self._client.get(f"{remote_url}/health")
             return response.status_code == 200
         except Exception:
+            # POLICY[no-silent-except]: probe failure is expected when remote is down; log at DEBUG.
+            logger.debug("Health check failed for remote %s", remote_url, exc_info=True)
             return False
 
 
@@ -308,7 +310,7 @@ class SyncScheduler:
             try:
                 await self._task
             except asyncio.CancelledError:
-                pass
+                logger.debug("Sync scheduler task cancellation completed", exc_info=True)
         logger.info("Sync scheduler stopped")
     
     async def _sync_loop(self, remote_url: str, get_local_records: Callable):

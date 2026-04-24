@@ -1,3 +1,4 @@
+from __future__ import annotations
 """
 系统健康监控API路由
 
@@ -7,7 +8,6 @@
 该端点不需要LLM配置，始终可用。
 返回数据包括Token统计、Provider详情和各模块健康状态。
 """
-from __future__ import annotations
 
 from fastapi import APIRouter, Request
 

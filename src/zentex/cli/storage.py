@@ -8,7 +8,7 @@ from typing import Any, Dict, List, Optional
 
 class CliStorage:
     """Independent storage DAO for CLI tool assets."""
-    def __init__(self, db_path: str | Path):
+    def __init__(self, db_path: Union[str, Path]):
         self.db_path = Path(db_path)
         self._lock = threading.Lock()
         self._conn = sqlite3.connect(str(self.db_path), check_same_thread=False)

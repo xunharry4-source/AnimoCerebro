@@ -3,7 +3,7 @@ from __future__ import annotations
 import json
 from typing import Any
 
-from plugins.nine_questions.prompt_sections import (
+from zentex.common.nine_questions_prompts import (
     assemble_prompt_sections,
     build_prompt_section,
 )
@@ -35,7 +35,7 @@ def build_q3_llm_request(
             intent="Define the asset inventory task for Q3.",
             purpose="Prevent the model from drifting into planning or invention.",
             content=(
-                "你现在是 Zentex 外部大脑的资产评估中枢。请严格阅读提供的资源清单及活跃插件家族。\n"
+                "你现在是 G19 Preference AI 的资产评估中枢。请严格阅读提供的资源清单及活跃插件家族。\n"
                 "你的任务是完成大脑资产盘点：插件绝对禁止捏造外部资产，必须基于活跃的 Cognitive Tools、Functional Plugins、CLI Tools、MCP Servers 与 Connected Agents 进行能力声明。\n"
                 "你必须输出 UnifiedAssetInventory（统一资产盘点对象），作为后续任务分发的物理基础。"
             ),

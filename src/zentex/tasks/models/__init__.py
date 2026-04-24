@@ -1,6 +1,6 @@
+from __future__ import annotations
 """Task models module for zentex task management system."""
 
-from __future__ import annotations
 
 # Import all model classes from models.py
 from zentex.tasks.models.models import (

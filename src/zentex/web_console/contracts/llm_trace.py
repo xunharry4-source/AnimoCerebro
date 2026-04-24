@@ -16,18 +16,18 @@ class LLMTokenUsagePayload(BaseModel):
 class LLMTracePayload(BaseModel):
     model_config = ConfigDict(extra="ignore", frozen=True)
 
-    request_id: str | None = None
-    decision_id: str | None = None
-    provider_name: str | None = None
-    model: str | None = None
-    system_prompt: str | None = None
-    prompt: str | None = None
-    source_module: str | None = None
-    invocation_phase: str | None = None
+    request_id: Optional[str] = None
+    decision_id: Optional[str] = None
+    provider_name: Optional[str] = None
+    model: Optional[str] = None
+    system_prompt: Optional[str] = None
+    prompt: Optional[str] = None
+    source_module: Optional[str] = None
+    invocation_phase: Optional[str] = None
     question_driver_refs: list[str] = Field(default_factory=list)
     context_data: dict[str, Any] = Field(default_factory=dict)
-    raw_response: dict[str, Any] | None = None
+    raw_response: dict[str, Optional[Any]] = None
     token_usage: LLMTokenUsagePayload = Field(default_factory=LLMTokenUsagePayload)
-    elapsed_ms: int | None = None
-    error_type: str | None = None
-    error_message: str | None = None
+    elapsed_ms: Optional[int] = None
+    error_type: Optional[str] = None
+    error_message: Optional[str] = None

@@ -1,3 +1,4 @@
+from __future__ import annotations
 """Memory Query Commons - Shared Memory Access Layer
 
 ⚠️  SERVICE LAYER - QUERIES & SESSIONS
@@ -8,7 +9,6 @@ clear separation of concerns.
 ════════════════════════════════════════════════════════════════════
 """
 
-from __future__ import annotations
 
 import logging
 from typing import Any, List, Optional
@@ -32,19 +32,92 @@ from zentex.web_console.services.memory import (
 logger = logging.getLogger(__name__)
 
 
-def _get_enhanced_memory_service(request: Request) -> Any:
-    return getattr(request.app.state, "enhanced_memory_service", None)
+def _get_memory_service(request: Request) -> Any:
+    return getattr(request.app.state, "memory_service", None)
 
 
 def _get_consolidation_engine(request: Request) -> Any:
     return getattr(request.app.state, "consolidation_engine", None)
 
 
+def _build_degraded_memory_overview_payload(service: Any) -> EnhancedMemoryOverviewPayload:
+    """Build a degraded overview payload without pretending the backend is healthy.
+
+    When the overview builder fails, the monitoring page must still expose that the
+    memory subsystem is degraded. Returning an all-zero payload with implicit
+    "unknown/healthy enough" semantics would hide a real backend failure and is
+    forbidden because it breaks operational diagnosis.
+    """
+
+    health_status = "degraded"
+    initialization_failures: list[Any] = []
+    governance_failures: list[Any] = []
+    package_imports = 0
+    contamination_events = 0
+    projection_failures: list[Any] = []
+
+    if service is None:
+        return EnhancedMemoryOverviewPayload(
+            health_status=health_status,
+            projection_failures=projection_failures,
+            initialization_failures=initialization_failures,
+            governance_failures=governance_failures,
+            package_imports=package_imports,
+            contamination_events=contamination_events,
+            backends=[],
+        )
+
+    try:
+        health_snapshot = service.get_health_snapshot()
+    except Exception:
+        logger.exception(
+            "Failed to read memory health snapshot while building degraded overview payload"
+        )
+        health_snapshot = {}
+    else:
+        health_status = str(health_snapshot.get("health_status", health_status))
+        package_imports = int(health_snapshot.get("package_imports", package_imports))
+        contamination_events = int(
+            health_snapshot.get("contamination_events", contamination_events)
+        )
+
+    try:
+        projection_failures = list(service.list_projection_failures())
+    except Exception:
+        logger.exception(
+            "Failed to read memory projection failures while building degraded overview payload"
+        )
+
+    try:
+        initialization_failures = list(service.list_initialization_failures())
+    except Exception:
+        logger.exception(
+            "Failed to read memory initialization failures while building degraded overview payload"
+        )
+
+    try:
+        governance_failures = list(service.list_governance_failures())
+    except Exception:
+        logger.exception(
+            "Failed to read memory governance failures while building degraded overview payload"
+        )
+
+    return EnhancedMemoryOverviewPayload(
+        health_status=health_status,
+        projection_failures=projection_failures,
+        initialization_failures=initialization_failures,
+        governance_failures=governance_failures,
+        package_imports=package_imports,
+        contamination_events=contamination_events,
+        backends=[],
+    )
+
+
 class MemorySession:
     """Request-scoped memory session management.
     
     Encapsulates:
-      - enhanced_memory_service: Main memory service
+      - memory_service: Main memory service
       - consolidation_engine: Memory consolidation
       - Request context
     """
@@ -52,10 +125,13 @@ class MemorySession:
     def __init__(self, request: Request):
         """Initialize memory session from request dependencies."""
         try:
-            self.service = _get_enhanced_memory_service(request)
+            self.service = _get_memory_service(request)
             self.consolidation_engine = _get_consolidation_engine(request)
         except (AttributeError, TypeError) as e:
-            logger.error(f"Failed to initialize MemorySession: {e}")
+            # Do not reduce dependency bootstrap failures to a plain message. Hiding
+            # the traceback here makes the monitoring layer look like a normal 503
+            # instead of a real backend wiring failure.
+            logger.exception("Failed to initialize MemorySession")
             raise HTTPException(status_code=503, detail="Memory service unavailable") from e
 
     def is_available(self) -> bool:
@@ -102,31 +178,13 @@ async def get_memory_overview(request: Request) -> EnhancedMemoryOverviewPayload
     try:
         return build_enhanced_memory_overview(session.service)
     except TimeoutError:
-        logger.warning("Memory overview query timed out; returning zeros")
-        return EnhancedMemoryOverviewPayload(
-            semantic_count=0,
-            procedural_count=0,
-            episodic_count=0,
-            active_count=0,
-            deprecated_count=0,
-            archived_count=0,
-            suspect_count=0,
-            projection_failures=[],
-            backends=[],
-        )
+        logger.warning("Memory overview query timed out; returning degraded overview payload")
+        return _build_degraded_memory_overview_payload(session.service)
     except Exception as exc:
-        logger.error(f"Error fetching memory overview: {exc}")
-        return EnhancedMemoryOverviewPayload(
-            semantic_count=0,
-            procedural_count=0,
-            episodic_count=0,
-            active_count=0,
-            deprecated_count=0,
-            archived_count=0,
-            suspect_count=0,
-            projection_failures=[],
-            backends=[],
-        )
+        # Do not swallow overview failures into a clean all-zero payload. That would
+        # fake a normal monitoring state while the backend is already degraded.
+        logger.exception("Error fetching memory overview")
+        return _build_degraded_memory_overview_payload(session.service)
 
 
 async def list_memory_records(
@@ -170,11 +228,25 @@ async def list_memory_records(
             tag=tag,
         )
     except TimeoutError:
-        logger.warning("Memory records query timed out; returning empty results")
-        return EnhancedMemoryRecordsPayload(layer=layer, limit=limit, items=[])
+        logger.warning("Memory records query timed out")
+        raise HTTPException(
+            status_code=504,
+            detail={
+                "error": "memory_records_timeout",
+                "message": "Memory records query timed out",
+            },
+        )
     except Exception as exc:
-        logger.error(f"Error fetching memory records: {exc}")
-        return EnhancedMemoryRecordsPayload(layer=layer, limit=limit, items=[])
+        logger.exception("Error fetching memory records")
+        raise HTTPException(
+            status_code=500,
+            detail={
+                "error": "memory_records_query_failed",
+                "message": "Failed to query memory records",
+                "exception_type": type(exc).__name__,
+                "exception_message": str(exc),
+            },
+        ) from exc
 
 
 async def search_memory(
@@ -208,8 +280,11 @@ async def search_memory(
     except TimeoutError:
         logger.warning(f"Memory search for query '{query}' timed out")
         return EnhancedMemorySearchPayload(query=query, limit=limit, items=[])
-    except Exception as exc:
-        logger.error(f"Error searching memory: {exc}")
+    except Exception:
+        # Search may degrade to an empty result set for the caller, but the backend
+        # failure must stay visible in logs. Pretending this is a normal miss would
+        # hide real search corruption and is forbidden.
+        logger.exception("Error searching memory")
         return EnhancedMemorySearchPayload(query=query, limit=limit, items=[])
 
 
@@ -230,7 +305,7 @@ async def get_memory_record_detail(
         HTTPException (404): If record not found
     """
     session = await get_or_create_memory_session(request)
-    record = session.service.get_managed_record(memory_id)
+    record = session.service.get_record(memory_id)
     if record is None:
         raise HTTPException(status_code=404, detail="Memory record not found.")
     return build_enhanced_memory_record_item(record)
@@ -261,7 +336,7 @@ async def get_memory_audit_log(
         HTTPException (404): If record not found
     """
     session = await get_or_create_memory_session(request)
-    record = session.service.get_managed_record(memory_id)
+    record = session.service.get_record(memory_id)
     if record is None:
         raise HTTPException(status_code=404, detail="Memory record not found.")
     return build_enhanced_memory_audit_payload(

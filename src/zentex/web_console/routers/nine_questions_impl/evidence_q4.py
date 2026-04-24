@@ -1,10 +1,12 @@
+from __future__ import annotations
+
 """
 Q4 (我能做什么) evidence extraction.
 
 Contains functions for building and extracting EVIDENCE_Q4 evidence.
 """
 
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Union
 
 from zentex.web_console.contracts.nine_questions import (
     Q4PreprocessedEvidence,
@@ -14,7 +16,7 @@ from zentex.web_console.contracts.nine_questions import (
 from .helpers import _coerce_string_list
 
 
-def _extract_q4_preprocessed_evidence(context_payload: object) -> Q4PreprocessedEvidence | None:
+def _extract_q4_preprocessed_evidence(context_payload: object) -> Optional[Q4PreprocessedEvidence]:
     if not isinstance(context_payload, dict):
         return None
     permission_profile = context_payload.get("q4_permission_profile")
@@ -89,7 +91,7 @@ def _extract_q4_preprocessed_evidence(context_payload: object) -> Q4Preprocessed
     return Q4PreprocessedEvidence(q1_context=q1_context, q2_context=q2_context, q3_inventory=q3_inventory)
 
 
-def _extract_q4_inference_result(result_payload: object) -> Q4WhatCanIDoInferenceView | None:
+def _extract_q4_inference_result(result_payload: object) -> Optional[Q4WhatCanIDoInferenceView]:
     if not isinstance(result_payload, dict):
         return None
     payload = (

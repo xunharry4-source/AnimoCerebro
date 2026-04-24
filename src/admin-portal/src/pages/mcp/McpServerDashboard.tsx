@@ -17,6 +17,7 @@ import {
 } from "@mui/material";
 import { DataGrid, GridColDef } from "@mui/x-data-grid";
 import AddIcon from "@mui/icons-material/Add";
+import { Link as RouterLink, useNavigate } from "react-router-dom";
 
 type McpToolItem = {
   tool_name: string;
@@ -52,7 +53,6 @@ function getHealthColor(status: McpServerItem["status"]): "success" | "default" 
   }
 }
 
-import { useNavigate } from "react-router-dom";
 import { Locale, mcpServerCopy } from "../../i18n";
 
 export default function McpServerDashboard() {
@@ -194,7 +194,7 @@ export default function McpServerDashboard() {
         initialState={{
           pagination: { paginationModel: { page: 0, pageSize: 10 } },
         }}
-        onRowClick={(params) => navigate(`/console/mcp-servers/${params.row.server_id}`)}
+        onRowClick={(params) => setSelectedServer(params.row as McpServerItem)}
         sx={{ backgroundColor: "background.paper", "& .MuiDataGrid-row": { cursor: "pointer" } }}
       />
 
@@ -213,6 +213,14 @@ export default function McpServerDashboard() {
                 <Chip label={selectedServer.status} color={getHealthColor(selectedServer.status)} />
                 <Chip label={`${selectedServer.tool_count} tools`} variant="outlined" />
               </Stack>
+              <Button
+                sx={{ mt: 1 }}
+                size="small"
+                variant="outlined"
+                onClick={() => navigate(`/console/mcp-servers/${selectedServer.server_id}`)}
+              >
+                进入服务详情页
+              </Button>
             </Box>
             {selectedServer.error_message ? <Alert severity="warning">{selectedServer.error_message}</Alert> : null}
             <Divider />
@@ -277,7 +285,31 @@ export default function McpServerDashboard() {
             </Button>
             {testResult ? (
               <Alert severity="info">
-                <pre style={{ margin: 0, whiteSpace: "pre-wrap" }}>{testResult}</pre>
+                <Stack spacing={1}>
+                  <pre style={{ margin: 0, whiteSpace: "pre-wrap" }}>{testResult}</pre>
+                  {(() => {
+                    try {
+                      const parsed = JSON.parse(testResult);
+                      const traceId = String(parsed?.trace_id || "");
+                      if (!traceId) {
+                        return null;
+                      }
+                      return (
+                        <Button
+                          size="small"
+                          variant="outlined"
+                          component={RouterLink}
+                          to={`/console/audit/transcript-replay/${encodeURIComponent(traceId)}`}
+                          sx={{ alignSelf: "flex-start" }}
+                        >
+                          查看 trace 回放
+                        </Button>
+                      );
+                    } catch {
+                      return null;
+                    }
+                  })()}
+                </Stack>
               </Alert>
             ) : null}
           </Stack>

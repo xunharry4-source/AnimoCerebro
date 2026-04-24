@@ -1,3 +1,4 @@
+from __future__ import annotations
 """
 SystemAssembler — initialises all services in dependency order and wires them together.
 
@@ -6,18 +7,22 @@ to compute a safe init order, initialises each service (gracefully handling miss
 optional modules), and finally injects cross-service references into the kernel.
 """
 
-from __future__ import annotations
 
 import logging
 import time
 from dataclasses import dataclass, field
-from typing import Any
+from typing import Any, Optional, Union
 
 from zentex.launcher.config.startup_config import StartupConfig
 from zentex.launcher.assembly.service_registry import ServiceRegistry
 from zentex.launcher.assembly.dependency_graph import ServiceDependencyGraph
+from zentex.common.startup_markers import log_once
 
 logger = logging.getLogger(__name__)
+
+# Track which (service_name, attribute) pairs have already been warned about so
+# the scheduler loop does not flood logs with the same warning every 15 seconds.
+_STUB_WARNED: set[str] = set()
 
 
 # ---------------------------------------------------------------------------
@@ -25,13 +30,48 @@ logger = logging.getLogger(__name__)
 # ---------------------------------------------------------------------------
 
 class _StubService:
-    """Placeholder used when an optional service module is not yet installed."""
+    """Placeholder used when an optional service module is not yet installed or fails to init.
 
-    def __init__(self, name: str) -> None:
+    The ``_is_stub`` class attribute lets callers (e.g. ``_require_task_service``
+    in routers) detect that this is a stub and return a proper 503 error instead
+    of attempting to use the stub and crashing on the None return value.
+    """
+
+    _is_stub: bool = True  # Sentinel checked by router dependency guards
+
+    def __init__(self, name: str, error_detail: Optional[str] = None) -> None:
         self.name = name
+        self.error_detail = error_detail
 
     def health_check(self) -> dict:
-        return {"stub": True, "name": self.name}
+        return {
+            "stub": True,
+            "name": self.name,
+            "error": self.error_detail,
+            "status": "missing_provider" if self.error_detail else "not_installed"
+        }
+
+    def __getattr__(self, name: str) -> Any:
+        """Fail-closed for any attempted stub method access.
+
+        Each (service_name, attribute_name) combination logs exactly once, then
+        any attempted call raises a runtime error instead of fabricating an
+        empty/no-op result.
+        """
+        warn_key = f"{self.name}.{name}"
+        if warn_key not in _STUB_WARNED:
+            _STUB_WARNED.add(warn_key)
+            logger.warning(
+                "StubService '%s' accessed for attribute '%s' — service not available. "
+                "This warning is shown only once per attribute.",
+                self.name, name,
+            )
+        detail = self.error_detail or "Service not available"
+
+        def _fail(*args, **kwargs):
+            raise RuntimeError(f"StubService '{self.name}.{name}' invoked: {detail}")
+
+        return _fail
 
 
 # ---------------------------------------------------------------------------
@@ -63,8 +103,11 @@ _KERNEL_DEP_KWARG: dict[str, str] = {
     "safety": "safety_service",
     "plugins": "plugins_service",
     "memory": "memory_service",
+    "audit": "audit_service",
     "llm": "llm_service",
     "foundation": "foundation_service",
+    "reflection": "reflection_service",
+    "learning": "learning_service",
 }
 
 
@@ -106,7 +149,7 @@ class SystemAssembler:
                     "Failed to initialise service '%s': %s", name, error_msg
                 )
                 # Register a stub so downstream services don't explode on lookup.
-                stub = _StubService(name)
+                stub = _StubService(name, error_detail=error_msg)
                 registry.register(name, stub, init_duration_ms=0.0)
                 registry.mark_unhealthy(name, error_msg)
 
@@ -150,6 +193,21 @@ class SystemAssembler:
             instance = get_kernel_service(
                 transcript_db_dir=self._config.kernel.transcript_db_dir
             )
+        elif name == "cognition":
+            # Mandatory explicit initialization for CognitionService
+            from zentex.cognition.service import init_cognition_service
+            from plugins.simulation.thought.thought_sandbox_plugin import build_default_thought_sandbox
+            
+            llm_service = registry.get("llm")
+            # registry.get("llm") might return a stub if it failed, but init_cognition_service handles it
+            
+            # Instantiate default simulation plugin
+            simulation_plugins = [build_default_thought_sandbox()]
+            
+            instance = init_cognition_service(
+                llm_service=llm_service,
+                simulation_plugins=simulation_plugins
+            )
         else:
             # Optional external service — graceful fallback to stub on ImportError.
             try:
@@ -167,13 +225,13 @@ class SystemAssembler:
                     "Optional service 'zentex.%s.service' not found — using stub.",
                     name,
                 )
-                instance = _StubService(name)
+                instance = _StubService(name, error_detail="Module not found (ImportError)")
             except AttributeError:
                 logger.warning(
                     "Optional service 'zentex.%s.service' has no get_service() — using stub.",
                     name,
                 )
-                instance = _StubService(name)
+                instance = _StubService(name, error_detail="get_service() missing (AttributeError)")
 
         duration_ms = (time.monotonic() - start) * 1000.0
         return instance, duration_ms
@@ -193,7 +251,7 @@ class SystemAssembler:
             )
             return
 
-        dep_names = ["environment", "cognition", "safety", "plugins", "memory", "llm", "foundation"]
+        dep_names = ["environment", "cognition", "safety", "plugins", "memory", "audit", "llm", "foundation", "reflection", "learning"]
         kwargs: dict[str, Any] = {}
         for short_name in dep_names:
             kwarg_name = _KERNEL_DEP_KWARG.get(short_name, f"{short_name}_service")
@@ -204,3 +262,14 @@ class SystemAssembler:
             logger.info("Injected dependencies into kernel service.")
         except Exception as exc:
             logger.error("Failed to inject dependencies into kernel: %s", exc)
+
+        # 3. Attach tasks dependencies (late binding for circular plugin references)
+        tasks = registry.get("tasks")
+        if getattr(tasks, "_is_stub", False):
+            logger.warning("SystemAssembler: skipping dependency injection for stub 'tasks' service.")
+        elif tasks and hasattr(tasks, "attach_dependencies"):
+            tasks.attach_dependencies(
+                plugin_service=registry.get("plugins"),
+                transcript_store=getattr(kernel, "transcript_store", None)
+            )
+            logger.info("SystemAssembler: Attached dependencies to 'tasks' service.")

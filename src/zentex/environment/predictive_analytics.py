@@ -179,7 +179,6 @@ class PredictiveAnalyticsEngine:
         # Capacity alerts
         self._alerts: List[CapacityAlert] = []
         
-        # Thresholds for alerts
         self._thresholds: Dict[ResourceType, float] = {
             ResourceType.CPU: 85.0,
             ResourceType.MEMORY: 90.0,
@@ -189,12 +188,68 @@ class PredictiveAnalyticsEngine:
             ResourceType.API_CALLS: 85.0,
             ResourceType.ACTIVE_SESSIONS: 90.0,
         }
+
+        # Phase 1: Persistence Setup
+        from pathlib import Path
+        import json
+        self.storage_path = Path("./data/environment/telemetry")
+        self.storage_path.mkdir(parents=True, exist_ok=True)
+        self.telemetry_file = self.storage_path / "telemetry_state.json"
+        
+        # Mandatory Recovery
+        self._load_from_disk()
         
         logger.info(
             f"PredictiveAnalyticsEngine initialized: "
             f"max_points={max_data_points}, "
             f"smoothing={smoothing_factor}"
         )
+
+    def _save_to_disk(self):
+        """Atomic write of all telemetry and alerts."""
+        try:
+            import json
+            data = {
+                "time_series": {
+                    r_type.value: [vars(p) for p in points]
+                    for r_type, points in self._time_series.items()
+                },
+                "alerts": [vars(a) for a in self._alerts],
+                "thresholds": {r.value: v for r, v in self._thresholds.items()}
+            }
+            temp_file = self.telemetry_file.with_suffix(".tmp")
+            with open(temp_file, "w") as f:
+                json.dump(data, f, indent=2)
+            temp_file.replace(self.telemetry_file)
+        except Exception as e:
+            logger.error(f"CRITICAL: Telemetry persistence failure: {e}")
+            raise RuntimeError(f"Telemetry storage failure: {e}. System must halt to preserve analytical integrity.")
+
+    def _load_from_disk(self):
+        """Load telemetry history from disk."""
+        try:
+            import json
+            if not self.telemetry_file.exists():
+                return
+            
+            with open(self.telemetry_file, "r") as f:
+                data = json.load(f)
+                
+            # Restore Time Series
+            for r_val, points_data in data.get("time_series", {}).items():
+                r_type = ResourceType(r_val)
+                self._time_series[r_type] = [TimeSeriesPoint(**p) for p in points_data]
+                
+            # Restore Alerts
+            self._alerts = [CapacityAlert(**a) for a in data.get("alerts", [])]
+            
+            # Restore Thresholds
+            for r_val, val in data.get("thresholds", {}).items():
+                self._thresholds[ResourceType(r_val)] = val
+                
+        except Exception as e:
+            logger.warning(f"Telemetry recovery failed (continuing with fresh state): {e}")
+            # Recovery is best-effort for analytics, but logging failure is mandatory
     
     def record_metric(
         self,
@@ -234,6 +289,9 @@ class PredictiveAnalyticsEngine:
         logger.debug(
             f"Recorded metric: {resource_type.value} = {value:.2f}"
         )
+        
+        # Phase 1: Mandatory Persistence
+        self._save_to_disk()
         
         return point
     
@@ -299,6 +357,9 @@ class PredictiveAnalyticsEngine:
             f"Prediction generated: {resource_type.value} -> "
             f"{predicted_value:.2f} ({trend})"
         )
+        
+        # Phase 1: Mandatory Persistence (Store prediction metadata if needed, but alerts are already stored)
+        self._save_to_disk()
         
         return result
     
@@ -387,6 +448,7 @@ class PredictiveAnalyticsEngine:
             ]
         
         logger.info(f"Cleared data older than {older_than_hours} hours")
+        self._save_to_disk()
     
     def _forecast(
         self,

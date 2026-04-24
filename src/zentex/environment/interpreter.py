@@ -1,3 +1,5 @@
+from __future__ import annotations
+
 """
 Situation Interpreter / 态势解释器
 
@@ -42,8 +44,10 @@ class SituationInterpreter:
     def interpret_host_state(
         self,
         host_state: PhysicalHostState,
-        current_role: str | None = None,
-        active_goals: list[str] | None = None,
+        current_role: Optional[str] = None,
+        active_goals: list[Optional[str]] = None,
+        identity: Optional[dict[str, Any]] = None,
+        nine_question_state: Optional[dict[str, Any]] = None,
     ) -> SituationImpact:
         """
         Interpret physical host state and determine impacts.
@@ -54,6 +58,8 @@ class SituationInterpreter:
             host_state: Current physical host state
             current_role: Agent's current role (optional)
             active_goals: List of currently active goal IDs (optional)
+            identity: Agent's identity kernel (optional)
+            nine_question_state: Nine-Question baseline (optional)
             
         Returns:
             SituationImpact: Interpreted impacts and recommendations
@@ -69,6 +75,15 @@ class SituationInterpreter:
         risk_level = "low"
         requires_audit = False
         reasoning_parts = []
+        
+        # AUTHENTIC GROUNDING: Incorporate cognitive risk from 9-questions
+        if nine_question_state:
+            nq_risk = nine_question_state.get("risk_level", 0.0)
+            if nq_risk > 0.7:
+                 risk_level = "high"
+                 reasoning_parts.append(f"Cognitive baseline risk is elevated ({nq_risk:.2f}).")
+                 requires_audit = True
+                 recommendations.append("Prioritize cognitive integrity check (Audit)")
         
         # Analyze memory pressure
         if host_state.memory_pressure == MemoryPressureLevel.CRITICAL:
@@ -217,8 +232,9 @@ class SituationInterpreter:
     def _assess_role_impact(
         self,
         host_state: PhysicalHostState,
-        current_role: str | None,
-    ) -> str | None:
+        current_role: Optional[str],
+        identity: Optional[dict[str, Any]] = None,
+    ) -> Optional[str]:
         """
         Assess how environmental state impacts the agent's current role.
         
@@ -227,6 +243,7 @@ class SituationInterpreter:
         Args:
             host_state: Current physical host state
             current_role: Agent's current role
+            identity: Agent's identity kernel (optional)
             
         Returns:
             Description of role impact, or None if no significant impact
@@ -235,6 +252,10 @@ class SituationInterpreter:
             return None
         
         impacts = []
+        
+        # AUTHENTIC GROUNDING: check if context matches mission
+        if identity and identity.get("mission_baseline"):
+             impacts.append(f"Mission Check: Active mission '{identity['mission_baseline']}' is the primary driver for role '{current_role}'.")
         
         if host_state.is_degraded():
             impacts.append(

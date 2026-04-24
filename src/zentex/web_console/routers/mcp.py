@@ -72,8 +72,54 @@ def register_mcp_server(
         raise HTTPException(status_code=400, detail=str(exc)) from exc
 
 
+@router.get("/mcp-servers/{server_id}/health")
+def get_mcp_server_health(
+    server_id: str,
+    service: McpIntegrationService = Depends(_require_mcp_service),
+) -> dict[str, Any]:
+    try:
+        return service.get_server_health(server_id)
+    except KeyError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+
+
+@router.post("/mcp-servers/{server_id}/activate", response_model=McpServerStatusItem)
+def activate_mcp_server(
+    server_id: str,
+    service: McpIntegrationService = Depends(_require_mcp_service),
+) -> McpServerStatusItem:
+    try:
+        service.activate_server(server_id)
+        return next(item for item in handle_list_mcp_servers(service) if item.server_id == server_id)
+    except KeyError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+
+
+@router.post("/mcp-servers/{server_id}/disable", response_model=McpServerStatusItem)
+def disable_mcp_server(
+    server_id: str,
+    service: McpIntegrationService = Depends(_require_mcp_service),
+) -> McpServerStatusItem:
+    try:
+        service.disable_server(server_id)
+        return next(item for item in handle_list_mcp_servers(service) if item.server_id == server_id)
+    except KeyError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+
+
+@router.delete("/mcp-servers/{server_id}")
+def delete_mcp_server(
+    server_id: str,
+    service: McpIntegrationService = Depends(_require_mcp_service),
+) -> dict[str, Any]:
+    try:
+        return {"success": service.delete_server(server_id), "server_id": server_id}
+    except KeyError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+
+
 @router.post("/mcp-servers/{server_id}/test-call", response_model=McpToolTestCallResult)
-def test_mcp_tool(
+async def test_mcp_tool(
     server_id: str,
     payload: McpToolTestCallRequest,
     service: McpIntegrationService = Depends(_require_mcp_service),

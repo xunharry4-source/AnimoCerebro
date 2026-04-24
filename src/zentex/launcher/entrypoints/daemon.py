@@ -1,14 +1,14 @@
+from __future__ import annotations
 """
 Daemon entrypoint — background controller that monitors service health and
 manages session timeouts while the system is running.
 """
 
-from __future__ import annotations
 
 import logging
 import threading
 import time
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any, Dict, List, Optional, Union
 
 from zentex.foundation.meta import SESSION_DEFAULT_TIMEOUT_SECONDS
 from zentex.launcher.assembly.service_registry import ServiceRegistry
@@ -22,7 +22,7 @@ class DaemonController:
     def __init__(self, registry: ServiceRegistry) -> None:
         self._registry = registry
         self._running: bool = False
-        self._thread: threading.Thread | None = None
+        self._thread: threading.Optional[Thread] = None
 
     # ------------------------------------------------------------------
     # Lifecycle

@@ -61,3 +61,50 @@ class TurnAuditPagePayload(BaseModel):
     total_items: int
     total_pages: int
 
+
+class AuditGraphNode(BaseModel):
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    node_id: str
+    title: str
+    lane: str
+    status: str
+    description: str
+    href: Optional[str] = None
+    metrics: Dict[str, Any] = Field(default_factory=dict)
+
+
+class AuditGraphEdge(BaseModel):
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    edge_id: str
+    source: str
+    target: str
+    label: str = ""
+
+
+class AuditGraphLane(BaseModel):
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    lane_id: str
+    title: str
+    subtitle: str
+    nodes: List[AuditGraphNode] = Field(default_factory=list)
+
+
+class AuditGraphPayload(BaseModel):
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    mode: str
+    title: str
+    subtitle: str
+    database_backed: bool = True
+    generated_at: str
+    summary: Dict[str, Any] = Field(default_factory=dict)
+    lanes: List[AuditGraphLane] = Field(default_factory=list)
+    edges: List[AuditGraphEdge] = Field(default_factory=list)
+
+
+AuditGraphLane.model_rebuild()
+AuditGraphPayload.model_rebuild()
+TurnAuditItem.model_rebuild()

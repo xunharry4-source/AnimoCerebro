@@ -1,10 +1,10 @@
+from __future__ import annotations
 """
 ServiceDependencyGraph — canonical startup dependency order for zentex services.
 
 Uses Kahn's algorithm for topological sort and includes cycle detection.
 """
 
-from __future__ import annotations
 
 from collections import deque
 from dataclasses import dataclass, field
@@ -28,6 +28,7 @@ class ServiceDependencyGraph:
         ServiceNode("environment", ["foundation"]),
         ServiceNode("llm", ["foundation"]),
         ServiceNode("memory", ["foundation"]),
+        ServiceNode("audit", ["foundation"]),
         ServiceNode("safety", ["foundation", "memory"]),
         ServiceNode("plugins", ["foundation"]),
         ServiceNode("cognition", ["foundation", "llm", "memory"]),

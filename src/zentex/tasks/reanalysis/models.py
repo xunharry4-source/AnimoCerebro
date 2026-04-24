@@ -1,3 +1,4 @@
+from __future__ import annotations
 """
 Task Reanalysis Models - Handle partial completion and improvement opportunities.
 Detects when tasks are stuck mid-execution or can be improved after completion.
@@ -8,7 +9,6 @@ Scenarios:
 3. Incremental Refinement: New tasks generated to continue from stop point
 """
 
-from __future__ import annotations
 from datetime import datetime, timezone
 from enum import Enum
 from typing import Any, Dict, List, Optional

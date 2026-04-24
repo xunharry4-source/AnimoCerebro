@@ -1,6 +1,9 @@
 #!/bin/zsh
 set -euo pipefail
 
+# Ensure /usr/local/bin is in PATH for npm and other global tools
+export PATH="/usr/local/bin:$PATH"
+
 ROOT_DIR="$(cd "$(dirname "$0")/.." && pwd)"
 cd "$ROOT_DIR"
 

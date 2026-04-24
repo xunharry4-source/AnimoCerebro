@@ -1,11 +1,14 @@
+from __future__ import annotations
 """
 Task Route Handlers — Business logic for task management.
 Extracted from tasks.py to follow the Facade-First / Thin-Route pattern.
 """
-from __future__ import annotations
+import logging
 from typing import Any, Dict, List, Optional
 from fastapi import HTTPException
 from zentex.tasks.service import TaskManagementService, ZentexTask, TaskStatus
+
+logger = logging.getLogger(__name__)
 
 
 def handle_get_task_detail(
@@ -164,6 +167,10 @@ def handle_bulk_operation(
             
             results["success"].append({"task_id": task_id, "action": action})
         except Exception as e:
+            # Bulk operations may continue item-by-item, but they must not hide the
+            # traceback for failed items. Recording only a failed row in the payload
+            # would fake a diagnosable system while operators lose the real cause.
+            logger.exception("Task bulk operation item failed")
             results["failed"].append({"task_id": task_id, "error": str(e)})
     
     return {

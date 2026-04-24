@@ -1,12 +1,14 @@
 from __future__ import annotations
 
+from typing import Any, Dict, List, Optional, Union
+
 import importlib
 import re
 from dataclasses import dataclass
 from pathlib import Path
 
 
-LEGACY_RUNTIME_PATTERN = re.compile(r"zentex\.(?:core|runtime)|\bruntime\.")
+LEGACY_RUNTIME_PATTERN = re.compile(r"zentex\.(?:Union[core, runtime])|\bruntime\.")
 
 
 @dataclass(frozen=True)
@@ -21,8 +23,8 @@ class LegacyImportFinding:
 class SmokeImportResult:
     module_name: str
     ok: bool
-    error_type: str | None = None
-    error_message: str | None = None
+    error_type: Optional[str] = None
+    error_message: Optional[str] = None
 
 
 @dataclass(frozen=True)

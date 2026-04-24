@@ -1,10 +1,10 @@
+from __future__ import annotations
 """Session Management Contract
 
 Defines the interface for session lifecycle management, replacing
 direct access to runtime.active_session.
 """
 
-from __future__ import annotations
 
 from abc import ABC, abstractmethod
 from typing import List
@@ -40,7 +40,7 @@ class SessionManager(ABC):
     async def create_session(
         self,
         workspace: str,
-        session_id: str | None = None,
+        session_id: Optional[str] = None,
     ) -> SessionSnapshot:
         """Create a new session
         

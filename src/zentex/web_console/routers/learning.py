@@ -1,3 +1,4 @@
+from __future__ import annotations
 """
 Learning Router — /api/web/learning/* endpoints.
 
@@ -6,13 +7,11 @@ RESPONSIBILITY:
   web console learning panel.
 
 FAIL-CLOSED CONTRACT (Zentex Codex §1):
-  get_transcript_store() may return None when the kernel service does not
-  have a transcript store (e.g. during early startup).  The /learning/history
-  handler checks for None and raises HTTPException(503) rather than letting
-  build_learning_history crash with AttributeError.
+  learning/service.py is the only public learning entrypoint. The /learning/history
+  handler must read the canonical learning service from app.state and fail closed
+  if that service is unavailable.
 """
 
-from __future__ import annotations
 
 from fastapi import APIRouter, HTTPException, Query, Request
 
@@ -23,7 +22,6 @@ from zentex.web_console.contracts.learning import (
     LearningRunCycleRequest,
     LearningRunCycleResponse,
 )
-from zentex.web_console.dependencies import get_transcript_store
 from zentex.web_console.services.learning import (
     build_learning_history,
     build_learning_plan,
@@ -43,16 +41,16 @@ def learning_history(
     request: Request,
     limit: int = Query(default=200, ge=1, le=2000),
 ) -> LearningHistoryResponse:
-    store = get_transcript_store(request)
-    if store is None:
+    learning_service = getattr(request.app.state, "learning_service", None)
+    if learning_service is None:
         raise HTTPException(
             status_code=503,
             detail={
-                "error": "transcript_store_unavailable",
-                "message": "TranscriptStore 未初始化，学习历史不可用。",
+                "error": "learning_service_unavailable",
+                "message": "LearningService 未初始化，学习历史不可用。",
             },
         )
-    rows = build_learning_history(store, limit=limit)
+    rows = build_learning_history(learning_service, limit=limit)
     return LearningHistoryResponse(rows=rows)
 
 

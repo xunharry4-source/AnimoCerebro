@@ -1,17 +1,17 @@
 from __future__ import annotations
 import asyncio
+import copy
 import logging
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Callable, Dict, List, Optional
+from typing import Any, Callable, Dict, List, Optional, Union
 from uuid import uuid4
 
 from zentex.tasks.models import ZentexTask, TaskStatus, TaskType, TaskContract, CoordinationMode, TaskPriority, SuspendedTask
 from zentex.tasks.core.decomposer import TaskDecomposerPlugin
 from zentex.tasks.models.errors import TaskStateError
 from zentex.tasks.registry import TaskRegistry
-from zentex.tasks.persistence import TaskPersistence
-from zentex.kernel import BrainTranscriptEntryType
+from zentex.kernel import AuditEventType
 from zentex.common.state import SharedStateStore
 from zentex.common.locking import get_lock_for_resource
 from zentex.common.coordination import LeaderElection
@@ -19,6 +19,9 @@ from zentex.tasks.management.negotiation import NegotiationGenerator
 from zentex.tasks.core.llm_decomposer import LLMTaskDecomposerPlugin
 from zentex.tasks.scheduling.loop_scheduler import TaskAutoLoopScheduler
 from zentex.tasks.schema import ensure_task_database_schema
+from zentex.common.storage_paths import get_storage_paths
+from zentex.tasks.execution.dispatch_manager import TaskDispatchManager
+from zentex.kernel.state_domain.transcript import NullTranscriptStore, TranscriptStore
 
 # Database support
 try:
@@ -65,45 +68,30 @@ class TaskManagementService:
         registry: TaskRegistry,
         transcript_store: Any,
         decomposer: Optional[TaskDecomposerPlugin] = None,
-        persistence: Optional[TaskPersistence] = None,
         *,
         allow_rule_based_test_stub: bool = False,
         auto_save: bool = True,
         use_database: bool = True,
-        db_path: str = "runtime/data/zentex_core.db",
+        db_path: Optional[str] = None,
     ) -> None:
         self.registry = registry
-        self.transcript_store = transcript_store
-        self.persistence = persistence
+        self.transcript_store = self._resolve_transcript_store(transcript_store)
+        self.persistence = None
         self.auto_save = auto_save
         self.use_database = use_database and DATABASE_AVAILABLE
 
-        # Initialize database layer if enabled
-        if self.use_database:
-            try:
-                self._db = DatabaseConnection(db_path)
-                ensure_task_database_schema(self._db)
-                self._cache = LRUCache(max_size=1000, ttl_seconds=60)
-                
-                self._task_dao = TaskDAO(self._db, self._cache)
-                self._suspended_dao = SuspendedTaskDAO(self._db, self._cache)
-                self._audit_dao = TaskAuditLogDAO(self._db)
-                self._intervention_dao = InterventionReceiptDAO(self._db)
-                self._idempotency_dao = IdempotencyLogDAO(self._db, self._cache)
-                
-                logger.info(f"Task database layer initialized: {db_path}")
-            except Exception as e:
-                logger.warning(f"Failed to initialize database layer: {e}. Falling back to JSON persistence.")
-                self.use_database = False
-        else:
-            self._db = None
-            self._cache = None
-            self._task_dao = None
-            self._suspended_dao = None
-            self._audit_dao = None
-            self._intervention_dao = None
-            self._idempotency_dao = None
-            logger.info("Database layer disabled, using JSON persistence")
+        if not self.use_database:
+            raise RuntimeError("TaskManagementService requires the database layer")
+        resolved_db_path = db_path or str(get_storage_paths().core_db)
+        self._db = DatabaseConnection(resolved_db_path)
+        ensure_task_database_schema(self._db)
+        self._cache = LRUCache(max_size=1000, ttl_seconds=60)
+        self._task_dao = TaskDAO(self._db, self._cache)
+        self._suspended_dao = SuspendedTaskDAO(self._db, self._cache)
+        self._audit_dao = TaskAuditLogDAO(self._db)
+        self._intervention_dao = InterventionReceiptDAO(self._db)
+        self._idempotency_dao = IdempotencyLogDAO(self._db, self._cache)
+        logger.info(f"Task database layer initialized: {resolved_db_path}")
 
         # Cluster-friendly shared state pools
         self._shared_tasks = SharedStateStore("tasks")
@@ -143,6 +131,44 @@ class TaskManagementService:
                 logger.info("Verification engine initialized successfully")
             except Exception as e:
                 logger.warning(f"Failed to initialize verification engine: {e}")
+
+        # Initialize the Action Heartbeat controller
+        # We don't pass the registry here because TaskDispatchManager expects a PluginLayer,
+        # not a TaskRegistry. The actual PluginService will be attached later via attach_dependencies.
+        self._dispatch_manager = TaskDispatchManager(plugin_layer=None, transcript_store=self.transcript_store)
+
+    def attach_dependencies(
+        self,
+        *,
+        plugin_service: Any = None,
+        transcript_store: Any = None,
+    ) -> None:
+        """
+        Inject external service references into the task management stack.
+        This resolves the circular dependency between tasks and plugins.
+        """
+        if plugin_service is not None:
+            self._dispatch_manager.set_plugin_layer(plugin_service)
+            logger.info("TaskManagementService: PluginService attached to dispatcher.")
+        
+        if transcript_store is not None:
+            # Update transcript store if it was missing during init
+            resolved_store = self._resolve_transcript_store(transcript_store)
+            self.transcript_store = resolved_store
+            self._transcript_store = resolved_store
+            # UnifiedTaskRouter also needs a transcript store
+            if hasattr(self._dispatch_manager, "_router"):
+                self._dispatch_manager._router.transcript_store = resolved_store
+
+    def _resolve_transcript_store(self, transcript_store: Any) -> Any:
+        if transcript_store is None:
+            return None
+        if isinstance(transcript_store, NullTranscriptStore):
+            logger.warning(
+                "TaskManagementService received NullTranscriptStore; creating a local TranscriptStore fallback for task audits"
+            )
+            return TranscriptStore(session_id="task-management-runtime")
+        return transcript_store
 
     def _task_to_dict(self, task: ZentexTask) -> Dict[str, Any]:
         """Convert ZentexTask to dictionary for database storage."""
@@ -191,7 +217,18 @@ class TaskManagementService:
                 except (ValueError, AttributeError):
                     data[field] = None
         
-        # Handle contract
+        # Ensure collection fields are never None (Pydantic v2 requirement)
+        # This prevents ValidationErrors when database columns contain NULL for these fields.
+        for list_field in ['subtask_ids', 'depends_on', 'tags']:
+            if data.get(list_field) is None:
+                data[list_field] = []
+        
+        # Handle contract and metadata
+        if data.get('contract') is None:
+            data['contract'] = {}
+        if data.get('metadata') is None:
+            data['metadata'] = {}
+
         if 'contract' in data and isinstance(data['contract'], dict):
             data['contract'] = TaskContract(**data['contract'])
         
@@ -232,20 +269,23 @@ class TaskManagementService:
                  source_module: Optional[str] = None,
                  metadata_filters: Optional[Dict[str, Any]] = None) -> List[ZentexTask]:
         """List tasks with optional filtering."""
-        tasks = list(self._tasks.values())
+        if not self._task_dao:
+            raise RuntimeError("Task DAO is unavailable")
+        db_tasks = self._task_dao.list_tasks(
+            status=status.value if status else None,
+            priority=priority.value if priority else None,
+            parent_task_id=parent_task_id,
+            originator_id=None,
+            overdue_only=overdue_only,
+            limit=1000,
+            offset=0,
+        )
+        tasks = [self._dict_to_task(item) for item in db_tasks]
 
-        if status:
-            tasks = [t for t in tasks if t.status == status]
-        if priority:
-            tasks = [t for t in tasks if t.priority == priority]
         if tags:
             tasks = [t for t in tasks if any(tag in t.tags for tag in tags)]
-        if parent_task_id:
-            tasks = [t for t in tasks if t.parent_task_id == parent_task_id]
         if target_id:
             tasks = [t for t in tasks if t.target_id == target_id]
-        if overdue_only:
-            tasks = [t for t in tasks if t.is_overdue()]
         if source_module:
             tasks = [
                 t for t in tasks if str(t.metadata.get("source_module", "")) == source_module
@@ -291,24 +331,20 @@ class TaskManagementService:
         return getattr(self, "_revision", 0)
 
     def get_task(self, task_id: str) -> Optional[ZentexTask]:
-        """Get a task by ID, checking shared state first, then database."""
+        """Get a task by ID.
+        
+        G15: Truth Consolidation.
+        Priority: Database (if enabled) > Shared Memory > Local Cache.
+        """
         if not task_id:
             return None
-        # Favor shared state as source of truth
-        task = self._shared_tasks.get(task_id, ZentexTask)
+
+        task = self._load_task_from_database(task_id)
         if task:
             self._tasks[task_id] = task
+            self._shared_tasks.set(task_id, task)
             return task
-        
-        # Fallback to database if enabled
-        if self.use_database:
-            task = self._load_task_from_database(task_id)
-            if task:
-                # Cache in shared state for future access
-                self._shared_tasks.set(task_id, task)
-                self._tasks[task_id] = task
-        
-        return task
+        return None
 
     async def seed_demo_tasks(self, tasks: List[Dict[str, Any]]) -> List[ZentexTask]:
         """Seed local demo tasks through the service boundary."""
@@ -409,10 +445,12 @@ class TaskManagementService:
             self._tasks[task_id] = task
             
             # Save to database if enabled
-            if self.use_database:
-                self._sync_task_to_database(task)
-                if key and self._idempotency_dao:
-                    self._idempotency_dao.record_idempotency(key, task_id)
+            if not self._sync_task_to_database(task):
+                self._shared_tasks.delete(task_id)
+                self._tasks.pop(task_id, None)
+                raise TaskStateError(f"Failed to persist task {task_id} to database")
+            if key and self._idempotency_dao:
+                self._idempotency_dao.record_idempotency(key, task_id)
             
             # Legacy: save to shared idempotency
             if key:
@@ -427,7 +465,7 @@ class TaskManagementService:
                 
             return task
 
-    def update_task_metadata(
+    async def update_task_metadata(
         self,
         task_id: str,
         metadata_updates: Dict[str, Any],
@@ -448,7 +486,8 @@ class TaskManagementService:
         self._tasks[task_id] = task
 
         if self.use_database:
-            self._sync_task_to_database(task)
+            if not self._sync_task_to_database(task):
+                raise TaskStateError(f"Failed to persist metadata updates for task {task_id}")
             if self._audit_dao:
                 self._audit_dao.log_action(
                     task_id=task_id,
@@ -464,7 +503,12 @@ class TaskManagementService:
             "TASK_METADATA_UPDATED",
             {"metadata_updates": metadata_updates, "remarks": remarks},
         )
-        self._save_to_persistence()
+        # Read-after-write guard: metadata mutation must be query-visible.
+        refreshed = self._load_task_from_database(task_id)
+        if refreshed is None or any(
+            refreshed.metadata.get(key) != value for key, value in metadata_updates.items()
+        ):
+            raise TaskStateError(f"Metadata read-after-write mismatch for task {task_id}")
         return task
 
     async def decompose_and_dispatch_mission(self, mission_task: ZentexTask):
@@ -499,10 +543,18 @@ class TaskManagementService:
         for item, st_id in zip(subtask_data, mission_task.subtask_ids):
             st = self._tasks[st_id]
             st.depends_on = [local_id_map[dep] for dep in item.get("depends_on", []) if dep in local_id_map]
+            self._shared_tasks.set(st_id, st)
+            self._tasks[st_id] = st
+            if self.use_database and not self._sync_task_to_database(st):
+                raise TaskStateError(f"Failed to persist dependency linkage for subtask {st_id}")
+
+        mission_task.last_updated_at = datetime.now(timezone.utc)
+        self._shared_tasks.set(mission_task.task_id, mission_task)
+        self._tasks[mission_task.task_id] = mission_task
+        if self.use_database and not self._sync_task_to_database(mission_task):
+            raise TaskStateError(f"Failed to persist mission decomposition for task {mission_task.task_id}")
 
         self._record_audit(mission_task.task_id, "MISSION_DECOMPOSED", {"subtask_ids": mission_task.subtask_ids})
-        self._save_to_persistence()
-
     async def claim_task(self, task_id: str, handler_id: str) -> ZentexTask:
         """
         Collaborative claiming of a subtask.
@@ -513,26 +565,62 @@ class TaskManagementService:
              
         # Check dependencies
         for dep_id in task.depends_on:
-            dep_task = self._tasks.get(dep_id)
+            dep_task = self.get_task(dep_id)
             if dep_task and dep_task.status != TaskStatus.DONE:
                 raise TaskStateError(f"Dependency {dep_id} is not yet DONE.")
 
         task.target_id = handler_id
-        return self.update_task_status(task_id, TaskStatus.IN_PROGRESS, remarks=f"Claimed by {handler_id}")
+        task.last_updated_at = datetime.now(timezone.utc)
+        self._shared_tasks.set(task_id, task)
+        self._tasks[task_id] = task
+        if self.use_database and not self._sync_task_to_database(task):
+            raise TaskStateError(f"Failed to persist task claim target for {task_id}")
+        return await self.update_task_status(task_id, TaskStatus.IN_PROGRESS, remarks=f"Claimed by {handler_id}")
 
-    def update_task_status(self, task_id: str, new_status: TaskStatus, remarks: Optional[str] = None):
+    async def heartbeat_task(self, task_id: str) -> None:
+        """
+        G39: Signal that a task is still active. 
+        Updates last_updated_at to prevent stale reclamation.
+        """
+        task = self.get_task(task_id)
+        if not task:
+            logger.warning(f"Heartbeat attempted for non-existent task: {task_id}")
+            return
+
+        now = datetime.now(timezone.utc)
+        task.last_updated_at = now
+        
+        # Save to shared and local memory
+        self._shared_tasks.set(task_id, task)
+        self._tasks[task_id] = task
+
+        # Save to database (only update the timestamp to minimize overhead)
+        if self.use_database and self._task_dao:
+            try:
+                if not self._task_dao.update_task(task_id, {"last_updated_at": now.isoformat()}):
+                    raise TaskStateError(f"Failed to persist task heartbeat for {task_id}")
+            except Exception as e:
+                logger.error(f"Failed to persist task heartbeat for {task_id}: {e}")
+                raise
+
+        # Record minor audit event
+        self._record_audit(task_id, "TASK_HEARTBEAT", {"timestamp": now.isoformat()})
+
+    async def update_task_status(self, task_id: str, new_status: TaskStatus, remarks: Optional[str] = None):
         """
         State Machine Redline: Validates illegal transitions.
-        Now with database persistence support.
+        
+        G16: Atomic status update.
+        G18: Asynchronous execution.
         """
-        task = self.get_task(task_id)  # Use get_task to check database too
+        task = self.get_task(task_id)  # Returns most current state from DB/Shared
         if not task:
             raise KeyError(f"Task {task_id} not found")
 
         # Define legal transitions
         legal_from: Dict[TaskStatus, List[TaskStatus]] = {
             TaskStatus.TODO: [TaskStatus.IN_PROGRESS, TaskStatus.BLOCKED, TaskStatus.FAILED, TaskStatus.SUSPENDED, TaskStatus.ARCHIVED],
-            TaskStatus.IN_PROGRESS: [TaskStatus.WAITING_CONFIRMATION, TaskStatus.BLOCKED, TaskStatus.DONE, TaskStatus.FAILED, TaskStatus.SUSPENDED],
+            TaskStatus.IN_PROGRESS: [TaskStatus.TODO, TaskStatus.WAITING_CONFIRMATION, TaskStatus.BLOCKED, TaskStatus.DONE, TaskStatus.FAILED, TaskStatus.SUSPENDED],
             TaskStatus.BLOCKED: [TaskStatus.TODO, TaskStatus.IN_PROGRESS, TaskStatus.FAILED, TaskStatus.SUSPENDED, TaskStatus.ARCHIVED],
             TaskStatus.WAITING_CONFIRMATION: [TaskStatus.IN_PROGRESS, TaskStatus.DONE, TaskStatus.FAILED, TaskStatus.SUSPENDED],
             TaskStatus.SUSPENDED: [TaskStatus.TODO, TaskStatus.IN_PROGRESS, TaskStatus.BLOCKED, TaskStatus.FAILED, TaskStatus.ARCHIVED],
@@ -555,28 +643,58 @@ class TaskManagementService:
         
         # Save to database if enabled
         if self.use_database:
-            self._sync_task_to_database(task)
+            if not self._sync_task_to_database(task):
+                # Rollback in-memory state to prevent desync
+                task.status = old_status
+                self._shared_tasks.set(task_id, task)
+                self._tasks[task_id] = task
+                logger.error(f"Failed to persist task {task_id} status change ({old_status} -> {new_status}) to database. Rolled back in-memory state.")
+                raise TaskStateError(f"Persistence failure for task {task_id}. Database synchronization failed.")
             
             # Log audit to database
             if self._audit_dao:
-                self._audit_dao.log_action(
-                    task_id=task_id,
-                    action="TASK_STATUS_UPDATED",
-                    operator_id="system",
-                    old_status=old_status.value,
-                    new_status=new_status.value,
-                    details={"remarks": remarks}
-                )
+                try:
+                    self._audit_dao.log_action(
+                        task_id=task_id,
+                        action="TASK_STATUS_UPDATED",
+                        operator_id="system",
+                        old_status=old_status.value,
+                        new_status=new_status.value,
+                        details={"remarks": remarks}
+                    )
+                except Exception as audit_err:
+                     logger.error(f"Failed to log task audit: {audit_err}")
+                     raise
         
         # Record audit to transcript (legacy)
         self._record_audit(task_id, "TASK_STATUS_UPDATED", {"new_status": new_status, "remarks": remarks})
 
-        # Legacy persistence
-        self._save_to_persistence()
-        
         return task
 
-    def intervene(
+    def delete_task(self, task_id: str, *, force: bool = False) -> bool:
+        """Delete a task through the official service boundary."""
+        task = self.get_task(task_id)
+        if task is None:
+            return False
+        if not self._task_dao:
+            raise RuntimeError("Task DAO is unavailable")
+
+        deleted = self._task_dao.delete_task(task_id, force=force)
+        if not deleted:
+            return False
+
+        self._shared_tasks.delete(task_id)
+        self._tasks.pop(task_id, None)
+        if task.idempotency_key:
+            self._shared_idempotency.delete(task.idempotency_key)
+            self._idempotency_log.pop(task.idempotency_key, None)
+            if self._idempotency_dao:
+                self._idempotency_dao.delete(task.idempotency_key)
+
+        self._record_audit(task_id, "TASK_DELETED", {"force": force})
+        return True
+
+    async def intervene(
         self,
         task_id: str,
         *,
@@ -612,7 +730,7 @@ class TaskManagementService:
         if new_status is None:
             raise ValueError("Invalid intervention action")
 
-        updated = self.update_task_status(task_id, new_status, remarks=remarks)
+        updated = await self.update_task_status(task_id, new_status, remarks=remarks)
         receipt = {
             "idempotency_key": idempotency_key,
             "task_id": task_id,
@@ -623,6 +741,8 @@ class TaskManagementService:
             "recorded_at": datetime.now(timezone.utc).isoformat(),
         }
         self._intervention_receipts[idempotency_key] = receipt
+        if self._intervention_dao:
+            self._intervention_dao.record_intervention(receipt)
         self._record_audit(
             task_id,
             "TASK_INTERVENED",
@@ -634,10 +754,9 @@ class TaskManagementService:
                 "operator_id": operator_id,
             },
         )
-        self._save_to_persistence()
         return {**receipt, "idempotent_replay": False}
 
-    def suspend_task(self, 
+    async def suspend_task(self, 
                     task_id: str, 
                     reason: str,
                     recovery_conditions: Optional[List[str]] = None,
@@ -666,6 +785,21 @@ class TaskManagementService:
         
         self._shared_suspensions.set(task_id, suspended_task)
         self._shared_tasks.set(task_id, task) # Update task status in shared store
+        self._tasks[task_id] = task
+        if not self._sync_task_to_database(task):
+            raise TaskStateError(f"Failed to persist suspended task {task_id}")
+        if self._suspended_dao:
+            self._suspended_dao.suspend_task(
+                {
+                    "task_id": task_id,
+                    "original_status": original_status.value,
+                    "suspension_reason": reason,
+                    "recovery_conditions": recovery_conditions or [],
+                    "suspension_context": suspension_context or {},
+                    "suspended_at": suspended_task.suspended_at.isoformat(),
+                    "auto_resume_at": auto_resume_at.isoformat() if auto_resume_at else None,
+                }
+            )
         
         self._record_audit(task_id, "TASK_SUSPENDED", {
             "reason": reason,
@@ -675,7 +809,7 @@ class TaskManagementService:
         
         return task
 
-    def resume_task(self, task_id: str, remarks: Optional[str] = None) -> ZentexTask:
+    async def resume_task(self, task_id: str, remarks: Optional[str] = None) -> ZentexTask:
         """Resume a suspended task"""
         task = self.get_task(task_id)
         if not task:
@@ -695,6 +829,11 @@ class TaskManagementService:
         # Clean up suspension record
         self._shared_suspensions.delete(task_id)
         self._shared_tasks.set(task_id, task)
+        self._tasks[task_id] = task
+        if not self._sync_task_to_database(task):
+            raise TaskStateError(f"Failed to persist resumed task {task_id}")
+        if self._suspended_dao:
+            self._suspended_dao.resume_task(task_id)
         
         self._record_audit(task_id, "TASK_RESUMED", {
             "original_status": suspension_info.original_status.value,
@@ -706,10 +845,16 @@ class TaskManagementService:
 
     def get_suspended_task(self, task_id: str) -> Optional[SuspendedTask]:
         """Get suspension information for a task"""
+        if self._suspended_dao:
+            payload = self._suspended_dao.get_suspended_task(task_id)
+            if payload:
+                return SuspendedTask.model_validate(payload)
         return self._shared_suspensions.get(task_id, SuspendedTask)
 
     def list_suspended_tasks(self) -> List[SuspendedTask]:
         """List all suspended tasks"""
+        if self._suspended_dao:
+            return [SuspendedTask.model_validate(item) for item in self._suspended_dao.list_suspended_tasks()]
         all_suspensions = self._shared_suspensions.list_all(SuspendedTask)
         return list(all_suspensions.values())
 
@@ -729,27 +874,204 @@ class TaskManagementService:
              
         return new_negs
 
+    async def run_worker_cycle(self) -> Dict[str, Any]:
+        """
+        Execute one worker heartbeat cycle.
+        Pulls TODO tasks, routes them, and executes them via plugins.
+        """
+        if not self._task_dao:
+            logger.warning("run_worker_cycle invoked but database/DAO is unavailable.")
+            return {"tasks_dispatched": 0}
+
+        logger.info("TaskManagementService: Starting worker heartbeat cycle...")
+        try:
+            stats = await self._dispatch_manager.run_cycle(self._task_dao)
+            return stats.__dict__ if hasattr(stats, "__dict__") else {}
+        except Exception as e:
+            logger.exception("Worker heartbeat cycle failed at service level: %s", e)
+            return {"error": str(e)}
+
     async def check_auto_resume_tasks(self) -> List[ZentexTask]:
-        """Check and auto-resume tasks whose auto_resume_at time has arrived"""
+        """Check and auto-resume tasks whose auto_resume_at time has arrived.
+        Also reclaims stale IN_PROGRESS tasks (G39).
+        """
         if not self._auto_resume_leader.try_acquire():
-            return [] # Only the leader node performs auto-resume
+            return [] # Only the leader node performs auto-resume and reclamation
 
         now = datetime.now(timezone.utc)
-        resumed_tasks = []
+        processed_tasks = []
         
+        # 1. Auto-resume suspended tasks
         all_suspensions = self._shared_suspensions.list_all(SuspendedTask)
         for task_id, suspension_info in all_suspensions.items():
             if suspension_info.auto_resume_at and suspension_info.auto_resume_at <= now:
                 try:
                     resumed_task = self.resume_task(task_id, "Auto-resumed by system leader")
-                    resumed_tasks.append(resumed_task)
+                    processed_tasks.append(resumed_task)
                     logger.info(f"Auto-resumed task {task_id}")
                 except Exception as e:
-                    logger.error(f"Failed to auto-resume task {task_id}: {e}")
+                    # Forbidden: auto-resume failures must leave a traceback.
+                    # Logging a plain error string here hides the real root cause
+                    # and makes the scheduler look healthier than it is.
+                    logger.exception("Failed to auto-resume task %s: %s", task_id, e)
         
-        return resumed_tasks
+        # 2. Reclaim stale IN_PROGRESS tasks (G39)
+        # We scan all tasks. In a production environment with millions of tasks, 
+        # this would be optimized with a dedicated 'in_progress' index.
+        in_progress_tasks = self.list_tasks(status=TaskStatus.IN_PROGRESS)
+        stale_threshold = 300 # Default 5 minutes
+        
+        for task in in_progress_tasks:
+            # 1. Determine the effective stale threshold for this specific task
+            # Priority: task metadata > service default (300s)
+            stale_threshold = task.metadata.get("stale_timeout", 300)
+            
+            # Check last_updated_at instead of started_at to allow heartbeats
+            elapsed = (now - task.last_updated_at).total_seconds()
+            if elapsed > stale_threshold:
+                try:
+                    if task.contract.retriable:
+                        logger.warning(f"Reclaiming stale task {task.task_id} (threshold={stale_threshold}s): resetting to TODO.")
+                        await self.update_task_status(
+                            task.task_id, 
+                            TaskStatus.TODO, 
+                            remarks=f"Reclaimed from stale IN_PROGRESS state after {elapsed:.0f}s (Threshold: {stale_threshold}s)."
+                        )
+                    else:
+                        logger.error(f"Reclaiming stale task {task.task_id} (threshold={stale_threshold}s): non-retriable, marking FAILED.")
+                        await self.update_task_status(
+                            task.task_id, 
+                            TaskStatus.FAILED, 
+                            remarks=f"Reclaimed from stale IN_PROGRESS state after {elapsed:.0f}s (Non-retriable, Threshold: {stale_threshold}s)."
+                        )
+                    processed_tasks.append(task)
+                except Exception as e:
+                    logger.exception("Failed to reclaim stale task %s: %s", task.task_id, e)
+        
+        return processed_tasks
 
-    def bulk_update_status(self, 
+    def _parse_task_lease_timestamp(
+        self,
+        raw_value: Any,
+        *,
+        task_id: str,
+        field_name: str,
+    ) -> datetime:
+        """Parse a lease timestamp and fail loudly on malformed runtime state."""
+        if not raw_value or not isinstance(raw_value, str):
+            raise ValueError(
+                f"Task {task_id} lease field '{field_name}' is missing or not an ISO timestamp."
+            )
+
+        parsed = datetime.fromisoformat(raw_value.replace("Z", "+00:00"))
+        if parsed.tzinfo is None:
+            parsed = parsed.replace(tzinfo=timezone.utc)
+        return parsed
+
+    async def check_timeout_and_republish_tasks(
+        self,
+        limit: Optional[int] = None,
+    ) -> List[Dict[str, Any]]:
+        """Reclaim timed-out IN_PROGRESS tasks and republish retriable work.
+
+        Forbidden behavior:
+        - exposing a timeout recovery entry point but leaving it as a fake stub
+        - swallowing lease parsing or recovery failures and pretending the scheduler is healthy
+        Both behaviors hide real stuck-task faults and directly damage runtime stability.
+        """
+        now = datetime.now(timezone.utc)
+        recovered: List[Dict[str, Any]] = []
+        in_progress_tasks = self.list_tasks(status=TaskStatus.IN_PROGRESS)
+
+        if limit is not None:
+            in_progress_tasks = in_progress_tasks[: max(0, int(limit))]
+
+        for task in in_progress_tasks:
+            try:
+                lease = task.metadata.get("lease")
+                if not isinstance(lease, dict):
+                    raise ValueError(
+                        f"Task {task.task_id} is in_progress without lease metadata."
+                    )
+
+                heartbeat_at = self._parse_task_lease_timestamp(
+                    lease.get("heartbeat_at") or lease.get("acquired_at"),
+                    task_id=task.task_id,
+                    field_name="heartbeat_at",
+                )
+
+                timeout_seconds_raw = lease.get("timeout_seconds", 300)
+                timeout_seconds = int(timeout_seconds_raw)
+                if timeout_seconds <= 0:
+                    raise ValueError(
+                        f"Task {task.task_id} has invalid lease timeout_seconds={timeout_seconds_raw!r}."
+                    )
+
+                elapsed_seconds = (now - heartbeat_at).total_seconds()
+                if elapsed_seconds <= timeout_seconds:
+                    continue
+
+                original_metadata = copy.deepcopy(task.metadata)
+                task.metadata = {
+                    **task.metadata,
+                    "lease": {
+                        **lease,
+                        "status": "expired",
+                        "expired_at": now.isoformat(),
+                        "heartbeat_at": heartbeat_at.isoformat(),
+                        "timeout_seconds": timeout_seconds,
+                    },
+                    "timeout_recovery": {
+                        "timed_out": True,
+                        "detected_at": now.isoformat(),
+                        "heartbeat_at": heartbeat_at.isoformat(),
+                        "timeout_seconds": timeout_seconds,
+                        "elapsed_seconds": elapsed_seconds,
+                        "recovery_source": "check_timeout_and_republish_tasks",
+                    },
+                }
+
+                next_status = TaskStatus.TODO if task.contract.retriable else TaskStatus.FAILED
+                remarks = (
+                    f"Timeout recovery after {elapsed_seconds:.0f}s without heartbeat; "
+                    f"lease expired at {now.isoformat()}."
+                )
+
+                try:
+                    await self.update_task_status(task.task_id, next_status, remarks=remarks)
+                except Exception:
+                    task.metadata = original_metadata
+                    self._shared_tasks.set(task.task_id, task)
+                    self._tasks[task.task_id] = task
+                    raise
+
+                logger.warning(
+                    "Recovered timed-out task %s from in_progress to %s after %.0fs without heartbeat.",
+                    task.task_id,
+                    next_status.value,
+                    elapsed_seconds,
+                )
+                recovered.append(
+                    {
+                        "task_id": task.task_id,
+                        "republished": next_status == TaskStatus.TODO,
+                        "new_status": next_status.value,
+                        "timeout_seconds": timeout_seconds,
+                        "elapsed_seconds": elapsed_seconds,
+                    }
+                )
+            except Exception as exc:
+                # Forbidden: silently skipping broken lease state would make the scheduler
+                # look healthy while timed-out tasks remain stuck forever.
+                logger.exception(
+                    "Task timeout recovery failed for %s: %s",
+                    task.task_id,
+                    exc,
+                )
+
+        return recovered
+
+    async def bulk_update_status(self, 
                            task_ids: List[str], 
                            new_status: TaskStatus, 
                            remarks: Optional[str] = None) -> Dict[str, Any]:
@@ -758,7 +1080,7 @@ class TaskManagementService:
         
         for task_id in task_ids:
             try:
-                updated_task = self.update_task_status(task_id, new_status, remarks)
+                updated_task = await self.update_task_status(task_id, new_status, remarks)
                 results["success"].append({
                     "task_id": task_id,
                     "previous_status": updated_task.status,
@@ -780,7 +1102,7 @@ class TaskManagementService:
         
         return results
 
-    def bulk_suspend(self, 
+    async def bulk_suspend(self, 
                     task_ids: List[str], 
                     reason: str,
                     recovery_conditions: Optional[List[str]] = None) -> Dict[str, Any]:
@@ -789,7 +1111,7 @@ class TaskManagementService:
         
         for task_id in task_ids:
             try:
-                suspended_task = self.suspend_task(task_id, reason, recovery_conditions)
+                suspended_task = await self.suspend_task(task_id, reason, recovery_conditions)
                 results["success"].append({
                     "task_id": task_id,
                     "status": suspended_task.status
@@ -816,7 +1138,29 @@ class TaskManagementService:
         
         for task_id in task_ids:
             try:
-                resumed_task = self.resume_task(task_id, remarks)
+                resume_result = self.resume_task(task_id, remarks)
+                if asyncio.iscoroutine(resume_result):
+                    try:
+                        asyncio.get_running_loop()
+                    except RuntimeError:
+                        resumed_task = asyncio.run(resume_result)
+                    else:
+                        from concurrent.futures import Future
+                        import threading
+
+                        future: Future[ZentexTask] = Future()
+
+                        def _runner() -> None:
+                            try:
+                                future.set_result(asyncio.run(resume_result))
+                            except Exception as exc:  # pragma: no cover
+                                future.set_exception(exc)
+
+                        thread = threading.Thread(target=_runner, daemon=True)
+                        thread.start()
+                        resumed_task = future.result()
+                else:
+                    resumed_task = resume_result
                 results["success"].append({
                     "task_id": task_id,
                     "status": resumed_task.status
@@ -834,7 +1178,11 @@ class TaskManagementService:
             "remarks": remarks
         })
         
-        return results
+        return {
+            **results,
+            "requested": len(task_ids),
+            "resumed": len(results["success"]),
+        }
 
     def bulk_delete(self, task_ids: List[str], force: bool = False) -> Dict[str, Any]:
         """Bulk delete tasks (with safety checks)"""
@@ -867,10 +1215,12 @@ class TaskManagementService:
                     })
                     continue
                     
-                # Delete the task
-                del self._tasks[task_id]
-                if task_id in self._suspended_tasks:
-                    del self._suspended_tasks[task_id]
+                if not self.delete_task(task_id, force=force):
+                    results["failed"].append({
+                        "task_id": task_id,
+                        "error": "Official delete_task returned False"
+                    })
+                    continue
                     
                 results["success"].append({
                     "task_id": task_id,
@@ -912,6 +1262,10 @@ class TaskManagementService:
             
         task.depends_on.append(dependency_id)
         task.last_updated_at = datetime.now(timezone.utc)
+        self._shared_tasks.set(task_id, task)
+        self._tasks[task_id] = task
+        if self.use_database and not self._sync_task_to_database(task):
+            raise TaskStateError(f"Failed to persist dependency update for task {task_id}")
         
         self._record_audit(task_id, "DEPENDENCY_ADDED", {
             "dependency_id": dependency_id,
@@ -932,6 +1286,10 @@ class TaskManagementService:
             
         task.depends_on.remove(dependency_id)
         task.last_updated_at = datetime.now(timezone.utc)
+        self._shared_tasks.set(task_id, task)
+        self._tasks[task_id] = task
+        if self.use_database and not self._sync_task_to_database(task):
+            raise TaskStateError(f"Failed to persist dependency removal for task {task_id}")
         
         self._record_audit(task_id, "DEPENDENCY_REMOVED", {
             "dependency_id": dependency_id,
@@ -1023,70 +1381,46 @@ class TaskManagementService:
             
         return check_circular(new_dependency_id, task_id, set())
 
-    def _load_from_persistence(self) -> None:
-        """Load data from persistence layer"""
-        if not self.persistence:
-            return
-            
-        try:
-            data = self.persistence.load_all()
-            self._tasks = data.get("tasks", {})
-            self._suspended_tasks = data.get("suspended_tasks", {})
-            self._idempotency_log = data.get("idempotency_log", {})
-            self._intervention_receipts = data.get("intervention_receipts", {})
-            logger.info("Successfully loaded task data from persistence")
-        except Exception as e:
-            logger.error(f"Failed to load from persistence: {e}")
-
-    def _save_to_persistence(self, tasks_only: bool = False) -> None:
-        """Save data to persistence layer"""
-        if not self.persistence or not self.auto_save:
-            return
-            
-        try:
-            if tasks_only:
-                self.persistence.save_tasks_only(self._tasks)
-            else:
-                self.persistence.save_all(
-                    self._tasks,
-                    self._suspended_tasks,
-                    self._idempotency_log,
-                    self._intervention_receipts
-                )
-        except Exception as e:
-            logger.error(f"Failed to save to persistence: {e}")
-
     def save_state(self) -> bool:
-        """Manually trigger save of all state"""
-        if not self.persistence:
-            return False
-        return self.persistence.save_all(
-            self._tasks,
-            self._suspended_tasks,
-            self._idempotency_log,
-            self._intervention_receipts
-        )
+        return True
 
     def get_persistence_stats(self) -> Optional[Dict[str, Any]]:
-        """Get persistence statistics"""
-        if not self.persistence:
-            return None
-        return self.persistence.get_storage_stats()
+        return None
 
     def _record_audit(self, task_id: str, action: str, details: Dict[str, Any]):
+        if self.transcript_store is None or not callable(getattr(self.transcript_store, "write_entry", None)):
+            return
+        normalized_details = self._normalize_audit_value(details)
         self.transcript_store.write_entry(
             session_id="task-management-audit",
             turn_id=str(uuid4()),
-            entry_type=BrainTranscriptEntryType.PLUGIN_AUDIT_EVENT,
+            entry_type=AuditEventType.PLUGIN_AUDIT_EVENT,
             source="TaskManagementService",
             trace_id=f"task-audit:{task_id}:{action.lower()}",
             payload={
                 "task_id": task_id,
                 "action": action,
                 "timestamp": datetime.now(timezone.utc).isoformat(),
-                "details": details
+                "details": normalized_details
             }
         )
+
+    def _normalize_audit_value(self, value: Any) -> Any:
+        if value is None or isinstance(value, (str, int, float, bool)):
+            return value
+        if isinstance(value, datetime):
+            return value.isoformat()
+        if isinstance(value, Path):
+            return str(value)
+        if hasattr(value, "model_dump") and callable(getattr(value, "model_dump")):
+            return self._normalize_audit_value(value.model_dump(mode="json"))
+        if hasattr(value, "value"):
+            return self._normalize_audit_value(value.value)
+        if isinstance(value, dict):
+            return {str(k): self._normalize_audit_value(v) for k, v in value.items()}
+        if isinstance(value, (list, tuple, set)):
+            return [self._normalize_audit_value(v) for v in value]
+        return str(value)
     
     def get_task_statistics(self) -> Dict[str, Any]:
         """获取任务统计信息，支持数据库和内存两种模式"""
@@ -1208,35 +1542,41 @@ class TaskManagementService:
                 "error": f"Task {task_id} not found",
                 "error_code": "TASK_NOT_FOUND"
             }
+
+        async def _complete_without_verification(message: str) -> Dict[str, Any]:
+            current = self.get_task(task_id)
+            if current and current.status == TaskStatus.TODO:
+                await self.update_task_status(
+                    task_id,
+                    TaskStatus.IN_PROGRESS,
+                    "Auto-claimed before completion",
+                )
+            updated_task = await self.update_task_status(task_id, TaskStatus.DONE, remarks)
+            return {
+                "success": True,
+                "task": updated_task.model_dump(),
+                "verification_skipped": True,
+                "message": message,
+            }
         
         # Check if verification is available and enabled
         if not VERIFICATION_AVAILABLE or not self._verification_engine:
             logger.warning(f"Verification engine not available, completing task {task_id} without verification")
-            self._persist_execution_result(task_id, result)
-            updated_task = self.update_task_status(task_id, TaskStatus.DONE, remarks)
-            return {
-                "success": True,
-                "task": updated_task.model_dump(),
-                "verification_skipped": True,
-                "message": "Task completed without verification (engine not available)"
-            }
-
+            return await _complete_without_verification(
+                "Task completed without verification (engine not available)"
+            )
+        
         # Check if verification is enabled for this task
         if not task.contract.verification.enabled:
             logger.debug(f"Verification disabled for task {task_id}, completing directly")
-            self._persist_execution_result(task_id, result)
-            updated_task = self.update_task_status(task_id, TaskStatus.DONE, remarks)
-            return {
-                "success": True,
-                "task": updated_task.model_dump(),
-                "verification_skipped": True,
-                "message": "Task completed (verification disabled for this task)"
-            }
+            return await _complete_without_verification(
+                "Task completed (verification disabled for this task)"
+            )
         
         try:
             # Step 1: Transition to WAITING_CONFIRMATION
             logger.info(f"Task {task_id} entering verification phase")
-            self.update_task_status(
+            await self.update_task_status(
                 task_id, 
                 TaskStatus.WAITING_CONFIRMATION, 
                 remarks="Waiting for verification"
@@ -1265,19 +1605,17 @@ class TaskManagementService:
             
             # Step 4: Handle based on recommendation
             if verification_result.overall_passed:
-                # Verification passed - persist execution output before marking DONE
-                self._persist_execution_result(task_id, result)
-
+                # Verification passed - complete the task
                 final_remarks = f"Verified: {verification_result.summary}"
                 if remarks:
                     final_remarks += f" | {remarks}"
-
-                updated_task = self.update_task_status(
+                    
+                updated_task = await self.update_task_status(
                     task_id,
                     TaskStatus.DONE,
                     remarks=final_remarks
                 )
-
+                
                 logger.info(f"Task {task_id} verified and completed successfully")
                 return {
                     "success": True,
@@ -1301,7 +1639,7 @@ class TaskManagementService:
             
             # On error, mark task as failed
             try:
-                updated_task = self.update_task_status(
+                updated_task = await self.update_task_status(
                     task_id,
                     TaskStatus.FAILED,
                     remarks=f"Verification error: {str(e)}"
@@ -1320,45 +1658,6 @@ class TaskManagementService:
                     "error_code": "VERIFICATION_AND_STATUS_ERROR"
                 }
     
-    def _persist_execution_result(
-        self,
-        task_id: str,
-        result: Dict[str, Any],
-    ) -> None:
-        """Persist execution output to the tasks row.
-
-        Writes ``execution_output`` (JSON) and ``execution_finished_at`` to the
-        DB so the result is queryable independently of the task status field.
-        Safe to call even when the DB layer is disabled — it logs a warning and
-        returns without raising.
-        """
-        import json as _json
-
-        if not self.use_database or not self._task_dao:
-            logger.debug(
-                "DB persistence disabled — execution result for task %s not saved", task_id
-            )
-            return
-
-        try:
-            output_json = _json.dumps(result, ensure_ascii=False, default=str)
-        except Exception as exc:
-            logger.warning(
-                "Could not serialise execution result for task %s: %s", task_id, exc
-            )
-            output_json = _json.dumps({"serialisation_error": str(exc)})
-
-        try:
-            self._task_dao.update_task(task_id, {
-                "execution_output": output_json,
-                "execution_finished_at": datetime.now(timezone.utc).isoformat(),
-            })
-            logger.debug("Persisted execution_output for task %s", task_id)
-        except Exception as exc:
-            logger.error(
-                "Failed to persist execution result for task %s: %s", task_id, exc
-            )
-
     async def _handle_verification_failure(
         self,
         task_id: str,
@@ -1519,6 +1818,33 @@ class TaskManagementService:
             "message": "Verification engine ready"
         }
 
+    # === Observability Methods (Phase F) ===
+
+    def get_verification_records(self, task_id: str) -> List[Dict[str, Any]]:
+        """Phase F: Retrieve real verification history from audit logs."""
+        if not self.transcript_store:
+            return []
+        prefix = f"task-audit:{task_id}:task_verification_completed"
+        entries = self.transcript_store.read_entries_by_trace_prefix(prefix)
+        return [e.payload for e in entries if e.payload]
+
+    def get_dispatch_records(self, task_id: str) -> List[Dict[str, Any]]:
+        """Phase F: Retrieve real dispatch routing decisions from audit logs."""
+        if not self.transcript_store:
+            return []
+        prefix = f"task-audit:{task_id}:task_dispatched"
+        entries = self.transcript_store.read_entries_by_trace_prefix(prefix)
+        return [e.payload for e in entries if e.payload]
+
+    def get_supervision_records(self, task_id: str) -> List[Dict[str, Any]]:
+        """Phase F: Retrieve real supervision/intervention records from audit logs."""
+        if not self.transcript_store:
+            return []
+        prefix = f"task-audit:{task_id}:task_intervened"
+        entries = self.transcript_store.read_entries_by_trace_prefix(prefix)
+        # Also include other supervision-related events if needed
+        return [e.payload for e in entries if e.payload]
+
     def get_database_status(self) -> Dict[str, Any]:
         """
         Get database layer status and statistics.
@@ -1536,7 +1862,7 @@ class TaskManagementService:
             return {
                 "available": True,
                 "enabled": False,
-                "message": "Database layer disabled, using JSON persistence"
+                "message": "Task database layer unavailable"
             }
         
         try:
@@ -1590,7 +1916,7 @@ def task_plugin_normalize_result(
     result: Any,
     *,
     source_kind: str = "generic",
-    metadata: Dict[str, Any] | None = None,
+    metadata: Dict[str, Any] = None,
 ) -> Dict[str, Any]:
     payload = dict(result) if isinstance(result, dict) else {"output": result}
     return {
@@ -1695,7 +2021,7 @@ def task_plugin_extract_evidence(
 def task_plugin_rule_based_verification(
     result: Any,
     *,
-    rules: List[Dict[str, Any]] | None = None,
+    rules: List[Dict[str, Any]] = None,
 ) -> Dict[str, Any]:
     payload = dict(result) if isinstance(result, dict) else {"value": result}
     failures: List[Dict[str, Any]] = []
@@ -1752,9 +2078,9 @@ def task_plugin_match_capabilities(
     *,
     required_capabilities: List[str],
     candidate_capabilities: List[str],
-    preferred_capabilities: List[str] | None = None,
-    forbidden_capabilities: List[str] | None = None,
-    capability_aliases: Dict[str, List[str]] | None = None,
+    preferred_capabilities: List[Optional[str]] = None,
+    forbidden_capabilities: List[Optional[str]] = None,
+    capability_aliases: Dict[str, List[Optional[str]]] = None,
 ) -> Dict[str, Any]:
     candidate = set(candidate_capabilities or [])
     aliases = capability_aliases or {}
@@ -1851,7 +2177,7 @@ def task_plugin_check_constraints(
 def task_plugin_plan_compensation(
     *,
     workspace: str,
-    artifacts: List[Dict[str, Any]] | List[Any],
+    artifacts: List[Dict[str, Union[Any]], List[Any]],
     failure_type: str,
 ) -> Dict[str, Any]:
     workspace_path = Path(workspace).resolve()
@@ -1908,7 +2234,7 @@ __all__ = [
 
 
 # Global singleton instance for tasks service
-_default_service: TaskManagementService | None = None
+_default_service: Optional[TaskManagementService] = None
 
 
 def get_service() -> TaskManagementService:
@@ -1922,11 +2248,11 @@ def get_service() -> TaskManagementService:
     """
     global _default_service
     if _default_service is None:
-        # Create a minimal instance with rule-based stub allowed for initial startup
         from zentex.tasks.registry import TaskRegistry
+        from zentex.tasks.core.decomposer import TaskDecomposerPlugin
         _default_service = TaskManagementService(
             registry=TaskRegistry(),
             transcript_store=None,  # Will be set by kernel
-            allow_rule_based_test_stub=True,  # Allow default decomposer for startup
+            decomposer=TaskDecomposerPlugin(),
         )
     return _default_service

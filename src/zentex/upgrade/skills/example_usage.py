@@ -62,15 +62,14 @@ async def example_code_review():
     # Create a reviewer
     reviewer = AutomatedTwoStageReviewer()
     
-    # Mock candidate patch (in real usage, this comes from upgrade execution)
-    class MockCandidate:
-        isolation_path = "/tmp/mock-plugin"
+    class ExampleCandidate:
+        isolation_path = "/tmp/example-plugin"
         changes = {
             "baseline_version": "1.0.0",
             "candidate_version": "1.1.0-candidate"
         }
-    
-    candidate = MockCandidate()
+
+    candidate = ExampleCandidate()
     
     # Perform automated review
     result = await reviewer.review_candidate(candidate)
@@ -98,8 +97,7 @@ def example_root_cause_analysis():
     # Create an analyzer
     analyzer = AutomatedRootCauseAnalyzer()
     
-    # Mock failed record (in real usage, this comes from management store)
-    class MockFailedRecord:
+    class ExampleFailedRecord:
         target_id = "plugin-example"
         target_kind = type('obj', (object,), {'value': 'PLUGIN'})()
         failure_stage = "plugin_upgrade"
@@ -110,7 +108,7 @@ def example_root_cause_analysis():
             "stack_trace": "File 'plugin.py', line 5, in <module>\n  import numpy"
         }
     
-    failed_record = MockFailedRecord()
+    failed_record = ExampleFailedRecord()
     
     # Perform root cause analysis
     analysis = analyzer.analyze_failure(failed_record)

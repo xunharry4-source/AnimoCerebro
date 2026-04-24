@@ -1,6 +1,8 @@
 import { fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { MemoryRouter } from "react-router-dom";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
+import i18n from "../../i18nConfig";
 import CliAssetManager from "./CliAssetManager";
 
 const mockFetch = vi.fn();
@@ -10,6 +12,7 @@ globalThis.alert = vi.fn();
 describe("CliAssetManager", () => {
   beforeEach(() => {
     mockFetch.mockReset();
+    void i18n.changeLanguage("zh-CN");
   });
 
   it("registers a CLI tool and executes a test call", async () => {
@@ -63,7 +66,11 @@ describe("CliAssetManager", () => {
         }),
       } as Response);
 
-    render(<CliAssetManager />);
+    render(
+      <MemoryRouter>
+        <CliAssetManager />
+      </MemoryRouter>
+    );
 
     await waitFor(() => expect(screen.getByText("注册新工具")).toBeInTheDocument());
 

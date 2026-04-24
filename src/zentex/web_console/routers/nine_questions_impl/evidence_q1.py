@@ -1,3 +1,5 @@
+from __future__ import annotations
+
 """
 Q1 (我在哪) evidence building and extraction.
 
@@ -5,7 +7,7 @@ Contains functions for building Q1 preprocessed evidence from context snapshots
 and extracting Q1 inference results from tool outputs.
 """
 
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Union
 from pathlib import Path
 
 from zentex.web_console.contracts.nine_questions import (
@@ -267,7 +269,7 @@ def _build_q1_preprocessed_evidence(context_snapshot: dict[str, object]) -> Q1Pr
     )
 
 
-def _extract_q1_inference_result(result_payload: object) -> WorkspaceDomainInferenceView | None:
+def _extract_q1_inference_result(result_payload: object) -> Optional[WorkspaceDomainInferenceView]:
     """Extract Q1 inference result from tool output payload."""
     if not isinstance(result_payload, dict):
         return None
@@ -303,7 +305,7 @@ def _extract_q1_inference_result(result_payload: object) -> WorkspaceDomainInfer
     return WorkspaceDomainInferenceView.model_validate(raw_dict)
 
 
-def _extract_q1_llm_upgrade(context_payload: object) -> Q1LLMUpgradeView | None:
+def _extract_q1_llm_upgrade(context_payload: object) -> Optional[Q1LLMUpgradeView]:
     """Extract Q1 LLM upgrade information from context payload."""
     if not isinstance(context_payload, dict):
         return None
@@ -313,7 +315,7 @@ def _extract_q1_llm_upgrade(context_payload: object) -> Q1LLMUpgradeView | None:
     return Q1LLMUpgradeView.model_validate(upgrade_payload)
 
 
-def _extract_q1_preprocessed_evidence(context_payload: object) -> Q1PreprocessedEvidence | None:
+def _extract_q1_preprocessed_evidence(context_payload: object) -> Optional[Q1PreprocessedEvidence]:
     """Extract Q1 preprocessed evidence from context payload if available."""
     if not isinstance(context_payload, dict):
         return None

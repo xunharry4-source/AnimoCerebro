@@ -1,3 +1,4 @@
+from __future__ import annotations
 """
 Phase B1: TaskRouter interface defining the contract for dispatch logic.
 Responsible for selecting executors (internal/external) for subtasks.
@@ -8,7 +9,6 @@ Routing Policy (per requirements):
 - Fallback Chain: Try internal first; if no match, fall back to external ranked by quality
 """
 
-from __future__ import annotations
 from abc import ABC, abstractmethod
 from typing import Any, Dict, List, Optional
 from zentex.tasks.models import SubtaskIntent

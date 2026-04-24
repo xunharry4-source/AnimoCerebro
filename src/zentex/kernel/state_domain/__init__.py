@@ -5,7 +5,7 @@ from zentex.kernel.state_domain.transcript_models import (
     TranscriptEntryType,
     TurnAuditSummary,
 )
-from zentex.kernel.state_domain.transcript import TranscriptStore
+from zentex.kernel.state_domain.transcript import NullTranscriptStore, TranscriptStore
 from zentex.kernel.state_domain.working_memory import WorkingMemoryController
 from zentex.kernel.state_domain.self_model import SelfModelEngine
 from zentex.kernel.state_domain.temporal import CognitiveTemporalEngine
@@ -15,6 +15,7 @@ __all__ = [
     "SelfModelEngine",
     "CognitiveTemporalEngine",
     "TranscriptStore",
+    "NullTranscriptStore",
     "TranscriptEntry",
     "TranscriptEntryType",
     "TurnAuditSummary",

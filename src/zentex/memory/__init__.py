@@ -8,7 +8,7 @@ Internally reorganized into 6 sub-domains (storage, query, consolidation, securi
 """
 
 # ── 1. Service Facade (Primary Entry Point) ───────────────────────────────
-from zentex.memory.service import MemoryService, get_memory_service
+from zentex.memory.service import MemoryService, build_default_episode_graph_adapter, get_memory_service
 
 # ── 2. Management & Coordination ──────────────────────────────────────────
 from zentex.memory.management.classification import (
@@ -157,5 +157,6 @@ __all__ = [
 
     # Storage
     "HierarchicalMemoryStorage", "KuzuGraphMemoryClient", "MessagePackSerializer",
+    "build_default_episode_graph_adapter",
     "TieredCompressionService", "MultiModalIndex", "VectorSearchEngine",
 ]

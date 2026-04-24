@@ -1,3 +1,4 @@
+from __future__ import annotations
 """Runtime Facade Adapter - Translates old runtime interface to new Facade
 
 This adapter provides a compatibility bridge between:
@@ -15,7 +16,6 @@ Note: This adapter is deprecated and should be removed once all route handlers
 are migrated to use KernelServiceFacade directly.
 """
 
-from __future__ import annotations
 
 from typing import Any, Optional
 import asyncio
@@ -71,8 +71,7 @@ class RuntimeFacadeAdapter:
         
         async def _get_state():
             state_mgr = self._facade.get_nine_question_state_manager()
-            # This needs session_id, which we'd need to pass
-            return None  # TODO: needs proper implementation
+            raise NotImplementedError("nine_question_state mapping is incomplete on adapter facade.")
         
         return _get_state
     

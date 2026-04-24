@@ -4,42 +4,34 @@ from datetime import timezone
 from typing import Any, Dict, List, Optional, Protocol
 
 from zentex.web_console.contracts.replay import (
-    TranscriptReplayPayload,
+    TraceReplayPayload,
     TurnReplayPayload,
     TurnReplayTraceGroup,
 )
-from zentex.web_console.transcript_serialization import serialize_transcript_entry
+from zentex.web_console.audit_event_serialization import serialize_audit_event
 
 
-class _TranscriptStoreLike(Protocol):
-    def get_entries_snapshot(self) -> list[Any]: ...
+class _AuditReplaySourceLike(Protocol):
+    def list_recent_events(self, *, limit: int = 1000) -> list[Any]: ...
 
-    def read_by_trace_id(self, trace_id: str) -> list[Any]: ...
+    def list_trace_events(self, trace_id: str) -> list[Any]: ...
 
-    def read_by_turn_id(self, turn_id: str) -> list[Any]: ...
+    def list_turn_events(self, turn_id: str, *, session_id: Optional[str] = None) -> list[Any]: ...
 
 
-class _TranscriptEntryLike(Protocol):
+class _AuditEntryLike(Protocol):
     entry_type: Any
 
 
-def _entry_type_value(entry: _TranscriptEntryLike) -> str:
+def _entry_type_value(entry: _AuditEntryLike) -> str:
     entry_type = getattr(entry, "entry_type", None)
     return str(getattr(entry_type, "value", entry_type) or "")
 
 
-def _resolve_transcript_store(source: Any) -> _TranscriptStoreLike:
-    if all(hasattr(source, attr) for attr in ("get_entries_snapshot", "read_by_trace_id", "read_by_turn_id")):
+def _resolve_audit_store(source: Any) -> _AuditReplaySourceLike:
+    if all(hasattr(source, attr) for attr in ("list_recent_events", "list_trace_events", "list_turn_events")):
         return source
-    if hasattr(source, "get_transcript_store") and callable(source.get_transcript_store):
-        store = source.get_transcript_store()
-        if all(hasattr(store, attr) for attr in ("get_entries_snapshot", "read_by_trace_id", "read_by_turn_id")):
-            return store
-    if hasattr(source, "transcript_store"):
-        store = source.transcript_store
-        if all(hasattr(store, attr) for attr in ("get_entries_snapshot", "read_by_trace_id", "read_by_turn_id")):
-            return store
-    raise TypeError("Expected transcript store, runtime, or facade with transcript store access")
+    raise TypeError("Expected audit service-like source with replay query access")
 
 
 def build_replay_payload(
@@ -47,19 +39,19 @@ def build_replay_payload(
     event_id: str,
     *,
     include_payload: bool = True,
-) -> TranscriptReplayPayload:
+) -> TraceReplayPayload:
     """
-    Build a replay payload from a trace id or transcript entry id.
+    Build a replay payload from a trace id or audit event id.
 
     Why:
     - 前端调试是从“某次事件”跳进来，但底层 replay 需要回放整条 trace。
     - 因此这里允许 event_id 同时匹配 entry_id 和 trace_id，再统一展开全链路。
     """
-    transcript_store = _resolve_transcript_store(runtime)
-    entries = transcript_store.get_entries_snapshot()
+    audit_store = _resolve_audit_store(runtime)
+    entries = audit_store.list_recent_events()
     matched_entry = next((entry for entry in entries if entry.entry_id == event_id), None)
     trace_id = matched_entry.trace_id if matched_entry is not None else event_id
-    related_entries = transcript_store.read_by_trace_id(trace_id)
+    related_entries = audit_store.list_trace_events(trace_id)
     if not related_entries:
         raise KeyError(f"Unknown replay event_id or trace_id: {event_id}")
 
@@ -113,7 +105,7 @@ def build_replay_payload(
             summary = f"{source_module or '主脑回路'} 在 {invocation_phase or '关键推理阶段'} 发起了一次模型调用。"
             break
 
-    return TranscriptReplayPayload(
+    return TraceReplayPayload(
         event_id=event_id,
         trace_id=trace_id,
         summary=summary,
@@ -121,7 +113,7 @@ def build_replay_payload(
         invocation_phase=(invocation_phase or None),
         question_driver_refs=question_driver_refs,
         events=[
-            serialize_transcript_entry(entry, include_payload=include_payload)
+            serialize_audit_event(entry, include_payload=include_payload)
             for entry in related_entries
         ],
     )
@@ -134,10 +126,8 @@ def build_turn_replay_payload(
     session_id: Optional[str] = None,
     include_payload: bool = True,
 ) -> TurnReplayPayload:
-    transcript_store = _resolve_transcript_store(runtime)
-    turn_entries = transcript_store.read_by_turn_id(turn_id)
-    if session_id is not None:
-        turn_entries = [entry for entry in turn_entries if entry.session_id == session_id]
+    audit_store = _resolve_audit_store(runtime)
+    turn_entries = audit_store.list_turn_events(turn_id, session_id=session_id)
     if not turn_entries:
         raise KeyError(f"Unknown replay turn_id: {turn_id}")
 
@@ -184,7 +174,7 @@ def build_turn_replay_payload(
         summary=summary,
         trace_groups=trace_groups,
         events=[
-            serialize_transcript_entry(entry, include_payload=include_payload)
+            serialize_audit_event(entry, include_payload=include_payload)
             for entry in turn_entries
         ],
     )

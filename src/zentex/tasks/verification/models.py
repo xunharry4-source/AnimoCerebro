@@ -1,10 +1,10 @@
+from __future__ import annotations
 """
 任务验证数据模型 - Task Verification Models
 
 定义验证相关的枚举、配置和结果模型。
 """
 
-from __future__ import annotations
 
 from datetime import datetime, timezone
 from enum import Enum
@@ -20,6 +20,7 @@ class VerificationType(str, Enum):
     LLM_EVALUATION = "llm_evaluation"  # LLM语义评估
     RULE_BASED = "rule_based"  # 规则检查（结构化字段校验）
     MANUAL_REVIEW = "manual_review"  # 人工审核
+    LOG_AUDIT = "log_audit"  # 日志审计（物理痕迹校验）
     COMBINED = "combined"  # 组合验证
 
 

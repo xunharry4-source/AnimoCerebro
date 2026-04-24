@@ -1,7 +1,7 @@
 """Plugin lifecycle contracts and health reporting models."""
 
 from datetime import datetime, timezone
-from enum import StrEnum
+from enum import Enum
 
 from pydantic import Field
 
@@ -11,7 +11,7 @@ from zentex.foundation.meta.feature_family import FeatureFamily
 UTC = timezone.utc
 
 
-class PluginStatus(StrEnum):
+class PluginStatus(str, Enum):
     unregistered = "unregistered"
     registered = "registered"
     active = "active"

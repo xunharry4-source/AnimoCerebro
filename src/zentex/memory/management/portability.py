@@ -24,9 +24,10 @@ import hashlib
 import hmac
 import json
 import logging
-from datetime import UTC, datetime
+from datetime import datetime, timezone
+UTC = timezone.utc
 from pathlib import Path
-from typing import Any
+from typing import Any, Dict, List, Optional, Union
 from uuid import uuid4
 
 from pydantic import BaseModel, ConfigDict, Field
@@ -118,7 +119,7 @@ class MemoryExporter:
     (the package can still be verified if the same key is stored alongside it).
     """
 
-    def __init__(self, hmac_key: bytes | None = None) -> None:
+    def __init__(self, hmac_key: Optional[bytes] = None) -> None:
         # If no key provided, generate a session key (package cannot be verified
         # by another instance without the key).
         self._key = hmac_key or _generate_key()
@@ -129,7 +130,7 @@ class MemoryExporter:
         *,
         source_origin: str = "local",
         encrypt: bool = False,
-        aes_key: bytes | None = None,
+        aes_key: Optional[bytes] = None,
     ) -> tuple[MemoryPackage, bytes]:
         """
         Export records to a signed package.
@@ -160,7 +161,7 @@ class MemoryExporter:
     def save(
         self,
         package: MemoryPackage,
-        path: str | Path,
+        path: Union[str, Path],
     ) -> None:
         path = Path(path)
         path.parent.mkdir(parents=True, exist_ok=True)
@@ -190,8 +191,8 @@ class MemoryImporter:
         self,
         *,
         hmac_key: bytes,
-        existing_hashes: set[str] | None = None,
-        aes_key: bytes | None = None,
+        existing_hashes: set[Optional[str]] = None,
+        aes_key: Optional[bytes] = None,
     ) -> None:
         self._key = hmac_key
         self._existing_hashes: set[str] = existing_hashes or set()
@@ -202,7 +203,7 @@ class MemoryImporter:
     def contamination_log(self) -> list[ContaminationEvent]:
         return list(self._contamination_log)
 
-    def load_from_file(self, path: str | Path) -> MemoryPackage:
+    def load_from_file(self, path: Union[str, Path]) -> MemoryPackage:
         path = Path(path)
         if not path.exists():
             raise MemoryImportError(f"Package file not found: {path}")

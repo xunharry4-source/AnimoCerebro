@@ -1,3 +1,4 @@
+from __future__ import annotations
 """
 Database access layer for Zentex persistent storage.
 
@@ -16,12 +17,11 @@ Architecture:
 - BaseDAO: Common data access patterns inherited by specific DAOs
 
 Usage:
-    db = DatabaseConnection("runtime/data/zentex_core.db")
+    db = DatabaseConnection(get_storage_paths().core_db)
     dao = AgentDAO(db)
     agent = dao.find_by_id("agent-123")
 """
 
-from __future__ import annotations
 
 import json
 import logging

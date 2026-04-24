@@ -1,11 +1,11 @@
 from __future__ import annotations
 
-from typing import Any
+from typing import Any, Dict, List, Optional, Union
 
 from pydantic import BaseModel, ConfigDict, Field
 
 from zentex.web_console.contracts.llm_trace import LLMTracePayload
-from zentex.web_console.contracts.transcript import TranscriptEventPayload
+from zentex.web_console.contracts.audit_event import AuditEventPayload
 
 
 class ModelProviderTraceItem(BaseModel):
@@ -18,25 +18,25 @@ class ModelProviderTraceItem(BaseModel):
     session_id: str
     turn_id: str
     provider_plugin_id: str
-    provider_name: str | None = None
-    model: str | None = None
-    source_module: str | None = None
-    invocation_phase: str | None = None
+    provider_name: Optional[str] = None
+    model: Optional[str] = None
+    source_module: Optional[str] = None
+    invocation_phase: Optional[str] = None
     question_driver_refs: list[str] = Field(default_factory=list)
-    invoked_at: str | None = None
-    completed_at: str | None = None
-    failed_at: str | None = None
-    prompt: str | None = None
+    invoked_at: Optional[str] = None
+    completed_at: Optional[str] = None
+    failed_at: Optional[str] = None
+    prompt: Optional[str] = None
     context: dict[str, Any] = Field(default_factory=dict)
     request_driver: dict[str, Any] = Field(default_factory=dict)
-    result: dict[str, Any] | None = None
-    error_type: str | None = None
-    error_message: str | None = None
-    related_events: list[TranscriptEventPayload] = Field(default_factory=list)
-    preprocessed_evidence: dict[str, Any] | None = None
-    inference_result: dict[str, Any] | None = None
-    q1_llm_upgrade: dict[str, Any] | None = None
-    llm_trace_payload: LLMTracePayload | None = None
+    result: Optional[dict[str, Any]] = None
+    error_type: Optional[str] = None
+    error_message: Optional[str] = None
+    related_events: list[AuditEventPayload] = Field(default_factory=list)
+    preprocessed_evidence: Optional[dict[str, Any]] = None
+    inference_result: Optional[dict[str, Any]] = None
+    q1_llm_upgrade: Optional[dict[str, Any]] = None
+    llm_trace_payload: Optional[LLMTracePayload] = None
 
 
 ModelProviderTraceItem.model_rebuild()

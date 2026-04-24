@@ -2,7 +2,7 @@
 
 from abc import abstractmethod
 from dataclasses import dataclass, field
-from enum import StrEnum
+from enum import Enum
 
 from zentex.foundation.contracts import ActionIntent, ActionResult, AuditEntry, SafetyDecision
 from zentex.foundation.specs.plugin_spec import (
@@ -12,7 +12,7 @@ from zentex.foundation.specs.plugin_spec import (
 )
 
 
-class ExecutionDomainLevel(StrEnum):
+class ExecutionDomainLevel(str, Enum):
     """Permission tiers governing what an execution plugin may do."""
 
     strict = "strict"       # no network, no file write

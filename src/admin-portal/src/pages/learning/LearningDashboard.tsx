@@ -14,6 +14,7 @@ import {
 } from "@mui/material";
 import { DataGrid, type GridColDef } from "@mui/x-data-grid";
 import { useCallback, useEffect, useState } from "react";
+import { Link as RouterLink } from "react-router-dom";
 
 type PlanDirection = {
   id: string;
@@ -29,11 +30,14 @@ type HistoryRow = {
   entry_id: string;
   timestamp: string;
   trace_id: string;
+  session_id: string;
+  replay_event_id: string;
   kind: string;
   direction: string;
   verified: boolean;
   summary: string;
   architecture_ref: string;
+  question_driver_refs: string[];
 };
 
 export default function LearningDashboard() {
@@ -111,7 +115,52 @@ export default function LearningDashboard() {
     },
     { field: "architecture_ref", headerName: t("learning.archRef"), width: 100 },
     { field: "trace_id", headerName: "trace_id", flex: 1, minWidth: 200 },
+    {
+      field: "question_driver_refs",
+      headerName: "问题关联",
+      minWidth: 220,
+      flex: 1,
+      renderCell: (p) => {
+        const refs = Array.isArray(p.value) ? (p.value as string[]) : [];
+        if (refs.length === 0) {
+          return <Typography variant="caption" color="text.secondary">无</Typography>;
+        }
+        return (
+          <Stack direction="row" spacing={0.5} useFlexGap flexWrap="wrap" sx={{ py: 0.5 }}>
+            {refs.map((ref) => (
+              <Chip
+                key={`${p.row.entry_id}-${ref}`}
+                label={ref}
+                size="small"
+                component={RouterLink}
+                to={`/console/nine-questions/${ref}`}
+                clickable
+              />
+            ))}
+          </Stack>
+        );
+      },
+    },
     { field: "summary", headerName: t("learning.summary"), flex: 1.5, minWidth: 240 },
+    {
+      field: "actions",
+      headerName: "溯源",
+      minWidth: 220,
+      sortable: false,
+      filterable: false,
+      renderCell: (p) => (
+        <Stack direction="row" spacing={1} sx={{ py: 0.5 }}>
+          <Button
+            size="small"
+            variant="outlined"
+            component={RouterLink}
+            to={`/console/audit/transcript-replay/${encodeURIComponent(String(p.row.replay_event_id || p.row.trace_id))}`}
+          >
+            查看 trace
+          </Button>
+        </Stack>
+      ),
+    },
   ];
 
   return (

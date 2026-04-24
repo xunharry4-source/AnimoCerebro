@@ -8,7 +8,7 @@ memory snapshots so upgrades are traceable beyond the transient management
 status view.
 """
 
-from typing import Any
+from typing import Any, Dict, List, Optional, Union
 
 from zentex.upgrade.ledger import (
     UpgradeAuditEvent,
@@ -17,22 +17,19 @@ from zentex.upgrade.ledger import (
     UpgradeMemoryStore,
 )
 from zentex.upgrade.management import UpgradeManagementRecord
-from zentex.memory import EnhancedMemoryService
-
-
 class UpgradeEvidenceService:
     """Persists upgrade lifecycle evidence into audit and memory ledgers."""
 
     def __init__(
         self,
         *,
-        audit_store: UpgradeAuditStore | None = None,
-        memory_store: UpgradeMemoryStore | None = None,
-        enhanced_memory_service: EnhancedMemoryService | None = None,
+        audit_store: Optional[UpgradeAuditStore] = None,
+        memory_store: Optional[UpgradeMemoryStore] = None,
+        memory_service: Optional[Any] = None,
     ) -> None:
         self._audit_store = audit_store or UpgradeAuditStore()
         self._memory_store = memory_store or UpgradeMemoryStore()
-        self._enhanced_memory_service = enhanced_memory_service
+        self._memory_service = memory_service
 
     @property
     def audit_store(self) -> UpgradeAuditStore:
@@ -43,8 +40,8 @@ class UpgradeEvidenceService:
         return self._memory_store
 
     @property
-    def enhanced_memory_service(self) -> EnhancedMemoryService | None:
-        return self._enhanced_memory_service
+    def memory_service(self) -> Optional[Any]:
+        return self._memory_service
 
     def record_event(
         self,
@@ -52,7 +49,7 @@ class UpgradeEvidenceService:
         *,
         event_type: str,
         summary: str,
-        payload: dict[str, Any] | None = None,
+        payload: dict[str, Any] = None,
     ) -> UpgradeAuditEvent:
         event = UpgradeAuditEvent(
             record_id=record.record_id,
@@ -133,6 +130,6 @@ class UpgradeEvidenceService:
             payload=payload or {},
         )
         self._memory_store.append_record(memory_record)
-        if self._enhanced_memory_service is not None:
-            self._enhanced_memory_service.ingest_upgrade_memory_record(memory_record)
+        if self._memory_service is not None:
+            self._memory_service.ingest_upgrade_memory_record(memory_record)
         return event

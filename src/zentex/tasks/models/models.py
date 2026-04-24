@@ -90,21 +90,9 @@ class ZentexTask(BaseModel):
     last_updated_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
     created_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
 
-    # -----------------------------------------------------------------------
-    # Execution result fields — written by TaskExecutionWorker after the
-    # plugin finishes.  These fields are persisted to the DB via migrate_task_schema.
-    # -----------------------------------------------------------------------
-    # The plugin that was selected and actually ran this task
-    dispatch_plugin_id: Optional[str] = None
-    # Structured output returned by the plugin (None until execution completes)
-    execution_output: Optional[Dict[str, Any]] = None
-    # Wall-clock timestamps for the execution window
-    execution_started_at: Optional[datetime] = None
-    execution_finished_at: Optional[datetime] = None
-    # Last error message (overwritten on every attempt)
-    last_error: Optional[str] = None
-    # How many execution attempts have been made
-    attempt_count: int = 0
+    @property
+    def description(self) -> str:
+        return str(self.remarks or self.title or "")
 
     def update_status(self, new_status: TaskStatus, remarks: Optional[str] = None):
         if new_status == TaskStatus.IN_PROGRESS and not self.started_at:

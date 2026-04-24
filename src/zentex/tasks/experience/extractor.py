@@ -1,3 +1,5 @@
+from __future__ import annotations
+
 """
 Phase E1: Experience Extractor
 
@@ -7,7 +9,7 @@ for injection into decomposition prompts.
 
 import logging
 from datetime import datetime, timedelta
-from typing import Dict, List, Optional, Any
+from typing import Dict, List, Optional, Any, Union
 from statistics import mean, stdev
 
 from .models import (
@@ -310,7 +312,7 @@ class ExperienceExtractor:
             return 0.0
         
         intersection = len(tokens1 & tokens2)
-        union = len(tokens1 | tokens2)
+        union = len(Union[tokens1, tokens2])
         
         # Jaccard similarity, minimum 0.6 if any overlap
         similarity = intersection / union if union > 0 else 0.0

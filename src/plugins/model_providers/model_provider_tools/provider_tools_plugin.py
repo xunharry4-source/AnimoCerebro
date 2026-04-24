@@ -43,7 +43,7 @@ class ProviderToolsModelProvider(BaseModel):
     operational_status: str = "enabled"
     provider_name: str = Field(default="openai_compat", min_length=1)
     api_base: str = Field(default="https://api.openai.com/v1", min_length=1)
-    api_key_env: str = Field(default="OPENAI_API_KEY", min_length=1)
+    api_key_env: Optional[str] = Field(default=None)
     default_model: str = Field(default="stub-json-model", min_length=1)
     timeout_seconds: float = Field(default=30.0, gt=0)
     rollback_conditions: list[str] = Field(default_factory=lambda: ["provider_timeout_spike", "provider_auth_regression"])

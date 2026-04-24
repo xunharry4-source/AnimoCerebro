@@ -1,3 +1,4 @@
+from __future__ import annotations
 """
 Interventions Router — POST /api/web/interventions.
 
@@ -6,7 +7,6 @@ RESPONSIBILITY:
   and forwards them to the intervention service for runtime application.
 """
 
-from __future__ import annotations
 
 from typing_extensions import Annotated
 from fastapi import APIRouter, Depends, Request

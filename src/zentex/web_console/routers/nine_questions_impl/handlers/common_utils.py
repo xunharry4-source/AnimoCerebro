@@ -1,10 +1,10 @@
+from __future__ import annotations
 """Common utility functions for nine questions handlers.
 
 Shared helpers used across multiple question handlers for data normalization,
 payload serialization, and context merging.
 """
 
-from __future__ import annotations
 from typing import Any, Dict
 
 from pydantic import BaseModel
@@ -29,7 +29,7 @@ def normalize_health_status(value: object) -> str:
     return "unknown"
 
 
-def serialize_contract_payload(value: object) -> dict[str, object] | None:
+def serialize_contract_payload(value: object) -> dict[str, Optional[object]]:
     """Serialize a contract payload to dictionary.
     
     Args:
@@ -75,7 +75,7 @@ def normalize_ratio(value: object) -> float:
         return 0.0
 
 
-def humanize_constraint_text(value: object) -> str | None:
+def humanize_constraint_text(value: object) -> Optional[str]:
     """Humanize constraint code to readable Chinese text.
     
     Args:

@@ -1,11 +1,11 @@
 """FeatureFamily enum and associated metadata registry."""
 
-from enum import StrEnum
+from enum import Enum
 
 from pydantic import BaseModel, ConfigDict
 
 
-class FeatureFamily(StrEnum):
+class FeatureFamily(str, Enum):
     execution = "execution"
     sensory = "sensory"
     simulation = "simulation"

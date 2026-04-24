@@ -1,3 +1,4 @@
+from __future__ import annotations
 """
 Plugin Commons — shared plugin query helpers for web_console route handlers.
 
@@ -25,7 +26,6 @@ DOES NOT:
   - Fall back to synthetic/empty cognitive state when registries are absent.
 """
 
-from __future__ import annotations
 
 import logging
 from typing import Any, Optional
@@ -274,19 +274,8 @@ async def get_cognitive_plugin_detail(
         session = await get_or_create_plugin_session(request)
 
         # cognitive_registry is None when get_cognitive_tool_registry raised
-        # NotImplementedError (deprecated).  Without a registry we cannot look up
-        # cognitive plugin detail — treat as not-found rather than crashing into 500.
-        if session.cognitive_registry is None:
-            logger.warning(
-                "plugin_commons.get_cognitive_plugin_detail: cognitive_registry is None "
-                "— cannot look up plugin '%s'; returning 404.",
-                plugin_id,
-                extra={"module": "web_console.plugin_commons", "action": "get_cognitive_plugin_detail"},
-            )
-            raise HTTPException(
-                status_code=404,
-                detail=f"Cognitive plugin not found: {plugin_id} (cognitive registry unavailable)",
-            )
+        # NotImplementedError (deprecated). The plugin_service is now the
+        # authoritative source and handles None as 'no extra registry to merge'.
 
         return build_cognitive_plugin_detail(
             session.cognitive_registry,
@@ -393,5 +382,17 @@ async def get_plugin_history(
             )
         return history
     except Exception as e:
-        logger.error(f"Error getting plugin history for {plugin_id}: {e}")
-        return []
+        # Do not turn a real history-query failure into an empty history list. That
+        # would fake a normal "no upgrades yet" state while the backend query is
+        # already broken.
+        logger.exception("Error getting plugin history for %s", plugin_id)
+        raise HTTPException(
+            status_code=500,
+            detail={
+                "error": "plugin_history_query_failed",
+                "message": "Failed to retrieve plugin upgrade history",
+                "plugin_id": plugin_id,
+                "exception_type": type(e).__name__,
+                "exception_message": str(e),
+            },
+        ) from e

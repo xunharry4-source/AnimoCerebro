@@ -1,3 +1,4 @@
+from __future__ import annotations
 """
 CLI Tool Data Access Object.
 
@@ -11,7 +12,7 @@ Responsibilities:
 - Performance statistics
 
 Usage:
-    db = DatabaseConnection("runtime/data/zentex_core.db")
+    db = DatabaseConnection(get_storage_paths().core_db)
     dao = CliToolDAO(db)
     
     # Register tool
@@ -21,7 +22,6 @@ Usage:
     dao.record_execution(execution_data)
 """
 
-from __future__ import annotations
 
 import logging
 from datetime import datetime, timezone
@@ -48,7 +48,7 @@ class CliToolDAO(BaseDAO):
             return success
         except Exception as e:
             logger.error(f"Failed to register CLI tool: {e}", exc_info=True)
-            return False
+            raise
     
     def update_tool_status(self, command_name: str, status: str) -> bool:
         """Update tool availability status."""
@@ -148,7 +148,7 @@ class CliCreditScoreDAO(BaseDAO):
             return True
         except Exception as e:
             logger.error(f"Failed to update credit score: {e}", exc_info=True)
-            return False
+            raise
     
     def get_credit_score(self, tool_name: str) -> Optional[Dict[str, Any]]:
         """Get credit score for a tool."""

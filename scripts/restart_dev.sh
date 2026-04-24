@@ -3,6 +3,9 @@
 # 清理占用端口的旧进程并重新启动 Web Console + Admin Portal
 set -euo pipefail
 
+# Ensure /usr/local/bin is in PATH for npm and other global tools
+export PATH="/usr/local/bin:$PATH"
+
 echo ">>> [Zentex] 正在执行临床级重启程序..."
 
 PYTHON_BIN="${PYTHON_BIN:-python3}"

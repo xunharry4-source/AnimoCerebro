@@ -1,4 +1,8 @@
+from __future__ import annotations
 """NineQuestionRouter — plans which questions to execute for a given state."""
+
+
+from typing import Any, Dict, List, Optional, Union
 
 from zentex.kernel.cognition_flow.models import (
     BootstrapStatus,
@@ -16,7 +20,7 @@ class NineQuestionRouter:
     - Any other status: only questions that lack a valid answer are included.
     """
 
-    def __init__(self, questions: list[NineQuestion] | None = None) -> None:
+    def __init__(self, questions: list[Optional[NineQuestion]] = None) -> None:
         self._questions: list[NineQuestion] = questions or list(DEFAULT_NINE_QUESTIONS)
 
     # ------------------------------------------------------------------

@@ -1,3 +1,4 @@
+from __future__ import annotations
 """
 Learning LLM Prompt Builder — zentex.learning.llm_prompt
 
@@ -32,11 +33,10 @@ SEGMENT / FIELD INTENT MAP:
 DOES NOT:
   - Import or use DSPy directly (no coupling to DSPy internals).
   - Call the LLM directly.
-  - Own transcript_store writes or trace_id generation (caller's job).
+  - Own LearningStore writes or trace_id generation (caller's job).
   - Import from zentex.llm (avoids circular dependency).
 """
 
-from __future__ import annotations
 
 import logging
 import re
@@ -282,6 +282,52 @@ def _preprocess_schema_block(schema: str) -> str:
         schema = schema[:_MAX_SCHEMA_CHARS] + "\n\n// [schema 过长，已截断]"
 
     return schema
+
+
+def build_learning_maintenance_synthesis_prompt(
+    *,
+    top_tags: List[str],
+    focus_topics: List[str],
+    layer_distribution: Dict[str, int],
+) -> str:
+    """Return a prompt for LLM-based cross-module learning synthesis.
+
+    Used by ``LearningService._summarize_maintenance_inputs()`` to produce an
+    LLM-enriched summary from aggregated memory + reflection statistics, replacing
+    the raw counter-based fallback.
+
+    Output schema (strict JSON):
+    {
+      "summary": "<one-sentence learning synthesis>",
+      "top_learning_themes": ["...", ...],
+      "recommended_directions": ["...", ...]
+    }
+    """
+    tag_block = ", ".join(top_tags[:10]) if top_tags else "（无标签数据）"
+    topic_block = "; ".join(focus_topics[:5]) if focus_topics else "（无反思主题数据）"
+    layer_block = ", ".join(f"{k}:{v}" for k, v in layer_distribution.items()) if layer_distribution else "（无分层数据）"
+
+    return (
+        "你是一个【跨模块学习分析师】。根据以下来自记忆与反思模块的统计摘要，识别核心学习主题并提出学习方向建议。\n\n"
+        "## 输入摘要\n"
+        f"- 高频标签（来自记忆+反思）: {tag_block}\n"
+        f"- 近期反思关注主题: {topic_block}\n"
+        f"- 记忆分层分布: {layer_block}\n\n"
+        "## 任务\n"
+        "1. 识别跨记忆与反思的核心学习主题（top_learning_themes），最多 3 条。\n"
+        "2. 基于主题提出具体的下一步学习方向（recommended_directions），最多 3 条。\n"
+        "   方向必须具体可执行，例如「深入研究 X 模式以改进 Y 决策」而非「加强学习」。\n"
+        "3. 用一句话总结当前跨模块学习状态（summary）。\n\n"
+        "## 返回格式（严格 JSON）\n"
+        "```json\n"
+        "{\n"
+        '  "summary": "...",\n'
+        '  "top_learning_themes": ["...", "..."],\n'
+        '  "recommended_directions": ["...", "..."]\n'
+        "}\n"
+        "```\n"
+        "不得输出 JSON 以外的内容。每个数组 1–3 条。"
+    )
 
 
 def _preprocess_test_cases(test_cases: str) -> str:

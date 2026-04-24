@@ -11,8 +11,11 @@ plugin into a versioned candidate directory and only mutate that copy.
 """
 
 from importlib.util import find_spec
+import logging
 from pathlib import Path
-from typing import Any
+from typing import Any, Dict, List, Optional, Union
+
+logger = logging.getLogger(__name__)
 
 from zentex.upgrade.plugin.models import (
     PluginCreationCandidate,
@@ -158,8 +161,9 @@ class OpenHandsPluginUpgradeService:
                 metadata_file.write_text(json.dumps(data, indent=2), encoding="utf-8")
                 return True
             except Exception:
-                pass
-        
+                # POLICY[no-silent-except]: log the failure so version-bump errors are visible.
+                logger.warning("Failed to update version in metadata.json at %s", path, exc_info=True)
+
         # 2. Check for __init__.py (Python standard)
         init_file = path / "__init__.py"
         if init_file.exists():
@@ -172,7 +176,7 @@ class OpenHandsPluginUpgradeService:
         
         return False
 
-    def execute_openhands_evolution(self, candidate: PluginUpgradeCandidate | PluginCreationCandidate) -> dict[str, Any]:
+    def execute_openhands_evolution(self, candidate: Union[PluginUpgradeCandidate, PluginCreationCandidate]) -> dict[str, Any]:
         """Autonomous code generation and evolution logic (Function 60 gap)."""
         self.assert_runtime_ready()
         

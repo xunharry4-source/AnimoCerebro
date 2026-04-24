@@ -8,11 +8,14 @@ plugin evolution jobs. It is intentionally limited to filesystem work and does
 not pretend to execute OpenHands itself.
 """
 
+import logging
 from pathlib import Path
 import shutil
 import subprocess
 import ast
 from typing import Any
+
+logger = logging.getLogger(__name__)
 
 
 class PluginEvolutionRuntime:
@@ -141,5 +144,7 @@ class PluginEvolutionRuntime:
                              if node.func.attr in {"remove", "rmtree", "mkdir", "write", "unlink"}:
                                   side_effects.append(f"Side-effect call '.{node.func.attr}()' in {file.name}")
             except Exception:
-                 continue
+                # POLICY[no-silent-except]: log unparseable files and skip them.
+                logger.debug("Could not parse %s for side-effect analysis — skipping", file, exc_info=True)
+                continue
         return side_effects

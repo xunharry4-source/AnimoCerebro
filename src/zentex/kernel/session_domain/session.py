@@ -1,3 +1,5 @@
+from __future__ import annotations
+
 """KernelSession — the primary session object managed by the kernel."""
 
 from datetime import datetime, timezone
@@ -24,6 +26,29 @@ class KernelSession:
         )
         self.status: SessionStatus = SessionStatus.active
         self._state_refs: dict = {}
+        
+        # Stability metrics (Resilience Phase 5)
+        self.stability_score: float = 1.0 # 1.0 = perfect, 0.0 = collapsed
+        self.error_count: int = 0
+        self.critical_failures: list[str] = []
+
+    # ------------------------------------------------------------------
+    # Resilience API
+    # ------------------------------------------------------------------
+
+    def record_error(self, error_msg: str, is_critical: bool = False) -> None:
+        """Record an error and update stability score."""
+        self.error_count += 1
+        if is_critical:
+            self.critical_failures.append(f"{datetime.now(UTC).isoformat()}: {error_msg}")
+            self.stability_score = max(0.0, self.stability_score - 0.2)
+        else:
+            self.stability_score = max(0.0, self.stability_score - 0.05)
+
+        # Auto-degradation
+        if self.stability_score < 0.5 and self.status != SessionStatus.terminated:
+            self.set_status(SessionStatus.suspended)
+            self.critical_failures.append(f"SYSTEM: Session auto-suspended due to low stability ({self.stability_score:.2f})")
 
     # ------------------------------------------------------------------
     # Public API
@@ -66,7 +91,7 @@ class KernelSession:
         """Store a kernel-internal state reference under *key*."""
         self._state_refs[key] = ref
 
-    def get_state(self, key: str) -> object | None:
+    def get_state(self, key: str) -> Optional[object]:
         """Retrieve a previously attached state reference, or None."""
         return self._state_refs.get(key)
 

@@ -7,21 +7,43 @@ from uuid import uuid4
 
 from pydantic import BaseModel, ConfigDict
 
-from plugins.shared.cognitive_result import CognitiveToolResult
+from zentex.common.cognitive_result import CognitiveToolResult
 from zentex.common.plugin_ids import NINE_QUESTION_Q5
 from zentex.plugins.models import PluginLifecycleStatus
+from plugins.nine_questions.q5_what_am_i_allowed_to_do.modules import (
+    derive_authorization_baseline,
+    normalize_functional_authorization_inputs,
+    normalize_text,
+    resolve_agent_trust_policy,
+    resolve_contact_policy,
+    resolve_q3_connected_agents,
+    resolve_tenant_scope,
+)
 
 QUESTION_REF = "我被允许做什么"
 
 
 from zentex.common.nine_questions_shared import (
+    build_nine_question_partial_failure,
+    bind_module_runs,
+    fail_module_run,
+    finish_module_run,
+    start_module_run,
+    run_audit_integration,
+    run_learning_integration,
+    load_authoritative_question_context_from_storage,
+    run_memory_integration,
+    run_reflection_integration,
     build_caller_context,
+    build_recovery_action,
+    build_recovery_plan,
     build_model_context,
     json_safe_payload,
     record_model_completed,
     record_model_failed,
     record_model_invoked,
     render_q4_boundary,
+    persist_question_module_output,
     require_model_provider,
     require_transcript_store,
     safe_provider_plugin_id,
@@ -30,173 +52,6 @@ from zentex.plugins.service import execute_enabled_cognitive_plugin_functionals
 from plugins.nine_questions.q5_what_am_i_allowed_to_do.llm_prompt import build_q5_llm_request
 
 logger = logging.getLogger(__name__)
-
-
-def _normalize_text(value: object) -> str:
-    return str(value or "").strip()
-
-
-def _coerce_string_list(value: object) -> list[str]:
-    if isinstance(value, list):
-        return [str(item).strip() for item in value if str(item).strip()]
-    if isinstance(value, str):
-        text = value.strip()
-        return [text] if text else []
-    return []
-
-
-def _normalize_functional_authorization_inputs(
-    functional_authorization_inputs: list[dict[str, Any]],
-) -> list[dict[str, Any]]:
-    normalized: list[dict[str, Any]] = []
-    for item in functional_authorization_inputs:
-        if not isinstance(item, dict) or item.get("status") != "done":
-            continue
-        normalized.append(
-            {
-                "plugin_id": _normalize_text(item.get("plugin_id")),
-                "status": _normalize_text(item.get("status")) or "done",
-                "result": item.get("result") if isinstance(item.get("result"), dict) else {},
-            }
-        )
-    return normalized
-
-
-def _derive_agent_trust_status(snapshot: dict[str, Any]) -> dict[str, str]:
-    trust_policy = snapshot.get("agent_trust_policy")
-    if isinstance(trust_policy, dict):
-        return {
-            str(key): str(value)
-            for key, value in trust_policy.items()
-            if _normalize_text(key) and _normalize_text(value)
-        }
-
-    connected_agents = snapshot.get("q3_connected_agents")
-    if not isinstance(connected_agents, list):
-        connected_agents = []
-    derived: dict[str, str] = {}
-    for agent in connected_agents:
-        if not isinstance(agent, dict):
-            continue
-        agent_id = _normalize_text(agent.get("agent_id") or agent.get("id") or agent.get("name"))
-        trust = _normalize_text(agent.get("trust_level") or agent.get("status") or agent.get("scope"))
-        if agent_id and trust:
-            derived[agent_id] = trust
-    return derived
-
-
-def _derive_authorization_baseline(
-    snapshot: dict[str, Any],
-    actionable_space: list[str],
-    normalized_functional_inputs: list[dict[str, Any]],
-) -> dict[str, Any]:
-    permission_profile = snapshot.get("q4_permission_profile")
-    permission_profile = permission_profile if isinstance(permission_profile, dict) else {}
-    contact_policy = snapshot.get("contact_policy")
-    contact_policy = contact_policy if isinstance(contact_policy, dict) else {}
-    tenant_scope = snapshot.get("tenant_scope")
-    tenant_scope = tenant_scope if isinstance(tenant_scope, dict) else {}
-    trust_status = _derive_agent_trust_status(snapshot)
-
-    mode = _normalize_text(permission_profile.get("mode")) or "unknown"
-    requires_human_confirmation = bool(permission_profile.get("is_read_only"))
-    requires_cloud_audit = False
-
-    allowed_action_space: list[str] = []
-    forbidden_action_space: list[dict[str, str]] = []
-    requires_escalation_actions: list[str] = []
-    contact_and_org_boundaries: dict[str, Any] = {
-        "execution_tier": "constrained_execute",
-        "interaction_scope": "whitelist_only",
-        "requires_human_confirmation": requires_human_confirmation,
-        "requires_cloud_audit": requires_cloud_audit,
-    }
-
-    if mode == "read_only":
-        contact_and_org_boundaries["execution_tier"] = "read_only"
-        allowed_action_space = [
-            action for action in actionable_space if "read" in action.lower() or "inspect" in action.lower()
-        ]
-        for action in actionable_space:
-            if action not in allowed_action_space:
-                forbidden_action_space.append({"action": action, "reason": "read_only boundary"})
-                requires_escalation_actions.append(action)
-    else:
-        allowed_action_space = list(actionable_space)
-
-    if tenant_scope:
-        contact_and_org_boundaries["tenant_scope"] = tenant_scope
-        if tenant_scope.get("same_org_only") is True:
-            contact_and_org_boundaries["interaction_scope"] = "same_org_only"
-        if isinstance(tenant_scope.get("forbidden_actions"), list):
-            forbidden_set = {_normalize_text(item) for item in tenant_scope.get("forbidden_actions") if _normalize_text(item)}
-            retained_allowed: list[str] = []
-            for action in allowed_action_space:
-                if action in forbidden_set:
-                    forbidden_action_space.append({"action": action, "reason": "tenant scope forbidden"})
-                else:
-                    retained_allowed.append(action)
-            allowed_action_space = retained_allowed
-
-    if contact_policy:
-        contact_and_org_boundaries["contact_policy"] = contact_policy
-        if contact_policy.get("requires_human_confirmation") is True:
-            requires_human_confirmation = True
-            contact_and_org_boundaries["requires_human_confirmation"] = True
-        if contact_policy.get("requires_cloud_audit") is True:
-            requires_cloud_audit = True
-            contact_and_org_boundaries["requires_cloud_audit"] = True
-        blocked_contacts = _coerce_string_list(contact_policy.get("blocked_actions"))
-        if blocked_contacts:
-            retained_allowed = []
-            blocked_set = set(blocked_contacts)
-            for action in allowed_action_space:
-                if action in blocked_set:
-                    forbidden_action_space.append({"action": action, "reason": "contact policy blocked"})
-                else:
-                    retained_allowed.append(action)
-            allowed_action_space = retained_allowed
-
-    if trust_status:
-        contact_and_org_boundaries["agent_trust_status"] = trust_status
-        if any(status.lower() in {"pending", "revoked", "blocked"} for status in trust_status.values()):
-            requires_human_confirmation = True
-            contact_and_org_boundaries["requires_human_confirmation"] = True
-
-    for item in normalized_functional_inputs:
-        result = item.get("result") if isinstance(item.get("result"), dict) else {}
-        if not result:
-            continue
-        if isinstance(result.get("forbidden_actions"), list):
-            for action in result.get("forbidden_actions", []):
-                text = _normalize_text(action)
-                if text:
-                    forbidden_action_space.append({"action": text, "reason": f"functional policy {item.get('plugin_id')}"})
-        if isinstance(result.get("requires_escalation_actions"), list):
-            requires_escalation_actions.extend(_coerce_string_list(result.get("requires_escalation_actions")))
-
-    forbidden_index = {
-        (_normalize_text(item.get("action")), _normalize_text(item.get("reason"))): item
-        for item in forbidden_action_space
-        if _normalize_text(item.get("action"))
-    }
-    forbidden_action_space = list(forbidden_index.values())
-    requires_escalation_actions = list(dict.fromkeys(action for action in requires_escalation_actions if _normalize_text(action)))
-    allowed_action_space = [
-        action
-        for action in list(dict.fromkeys(actionable for actionable in allowed_action_space if _normalize_text(actionable)))
-        if action not in {item["action"] for item in forbidden_action_space}
-    ]
-
-    return {
-        "allowed_action_space": allowed_action_space,
-        "forbidden_action_space": forbidden_action_space,
-        "contact_and_org_boundaries": contact_and_org_boundaries,
-        "requires_escalation_actions": requires_escalation_actions,
-        "agent_trust_status": trust_status,
-    }
-
-
 class Q5WhatAmIAllowedToDoPlugin(BaseModel):
     model_config = ConfigDict(extra="allow")
 
@@ -217,13 +72,93 @@ class Q5WhatAmIAllowedToDoPlugin(BaseModel):
     def run_tool(self, context: dict[str, Any]) -> CognitiveToolResult:
         provider = require_model_provider(context)
         transcript_store = require_transcript_store(context)
-        snapshot = context.get("context_snapshot", {}) or {}
-        if not snapshot and any(key.startswith("q") or key in {"contact_policy", "tenant_scope", "agent_trust_policy"} for key in context):
-            snapshot = dict(context)
-        q4_profile = snapshot.get("q4_capability_boundary_profile", {}) or {}
+        q5_module_runs = bind_module_runs(context, "q5")
+        upstream_context = load_authoritative_question_context_from_storage(context, ["q3", "q4"])
+        q4_profile = upstream_context.get("q4_capability_boundary_profile", {}) or {}
+        q4_boundary_run = start_module_run(
+            q5_module_runs,
+            "q5_q4_boundary_validation",
+            source="plugins.nine_questions.q5",
+        )
         actionable_space = list(q4_profile.get("actionable_space", []) or q4_profile.get("available_actions", []) or [])
+        tenant_scope = resolve_tenant_scope(upstream_context) or context.get("tenant_scope")
+        tenant_scope_run = start_module_run(
+            q5_module_runs,
+            "q5_tenant_scope_validation",
+            source="plugins.nine_questions.q5",
+        )
+        contact_policy = resolve_contact_policy(upstream_context) or context.get("contact_policy")
+        contact_policy_run = start_module_run(
+            q5_module_runs,
+            "q5_contact_policy_validation",
+            source="plugins.nine_questions.q5",
+        )
+        agent_trust_policy = resolve_agent_trust_policy(upstream_context) or context.get("agent_trust_policy")
+        agent_trust_run = start_module_run(
+            q5_module_runs,
+            "q5_agent_trust_validation",
+            source="plugins.nine_questions.q5",
+        )
+        q3_connected_agents = resolve_q3_connected_agents(upstream_context)
+        finish_module_run(
+            q4_boundary_run,
+            status="completed" if q4_profile else "missing",
+            error_code="" if q4_profile else "q4_boundary_missing",
+            error_message="" if q4_profile else "Q4 capability boundary is missing.",
+        )
+        persist_question_module_output(
+            context,
+            question_id="q5",
+            module_id="q5_q4_boundary_validation",
+            payload={"q4_capability_boundary_profile": q4_profile},
+            status=str(q4_boundary_run.get("status") or "completed"),
+            output_kind="evidence",
+        )
+        finish_module_run(
+            tenant_scope_run,
+            status="completed" if tenant_scope not in (None, {}, [], "") else "missing",
+            error_code="" if tenant_scope not in (None, {}, [], "") else "tenant_scope_missing",
+            error_message="" if tenant_scope not in (None, {}, [], "") else "Tenant scope is not available.",
+        )
+        persist_question_module_output(
+            context,
+            question_id="q5",
+            module_id="q5_tenant_scope_validation",
+            payload={"tenant_scope": tenant_scope},
+            status=str(tenant_scope_run.get("status") or "completed"),
+            output_kind="evidence",
+        )
+        finish_module_run(
+            contact_policy_run,
+            status="completed" if contact_policy not in (None, {}, [], "") else "missing",
+            error_code="" if contact_policy not in (None, {}, [], "") else "contact_policy_missing",
+            error_message="" if contact_policy not in (None, {}, [], "") else "Contact policy is not available.",
+        )
+        persist_question_module_output(
+            context,
+            question_id="q5",
+            module_id="q5_contact_policy_validation",
+            payload={"contact_policy": contact_policy},
+            status=str(contact_policy_run.get("status") or "completed"),
+            output_kind="evidence",
+        )
+        finish_module_run(
+            agent_trust_run,
+            status="completed" if agent_trust_policy not in (None, {}, [], "") else "ready",
+            error_code="",
+            error_message="" if agent_trust_policy not in (None, {}, [], "") else "Agent trust policy is empty; continuing with neutral trust baseline.",
+        )
+        persist_question_module_output(
+            context,
+            question_id="q5",
+            module_id="q5_agent_trust_validation",
+            payload={"q5_agent_trust_status": agent_trust_policy},
+            status=str(agent_trust_run.get("status") or "completed"),
+            output_kind="evidence",
+        )
         plugin_service = context.get("plugin_service")
         functional_authorization_inputs: list[dict[str, Any]] = []
+        plugin_runs: list[dict[str, Any]] = []
         if plugin_service is not None:
             functional_authorization_inputs = execute_enabled_cognitive_plugin_functionals(
                 plugin_service,
@@ -233,24 +168,39 @@ class Q5WhatAmIAllowedToDoPlugin(BaseModel):
                 originator_id=str(context.get("session_id") or "unknown-session"),
                 caller_plugin_id=self.plugin_id,
             )
-        normalized_functional_inputs = _normalize_functional_authorization_inputs(functional_authorization_inputs)
-        authorization_baseline = _derive_authorization_baseline(
-            snapshot,
+            for item in functional_authorization_inputs:
+                plugin_runs.append(
+                    {
+                        "plugin_id": str(item.get("plugin_id") or "unknown_plugin"),
+                        "feature_code": str(item.get("feature_code") or self.feature_code),
+                        "expected": True,
+                        "attempted": True,
+                        "status": "completed" if item.get("status") == "done" else "failed",
+                        "error_code": "" if item.get("status") == "done" else "functional_authorization_failed",
+                        "error_message": "" if item.get("status") == "done" else str(item.get("error") or "functional authorization input failed"),
+                        "duration_ms": 0,
+                        "input_summary": {},
+                        "output_summary": item.get("result") if isinstance(item.get("result"), dict) else {},
+                    }
+                )
+        normalized_functional_inputs = normalize_functional_authorization_inputs(functional_authorization_inputs)
+        authorization_baseline = derive_authorization_baseline(
+            upstream_context,
             actionable_space,
             normalized_functional_inputs,
         )
 
         llm_request = build_q5_llm_request(
             authorization_baseline=authorization_baseline,
-            rendered_q4_boundary=render_q4_boundary(snapshot),
+            rendered_q4_boundary=render_q4_boundary(upstream_context),
             actionable_space=actionable_space,
-            snapshot_version=snapshot.get("snapshot_version"),
+            snapshot_version=upstream_context.get("snapshot_version"),
             q4_capability_boundary_profile=q4_profile,
-            q4_permission_profile=snapshot.get("q4_permission_profile"),
-            contact_policy=snapshot.get("contact_policy"),
-            tenant_scope=snapshot.get("tenant_scope"),
-            agent_trust_policy=snapshot.get("agent_trust_policy"),
-            q3_connected_agents=snapshot.get("q3_connected_agents"),
+            q4_permission_profile=upstream_context.get("q4_permission_profile"),
+            contact_policy=contact_policy,
+            tenant_scope=tenant_scope,
+            agent_trust_policy=agent_trust_policy,
+            q3_connected_agents=q3_connected_agents,
             functional_authorization_inputs=normalized_functional_inputs,
         )
         prompt = llm_request["prompt"]
@@ -290,6 +240,11 @@ class Q5WhatAmIAllowedToDoPlugin(BaseModel):
                 "context": model_context,
             },
         )
+        authorization_projection_run = start_module_run(
+            q5_module_runs,
+            "q5_authorization_decision_projection",
+            source="plugins.nine_questions.q5",
+        )
 
         # 5. Execute LLM Inference with Fail-Closed Block
         try:
@@ -314,7 +269,28 @@ class Q5WhatAmIAllowedToDoPlugin(BaseModel):
                     "error_message": str(exc),
                 },
             )
-            raise
+            fail_module_run(
+                authorization_projection_run,
+                error_code="q5_llm_invocation_failed",
+                error_message=str(exc),
+            )
+            return build_nine_question_partial_failure(
+                context=context,
+                tool_id=self.plugin_id,
+                question_id="q5",
+                question_ref=QUESTION_REF,
+                error_code="q5_llm_invocation_failed",
+                error_message=str(exc),
+                diagnosis_key="q5_execution_diagnosis",
+                module_runs=list(q5_module_runs),
+                plugin_runs=plugin_runs,
+                upstream_dependencies=[{"dependency_id": "q4", "required": True, "status": "completed" if q4_profile else "missing"}],
+                context_updates={
+                    "q5_authorization_baseline": authorization_baseline,
+                    "q5_functional_authorization_inputs": normalized_functional_inputs,
+                },
+                required_modules=["q5_q4_boundary_validation", "q5_authorization_decision_projection"],
+            )
 
         profile = None
         permission_boundary = None
@@ -336,10 +312,46 @@ class Q5WhatAmIAllowedToDoPlugin(BaseModel):
                     "requires_escalation_actions": list(permission_boundary.get("conditional_actions", []) or []),
                 }
         if not isinstance(profile, dict):
-            raise ValueError("Invalid Q5 output: missing authorization_boundary_profile")
+            fail_module_run(
+                authorization_projection_run,
+                error_code="q5_output_validation_failed",
+                error_message="Invalid Q5 output: missing authorization_boundary_profile",
+            )
+            return build_nine_question_partial_failure(
+                context=context,
+                tool_id=self.plugin_id,
+                question_id="q5",
+                question_ref=QUESTION_REF,
+                error_code="q5_output_validation_failed",
+                error_message="Invalid Q5 output: missing authorization_boundary_profile",
+                diagnosis_key="q5_execution_diagnosis",
+                module_runs=list(q5_module_runs),
+                plugin_runs=plugin_runs,
+                upstream_dependencies=[{"dependency_id": "q4", "required": True, "status": "completed" if q4_profile else "missing"}],
+                context_updates={"q5_authorization_baseline": authorization_baseline},
+                required_modules=["q5_authorization_decision_projection"],
+            )
         allowed = profile.get("allowed_action_space")
         if not isinstance(allowed, list):
-            raise ValueError("Invalid Q5 output: allowed_action_space must be a list")
+            fail_module_run(
+                authorization_projection_run,
+                error_code="q5_output_validation_failed",
+                error_message="Invalid Q5 output: allowed_action_space must be a list",
+            )
+            return build_nine_question_partial_failure(
+                context=context,
+                tool_id=self.plugin_id,
+                question_id="q5",
+                question_ref=QUESTION_REF,
+                error_code="q5_output_validation_failed",
+                error_message="Invalid Q5 output: allowed_action_space must be a list",
+                diagnosis_key="q5_execution_diagnosis",
+                module_runs=list(q5_module_runs),
+                plugin_runs=plugin_runs,
+                upstream_dependencies=[{"dependency_id": "q4", "required": True, "status": "completed" if q4_profile else "missing"}],
+                context_updates={"q5_authorization_baseline": authorization_baseline},
+                required_modules=["q5_authorization_decision_projection"],
+            )
 
         baseline_allowed = authorization_baseline.get("allowed_action_space") or []
         baseline_allowed_set = set(map(str, baseline_allowed))
@@ -354,8 +366,8 @@ class Q5WhatAmIAllowedToDoPlugin(BaseModel):
         for item in list(forbidden_payload) + list(baseline_forbidden):
             if not isinstance(item, dict):
                 continue
-            action = _normalize_text(item.get("action"))
-            reason = _normalize_text(item.get("reason")) or "unauthorized"
+            action = normalize_text(item.get("action"))
+            reason = normalize_text(item.get("reason")) or "unauthorized"
             if action:
                 merged_forbidden.append({"action": action, "reason": reason})
         merged_forbidden = list(
@@ -367,8 +379,14 @@ class Q5WhatAmIAllowedToDoPlugin(BaseModel):
 
         merged_escalations = list(
             dict.fromkeys(
-                _coerce_string_list(profile.get("requires_escalation_actions"))
-                + _coerce_string_list(authorization_baseline.get("requires_escalation_actions"))
+                [
+                    str(item).strip()
+                    for item in (
+                        list(profile.get("requires_escalation_actions") or [])
+                        + list(authorization_baseline.get("requires_escalation_actions") or [])
+                    )
+                    if str(item).strip()
+                ]
             )
         )
         merged_contact_boundaries = authorization_baseline.get("contact_and_org_boundaries") or {}
@@ -384,7 +402,25 @@ class Q5WhatAmIAllowedToDoPlugin(BaseModel):
             "requires_escalation_actions": merged_escalations,
         }
         if not set(map(str, profile.get("allowed_action_space", []))).issubset(set(map(str, actionable_space))):
-            raise RuntimeError("Q5 authorization violation: allowed_action_space exceeds Q4 actionable_space")
+            fail_module_run(
+                authorization_projection_run,
+                error_code="q5_authorization_violation",
+                error_message="Q5 authorization violation: allowed_action_space exceeds Q4 actionable_space",
+            )
+            return build_nine_question_partial_failure(
+                context=context,
+                tool_id=self.plugin_id,
+                question_id="q5",
+                question_ref=QUESTION_REF,
+                error_code="q5_authorization_violation",
+                error_message="Q5 authorization violation: allowed_action_space exceeds Q4 actionable_space",
+                diagnosis_key="q5_execution_diagnosis",
+                module_runs=list(q5_module_runs),
+                plugin_runs=plugin_runs,
+                upstream_dependencies=[{"dependency_id": "q4", "required": True, "status": "completed" if q4_profile else "missing"}],
+                context_updates={"q5_authorization_baseline": authorization_baseline},
+                required_modules=["q5_authorization_decision_projection"],
+            )
         normalized_permission_boundary = {
             "authorized_actions": list(profile.get("allowed_action_space", []) or []),
             "unauthorized_actions": [
@@ -394,6 +430,93 @@ class Q5WhatAmIAllowedToDoPlugin(BaseModel):
             ],
             "conditional_actions": list(profile.get("requires_escalation_actions", []) or []),
         }
+        validated_policy_sources = sum(
+            1
+            for payload in (tenant_scope, contact_policy, agent_trust_policy)
+            if payload not in (None, {}, [], "")
+        )
+        authenticity_status = (
+            "completed"
+            if q4_profile and validated_policy_sources >= 2 and plugin_service is not None
+            else "degraded"
+        )
+        finish_module_run(
+            authorization_projection_run,
+            status="completed" if authenticity_status == "completed" else "degraded",
+            error_code="" if authenticity_status == "completed" else "authorization_projection_degraded",
+            error_message="" if authenticity_status == "completed" else "Authorization actions were produced without enough validated policy sources.",
+        )
+        q5_execution_diagnosis = {
+            "authenticity_status": authenticity_status,
+            "diagnosis_code": "authorization_boundary_degraded" if authenticity_status != "completed" else "completed",
+            "diagnosis_message": (
+                "Q5 authorization boundary relies on snapshot-only policy sources or missing functional authorization inputs."
+                if authenticity_status != "completed"
+                else "Q5 authorization boundary completed with validated upstream and policy evidence."
+            ),
+            "used_fallback": authenticity_status != "completed",
+            "upstream_degraded": not bool(q4_profile),
+            "module_runs": list(q5_module_runs),
+            "plugin_runs": plugin_runs,
+            "upstream_dependencies": [
+                {
+                    "dependency_id": "q4",
+                    "required": True,
+                    "status": "completed" if q4_profile else "missing",
+                    "message": "Q4 capability boundary is required for authorization projection.",
+                }
+            ],
+            "recovery_plan": build_recovery_plan(
+                question_id="q5",
+                retriable=True,
+                rollback_available=False,
+                partial_retry_available=True,
+                partial_replace_available=False,
+                actions=[
+                    build_recovery_action(
+                        "q5-rerun-question",
+                        label="重跑 Q5 及下游",
+                        kind="retry",
+                        executable=True,
+                        scope="question_downstream",
+                        target="q5",
+                        reason="重新执行授权边界判断。",
+                        path="/api/web/nine-questions/q5/run",
+                    ),
+                    build_recovery_action(
+                        "q5-rerun-upstream-q4",
+                        label="先重跑 Q4 再重跑 Q5",
+                        kind="partial_retry",
+                        executable=True,
+                        scope="upstream_chain",
+                        target="q4->q5",
+                        reason="Q5 依赖 Q4 能力边界。",
+                        path="/api/web/nine-questions/q4/run",
+                    ),
+                    build_recovery_action(
+                        "q5-refresh-contact-policy",
+                        label="刷新 contact policy",
+                        kind="partial_retry",
+                        executable=True,
+                        scope="module",
+                        target="q5_contact_policy_validation",
+                        reason="仅刷新 Q5 contact_policy 基线与模块状态，不重跑 LLM。",
+                        path="/api/web/nine-questions/q5/modules/q5_contact_policy_validation/retry",
+                    ),
+                ],
+            ),
+        }
+        persist_question_module_output(
+            context,
+            question_id="q5",
+            module_id="q5_authorization_decision_projection",
+            payload={
+                "authorization_boundary_profile": profile,
+                "permission_boundary": normalized_permission_boundary,
+            },
+            status=str(authorization_projection_run.get("status") or "completed"),
+            output_kind="inference",
+        )
 
         # 7. Audit Log: Completion
         record_model_completed(
@@ -415,6 +538,51 @@ class Q5WhatAmIAllowedToDoPlugin(BaseModel):
         )
 
         summary = f"allowed={len(profile.get('allowed_action_space', []) or [])}; forbidden={len(profile.get('forbidden_action_space', []) or [])}"
+        q5_module_runs = q5_execution_diagnosis.get("module_runs")
+        q5_module_runs = q5_module_runs if isinstance(q5_module_runs, list) else []
+        run_audit_integration(
+            context,
+            question_id="q5",
+            module_runs=q5_module_runs,
+            summary="Q5 授权裁剪审计已记录。",
+            payload={
+                "q5_authorization_boundary_profile": profile,
+                "q5_permission_boundary": normalized_permission_boundary,
+                "q5_authorization_baseline": authorization_baseline,
+            },
+        )
+        run_memory_integration(
+            context,
+            question_id="q5",
+            module_runs=q5_module_runs,
+            title="Q5 Authorization Boundary",
+            summary="Q5 授权边界已写入记忆。",
+            layer="episodic",
+            payload=profile,
+            tags=["nine-questions", "q5", "authorization-boundary"],
+        )
+        run_reflection_integration(
+            context,
+            question_id="q5",
+            module_runs=q5_module_runs,
+            subject="Q5 authorization boundary",
+            summary="Q5 越权风险与裁剪充分性反思已记录。",
+            reflection_type="decision_reflection",
+            payload={
+                "q5_authorization_boundary_profile": profile,
+                "q5_permission_boundary": normalized_permission_boundary,
+            },
+        )
+        run_learning_integration(
+            context,
+            question_id="q5",
+            module_runs=q5_module_runs,
+            learning_kind="authorization_boundary",
+            summary="Q5 授权决策学习记录已登记。",
+            payload=profile,
+        )
+        q5_execution_diagnosis["module_runs"] = q5_module_runs
+
         return CognitiveToolResult(
             tool_id=self.plugin_id,
             summary=summary,
@@ -431,6 +599,7 @@ class Q5WhatAmIAllowedToDoPlugin(BaseModel):
                 "q5_authorization_baseline": authorization_baseline,
                 "q5_agent_trust_status": authorization_baseline.get("agent_trust_status", {}),
                 "q5_functional_authorization_inputs": normalized_functional_inputs,
+                "q5_execution_diagnosis": q5_execution_diagnosis,
             },
             confidence=0.9,
         )

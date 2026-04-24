@@ -1,7 +1,7 @@
 """Cognition-flow models — nine-question data types and bootstrap state."""
 
 from dataclasses import dataclass, field
-from enum import StrEnum
+from enum import Enum
 from typing import Any
 
 from zentex.common.plugin_ids import (
@@ -18,7 +18,7 @@ from zentex.common.plugin_ids import (
 from zentex.foundation.meta import FeatureFamily
 
 
-class NineQuestionExecutionPhase(StrEnum):
+class NineQuestionExecutionPhase(str, Enum):
     """Ordered phases within the execution of a single nine-question cycle."""
 
     context_gathering = "context_gathering"
@@ -27,12 +27,13 @@ class NineQuestionExecutionPhase(StrEnum):
     audit = "audit"
 
 
-class BootstrapStatus(StrEnum):
+class BootstrapStatus(str, Enum):
     """Overall status of the nine-question bootstrap process."""
 
     not_started = "not_started"
     in_progress = "in_progress"
     completed = "completed"
+    partial_failed = "partial_failed"
     failed = "failed"
 
 
@@ -59,6 +60,9 @@ class NineQuestionResponse:
     tool_id: str = ""
     trace_id: str = ""
     timestamp: str = ""
+    is_partial: bool = False
+    failed_modules: list[str] = field(default_factory=list)
+    success_modules: list[str] = field(default_factory=list)
     result_payload: dict[str, Any] = field(default_factory=dict)
     context_updates: dict[str, Any] = field(default_factory=dict)
     execution_context: dict[str, Any] = field(default_factory=dict)

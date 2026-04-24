@@ -2,10 +2,11 @@ from __future__ import annotations
 
 from datetime import datetime, timezone
 from threading import Event, Thread
-from typing import Any
+from typing import Any, Dict, List, Optional, Union
 
 from zentex.reflection.nine_question_effectiveness import run_question_reflection
-from zentex.reflection.service_facade import ReflectionServiceFacade
+from zentex.reflection.service import ReflectionService
+from zentex.common.startup_markers import log_once
 
 
 class NineQuestionReflectionScheduler:
@@ -15,8 +16,8 @@ class NineQuestionReflectionScheduler:
         self,
         *,
         runtime: Any,
-        reflection_service: ReflectionServiceFacade,
-        upgrade_execution_service: Any | None = None,
+        reflection_service: ReflectionService,
+        upgrade_execution_service: Any = None,
         interval_seconds: int = 3600,
     ) -> None:
         self._runtime = runtime
@@ -24,12 +25,16 @@ class NineQuestionReflectionScheduler:
         self._upgrade_execution_service = upgrade_execution_service
         self._interval_seconds = max(60, int(interval_seconds))
         self._stop_event = Event()
-        self._thread: Thread | None = None
-        self._last_run_date: str | None = None
+        self._thread: Optional[Thread] = None
+        self._last_run_date: Optional[str] = None
 
     def start(self) -> None:
         if self._thread is not None and self._thread.is_alive():
             return
+        log_once(
+            "reflection.scheduler.started",
+            interval_seconds=self._interval_seconds,
+        )
         self._thread = Thread(target=self._run_loop, name="nq-reflection-scheduler", daemon=True)
         self._thread.start()
 

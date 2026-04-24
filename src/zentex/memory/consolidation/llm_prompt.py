@@ -1,9 +1,11 @@
 from __future__ import annotations
 
+from typing import Any, Dict, List, Optional, Union
+
 from zentex.common.prompt_sections import assemble_prompt_sections, build_prompt_section
 
 
-def build_consolidation_summary_prompt() -> dict[str, str | list[dict[str, str]]]:
+def build_consolidation_summary_prompt() -> dict[str, Union[str, list[dict[str], str]]]:
     system_prompt_sections = [
         build_prompt_section(
             key="role",

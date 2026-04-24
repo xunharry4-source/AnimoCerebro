@@ -7,10 +7,15 @@ from uuid import uuid4
 
 from pydantic import BaseModel, ConfigDict
 
-from plugins.shared.cognitive_result import CognitiveToolResult
+from zentex.common.cognitive_result import CognitiveToolResult
 from zentex.common.plugin_ids import NINE_QUESTION_Q6
 from zentex.plugins.models import PluginLifecycleStatus
 
+from plugins.nine_questions.q6_what_should_i_not_do.modules import (
+    derive_forbidden_zone_baseline,
+    merge_with_forbidden_baseline,
+    normalize_redline_inputs,
+)
 from plugins.nine_questions.q6_what_should_i_not_do.models import Q6InferenceResult
 from plugins.nine_questions.q6_what_should_i_not_do.llm_prompt import build_q6_llm_request
 # Decoupled: Inputs come from identity constraint and red-line plugins
@@ -20,115 +25,26 @@ from zentex.plugins.service import execute_enabled_cognitive_plugin_functionals
 QUESTION_REF = "我即使能做也不该做什么"
 
 logger = logging.getLogger(__name__)
-
-
-def _normalize_text(value: object) -> str:
-    return str(value or "").strip()
-
-
-def _coerce_string_list(value: object) -> list[str]:
-    if isinstance(value, list):
-        return [str(item).strip() for item in value if str(item).strip()]
-    if isinstance(value, str):
-        text = value.strip()
-        return [text] if text else []
-    return []
-
-
-def _normalize_redline_inputs(raw_inputs: list[Any]) -> list[dict[str, Any]]:
-    normalized: list[dict[str, Any]] = []
-    for item in raw_inputs:
-        if isinstance(item, dict):
-            normalized.append(dict(item))
-        elif isinstance(item, list):
-            normalized.append({"items": [str(entry).strip() for entry in item if str(entry).strip()]})
-    return normalized
-
-
-def _derive_forbidden_zone_baseline(
-    snapshot: dict[str, Any],
-    global_constraints: list[dict[str, Any]],
-    redline_hints: list[dict[str, Any]],
-) -> dict[str, list[str]]:
-    q4_profile = snapshot.get("q4_capability_boundary_profile")
-    q4_profile = q4_profile if isinstance(q4_profile, dict) else {}
-    q5_profile = snapshot.get("q5_authorization_boundary_profile")
-    q5_profile = q5_profile if isinstance(q5_profile, dict) else {}
-    q5_permission_boundary = snapshot.get("q5_permission_boundary")
-    q5_permission_boundary = q5_permission_boundary if isinstance(q5_permission_boundary, dict) else {}
-
-    absolute_red_lines: list[str] = []
-    performance_tradeoff_bans: list[str] = []
-    prohibited_strategies: list[str] = []
-    contamination_risks: list[str] = []
-
-    for item in global_constraints:
-        constraints = _coerce_string_list(item.get("non_bypassable_constraints"))
-        absolute_red_lines.extend(constraints)
-        contamination_risks.extend(_coerce_string_list(item.get("contamination_risks")))
-
-    for item in redline_hints:
-        absolute_red_lines.extend(_coerce_string_list(item.get("absolute_red_lines")))
-        performance_tradeoff_bans.extend(_coerce_string_list(item.get("performance_tradeoff_bans")))
-        prohibited_strategies.extend(_coerce_string_list(item.get("prohibited_strategies")))
-        contamination_risks.extend(_coerce_string_list(item.get("contamination_risks")))
-        contamination_risks.extend(_coerce_string_list(item.get("forbidden_actions")))
-        contamination_risks.extend(_coerce_string_list(item.get("items")))
-
-    forbidden_actions = q5_profile.get("forbidden_action_space")
-    if isinstance(forbidden_actions, list):
-        for item in forbidden_actions:
-            if isinstance(item, dict):
-                action = _normalize_text(item.get("action"))
-                reason = _normalize_text(item.get("reason"))
-                if action and reason:
-                    prohibited_strategies.append(f"{action}: {reason}")
-                elif action:
-                    prohibited_strategies.append(action)
-
-    escalation_actions = _coerce_string_list(q5_profile.get("requires_escalation_actions"))
-    if escalation_actions:
-        performance_tradeoff_bans.append("no bypassing escalation-required actions")
-        prohibited_strategies.extend(
-            [f"execute without escalation: {action}" for action in escalation_actions]
-        )
-
-    unauthorized_actions = _coerce_string_list(q5_permission_boundary.get("unauthorized_actions"))
-    prohibited_strategies.extend(unauthorized_actions)
-
-    actionable_space = _coerce_string_list(q4_profile.get("actionable_space"))
-    if not actionable_space:
-        absolute_red_lines.append("no action without validated actionable_space")
-
-    permission_profile = snapshot.get("q4_permission_profile")
-    permission_profile = permission_profile if isinstance(permission_profile, dict) else {}
-    if permission_profile.get("is_read_only") is True:
-        performance_tradeoff_bans.append("no write-like actions in read-only mode")
-
-    absolute_red_lines = list(dict.fromkeys(item for item in absolute_red_lines if _normalize_text(item)))
-    performance_tradeoff_bans = list(dict.fromkeys(item for item in performance_tradeoff_bans if _normalize_text(item)))
-    prohibited_strategies = list(dict.fromkeys(item for item in prohibited_strategies if _normalize_text(item)))
-    contamination_risks = list(dict.fromkeys(item for item in contamination_risks if _normalize_text(item)))
-
-    return {
-        "absolute_red_lines": absolute_red_lines,
-        "performance_tradeoff_bans": performance_tradeoff_bans,
-        "prohibited_strategies": prohibited_strategies,
-        "contamination_risks": contamination_risks,
-    }
-
-
-def _merge_with_forbidden_baseline(inferred: list[str], baseline: list[str]) -> list[str]:
-    return list(dict.fromkeys(_coerce_string_list(inferred) + _coerce_string_list(baseline)))
-
-
 from zentex.common.nine_questions_shared import (
+    build_nine_question_partial_failure,
+    bind_module_runs,
+    fail_module_run,
+    finish_module_run,
+    start_module_run,
+    run_audit_integration,
+    run_learning_integration,
+    load_authoritative_question_context_from_storage,
+    run_memory_integration,
+    run_reflection_integration,
     build_caller_context,
+    build_recovery_action,
+    build_recovery_plan,
     build_model_context,
     json_safe_payload,
     record_model_completed,
     record_model_failed,
     record_model_invoked,
+    persist_question_module_output,
     render_human_readable_block,
     render_q4_boundary,
     render_q5_boundary,
@@ -158,11 +74,18 @@ class Q6WhatShouldINotDoPlugin(BaseModel):
     def run_tool(self, context: Dict[str, Any]) -> CognitiveToolResult:
         provider = require_model_provider(context)
         transcript_store = require_transcript_store(context)
-        snapshot = context.get("context_snapshot", {}) or {}
+        q6_module_runs = bind_module_runs(context, "q6")
+        upstream_context = load_authoritative_question_context_from_storage(context, ["q4", "q5"])
         
         global_constraints: list[dict[str, Any]] = []
         redline_hints: list[list[dict[str, Any]] | dict[str, Any]] = []
+        plugin_runs: list[dict[str, Any]] = []
         plugin_service = context.get("plugin_service")
+        redline_hint_run = start_module_run(
+            q6_module_runs,
+            "q6_redline_hint_chain",
+            source="plugins.nine_questions.q6",
+        )
         if plugin_service is not None:
             try:
                 functional_inputs = execute_enabled_cognitive_plugin_functionals(
@@ -174,37 +97,144 @@ class Q6WhatShouldINotDoPlugin(BaseModel):
                     caller_plugin_id=self.plugin_id,
                 )
                 for item in functional_inputs:
+                    plugin_runs.append(
+                        {
+                            "plugin_id": str(item.get("plugin_id") or "unknown_plugin"),
+                            "feature_code": str(item.get("feature_code") or self.feature_code),
+                            "expected": True,
+                            "attempted": True,
+                            "status": "completed" if item.get("status") == "done" else "failed",
+                            "error_code": "" if item.get("status") == "done" else "redline_plugin_failed",
+                            "error_message": "" if item.get("status") == "done" else str(item.get("error") or "redline plugin failed"),
+                            "duration_ms": 0,
+                            "input_summary": {},
+                            "output_summary": item.get("result") if isinstance(item.get("result"), dict) else {},
+                        }
+                    )
                     if item.get("status") != "done":
                         continue
                     result = item.get("result")
-                    if isinstance(result, dict) and "non_bypassable_constraints" in result:
-                        global_constraints.append(result)
-                    elif isinstance(result, dict) and ("zone" in result or "forbidden_actions" in result):
-                        redline_hints.append(result)
-                    elif isinstance(result, list):
-                        redline_hints.append(result)
+                    if not isinstance(result, (dict, list)):
+                        continue
+                    
+                    if isinstance(result, dict):
+                        is_redline_pack = (result.get("pack_type") == "redline_pack")
+                        has_constraints = "non_bypassable_constraints" in result
+                        
+                        if is_redline_pack or has_constraints:
+                            global_constraints.append(result)
+                        elif "zone" in result or "forbidden_actions" in result:
+                            redline_hints.append(result)
+                    else:
+                        # List of hints
+                        redline_hints.extend(result)
+                has_live_redline_inputs = bool(redline_hints or global_constraints)
+                finish_module_run(
+                    redline_hint_run,
+                    status="completed" if has_live_redline_inputs else "missing",
+                    error_code="" if has_live_redline_inputs else "redline_hint_missing",
+                    error_message=(
+                        ""
+                        if has_live_redline_inputs
+                        else "No live redline hints or global constraints were produced."
+                    ),
+                )
             except Exception as exc:
                 logger.error(f"Red-line Discovery Failure: {exc}")
-                raise RuntimeError(f"Q6 Moral Defense Break: {exc}") from exc
-        normalized_global_constraints = _normalize_redline_inputs(global_constraints)
-        normalized_redline_hints = _normalize_redline_inputs(redline_hints)
-        forbidden_zone_baseline = _derive_forbidden_zone_baseline(
-            snapshot,
+                fail_module_run(
+                    redline_hint_run,
+                    error_code="q6_functional_redline_chain_failed",
+                    error_message=str(exc),
+                )
+                return build_nine_question_partial_failure(
+                    context=context,
+                    tool_id=self.plugin_id,
+                    question_id="q6",
+                    question_ref=QUESTION_REF,
+                    error_code="q6_functional_redline_chain_failed",
+                    error_message=str(exc),
+                    diagnosis_key="q6_execution_diagnosis",
+                    module_runs=list(q6_module_runs),
+                    plugin_runs=plugin_runs,
+                    upstream_dependencies=[],
+                    context_updates={},
+                    required_modules=["q6_redline_hint_chain"],
+                )
+        else:
+            finish_module_run(
+                redline_hint_run,
+                status="missing",
+                error_code="plugin_service_missing",
+                error_message="Functional redline chain not started.",
+            )
+        persist_question_module_output(
+            context,
+            question_id="q6",
+            module_id="q6_redline_hint_chain",
+            payload={
+                "q6_redline_hints": redline_hints,
+                "q6_global_constraints_raw": global_constraints,
+            },
+            status=str(redline_hint_run.get("status") or "completed"),
+            output_kind="evidence",
+        )
+        normalized_global_constraints = normalize_redline_inputs(global_constraints)
+        normalized_redline_hints = normalize_redline_inputs(redline_hints)
+        constraint_source_run = start_module_run(
+            q6_module_runs,
+            "q6_constraint_source_validation",
+            source="plugins.nine_questions.q6",
+        )
+        finish_module_run(
+            constraint_source_run,
+            status="completed" if normalized_global_constraints else "degraded",
+            error_code="" if normalized_global_constraints else "constraint_snapshot_only",
+            error_message="" if normalized_global_constraints else "Global constraints were not validated from live plugin sources.",
+        )
+        persist_question_module_output(
+            context,
+            question_id="q6",
+            module_id="q6_constraint_source_validation",
+            payload={"q6_global_constraints": normalized_global_constraints},
+            status=str(constraint_source_run.get("status") or "completed"),
+            output_kind="evidence",
+        )
+        risk_assessment_run = start_module_run(
+            q6_module_runs,
+            "q6_risk_assessment",
+            source="plugins.nine_questions.q6",
+        )
+        finish_module_run(
+            risk_assessment_run,
+            status="completed" if normalized_global_constraints or normalized_redline_hints else "degraded",
+            error_code="" if normalized_global_constraints or normalized_redline_hints else "dynamic_risk_unverified",
+            error_message="" if normalized_global_constraints or normalized_redline_hints else "Dynamic risk assessment is inferred from baseline only.",
+        )
+        forbidden_zone_baseline = derive_forbidden_zone_baseline(
+            upstream_context,
             normalized_global_constraints,
             normalized_redline_hints,
+        )
+        persist_question_module_output(
+            context,
+            question_id="q6",
+            module_id="q6_risk_assessment",
+            payload={"q6_forbidden_zone_baseline": forbidden_zone_baseline},
+            status=str(risk_assessment_run.get("status") or "completed"),
+            output_kind="evidence",
         )
 
         llm_request = build_q6_llm_request(
             normalized_global_constraints=normalized_global_constraints,
             normalized_redline_hints=normalized_redline_hints,
             forbidden_zone_baseline=forbidden_zone_baseline,
-            rendered_q4_boundary=render_q4_boundary(snapshot),
-            rendered_q5_boundary=render_q5_boundary(snapshot),
+            rendered_q4_boundary=render_q4_boundary(upstream_context),
+            rendered_q5_boundary=render_q5_boundary(upstream_context),
             rendered_global_constraints=render_human_readable_block(normalized_global_constraints, heading="全局不可绕过约束"),
             rendered_redline_hints=render_human_readable_block(normalized_redline_hints, heading="场景红线提示"),
             rendered_forbidden_baseline=render_human_readable_block(forbidden_zone_baseline, heading="禁区基线"),
-            q4_capability_boundary=snapshot.get("q4_capability_boundary_profile"),
-            q5_authorization_boundary=snapshot.get("q5_permission_boundary"),
+            q4_capability_boundary=upstream_context.get("q4_capability_boundary_profile"),
+            q5_authorization_boundary=upstream_context.get("q5_permission_boundary"),
         )
         system_prompt = llm_request["system_prompt"]
         prompt = llm_request["prompt"]
@@ -244,6 +274,11 @@ class Q6WhatShouldINotDoPlugin(BaseModel):
                 "context": model_context,
             },
         )
+        forbidden_projection_run = start_module_run(
+            q6_module_runs,
+            "q6_forbidden_projection",
+            source="plugins.nine_questions.q6",
+        )
 
         # 5. Execute LLM Inference with Fail-Closed Block
         try:
@@ -268,25 +303,71 @@ class Q6WhatShouldINotDoPlugin(BaseModel):
                     "error_message": str(exc),
                 },
             )
-            # Fail-Closed: Strictly raise fatal exception.
-            raise RuntimeError(f"Q6 Forbidden Zone Inference Failed: {str(exc)}") from exc
+            fail_module_run(
+                forbidden_projection_run,
+                error_code="q6_llm_invocation_failed",
+                error_message=str(exc),
+            )
+            return build_nine_question_partial_failure(
+                context=context,
+                tool_id=self.plugin_id,
+                question_id="q6",
+                question_ref=QUESTION_REF,
+                error_code="q6_llm_invocation_failed",
+                error_message=str(exc),
+                diagnosis_key="q6_execution_diagnosis",
+                module_runs=list(q6_module_runs),
+                plugin_runs=plugin_runs,
+                upstream_dependencies=[],
+                context_updates={
+                    "q6_global_constraints": normalized_global_constraints,
+                    "q6_redline_hints": normalized_redline_hints,
+                    "q6_forbidden_zone_baseline": forbidden_zone_baseline,
+                },
+                required_modules=["q6_forbidden_projection"],
+            )
 
         # 6. Validate & Parse (Pydantic v2)
-        inference = Q6InferenceResult.model_validate(raw)
+        try:
+            inference = Q6InferenceResult.model_validate(raw)
+        except Exception as exc:
+            fail_module_run(
+                forbidden_projection_run,
+                error_code="q6_output_validation_failed",
+                error_message=str(exc),
+            )
+            return build_nine_question_partial_failure(
+                context=context,
+                tool_id=self.plugin_id,
+                question_id="q6",
+                question_ref=QUESTION_REF,
+                error_code="q6_output_validation_failed",
+                error_message=str(exc),
+                diagnosis_key="q6_execution_diagnosis",
+                module_runs=list(q6_module_runs),
+                plugin_runs=plugin_runs,
+                upstream_dependencies=[],
+                context_updates={
+                    "q6_global_constraints": normalized_global_constraints,
+                    "q6_redline_hints": normalized_redline_hints,
+                    "q6_forbidden_zone_baseline": forbidden_zone_baseline,
+                },
+                required_modules=["q6_forbidden_projection"],
+            )
         profile = inference.forbidden_zone_profile
-        profile.absolute_red_lines = _merge_with_forbidden_baseline(
+        profile.absolute_red_lines = merge_with_forbidden_baseline(
             profile.absolute_red_lines,
             forbidden_zone_baseline.get("absolute_red_lines", []),
         )
-        profile.performance_tradeoff_bans = _merge_with_forbidden_baseline(
+        profile.performance_tradeoff_bans = merge_with_forbidden_baseline(
             profile.performance_tradeoff_bans,
             forbidden_zone_baseline.get("performance_tradeoff_bans", []),
         )
-        profile.prohibited_strategies = _merge_with_forbidden_baseline(
+        profile.prohibited_strategies = merge_with_forbidden_baseline(
             profile.prohibited_strategies,
             forbidden_zone_baseline.get("prohibited_strategies", []),
         )
-        profile.contamination_risks = _merge_with_forbidden_baseline(
+        profile.contamination_risks = merge_with_forbidden_baseline(
             profile.contamination_risks,
             forbidden_zone_baseline.get("contamination_risks", []),
         )
@@ -316,6 +397,129 @@ class Q6WhatShouldINotDoPlugin(BaseModel):
             f"TradeoffBans={len(profile.performance_tradeoff_bans)}; "
             f"Prohibited={len(profile.prohibited_strategies)}"
         )
+        authenticity_status = (
+            "completed"
+            if plugin_service is not None and (normalized_global_constraints or normalized_redline_hints)
+            else "degraded"
+        )
+        finish_module_run(
+            forbidden_projection_run,
+            status="completed",
+        )
+        q6_execution_diagnosis = {
+            "authenticity_status": authenticity_status,
+            "diagnosis_code": "forbidden_zone_degraded" if authenticity_status != "completed" else "completed",
+            "diagnosis_message": (
+                "Q6 currently relies on static baseline only; dynamic risk and redline plugin evidence is incomplete."
+                if authenticity_status != "completed"
+                else "Q6 completed with validated constraint and redline plugin evidence."
+            ),
+            "used_fallback": authenticity_status != "completed",
+            "upstream_degraded": False,
+            "module_runs": list(q6_module_runs),
+            "plugin_runs": plugin_runs,
+            "upstream_dependencies": [
+                {
+                    "dependency_id": "q5",
+                    "required": True,
+                    "status": "completed" if upstream_context.get("q5_permission_boundary") or upstream_context.get("q5_authorization_boundary_profile") else "missing",
+                    "message": "Q5 authorization boundary constrains Q6 forbidden-zone reasoning.",
+                }
+            ],
+            "recovery_plan": build_recovery_plan(
+                question_id="q6",
+                retriable=True,
+                rollback_available=False,
+                partial_retry_available=True,
+                partial_replace_available=False,
+                actions=[
+                    build_recovery_action(
+                        "q6-rerun-question",
+                        label="重跑 Q6 及下游",
+                        kind="retry",
+                        executable=True,
+                        scope="question_downstream",
+                        target="q6",
+                        reason="重新执行禁区与红线判断。",
+                        path="/api/web/nine-questions/q6/run",
+                    ),
+                    build_recovery_action(
+                        "q6-rerun-upstream-q5",
+                        label="先重跑 Q5 再重跑 Q6",
+                        kind="partial_retry",
+                        executable=True,
+                        scope="upstream_chain",
+                        target="q5->q6",
+                        reason="Q6 依赖 Q5 授权边界。",
+                        path="/api/web/nine-questions/q5/run",
+                    ),
+                    build_recovery_action(
+                        "q6-refresh-redline-plugins",
+                        label="刷新红线插件输入",
+                        kind="partial_retry",
+                        executable=True,
+                        scope="module",
+                        target="q6_redline_hint_chain",
+                        reason="仅刷新 Q6 redline functional inputs 和基线，不重跑 LLM。",
+                        path="/api/web/nine-questions/q6/modules/q6_redline_hint_chain/retry",
+                    ),
+                ],
+            ),
+        }
+        persist_question_module_output(
+            context,
+            question_id="q6",
+            module_id="q6_forbidden_projection",
+            payload=profile.model_dump(mode="json"),
+            status=str(forbidden_projection_run.get("status") or "completed"),
+            output_kind="inference",
+        )
+        q6_module_runs = q6_execution_diagnosis.get("module_runs")
+        q6_module_runs = q6_module_runs if isinstance(q6_module_runs, list) else []
+        q6_payload = profile.model_dump(mode="json")
+        run_audit_integration(
+            context,
+            question_id="q6",
+            module_runs=q6_module_runs,
+            summary="Q6 红线与禁区审计已记录。",
+            payload={
+                "q6_forbidden_zone_profile": q6_payload,
+                "q6_global_constraints": normalized_global_constraints,
+                "q6_redline_hints": normalized_redline_hints,
+            },
+        )
+        run_memory_integration(
+            context,
+            question_id="q6",
+            module_runs=q6_module_runs,
+            title="Q6 Forbidden Zone",
+            summary="Q6 红线禁区已写入记忆。",
+            layer="episodic",
+            payload=q6_payload,
+            tags=["nine-questions", "q6", "forbidden-zone"],
+        )
+        run_reflection_integration(
+            context,
+            question_id="q6",
+            module_runs=q6_module_runs,
+            subject="Q6 forbidden zone",
+            summary="Q6 红线覆盖与风险识别反思已记录。",
+            reflection_type="error_reflection",
+            payload={
+                "q6_forbidden_zone_profile": q6_payload,
+                "q6_redline_hints": normalized_redline_hints,
+            },
+        )
+        run_learning_integration(
+            context,
+            question_id="q6",
+            module_runs=q6_module_runs,
+            learning_kind="safety_redline",
+            summary="Q6 安全红线学习记录已登记。",
+            payload=q6_payload,
+        )
+        q6_execution_diagnosis["module_runs"] = q6_module_runs
+
         return CognitiveToolResult(
             tool_id=self.plugin_id,
             summary=summary,
@@ -331,6 +535,7 @@ class Q6WhatShouldINotDoPlugin(BaseModel):
                 "q6_global_constraints": normalized_global_constraints,
                 "q6_redline_hints": normalized_redline_hints,
                 "q6_forbidden_zone_baseline": forbidden_zone_baseline,
+                "q6_execution_diagnosis": q6_execution_diagnosis,
             },
             confidence=0.99, # Redlines must have near-absolute confidence
         )

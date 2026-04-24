@@ -1,10 +1,10 @@
+from __future__ import annotations
 """
 Plugin Manager: Unified Service Entry Point
 
 Combines all services (base, query, execute, manage) into one coherent interface.
 """
 
-from __future__ import annotations
 
 import logging
 import threading
@@ -17,6 +17,7 @@ from zentex.foundation.contracts import ServiceErrorCode, ServiceResponse
 from zentex.plugins.models import PluginLifecycleStatus
 from zentex.plugins.manager import PluginManager
 from zentex.common.protocol import TaskEnvelope, TaskFeedback
+from zentex.common.startup_markers import log_once
 
 from .base import BasePluginService
 from .query import QueryService
@@ -107,6 +108,7 @@ class SystemPluginService(BasePluginService):
             plugin_specs=self._plugin_specs,
             get_factories_fn=self._get_factories,
             determine_category_fn=self._determine_category,
+            index_fn=self._index_plugin_runtime_state,
         )
         
         # Initialize Phase 2c services
@@ -132,7 +134,53 @@ class SystemPluginService(BasePluginService):
             query_service=self._query_service,
             determine_category_fn=self._determine_category,
         )
+
+    def attach_cognitive_services(
+        self,
+        *,
+        audit_service: Any = None,
+        memory_service: Any = None,
+        reflection_service: Any = None,
+        learning_service: Any = None,
+        transcript_store: Any = None,
+        llm_service: Any = None,
+        foundation_service: Any = None,
+        environment_service: Any = None,
+    ) -> None:
+        """Inject cognitive services for authentic plugin integration."""
+        self._execution_service.attach_cognitive_services(
+            audit_service=audit_service,
+            memory_service=memory_service,
+            reflection_service=reflection_service,
+            learning_service=learning_service,
+            transcript_store=transcript_store,
+            llm_service=llm_service,
+            foundation_service=foundation_service,
+            environment_service=environment_service,
+        )
     
+    # ==================== Task Dispatch Compatibility Methods ====================
+    
+    def get_plugins(self, category: str = "FUNCTIONAL") -> list:
+        """
+        Standardized query for task dispatchers.
+        Maps the unified query results to the format expected by InternalPluginExecutor.
+        """
+        results = self.query_by_category(category.lower())
+        # The internal executor expects 'id' and 'capabilities' keys
+        for row in results:
+            row["id"] = row["plugin_id"]
+            row["capabilities"] = self.get_plugin_capabilities(row["plugin_id"])
+        return results
+
+    def get_plugin(self, plugin_id: str, category: Optional[str] = None) -> Any:
+        """
+        Return the runtime instance of a plugin, ensuring it is loaded.
+        Used by executors to invoke the plugin.
+        """
+        self.ensure_runtime_instance_loaded(plugin_id)
+        return self._plugin_instances.get(plugin_id)
+
     def _promote_plugin_ref(self, plugin_id: str, target_lifecycle_status: str, reason: str) -> None:
         """Helper reference for auto-degradation."""
         self._management_service.promote_plugin(plugin_id, target_lifecycle_status, reason)
@@ -304,6 +352,14 @@ class SystemPluginService(BasePluginService):
         caller_plugin_id: Optional[str] = None,
     ) -> TaskFeedback:
         """Execute a single plugin."""
+        log_once(
+            "plugins.execute.invoked",
+            plugin_id=plugin_id,
+            caller_plugin_id=caller_plugin_id or "",
+            originator_id=originator_id,
+            trace_id=trace_id,
+            has_parameters=bool(parameters),
+        )
         return await self._execution_service.execute_plugin_once(
             plugin_id=plugin_id,
             task_id=task_id,
@@ -476,6 +532,12 @@ class SystemPluginService(BasePluginService):
     def disable_plugin(self, plugin_id: str, reason: str = "Manual deactivation") -> None:
         """Disable a plugin."""
         self._management_service.disable_plugin(plugin_id, reason)
+
+    def delete_plugin(self, plugin_id: str) -> None:
+        """Delete a non-default plugin registration from plugin storage."""
+        self._storage.delete_plugin(plugin_id)
+        self._plugin_instances.pop(plugin_id, None)
+        self._plugin_specs.pop(plugin_id, None)
     
     def batch_disable(
         self,

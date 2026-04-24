@@ -20,11 +20,13 @@ def initialize_agents() -> Dict[str, Any]:
         from Agent.calculator_agent import calculator_agent
         from Agent.data_generator_agent import data_generator_agent
         from Agent.promotion_agent import promotion_agent
+        from Agent.self_promotion_agent import self_promotion_agent
         
         # 获取 Agent 信息
         calc_info = calculator_agent.get_info()
         data_gen_info = data_generator_agent.get_info()
         promo_info = promotion_agent.get_info()
+        self_promo_info = self_promotion_agent.get_info()
         
         # 执行数据生成 Agent 的初始化任务（生成 CSV 文件）
         csv_result = data_generator_agent.generate_csv(
@@ -39,11 +41,12 @@ def initialize_agents() -> Dict[str, Any]:
                 "initial_csv_generation": csv_result
             },
             "promotion": promo_info,
+            "self_promotion": self_promo_info,
             "status": "initialized",
             "message": "All agents initialized successfully"
         }
         
-        logger.info("✅ Agents initialized: Calculator Agent, Data Generator Agent, Promotion Agent")
+        logger.info("✅ Agents initialized: Calculator Agent, Data Generator Agent, Promotion Agent, Self-Promotion Agent")
         if csv_result.get("success"):
             logger.info(f"✅ CSV generated: {csv_result.get('filepath')}")
         
@@ -63,14 +66,16 @@ def get_agent_status() -> Dict[str, Any]:
         from Agent.calculator_agent import calculator_agent
         from Agent.data_generator_agent import data_generator_agent
         from Agent.promotion_agent import promotion_agent
+        from Agent.self_promotion_agent import self_promotion_agent
         
         return {
             "agents": [
                 calculator_agent.get_info(),
                 data_generator_agent.get_info(),
-                promotion_agent.get_info()
+                promotion_agent.get_info(),
+                self_promotion_agent.get_info()
             ],
-            "total_agents": 3,
+            "total_agents": 4,
             "status": "running"
         }
     except Exception as e:

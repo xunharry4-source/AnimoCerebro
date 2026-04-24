@@ -1,13 +1,13 @@
+from __future__ import annotations
 """
 ZMSP Bridge: Integration between ZMSP protocol and EnhancedMemoryService.
 
 Provides seamless export/import of memory records using ZMSP binary format.
 """
 
-from __future__ import annotations
 
 import logging
-from typing import List, Optional, Tuple
+from typing import List, Optional, Tuple, Union
 from pathlib import Path
 
 from zentex.memory.sharing.zmsp import ZMSPEncoder, ZMSPDecoder
@@ -62,7 +62,7 @@ class ZMSPBridge:
         records = self.service.list_managed_records(
             layer=layer,
             limit=limit,
-            lifecycle_status=lifecycle_status,
+            status=status,
             trust_level=trust_level
         )
         
@@ -82,7 +82,7 @@ class ZMSPBridge:
     
     def export_to_file(
         self,
-        file_path: str | Path,
+        file_path: Union[str, Path],
         layer: str = "all",
         limit: int = 100
     ) -> Path:
@@ -170,7 +170,7 @@ class ZMSPBridge:
     
     def import_from_file(
         self,
-        file_path: str | Path,
+        file_path: Union[str, Path],
         origin: Optional[str] = None
     ) -> Tuple[int, int]:
         """
@@ -196,15 +196,8 @@ class ZMSPBridge:
     def _import_single_record(self, rec_dict: dict, origin: str):
         """
         Import a single memory record into EnhancedMemoryService.
-        
-        This is a placeholder - actual implementation depends on
-        EnhancedMemoryService API.
         """
-        # TODO: Implement actual import logic
-        # For now, we'll use the existing store_memory API if available
-        
         if hasattr(self.service, 'store_memory'):
-            # Try to use store_memory API
             self.service.store_memory(
                 title=rec_dict.get("title", "Imported Memory"),
                 summary=rec_dict.get("summary", ""),
@@ -275,7 +268,8 @@ class ZMSPBridge:
                 else:
                     loop.run_until_complete(engine.close())
             except Exception:
-                pass
+                # POLICY[no-silent-except]: log async cleanup failure at DEBUG (non-critical on shutdown).
+                logger.debug("Failed to close ZMSP sharing engine cleanly", exc_info=True)
 
 
 # Convenience function for quick setup

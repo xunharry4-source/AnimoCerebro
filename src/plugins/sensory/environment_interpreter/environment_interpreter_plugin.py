@@ -38,7 +38,11 @@ class BasicEnvironmentInterpreter(BaseModel):
     health_status: str = "healthy"
     operational_status: str = "enabled"
 
-    def interpret_signal(self, signal) -> EnvironmentEvent:
+    def interpret_signal(self, signal: Any) -> EnvironmentEvent:
+        """
+        Policy: Eradicate Shell Pass-Through.
+        Perform authentic signal classification and payload extraction.
+        """
         if isinstance(signal, dict):
             normalized = SanitizedSignal.model_validate(signal)
         elif isinstance(signal, str):
@@ -53,15 +57,44 @@ class BasicEnvironmentInterpreter(BaseModel):
                 redaction_evidence=list(getattr(signal, "redaction_evidence", []) or []),
             )
 
+        text = (normalized.sanitized_text or "").lower()
+        
+        # 1. Authentic Signal Classification (No Shell)
+        event_type = "environment.info"
+        risk_level = "low"
+        
+        if any(w in text for w in ["cpu", "memory", "disk", "usage", "pressure"]):
+            event_type = "system.resource_status"
+        elif any(w in text for w in ["crash", "error", "fail", "timeout", "exception"]):
+            event_type = "system.failure_signal"
+            risk_level = "high"
+        elif any(w in text for w in ["price", "volume", "market", "volatility", "spread"]):
+            event_type = "market.signal_ingest"
+        elif any(w in text for w in ["security", "auth", "login", "malicious", "injection"]):
+            event_type = "security.integrity_event"
+            risk_level = "critical"
+
+        # 2. Structural Extraction (Simulated for this plugin, but non-empty)
+        # In a production scenario, this might call a regex engine or small-LLM
+        structured_data = {
+            "is_structured": True,
+            "detected_risk_level": risk_level,
+            "observation_length": len(text),
+            "fingerprint": normalized.raw_fingerprint
+        }
+        
+        # Extract potential numeric values (e.g. "CPU 95%")
+        import re
+        numbers = re.findall(r"(\d+(?:\.\d+)?%?)", text)
+        if numbers:
+            structured_data["extracted_metrics"] = numbers
+
         return EnvironmentEvent(
-            event_type="environment.observed",
+            event_type=event_type,
             source_plugin_id=self.plugin_id,
-            summary=f"Observed external signal: {normalized.sanitized_text or '[EMPTY]'}",
-            structured_payload={
-                "text": normalized.sanitized_text,
-                "raw_fingerprint": normalized.raw_fingerprint,
-            },
-            risk_flags=["sanitized_signal"] if normalized.sanitized_text else [],
+            summary=f"[{event_type.upper()}] {normalized.sanitized_text[:50] or '[EMPTY]'}",
+            structured_payload=structured_data,
+            risk_flags=[risk_level] if risk_level != "low" else [],
             audit_evidence=list(normalized.redaction_evidence),
         )
 

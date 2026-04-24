@@ -1,3 +1,5 @@
+from __future__ import annotations
+
 """
 Environment Awareness Data Models / 环境感知数据模型
 
@@ -9,7 +11,7 @@ context snapshots, situation interpretations, and sensory signals.
 
 from datetime import datetime, timezone
 from enum import Enum
-from typing import Any
+from typing import Any, Dict, List, Optional, Union
 
 from pydantic import BaseModel, ConfigDict, Field
 
@@ -71,43 +73,43 @@ class PhysicalHostState(BaseModel):
         default=MemoryPressureLevel.UNKNOWN,
         description="Memory usage pressure level"
     )
-    memory_used_ratio: float | None = Field(
+    memory_used_ratio: Optional[float] = Field(
         default=None,
         ge=0.0,
         le=1.0,
         description="Memory usage ratio (0.0-1.0)"
     )
-    memory_total_bytes: int | None = Field(
+    memory_total_bytes: Optional[int] = Field(
         default=None,
         ge=0,
         description="Total memory in bytes"
     )
-    memory_available_bytes: int | None = Field(
+    memory_available_bytes: Optional[int] = Field(
         default=None,
         ge=0,
         description="Available memory in bytes"
     )
     
     # CPU metrics
-    cpu_load_percent: float | None = Field(
+    cpu_load_percent: Optional[float] = Field(
         default=None,
         ge=0.0,
         description="CPU load percentage (0-100+)"
     )
-    cpu_count: int | None = Field(
+    cpu_count: Optional[int] = Field(
         default=None,
         ge=1,
         description="Number of CPU cores"
     )
     
     # Disk metrics
-    disk_usage_percent: float | None = Field(
+    disk_usage_percent: Optional[float] = Field(
         default=None,
         ge=0.0,
         le=100.0,
         description="Disk usage percentage"
     )
-    disk_free_bytes: int | None = Field(
+    disk_free_bytes: Optional[int] = Field(
         default=None,
         ge=0,
         description="Free disk space in bytes"
@@ -198,11 +200,11 @@ class ContextSnapshot(BaseModel):
     
     snapshot_id: str = Field(min_length=1, description="Unique snapshot identifier")
     timestamp: datetime = Field(default_factory=utc_now)
-    session_id: str | None = Field(default=None, description="Associated session ID")
-    turn_id: str | None = Field(default=None, description="Associated think loop turn ID")
+    session_id: Optional[str] = Field(default=None, description="Associated session ID")
+    turn_id: Optional[str] = Field(default=None, description="Associated think loop turn ID")
     
     # Environmental state
-    host_state: PhysicalHostState | None = Field(
+    host_state: Optional[PhysicalHostState] = Field(
         default=None,
         description="Physical host state at snapshot time"
     )
@@ -216,17 +218,17 @@ class ContextSnapshot(BaseModel):
         default_factory=list,
         description="IDs of currently active goals"
     )
-    working_memory_summary: str | None = Field(
+    working_memory_summary: Optional[str] = Field(
         default=None,
         description="Summary of working memory state"
     )
     
     # Role and identity context
-    current_role: str | None = Field(
+    current_role: Optional[str] = Field(
         default=None,
         description="Current agent role"
     )
-    identity_anchor_ref: str | None = Field(
+    identity_anchor_ref: Optional[str] = Field(
         default=None,
         description="Reference to identity kernel"
     )
@@ -258,17 +260,17 @@ class SituationImpact(BaseModel):
     timestamp: datetime = Field(default_factory=utc_now)
     
     # Source reference
-    source_snapshot_id: str | None = Field(
+    source_snapshot_id: Optional[str] = Field(
         default=None,
         description="Reference to source context snapshot"
     )
-    source_host_state: PhysicalHostState | None = Field(
+    source_host_state: Optional[PhysicalHostState] = Field(
         default=None,
         description="Reference to source host state"
     )
     
     # Impact assessments
-    role_impact: str | None = Field(
+    role_impact: Optional[str] = Field(
         default=None,
         description="How environment affects current role execution"
     )
@@ -278,7 +280,7 @@ class SituationImpact(BaseModel):
     )
     
     # Recommendations
-    recommended_cognitive_mode: str | None = Field(
+    recommended_cognitive_mode: Optional[str] = Field(
         default=None,
         description="Suggested cognitive mode (e.g., 'shallow', 'deep', 'emergency')"
     )
@@ -298,7 +300,7 @@ class SituationImpact(BaseModel):
     )
     
     # Explanation
-    reasoning: str | None = Field(
+    reasoning: Optional[str] = Field(
         default=None,
         description="Explanation of the interpretation logic"
     )
@@ -342,11 +344,11 @@ class SanitizedSignal(BaseModel):
     )
     
     # Source tracking
-    source_plugin_id: str | None = Field(
+    source_plugin_id: Optional[str] = Field(
         default=None,
         description="ID of the plugin that provided this signal"
     )
-    source_kind: str | None = Field(
+    source_kind: Optional[str] = Field(
         default=None,
         description="Kind of source (webhook, file, api, etc.)"
     )
@@ -393,7 +395,7 @@ class SourceConflictScore(BaseModel):
     )
     
     # Resolution guidance
-    suggested_resolution: str | None = Field(
+    suggested_resolution: Optional[str] = Field(
         default=None,
         description="Suggested resolution approach"
     )

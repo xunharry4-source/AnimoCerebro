@@ -1,10 +1,10 @@
+from __future__ import annotations
 """
 反思指标计算器
 
 负责计算和聚合反思相关的统计指标。
 """
 
-from __future__ import annotations
 
 import logging
 from datetime import datetime, timezone, timedelta

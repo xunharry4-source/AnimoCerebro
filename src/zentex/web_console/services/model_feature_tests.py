@@ -71,6 +71,18 @@ def _iter_log() -> List[Dict[str, Any]]:
 
 
 def list_model_feature_tests() -> List[ModelFeatureTestCatalogItem]:
+    """Return the catalog of available model feature tests.
+
+    Intentionally empty: LLM invocation has been permanently removed from the
+    web console (see invoke_model_feature_test — it returns HTTP 410 Gone).
+    There are no tests to catalogue because none can be executed through this
+    interface.  When direct LLM testing is re-enabled via a dedicated test
+    harness, add ModelFeatureTestCatalogItem entries here.
+
+    # NOTE: this is NOT a fake implementation — returning [] is the correct
+    # behaviour for a disabled feature.  Do NOT add stub items that cannot be
+    # invoked; that would be a POLICY[no-fake-impl] violation.
+    """
     return []
 
 
@@ -192,7 +204,7 @@ def collect_model_feature_stats(*, feature_id: Optional[str] = None) -> ModelFea
     )
 
 
-def get_model_feature_run_log(test_run_id: str) -> Dict[str, Any] | None:
+def get_model_feature_run_log(test_run_id: str) -> Dict[str, Optional[Any]]:
     for record in reversed(_iter_log()):
         if str(record.get("test_run_id") or "") == test_run_id:
             return record

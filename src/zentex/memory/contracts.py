@@ -1,12 +1,13 @@
 from __future__ import annotations
 from datetime import datetime
+from typing import Optional
 from pydantic import BaseModel, ConfigDict, Field
 
 class MemoryBackendStatusItem(BaseModel):
     model_config = ConfigDict(extra="forbid", frozen=True)
 
     backend: str
-    package_name: str | None = None
+    package_name: Optional[str] = None
     package_installed: bool
     write_enabled: bool
     recall_enabled: bool
@@ -23,10 +24,10 @@ class EnhancedMemoryRecordItem(BaseModel):
     summary: str
     content: str
     trace_id: str
-    request_id: str | None = None
-    source_event_id: str | None = None
-    target_id: str | None = None
-    version_id: str | None = None
+    request_id: Optional[str] = None
+    source_event_id: Optional[str] = None
+    target_id: Optional[str] = None
+    version_id: Optional[str] = None
     tags: list[str] = Field(default_factory=list)
     evidence_refs: list[str] = Field(default_factory=list)
     source_refs: list[str] = Field(default_factory=list)
@@ -34,21 +35,21 @@ class EnhancedMemoryRecordItem(BaseModel):
     status: str
     visibility: str
     trust_level: str
-    management_note: str | None = None
-    correction_note: str | None = None
-    supersedes_memory_id: str | None = None
-    superseded_by_memory_id: str | None = None
+    management_note: Optional[str] = None
+    correction_note: Optional[str] = None
+    supersedes_memory_id: Optional[str] = None
+    superseded_by_memory_id: Optional[str] = None
     operator: str
     last_action: str
     last_action_reason: str
-    last_verified_at: datetime | None = None
+    last_verified_at: Optional[datetime] = None
     updated_at: datetime
     created_at: datetime
     
-    compressed_by: str | None = None
-    compression_summary: str | None = None
+    compressed_by: Optional[str] = None
+    compression_summary: Optional[str] = None
     is_tombstone: bool = False
-    g38_audit_id: str | None = None
+    g38_audit_id: Optional[str] = None
     
     memory_tier: str = "hot"
     emotional_valence: str = "neutral"
@@ -74,3 +75,8 @@ class EnhancedMemoryRecallHitItem(BaseModel):
     score: float = Field(ge=0.0, le=1.0)
     tags: list[str] = Field(default_factory=list)
     source_refs: list[str] = Field(default_factory=list)
+
+
+MemoryBackendStatusItem.model_rebuild()
+EnhancedMemoryRecordItem.model_rebuild()
+EnhancedMemoryRecallHitItem.model_rebuild()

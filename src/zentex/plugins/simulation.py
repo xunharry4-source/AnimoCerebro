@@ -1,6 +1,6 @@
+from __future__ import annotations
 """Public simulation plugin contracts owned by zentex.plugins."""
 
-from __future__ import annotations
 
 from abc import abstractmethod
 from typing import Any, Dict, List, Optional
@@ -28,7 +28,13 @@ class SimulationResult(BasePluginSpec):
     is_concurrency_safe: bool = True
     is_safe: bool
     predicted_impacts: list[str] = Field(default_factory=list)
-    veto_reason: str | None = None
+    
+    # Brain-Specific Integrity Metrics
+    cognitive_impact: float = Field(default=0.0, ge=0.0, le=1.0) # 0 = no change, 1 = total state wipe
+    resource_usage: float = Field(default=0.0, ge=0.0, le=1.0)   # 0 = free, 1 = budget exhaustion
+    risk_score: float = Field(default=0.0, ge=0.0, le=1.0)      # Computed risk score
+    
+    veto_reason: Optional[str] = None
     replan_required: bool = False
     simulated_by: str
     fallback_used: bool = False

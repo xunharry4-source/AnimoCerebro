@@ -10,13 +10,17 @@ runtime callbacks, but the records themselves are durable.
 """
 
 from dataclasses import asdict, dataclass, field
-from datetime import UTC, datetime
+from datetime import datetime, timezone
+UTC = timezone.utc
 from enum import Enum
 import json
+import logging
 from pathlib import Path
 import sqlite3
 from threading import RLock
-from typing import Callable, Any
+from typing import Callable, Any, Dict, List, Optional, Union
+
+logger = logging.getLogger(__name__)
 
 from zentex.upgrade.base_models import UpgradeTargetKind
 
@@ -36,6 +40,8 @@ class UpgradeLifecycleStatus(str, Enum):
     FAILED = "failed"
     CANCELLED = "cancelled"
     CLEANED_UP = "cleaned_up"
+    RESTORE_FAILED = "restore_failed"
+    ROLLBACK_FAILED = "rollback_failed"
 
 
 class UpgradeLifecycleView(str, Enum):
@@ -67,6 +73,8 @@ COMPLETED_STATUSES = {
 }
 FAILED_STATUSES = {
     UpgradeLifecycleStatus.FAILED,
+    UpgradeLifecycleStatus.RESTORE_FAILED,
+    UpgradeLifecycleStatus.ROLLBACK_FAILED,
 }
 CANCELLED_STATUSES = {
     UpgradeLifecycleStatus.CANCELLED,
@@ -89,13 +97,13 @@ class UpgradeManagementRecord:
     reason: str
     trace_id: str
     request_id: str
-    source_event_id: str | None = None
-    parent_record_id: str | None = None
+    source_event_id: Optional[str] = None
+    parent_record_id: Optional[str] = None
     change_summary: str
     function_summary: str
-    previous_version: str | None
+    previous_version: Optional[str]
     current_version: str
-    candidate_version: str | None
+    candidate_version: Optional[str]
     current_status: UpgradeLifecycleStatus
     current_progress: int = 0
     
@@ -104,37 +112,39 @@ class UpgradeManagementRecord:
     functional_description: str = ""
     baseline_version_ref: str = ""
     failure_category: str = "" # logic_error, security_violation, validation_failed, runtime_exception
-    success_stage: str | None = None
-    success_summary: str | None = None
-    reusable_insight: str | None = None
-    successful_command: str | None = None
+    success_stage: Optional[str] = None
+    success_summary: Optional[str] = None
+    reusable_insight: Optional[str] = None
+    successful_command: Optional[str] = None
     success_artifact_refs: list[str] = field(default_factory=list)
-    promotion_hint: str | None = None
+    promotion_hint: Optional[str] = None
     success_tags: list[str] = field(default_factory=list)
-    failure_reason: str | None = None
-    failure_stage: str | None = None
-    failure_code: str | None = None
-    failure_summary: str | None = None
-    root_cause_hypothesis: str | None = None
-    failed_command: str | None = None
+    failure_reason: Optional[str] = None
+    failure_stage: Optional[str] = None
+    failure_code: Optional[str] = None
+    failure_summary: Optional[str] = None
+    root_cause_hypothesis: Optional[str] = None
+    failed_command: Optional[str] = None
     failed_artifact_refs: list[str] = field(default_factory=list)
-    retryable: bool | None = None
-    prevention_hint: str | None = None
+    retryable: Optional[bool] = None
+    prevention_hint: Optional[str] = None
     learning_tags: list[str] = field(default_factory=list)
-    source_path: str | None = None
-    candidate_path: str | None = None
-    memory_recall_query: str | None = None
+    source_path: Optional[str] = None
+    candidate_path: Optional[str] = None
+    backup_path: Optional[str] = None
+    memory_recall_query: Optional[str] = None
     recalled_memory_ids: list[str] = field(default_factory=list)
     recalled_success_patterns: list[str] = field(default_factory=list)
     recalled_failure_patterns: list[str] = field(default_factory=list)
     recalled_suspect_patterns: list[str] = field(default_factory=list)
-    memory_recall_summary: str | None = None
+    memory_recall_summary: Optional[str] = None
     audit_status: str = "pending"
     memory_status: str = "pending"
+    evolution_rollback_triggered: bool = False 
     created_at: datetime = field(default_factory=utc_now)
     updated_at: datetime = field(default_factory=utc_now)
-    started_at: datetime | None = None
-    finished_at: datetime | None = None
+    started_at: Optional[datetime] = None
+    finished_at: Optional[datetime] = None
     evidence_refs: list[str] = field(default_factory=list)
     payload: dict[str, Any] = field(default_factory=dict)  # For monitoring metrics and custom data
 
@@ -155,9 +165,9 @@ class UpgradeManagementStore:
 
     def __init__(
         self,
-        records: list[UpgradeManagementRecord] | None = None,
+        records: list[Optional[UpgradeManagementRecord]] = None,
         *,
-        file_path: str | Path | None = None,
+        file_path: Union[str, Optional[Path]] = None,
     ) -> None:
         self._lock = RLock()
         self._file_path = Path(file_path) if file_path is not None else None
@@ -172,7 +182,7 @@ class UpgradeManagementStore:
         self._persist_unlocked()
 
     @property
-    def file_path(self) -> Path | None:
+    def file_path(self) -> Optional[Path]:
         return self._file_path
 
     def upsert(self, record: UpgradeManagementRecord) -> UpgradeManagementRecord:
@@ -197,9 +207,9 @@ class UpgradeManagementStore:
     def list_records(
         self,
         *,
-        target_kind: UpgradeTargetKind | None = None,
+        target_kind: Optional[UpgradeTargetKind] = None,
         lifecycle: UpgradeLifecycleView = UpgradeLifecycleView.ALL,
-        action: str | None = None,
+        action: Optional[str] = None,
     ) -> list[UpgradeManagementRecord]:
         with self._lock:
             if self._file_path is not None:
@@ -224,7 +234,7 @@ class UpgradeManagementStore:
     def build_counts(
         self,
         *,
-        target_kind: UpgradeTargetKind | None = None,
+        target_kind: Optional[UpgradeTargetKind] = None,
     ) -> dict[str, int]:
         with self._lock:
             if self._file_path is not None:
@@ -247,7 +257,7 @@ class UpgradeManagementStore:
     ) -> UpgradeManagementRecord:
         with self._lock:
             record = self._records[record_id]
-            if record.current_status not in WAITING_STATUSES | ONGOING_STATUSES:
+            if record.current_status not in Union[WAITING_STATUSES, ONGOING_STATUSES]:
                 raise ValueError("Only waiting or ongoing upgrade records can be cancelled")
             if record.current_status in ONGOING_STATUSES:
                 handler = self._cancel_handlers.get(record_id)
@@ -290,9 +300,9 @@ class UpgradeManagementStore:
     def _list_records_from_sqlite(
         self,
         *,
-        target_kind: UpgradeTargetKind | None = None,
+        target_kind: Optional[UpgradeTargetKind] = None,
         lifecycle: UpgradeLifecycleView = UpgradeLifecycleView.ALL,
-        action: str | None = None,
+        action: Optional[str] = None,
     ) -> list[UpgradeManagementRecord]:
         if self._file_path is None or not self._file_path.exists():
             return []
@@ -319,6 +329,8 @@ class UpgradeManagementStore:
                 try:
                     item = json.loads(str(row[0]))
                 except Exception:
+                    # POLICY[no-silent-except]: log corrupted DB row and skip it.
+                    logger.warning("Skipping corrupted management record — invalid JSON", exc_info=True)
                     continue
                 if not isinstance(item, dict):
                     continue
@@ -328,7 +340,7 @@ class UpgradeManagementStore:
     def _build_counts_from_sqlite(
         self,
         *,
-        target_kind: UpgradeTargetKind | None = None,
+        target_kind: Optional[UpgradeTargetKind] = None,
     ) -> dict[str, int]:
         if self._file_path is None or not self._file_path.exists():
             return {
@@ -392,6 +404,8 @@ class UpgradeManagementStore:
                 try:
                     item = json.loads(str(row[0]))
                 except Exception:
+                    # POLICY[no-silent-except]: log corrupted DB row and skip it.
+                    logger.warning("Skipping corrupted management record — invalid JSON", exc_info=True)
                     continue
                 if not isinstance(item, dict):
                     continue

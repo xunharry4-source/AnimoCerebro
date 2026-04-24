@@ -94,11 +94,6 @@ class DashboardResponse(BaseModel):
 
 def get_supervised_task_manager() -> SupervisedTaskManager:
     """Get the supervised task manager instance."""
-    # This would be properly injected in production
-    from zentex.tasks.service import TaskManagementService
-    
-    # For now, we'll need to get these from the runtime
-    # This is a placeholder - in production, use proper dependency injection
     raise HTTPException(
         status_code=500,
         detail="SupervisedTaskManager not properly configured. Use runtime integration."

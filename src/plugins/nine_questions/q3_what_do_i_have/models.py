@@ -4,7 +4,7 @@ from typing import List
 
 from enum import Enum
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 
 class ResourceStatus(str, Enum):
@@ -30,6 +30,14 @@ class ResourceEvaluation(BaseModel):
     missing_critical_assets: List[str] = Field(default_factory=list)
     bottleneck_node: str = Field(min_length=1)
     reasoning_summary: str | None = None
+
+    @field_validator("bottleneck_node", mode="before")
+    @classmethod
+    def normalize_bottleneck_node(cls, value):
+        if value is None:
+            return "none"
+        text = str(value).strip()
+        return text or "none"
 
 
 class Q3WhatDoIHaveInference(BaseModel):

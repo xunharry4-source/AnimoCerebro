@@ -1,3 +1,4 @@
+from __future__ import annotations
 """
 EnvReader — reads environment variables and populates a StartupConfig.
 
@@ -5,9 +6,9 @@ Each env var overrides a specific field; fields not found in the environment
 retain their dataclass defaults.
 """
 
-from __future__ import annotations
 
 import os
+from typing import Optional
 
 from zentex.launcher.config.startup_config import StartupConfig
 
@@ -32,6 +33,12 @@ class EnvReader:
             config.environment = env
 
         # database
+        data_root = self._get("ZENTEX_DATA_ROOT")
+        if data_root is not None:
+            config.database.sqlite_dir = data_root
+            config.database.transcript_dir = os.path.join(data_root, "transcripts")
+            config.kernel.transcript_db_dir = config.database.transcript_dir
+
         db_dir = self._get("ZENTEX_DB_DIR")
         if db_dir is not None:
             config.database.sqlite_dir = db_dir
@@ -39,6 +46,7 @@ class EnvReader:
         transcript_dir = self._get("ZENTEX_TRANSCRIPT_DIR")
         if transcript_dir is not None:
             config.database.transcript_dir = transcript_dir
+            config.kernel.transcript_db_dir = transcript_dir
 
         # web
         web_host = self._get("ZENTEX_WEB_HOST")
@@ -75,7 +83,7 @@ class EnvReader:
     # Helpers
     # ------------------------------------------------------------------
 
-    def _get(self, key: str, default: str | None = None) -> str | None:
+    def _get(self, key: str, default: Optional[str] = None) -> Optional[str]:
         """Return the value of an env var, or *default* if not set."""
         return os.environ.get(key, default)
 

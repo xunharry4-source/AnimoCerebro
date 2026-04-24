@@ -19,8 +19,9 @@ Memory lifecycle manager.
 import logging
 import threading
 from collections import defaultdict
-from datetime import UTC, datetime, timedelta
-from typing import NamedTuple
+from datetime import datetime, timezone, timedelta
+UTC = timezone.utc
+from typing import NamedTuple, Any, Dict, List, Optional, Union
 from uuid import uuid4
 
 from pydantic import BaseModel, ConfigDict, Field
@@ -164,7 +165,7 @@ class MemoryAccessTracker:
         with self._lock:
             return len(self._accesses.get(memory_id, []))
 
-    def last_accessed(self, memory_id: str) -> datetime | None:
+    def last_accessed(self, memory_id: str) -> Optional[datetime]:
         with self._lock:
             lst = self._accesses.get(memory_id)
             return lst[-1].accessed_at if lst else None
@@ -208,8 +209,8 @@ class MemoryLifecycleManager:
     def __init__(
         self,
         *,
-        decay_config: MemoryDecayConfig | None = None,
-        access_tracker: MemoryAccessTracker | None = None,
+        decay_config: Optional[MemoryDecayConfig] = None,
+        access_tracker: Optional[MemoryAccessTracker] = None,
     ) -> None:
         self.config = decay_config or MemoryDecayConfig()
         self.tracker = access_tracker or MemoryAccessTracker()
@@ -221,7 +222,7 @@ class MemoryLifecycleManager:
         memory_id: str,
         current_tier: str,
         created_at: datetime,
-    ) -> LifecycleEvent | None:
+    ) -> Optional[LifecycleEvent]:
         """
         Return a LifecycleEvent if the record should change tier, else None.
 
@@ -256,8 +257,8 @@ class MemoryLifecycleManager:
         memory_id: str,
         current_tier: str,
         created_at: datetime,
-        ttl_days: int | None = None,
-    ) -> LifecycleEvent | None:
+        ttl_days: Optional[int] = None,
+    ) -> Optional[LifecycleEvent]:
         """Return a LifecycleEvent if an explicit TTL has expired."""
         if ttl_days is None:
             return None
@@ -281,7 +282,7 @@ class MemoryLifecycleManager:
         emotional_valence: str,
         affect_intensity: float,
         created_at: datetime,
-    ) -> LifecycleEvent | None:
+    ) -> Optional[LifecycleEvent]:
         """
         Evaluate whether a record is eligible for forgetting.
 
@@ -335,7 +336,7 @@ class MemoryLifecycleManager:
         memory_id: str,
         current_tier: str,
         duplicate_count: int,
-    ) -> LifecycleEvent | None:
+    ) -> Optional[LifecycleEvent]:
         """
         Interference-based forgetting: a record with many near-duplicates should lose.
 

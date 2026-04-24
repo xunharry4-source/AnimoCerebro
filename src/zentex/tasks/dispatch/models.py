@@ -1,3 +1,4 @@
+from __future__ import annotations
 """
 Phase B1: Dispatch models for task routing and execution coordination.
 Defines the contract for internal/external executor selection decisions.
@@ -8,7 +9,6 @@ Routing Policy (per requirements):
 - Order: Try internal first; fall back to external if no match
 """
 
-from __future__ import annotations
 from datetime import datetime, timezone
 from enum import Enum
 from typing import Any, Dict, List, Optional

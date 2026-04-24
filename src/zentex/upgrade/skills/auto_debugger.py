@@ -1,3 +1,4 @@
+from __future__ import annotations
 """
 Automated Root Cause Analyzer - Performs systematic failure analysis.
 
@@ -12,7 +13,6 @@ Phases:
 4. Verify - Generate verification plan for the fix
 """
 
-from __future__ import annotations
 
 from typing import List, Optional
 from datetime import datetime
@@ -336,7 +336,7 @@ class AutomatedRootCauseAnalyzer:
             try:
                 return self._llm_identify_root_cause(failed_record, isolated_scope)
             except Exception:
-                pass
+                logger.exception("LLM root-cause analysis failed; falling back to generic diagnosis")
         
         # Generic fallback
         return (
@@ -380,8 +380,8 @@ class AutomatedRootCauseAnalyzer:
                     data.get('confidence', 0.5)
                 )
         except Exception:
-            pass
-        
+            logger.exception("Failed to parse LLM root-cause analysis payload")
+
         raise ValueError("LLM analysis failed")
     
     def _generate_verification_plan(

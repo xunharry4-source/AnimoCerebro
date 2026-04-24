@@ -1,10 +1,10 @@
+from __future__ import annotations
 """
 Overview Router Module (v5)
 Runtime overview query endpoints
 Facade-First route layer extracted from overview.py
 """
 
-from __future__ import annotations
 
 from fastapi import APIRouter, Depends, Request
 from typing_extensions import Annotated

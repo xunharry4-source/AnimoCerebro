@@ -1,3 +1,4 @@
+from __future__ import annotations
 """Experience Exchange Manager (G37) - Secure Cross-Instance Experience Sharing
 
 ## File Purpose
@@ -32,7 +33,6 @@ strict security boundaries.
 Based on Zentex Product Document Function 36 (G37)
 """
 
-from __future__ import annotations
 
 import hashlib
 import hmac
@@ -560,9 +560,13 @@ class ExperienceExchangeManager:
             del self._adopted_experiences[source_id]
             revoked.append(source_id)
 
+        # Mark affected patches as revoked (Sub-function 1.5)
+        for patch_id in record.affected_patches:
+            revoked.append(f"patch:{patch_id}")
+
         # Update contamination record
         record.resolved_at = datetime.now(timezone.utc)
-        record.resolution_action = "rollback_executed"
+        record.resolution_action = f"rollback_executed: revoked {len(revoked)} entities."
 
         result = RollbackResult(
             contamination_id=contamination_id,

@@ -82,7 +82,9 @@ class ReflectionRecord(BaseModel):
     # 基础标识
     reflection_id: str = Field(description="反思唯一标识")
     trace_id: Optional[str] = Field(default=None, description="关联的追踪ID")
-    session_id: Optional[str] = Field(default=None, description="会话ID")
+    audit_id: Optional[str] = Field(default=None, description="审计流程ID，跨模块溯源用")
+    # Legacy field kept for backward compatibility; use audit_id for new code.
+    session_id: Optional[str] = Field(default=None, description="会话ID（已废弃，请使用 audit_id）")
     
     # 反思分类
     reflection_type: ReflectionType = Field(description="反思类型")
@@ -125,6 +127,7 @@ class ReflectionRecord(BaseModel):
     
     # 治理状态
     governance_status: GovernanceStatus = Field(default=GovernanceStatus.ACTIVE, description="治理状态")
+    suspect_reason: Optional[str] = Field(default=None, description="可疑原因")
     verified_at: Optional[datetime] = Field(default=None, description="验证时间")
     verified_by: Optional[str] = Field(default=None, description="验证者")
     
@@ -132,6 +135,26 @@ class ReflectionRecord(BaseModel):
         json_encoders = {
             datetime: lambda v: v.isoformat()
         }
+
+
+class ReflectionOverallRecord(BaseModel):
+    """Lightweight overall summary record derived from a persisted reflection."""
+
+    overall_id: str = Field(description="Overall record unique identifier")
+    reflection_id: str = Field(description="Source reflection identifier")
+    trace_id: Optional[str] = Field(default=None, description="Associated trace identifier")
+    audit_id: Optional[str] = Field(default=None, description="Associated audit flow identifier")
+    session_id: Optional[str] = Field(default=None, description="Legacy session identifier")
+    reflection_type: ReflectionType = Field(description="Reflection type")
+    subject: str = Field(description="Reflection subject")
+    summary: str = Field(description="Overall summary text")
+    quality: ReflectionQuality = Field(description="Reflection quality")
+    confidence: float = Field(default=0.7, ge=0.0, le=1.0)
+    impact_score: float = Field(default=0.5, ge=0.0, le=1.0)
+    actionability: float = Field(default=0.5, ge=0.0, le=1.0)
+    tags: List[str] = Field(default_factory=list)
+    metadata: Dict[str, Any] = Field(default_factory=dict)
+    created_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
 
 class GovernanceStatus(str, Enum):
     """治理状态"""
@@ -156,6 +179,9 @@ class ReflectionTemplate(BaseModel):
     
     # 模板内容
     prompt_template: str = Field(description="提示模板")
+    applicable_types: List[ReflectionType] = Field(default_factory=list, description="适用的反思类型")
+    suggested_depth: Optional[ReflectionDepth] = Field(default=None, description="建议反思深度")
+    guidance_notes: List[str] = Field(default_factory=list, description="引导说明")
     evaluation_criteria: Dict[str, Any] = Field(default_factory=dict, description="评估标准")
     
     # 使用统计

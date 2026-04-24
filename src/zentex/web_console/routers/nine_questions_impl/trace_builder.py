@@ -1,10 +1,10 @@
+from __future__ import annotations
 """Trace Detail Builder
 
 Constructs detailed trace information for nine-question execution traces.
 Handles transcript query, event extraction, and formatting.
 """
 
-from __future__ import annotations
 
 import logging
 from typing import Any, Optional
@@ -13,7 +13,7 @@ from datetime import datetime
 from fastapi import HTTPException, Request
 
 from zentex.web_console.dependencies import get_kernel_service_facade
-from zentex.web_console.transcript_serialization import serialize_transcript_entry
+from zentex.web_console.audit_event_serialization import serialize_audit_event
 
 logger = logging.getLogger(__name__)
 
@@ -23,7 +23,7 @@ def _entry_type_value(entry: Any) -> str:
     return str(getattr(entry_type, "value", entry_type) or "")
 
 
-def _extract_llm_trace_payload(entries: list[Any]) -> dict[str, Any] | None:
+def _extract_llm_trace_payload(entries: list[Any]) -> dict[str, Optional[Any]]:
     invoked_payload: dict[str, Any] = {}
     completed_payload: dict[str, Any] = {}
     failed_payload: dict[str, Any] = {}
@@ -121,42 +121,26 @@ async def build_trace_detail(
         }
         
         entries: list[Any] = []
+        transcript_query_failed = False
+        transcript_query_error = ""
+        audit_service = getattr(request.app.state, "audit_service", None)
 
-        # Try to query transcript store if available
+        # Try to query audit service if available
         try:
-            if hasattr(facade, "get_nine_question_audit_store"):
-                audit_store = facade.get_nine_question_audit_store(session_id)
-                if audit_store and hasattr(audit_store, "read_entries"):
-                    entries = [
-                        entry
-                        for entry in audit_store.read_entries(session_id=session_id)
-                        if str(getattr(entry, "trace_id", "") or "") == trace_id
-                    ]
-
-            # Try to access transcript store through facade
-            if not entries and hasattr(facade, "get_session_transcript_store"):
-                transcript_store = facade.get_session_transcript_store(session_id)
-                if transcript_store and hasattr(transcript_store, "read_by_trace_id"):
-                    entries = list(transcript_store.read_by_trace_id(trace_id) or [])
-
-            if not entries and hasattr(facade, "get_transcript_store"):
-                transcript_store = facade.get_transcript_store()
-
-                if transcript_store and hasattr(transcript_store, "read_by_trace_id"):
-                    entries = list(transcript_store.read_by_trace_id(trace_id) or [])
-                elif transcript_store and hasattr(transcript_store, "query"):
-                    # Query entries for this trace
-                    entries = await transcript_store.query(
-                        filters={"trace_id": trace_id},
-                        limit=100,
-                    )
+            if audit_service is not None and callable(getattr(audit_service, "list_trace_events", None)):
+                entries = list(audit_service.list_trace_events(trace_id) or [])
 
         except Exception as e:
-            logger.debug(f"Could not query transcript store: {e}")
+            # Do not downgrade audit query failures into a fake "pending"
+            # trace. That hides a real backend failure behind an empty placeholder
+            # and makes the monitoring page lie about execution state.
+            logger.exception("Could not query audit service for trace detail")
+            transcript_query_failed = True
+            transcript_query_error = str(e)
 
         for entry in entries:
             if all(hasattr(entry, attr) for attr in ("entry_id", "session_id", "turn_id", "entry_type", "timestamp", "source", "trace_id", "payload")):
-                serialized = serialize_transcript_entry(entry, include_payload=True).model_dump()
+                serialized = serialize_audit_event(entry, include_payload=True).model_dump()
                 trace_detail["events"].append(serialized)
                 trace_detail["related_events"].append(serialized)
             else:
@@ -168,17 +152,20 @@ async def build_trace_detail(
                 trace_detail["events"].append(serialized)
                 trace_detail["related_events"].append(serialized)
 
-        # Keep returning a minimal trace structure for compatibility with
-        # callers/tests that treat "no audit entries yet" as a pending trace
-        # rather than a hard missing object.
         if not trace_detail["events"]:
-            trace_detail["status"] = "pending"
-            trace_detail["snapshots"] = [{
-                "kind": "initial",
-                "timestamp": trace_detail["created_at"],
-                "data": {},
-            }]
-            return trace_detail
+            if transcript_query_failed:
+                return {
+                    "trace_id": trace_id,
+                    "session_id": session_id,
+                    "status": "error",
+                    "error_code": "trace_query_failed",
+                    "error": transcript_query_error,
+                    "events": [],
+                    "snapshots": [],
+                }
+            # Do not fabricate a pending trace when there are no real audit events.
+            # Returning a placeholder object here would fake that execution exists.
+            return None
 
         llm_trace_payload = _extract_llm_trace_payload(entries)
         trace_detail["llm_trace_payload"] = llm_trace_payload
@@ -205,7 +192,9 @@ async def build_trace_detail(
             elif entry_type == "model_provider_failed":
                 trace_detail["failed_at"] = timestamp_value
 
-        # Add empty snapshot placeholder
+        # Only expose a synthetic snapshot after real events were found. Creating
+        # placeholder snapshots for missing traces would fake that execution data
+        # exists when it does not.
         trace_detail["snapshots"] = [{
             "kind": "initial",
             "timestamp": trace_detail["created_at"],
@@ -215,12 +204,12 @@ async def build_trace_detail(
         return trace_detail
     
     except Exception as e:
-        logger.error(f"Error building trace detail for {trace_id}: {e}", exc_info=True)
-        # Return minimal valid trace on error
+        logger.exception("Error building trace detail for %s", trace_id)
         return {
             "trace_id": trace_id,
             "session_id": session_id,
             "status": "error",
+            "error_code": "trace_detail_build_failed",
             "error": str(e),
             "events": [],
         }
@@ -228,41 +217,31 @@ async def build_trace_detail(
 
 async def get_latest_nine_questions_report(
     request: Request,
-    session_id: str,
 ) -> Optional[dict[str, Any]]:
-    """
-    Get the latest nine-questions report/trace for a session
-    
-    Args:
-        request: FastAPI request
-        session_id: Session ID
-    
-    Returns:
-        Latest report data or None
-    """
-    facade = get_kernel_service_facade(request)
-    
+    """Get the latest nine-questions report/trace for the shared baseline."""
+    from zentex.web_console.routers.nine_questions_impl.q_state import (
+        _get_nine_question_service,
+    )
     try:
-        # Get state manager and query latest state
-        state_mgr = facade.get_nine_question_state_manager()
-        
-        if not state_mgr:
-            return None
-        
-        state = await state_mgr.get_state(session_id)
-        
+        nq_service = _get_nine_question_service(request)
+        state = await nq_service.get_state()
         if not state:
             return None
-        
-        # Build report from state
         return {
-            "session_id": session_id,
-            "state_revision": getattr(state, "revision", 0),
-            "questions_completed": getattr(state, "completed_questions", []),
+            "state_revision": getattr(state, "revision", 0) if not isinstance(state, dict) else state.get("revision", 0),
+            "questions_completed": getattr(state, "completed_questions", []) if not isinstance(state, dict) else state.get("completed_questions", []),
             "timestamp": datetime.now().isoformat(),
-            "trace_ids": getattr(state, "trace_ids", {}),
+            "trace_ids": getattr(state, "trace_ids", {}) if not isinstance(state, dict) else state.get("trace_ids", {}),
         }
-    
     except Exception as e:
-        logger.error(f"Error getting latest report for {session_id}: {e}")
-        return None
+        # Do not hide report assembly failures behind None. That makes the monitoring
+        # page indistinguishable from "no report yet" while the backend is already
+        # unhealthy.
+        logger.exception("Error getting latest nine-questions report")
+        return {
+            "status": "degraded",
+            "error_code": "nine_questions_report_unavailable",
+            "exception_type": type(e).__name__,
+            "error": str(e),
+            "timestamp": datetime.now().isoformat(),
+        }
