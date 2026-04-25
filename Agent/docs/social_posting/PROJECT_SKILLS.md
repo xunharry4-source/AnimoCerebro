@@ -18,6 +18,17 @@
 
 ## 技能清单
 
+测试文件和真实调用方式见：
+
+- `Agent/docs/social_posting/TESTING.md`
+
+Agent 代码边界：
+
+- 发布链路必须使用 `Agent/` 下自己的代码。
+- 禁止在 Agent 发布链路中 `import zentex.*`。
+- 禁止在 Agent 发布链路中把 `src/` 注入 `sys.path`。
+- LLM 调用入口为 `Agent/local_llm_client.py` 与 `Agent/posting_workflows/llm_client.py`。
+
 ### 1. 浏览器会话技能
 
 入口文件：

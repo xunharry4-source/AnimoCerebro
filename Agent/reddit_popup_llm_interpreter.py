@@ -4,10 +4,10 @@ Reddit popup LLM interpreter.
 
 Purpose:
     Translate and classify Reddit post-submission popup content with the active
-    ModelProvider so community-specific wording is handled semantically.
+    Agent local ModelProvider so community-specific wording is handled semantically.
 
 Main responsibilities:
-    - Call the configured Zentex LLM service for popup interpretation.
+    - Call the configured Agent local LLM service for popup interpretation.
     - Validate the provider JSON contract strictly.
     - Fail closed when the LLM is missing, unavailable, or returns invalid data.
 
@@ -19,20 +19,11 @@ Not responsible for:
 
 from __future__ import annotations
 
-import sys
-from pathlib import Path
 from typing import Any, Dict, Optional
 from uuid import uuid4
 
+from Agent.local_llm_client import AgentLocalLLMService, AgentModelCallerContext
 from Agent.reddit_popup_llm_prompt import build_reddit_popup_interpretation_prompt
-
-try:
-    from zentex.foundation.specs.model_provider import ModelProviderCallerContext
-except ModuleNotFoundError:
-    repo_src = Path(__file__).resolve().parents[1] / "src"
-    if repo_src.exists():
-        sys.path.insert(0, str(repo_src))
-    from zentex.foundation.specs.model_provider import ModelProviderCallerContext
 
 
 class RedditPopupLLMError(RuntimeError):
@@ -99,7 +90,7 @@ class RedditPopupLLMInterpreter:
 
         effective_trace_id = trace_id or f"reddit-popup-{uuid4().hex[:12]}"
         service = self._resolve_llm_service(effective_trace_id)
-        caller_context = ModelProviderCallerContext(
+        caller_context = AgentModelCallerContext(
             source_module="Agent.reddit_popup_llm_interpreter",
             invocation_phase="reddit_popup_interpretation",
             decision_id=effective_trace_id,
@@ -150,16 +141,8 @@ class RedditPopupLLMInterpreter:
         if self._llm_service is not None:
             return self._llm_service
 
-        try:
-            from zentex.llm import get_llm_service
-
-            self._llm_service = get_llm_service()
-            return self._llm_service
-        except Exception as exc:
-            raise RedditPopupLLMError(
-                f"reddit_popup_llm: active LLM service unavailable: {exc.__class__.__name__}: {exc}",
-                trace_id=trace_id,
-            ) from exc
+        self._llm_service = AgentLocalLLMService()
+        return self._llm_service
 
     def _validate_payload(self, payload: Any, trace_id: str) -> Dict[str, Any]:
         """Validate LLM output instead of accepting partial or malformed JSON."""

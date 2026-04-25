@@ -28,7 +28,6 @@ except ImportError:
     print("   安装命令: pip install playwright-stealth")
 
 project_root = Path(__file__).parent.parent
-sys.path.insert(0, str(project_root / "src"))
 sys.path.insert(0, str(project_root))
 
 # 增强的隐身脚本（更全面的指纹隐藏）

@@ -2,11 +2,11 @@
 Workflow LLM client.
 
 Purpose:
-    Provide a strict JSON-only ModelProvider wrapper for posting workflow nodes.
+    Provide a strict JSON-only Agent-owned ModelProvider wrapper for posting workflow nodes.
 
 Main responsibilities:
-    - Resolve the active Zentex LLM service.
-    - Call ModelProvider with trace metadata.
+    - Resolve the active LLM provider through Agent/local_llm_client.py.
+    - Call provider integrations without importing src/zentex code.
     - Reject missing, failed, or malformed model output.
 
 Not responsible for:
@@ -17,19 +17,10 @@ Not responsible for:
 
 from __future__ import annotations
 
-import sys
-from pathlib import Path
 from typing import Any, Dict, Optional
 
+from Agent.local_llm_client import AgentLLMError, AgentLocalLLMService, AgentModelCallerContext
 from Agent.posting_workflows.errors import PostingWorkflowError
-
-try:
-    from zentex.foundation.specs.model_provider import ModelProviderCallerContext
-except ModuleNotFoundError:
-    repo_src = Path(__file__).resolve().parents[2] / "src"
-    if repo_src.exists():
-        sys.path.insert(0, str(repo_src))
-    from zentex.foundation.specs.model_provider import ModelProviderCallerContext
 
 
 class WorkflowLLMClient:
@@ -55,9 +46,9 @@ class WorkflowLLMClient:
         phase: str,
         max_output_tokens: int = 1200,
     ) -> Dict[str, Any]:
-        """Call the active LLM service and require a JSON object."""
-        service = self._resolve_service(node)
-        caller_context = ModelProviderCallerContext(
+        """Call the active Agent local LLM service and require a JSON object."""
+        service = self._resolve_service()
+        caller_context = AgentModelCallerContext(
             source_module="Agent.posting_workflows",
             invocation_phase=phase,
             decision_id=trace_id,
@@ -78,6 +69,13 @@ class WorkflowLLMClient:
                 max_output_tokens=max_output_tokens,
                 metadata={"trace_id": trace_id, "workflow_node": node},
             )
+        except AgentLLMError as exc:
+            raise PostingWorkflowError(
+                f"LLM invocation failed: {exc.__class__.__name__}: {exc}",
+                node=node,
+                code="llm_invocation_failed",
+                details={"phase": phase, "agent_llm_code": exc.code, **exc.details},
+            ) from exc
         except Exception as exc:
             raise PostingWorkflowError(
                 f"LLM invocation failed: {exc.__class__.__name__}: {exc}",
@@ -96,17 +94,7 @@ class WorkflowLLMClient:
             )
         return payload
 
-    def _resolve_service(self, node: str) -> Any:
-        if self._llm_service is not None:
-            return self._llm_service
-        try:
-            from zentex.llm import get_llm_service
-
-            self._llm_service = get_llm_service()
-            return self._llm_service
-        except Exception as exc:
-            raise PostingWorkflowError(
-                f"Active LLM service unavailable: {exc.__class__.__name__}: {exc}",
-                node=node,
-                code="llm_unavailable",
-            ) from exc
+    def _resolve_service(self) -> Any:
+        if self._llm_service is None:
+            self._llm_service = AgentLocalLLMService()
+        return self._llm_service

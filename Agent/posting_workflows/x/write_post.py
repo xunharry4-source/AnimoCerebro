@@ -31,7 +31,9 @@ class WriteXPostNode:
     )
     POST_BUTTON_SELECTORS = (
         'button[data-testid="tweetButton"]',
+        'button[data-testid="tweetButtonInline"]',
         'div[data-testid="tweetButton"]',
+        'div[data-testid="tweetButtonInline"]',
         'button:has-text("Post")',
         'div[role="button"]:has-text("Post")',
         'button:has-text("发布")',
@@ -66,7 +68,7 @@ class WriteXPostNode:
             trace_id=context.trace_id,
             phase="x_content_generation",
         )
-        content = str(payload.get("content") or "").strip()
+        content = str(payload.get("content") or payload.get("post") or payload.get("text") or "").strip()
         if not content:
             raise PostingWorkflowError(
                 "LLM did not return X content",
@@ -84,6 +86,7 @@ class WriteXPostNode:
         return content
 
     def _fill_and_submit(self, page: Any, content: str) -> None:
+        self._open_composer(page)
         textbox = self._first_usable_locator(page, self.TEXTBOX_SELECTORS, require_enabled=False)
         if textbox is None:
             raise PostingWorkflowError(
@@ -101,12 +104,40 @@ class WriteXPostNode:
                 node=self.name,
                 code="x_post_button_missing",
             )
-        button.click()
+        self._click_post_button(button)
+        if hasattr(page, "wait_for_timeout"):
+            page.wait_for_timeout(10000)
+
+    def _click_post_button(self, button: Any) -> None:
+        try:
+            button.click(timeout=10000)
+        except Exception as first_exc:
+            try:
+                button.click(force=True, timeout=5000)
+            except Exception as force_exc:
+                raise PostingWorkflowError(
+                    f"Could not click X post button: {force_exc}",
+                    node=self.name,
+                    code="x_post_button_click_failed",
+                    details={"first_error": str(first_exc)[:500]},
+                ) from force_exc
+
+    def _open_composer(self, page: Any) -> None:
+        try:
+            page.goto("https://x.com/compose/post", wait_until="domcontentloaded", timeout=30000)
+        except Exception as exc:
+            raise PostingWorkflowError(
+                f"Could not open X composer: {exc}",
+                node=self.name,
+                code="x_compose_navigation_failed",
+            ) from exc
 
     def _first_usable_locator(self, page: Any, selectors: Iterable[str], *, require_enabled: bool) -> Any:
         for selector in selectors:
             try:
                 locator = page.locator(selector).first
+                if hasattr(locator, "wait_for"):
+                    locator.wait_for(state="visible", timeout=8000)
                 if locator.count() <= 0:
                     continue
                 if hasattr(locator, "is_visible") and not locator.is_visible():
