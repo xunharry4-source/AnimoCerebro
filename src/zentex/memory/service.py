@@ -324,6 +324,7 @@ class MemoryService:
             ConsolidationEngine,
             ReflectionClusteringPlugin,
         )
+        from zentex.memory.consolidation.semantic_clusterer import SemanticClusteringPlugin
         from zentex.plugins.contracts import PluginLifecycleStatus
         from zentex.plugins.service import get_service as get_plugin_service
 
@@ -362,6 +363,12 @@ class MemoryService:
             logger.warning("Failed to resolve runtime memory consolidation plugins", exc_info=True)
 
         if not analysis_plugins:
+            try:
+                semantic_plugin = SemanticClusteringPlugin()
+                semantic_plugin.status = PluginLifecycleStatus.ACTIVE
+                analysis_plugins.append(semantic_plugin)
+            except Exception:
+                logger.warning("Failed to initialize SemanticClusteringPlugin; falling back", exc_info=True)
             fallback_plugin = ReflectionClusteringPlugin()
             fallback_plugin.status = PluginLifecycleStatus.ACTIVE
             analysis_plugins.append(fallback_plugin)

@@ -9,7 +9,6 @@ Service层职责：仅提供对外服务接口，不包含任何业务逻辑或�
 
 import logging
 import threading
-from collections import Counter
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Union
@@ -394,16 +393,10 @@ class ReflectionService:
             if self._use_llm and memory_records:
                 llm_synthesis = self._llm_generator.synthesize_maintenance_insights(
                     top_tags=memory_snapshot["top_tags"],
-                    titles=[
-                        str(getattr(r, "title", "") or "").strip()
-                        for r in memory_records
-                        if str(getattr(r, "title", "") or "").strip()
-                    ][:10],
+                    titles=memory_snapshot["titles"],
                     layer_distribution=memory_snapshot["layer_distribution"],
-                    unverified_count=sum(
-                        1 for r in memory_records
-                        if str(getattr(r, "trust_level", "") or "") not in {"verified", "trusted"}
-                    ),
+                    unverified_count=memory_snapshot["unverified_count"],
+                    tier_pressure=memory_snapshot["tier_pressure"],
                 )
                 if llm_synthesis:
                     if llm_synthesis.get("summary"):
@@ -437,6 +430,7 @@ class ReflectionService:
                     "used_memory_count": len(memory_records),
                     "top_tags": memory_snapshot["top_tags"],
                     "layer_distribution": memory_snapshot["layer_distribution"],
+                    "tier_pressure": memory_snapshot["tier_pressure"],
                     "deleted_reflection_count": deleted_reflection_count,
                     "memory_ids": memory_snapshot["memory_ids"],
                 },
@@ -540,119 +534,62 @@ class ReflectionService:
            that recent but initially low-scored reflections get a chance to be
            updated before they are cleaned up.
         """
+        from zentex.reflection.reflection_cleanup_pipeline import (
+            extract_deletion_candidates,
+            reflections_to_dataframe,
+        )
+
         rows = self.list_reflections({"limit": limit})
         now = datetime.now(timezone.utc)
+        cleanup_df = reflections_to_dataframe(rows, now=now)
+        candidate_ids = set(extract_deletion_candidates(cleanup_df))
+        protected_ids: set[str] = set()
+        audit_window_ids = {
+            str(reflection_id)
+            for reflection_id in cleanup_df.loc[cleanup_df["age_days"] > 7.0, "reflection_id"].tolist()
+            if str(reflection_id)
+        }
+        audit_rows = [row for row in rows if row.reflection_id in audit_window_ids]
+        if len(audit_rows) < 100:
+            audit_rows = rows
+        if len(audit_rows) >= 100:
+            try:
+                from zentex.reflection.label_auditor import ReflectionLabelAuditor
+
+                report = ReflectionLabelAuditor().audit(audit_rows)
+                protected_ids = set(report.suspicious_ids)
+                for reflection_id in protected_ids:
+                    try:
+                        self.mark_suspect(reflection_id, "cleanlab_label_issue")
+                    except Exception:
+                        logger.warning(
+                            "Failed to mark reflection %s as suspect after label audit",
+                            reflection_id,
+                            exc_info=True,
+                        )
+            except (ImportError, ValueError) as exc:
+                logger.warning("Reflection label audit skipped: %s", exc, exc_info=True)
+            except Exception:
+                logger.warning("Reflection label audit failed; proceeding without protection", exc_info=True)
         deleted_count = 0
-        seen_maintenance_signatures: set[tuple[str, str]] = set()
 
         for reflection in rows:
-            metadata = dict(reflection.metadata or {})
-            age_seconds = max(0.0, (now - reflection.created_at).total_seconds())
-            signature = (
-                str(reflection.subject or "").strip().lower(),
-                str(reflection.summary or "").strip().lower(),
-            )
-            should_delete = False
-
-            # Rule 1 — maintenance duplicates (maintenance-source only)
-            is_maintenance_source = metadata.get("source") == "memory_aware_maintenance"
-            if is_maintenance_source:
-                if signature in seen_maintenance_signatures and age_seconds > 3600:
-                    should_delete = True
-
-            # Rule 2 — governance-retired (all sources)
-            if not should_delete and str(reflection.governance_status) in {
-                GovernanceStatus.ARCHIVED.value,
-                GovernanceStatus.DEPRECATED.value,
-                GovernanceStatus.HIDDEN.value,
-            } and age_seconds > 3600:
-                should_delete = True
-
-            # Rule 3 — universally poor quality, aged > 7 days (all sources)
-            _seven_days = 7 * 86400
-            if not should_delete and (
-                str(reflection.quality) == ReflectionQuality.POOR.value
-                and reflection.confidence < 0.35
-                and reflection.actionability < 0.25
-                and age_seconds > _seven_days
-            ):
-                should_delete = True
-
-            if should_delete and self.delete_reflection(reflection.reflection_id):
-                deleted_count += 1
+            if reflection.reflection_id in protected_ids:
                 continue
-
-            if is_maintenance_source:
-                seen_maintenance_signatures.add(signature)
+            if reflection.reflection_id in candidate_ids and self.delete_reflection(reflection.reflection_id):
+                deleted_count += 1
 
         return deleted_count
 
     def _summarize_memory_records(self, records: List[Any]) -> Dict[str, Any]:
-        layer_counter: Counter[str] = Counter()
-        tag_counter: Counter[str] = Counter()
-        trust_counter: Counter[str] = Counter()
-        titles: List[str] = []
-        memory_ids: List[str] = []
-
-        for record in records:
-            layer_counter[str(getattr(record, "memory_layer", "unknown") or "unknown")] += 1
-            trust_counter[str(getattr(record, "trust_level", "unknown") or "unknown")] += 1
-            memory_ids.append(str(getattr(record, "memory_id", "") or ""))
-            title = str(getattr(record, "title", "") or "").strip()
-            if title:
-                titles.append(title)
-            for tag in list(getattr(record, "tags", []) or []):
-                normalized = str(tag or "").strip()
-                if normalized:
-                    tag_counter[normalized] += 1
-
-        top_tags = [tag for tag, _count in tag_counter.most_common(5)]
-        layer_distribution = dict(layer_counter)
-        title_preview = titles[:3]
-        insights: List[str] = []
-        lessons: List[str] = []
-        risks: List[str] = []
-        improvements: List[str] = []
-
-        if layer_distribution:
-            insights.append(
-                "Recent memory is concentrated in "
-                + ", ".join(f"{layer}:{count}" for layer, count in layer_distribution.items())
-                + "."
-            )
-        if top_tags:
-            lessons.append("Recurring memory themes: " + ", ".join(top_tags[:3]) + ".")
-            improvements.append("Prioritize reflection follow-up on: " + ", ".join(top_tags[:3]) + ".")
-        if title_preview:
-            insights.append("Representative memory titles: " + "; ".join(title_preview) + ".")
-        low_trust_count = sum(
-            count for trust, count in trust_counter.items() if trust not in {"verified", "trusted"}
+        from zentex.reflection.memory_snapshot_pipeline import (
+            build_memory_snapshot,
+            memory_records_to_dataframe,
         )
-        if low_trust_count:
-            risks.append(f"{low_trust_count} recent memory records are not yet verified.")
-        if not records:
-            risks.append("No recent active memory records were available to organize.")
 
-        summary_parts: List[str] = []
-        if layer_distribution:
-            summary_parts.append(
-                "memory layers=" + ", ".join(f"{layer}:{count}" for layer, count in layer_distribution.items())
-            )
-        if top_tags:
-            summary_parts.append("top tags=" + ", ".join(top_tags[:3]))
-        if low_trust_count:
-            summary_parts.append(f"unverified={low_trust_count}")
-
-        return {
-            "summary": "Reflection maintenance: " + "; ".join(summary_parts) if summary_parts else "",
-            "insights": insights,
-            "lessons": lessons,
-            "risks": risks,
-            "improvements": improvements,
-            "top_tags": top_tags,
-            "layer_distribution": layer_distribution,
-            "memory_ids": [memory_id for memory_id in memory_ids if memory_id][:10],
-        }
+        return build_memory_snapshot(
+            memory_records_to_dataframe(records, now=datetime.now(timezone.utc))
+        )
 
 
 # Global singleton instance for reflection service

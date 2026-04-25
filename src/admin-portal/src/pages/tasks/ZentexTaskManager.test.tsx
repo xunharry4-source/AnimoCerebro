@@ -1,5 +1,6 @@
 import { render, screen, fireEvent, waitFor } from "@testing-library/react";
 import { describe, it, expect, vi, beforeEach } from "vitest";
+import { MemoryRouter } from "react-router-dom";
 
 import ZentexTaskManager from "./ZentexTaskManager";
 
@@ -18,6 +19,14 @@ class MockWebSocket {
 
 global.fetch = mockFetch;
 vi.stubGlobal("WebSocket", MockWebSocket as any);
+
+function renderTaskManager() {
+  return render(
+    <MemoryRouter>
+      <ZentexTaskManager />
+    </MemoryRouter>,
+  );
+}
 
 describe("ZentexTaskManager", () => {
   beforeEach(() => {
@@ -58,22 +67,60 @@ describe("ZentexTaskManager", () => {
       }),
     } as Response);
 
-    render(<ZentexTaskManager />);
+    renderTaskManager();
 
     await waitFor(() => {
       expect(screen.getByText("Planner prompt upgrade")).toBeInTheDocument();
     });
 
-    expect(screen.getByText("来源")).toBeInTheDocument();
-    expect(screen.getByText("工作流状态")).toBeInTheDocument();
+    expect(screen.getByText("tasks.sourceModule")).toBeInTheDocument();
+    expect(screen.getByText("tasks.workflowStatus")).toBeInTheDocument();
     expect(screen.getByText("upgrade")).toBeInTheDocument();
     expect(screen.getByText("validating")).toBeInTheDocument();
 
-    fireEvent.mouseDown(screen.getByLabelText("来源模块"));
-    fireEvent.click(screen.getByText("升级"));
+    fireEvent.mouseDown(screen.getByText("tasks.allSourceModules"));
+    fireEvent.click(screen.getByText("tasks.sourceModules.upgrade"));
 
     await waitFor(() => {
       expect(mockFetch).toHaveBeenLastCalledWith("/api/web/tasks/by-status?source_module=upgrade");
     });
+  });
+
+  it("renders task rows without metadata using default values", async () => {
+    mockFetch.mockResolvedValue({
+      ok: true,
+      json: async () => ({
+        in_progress: [
+          {
+            task_id: "core-1",
+            subtask_id: "sub-core-1",
+            idempotency_key: "core:1",
+            title: "Core task without metadata",
+            task_type: "system_action",
+            status: "in_progress",
+            progress: 0.4,
+            originator_id: "core",
+            remarks: null,
+            started_at: "2026-04-18T10:00:00Z",
+            completed_at: null,
+            created_at: "2026-04-18T09:00:00Z",
+          },
+        ],
+        pending: [],
+        waiting_confirmation: [],
+        completed: [],
+        cancelled: [],
+      }),
+    } as Response);
+
+    renderTaskManager();
+
+    await waitFor(() => {
+      expect(screen.getByText("Core task without metadata")).toBeInTheDocument();
+    });
+
+    expect(screen.getAllByText("core").length).toBeGreaterThanOrEqual(1);
+    expect(screen.getAllByText("--").length).toBeGreaterThanOrEqual(1);
+    expect(screen.getByText("medium")).toBeInTheDocument();
   });
 });

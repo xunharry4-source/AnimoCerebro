@@ -2,22 +2,45 @@
 """
 Reddit Tesseract OCR 视觉识别模块
 
-使用 Tesseract OCR 进行文字识别（macOS 优化版）
-替代 PaddleOCR，更轻量、更易安装
+文件用途:
+    为 Reddit 发帖页面提供基于 Tesseract OCR 和 DOM 检查的视觉识别辅助能力。
+
+主要职责:
+    - 识别页面文字和 Flair 选项位置
+    - 选择指定 Flair
+    - 点击 Reddit 提交按钮
+    - 在提交后验证是否真的生成了帖子 URL 或明确失败原因
+    - 将发帖后弹窗文本交给 LLM 翻译和语义分类
+
+不负责:
+    - 不管理 Reddit 登录状态和账号凭据
+    - 不绕过验证码、风控或社区限制
+    - 不在只有点击指令、没有发布证据时宣称发帖成功
+    - 不用静态关键词冒充社区弹窗语义理解
 """
 
+import re
 import time
 from pathlib import Path
-from typing import Dict, List, Optional, Tuple
+from typing import Any, Dict, List, Optional, Tuple
 
 
 class RedditVisualRecognizer:
     """Reddit 视觉识别器 - 使用 Tesseract OCR"""
     
-    def __init__(self, page, screenshot_dir: str = "screenshots"):
+    def __init__(
+        self,
+        page,
+        screenshot_dir: str = "screenshots",
+        llm_popup_interpreter: Optional[Any] = None,
+        enable_llm_popup_interpreter: bool = True,
+    ):
         self.page = page
         self.screenshot_dir = Path(screenshot_dir)
         self.screenshot_dir.mkdir(exist_ok=True)
+        self.llm_popup_interpreter = llm_popup_interpreter
+        self.enable_llm_popup_interpreter = enable_llm_popup_interpreter
+        self._failed_popup_interpretations = set()
         
         # 初始化 Tesseract OCR Helper
         try:
@@ -245,169 +268,517 @@ class RedditVisualRecognizer:
         Returns:
             bool: 是否成功
         """
+        result = self.select_flair_with_ocr(target_flair=target_flair, max_attempts=max_attempts)
+        if not result["success"]:
+            print(f"   ❌ Flair 选择失败: {result.get('error')}")
+        return result["success"]
+
+    def select_flair_with_ocr(
+        self,
+        target_flair: str = None,
+        preferred_keywords: List[str] = None,
+        max_attempts: int = 3
+    ) -> Dict:
+        """
+        打开 Flair 弹窗、OCR 识别候选项、选择目标或最合适项、点击 Apply 并验证。
+
+        Args:
+            target_flair: 首选 Flair 文本，允许为空。
+            preferred_keywords: target_flair 找不到时用于选择合适 Flair 的关键词。
+            max_attempts: 最大尝试次数。
+
+        Returns:
+            Dict: 选择结果，包含 success、selected_text、screenshot_path、error。
+        """
         if not self.ocr_helper:
-            print("   ❌ TesseractOCRHelper 未初始化")
-            return False
-        
-        print(f"\n🏷️  使用 Tesseract OCR 识别并选择 Flair: {target_flair}")
-        
-        for attempt in range(max_attempts):
-            print(f"\n   尝试 {attempt + 1}/{max_attempts}")
-            
-            # Step 1: 打开 Flair 对话框
+            return {'success': False, 'error': 'TesseractOCRHelper 未初始化'}
+
+        preferred_keywords = preferred_keywords or self._default_flair_keywords(target_flair)
+        print(f"\n🏷️  使用 OCR 选择 Flair: {target_flair or preferred_keywords}")
+
+        last_error = None
+        for attempt in range(1, max_attempts + 1):
+            print(f"\n   Flair 尝试 {attempt}/{max_attempts}")
+
             print("   Step 1: 打开 Flair 对话框...")
-            open_result = self._open_flair_dialog()
-            if not open_result:
-                print("   ❌ 无法打开 Flair 对话框")
+            if not self._open_flair_dialog():
+                last_error = '无法打开 Flair 对话框'
+                print(f"   ❌ {last_error}")
                 continue
-            
-            time.sleep(2)  # 等待对话框渲染
-            
-            # Step 2: 截图
-            print("   Step 2: 截取对话框...")
+
+            if not self._is_flair_dialog_open():
+                time.sleep(1)
+            if not self._is_flair_dialog_open():
+                last_error = 'Flair 对话框未打开或无法验证'
+                print(f"   ❌ {last_error}")
+                continue
+
+            print("   Step 2: 截图并 OCR 识别 Flair 选项...")
             screenshot_path = str(self.screenshot_dir / f"flair_dialog_{int(time.time())}.png")
             self.page.screenshot(path=screenshot_path, full_page=True)
-            
-            # Step 3: Tesseract OCR 识别
-            print("   Step 3: Tesseract OCR 识别...")
             ocr_results = self.ocr_helper.recognize_with_position(screenshot_path, lang='chi_sim+eng')
-            
             if not ocr_results:
-                print("   ⚠️  OCR 未识别到文字")
-                self.page.keyboard.press('Escape')
-                time.sleep(1)
+                last_error = 'OCR 未识别到 Flair 弹窗文字'
+                print(f"   ❌ {last_error}")
+                self._close_flair_dialog()
                 continue
-            
-            print(f"   ✅ 识别到 {len(ocr_results)} 个文本块")
-            
-            # 🔧 关键修复：将相邻的字符组合成完整的文本行
-            # Tesseract 经常把中文拆成单个字符，需要按 Y 坐标分组
-            print("   🔧 组合相邻字符...")
+
             grouped_texts = self._group_nearby_texts(ocr_results)
-            print(f"   📝 组合后得到 {len(grouped_texts)} 个文本行:")
-            for i, group in enumerate(grouped_texts[:15]):
-                print(f"      [{i}] \"{group['text']}\" (置信度: {group['confidence']:.1f}%, y={group['center_y']:.0f})")
-            
-            # 使用组合后的文本进行后续处理
-            ocr_results = grouped_texts
-            
-            # Step 4: 查找目标 Flair（中英文兼容）
-            print(f"   Step 4: 查找 '{target_flair}'...")
-            target_match = None
-            
-            # 首先尝试精确匹配或包含匹配
-            for item in ocr_results:
-                text_lower = item['text'].lower()
-                target_lower = target_flair.lower()
-                
-                # 双向包含匹配：目标在文本中 或 文本在目标中
-                if target_lower in text_lower or text_lower in target_lower:
-                    if item['confidence'] > 40:
-                        target_match = item
-                        print(f"   ✅ 找到匹配: \"{item['text']}\" (置信度: {item['confidence']:.1f}%)")
-                        break
-            
-            # 如果没找到，尝试关键词匹配（更宽松）
-            if not target_match:
-                print(f"   ⚠️  未找到精确匹配，尝试关键词匹配...")
-                
-                # 提取目标中的关键词（支持中英文）
-                import re
-                # 匹配中文字符或英文单词
-                keywords = re.findall(r'[\u4e00-\u9fff]+|[a-zA-Z0-9]+', target_flair)
-                
-                # 如果只有一个长关键词，拆分成更小的子串
-                if len(keywords) == 1 and len(keywords[0]) > 4:
-                    long_keyword = keywords[0]
-                    # 拆分成 2-3 个字符的子串
-                    keywords = [long_keyword[i:i+2] for i in range(0, len(long_keyword), 2)]
-                
-                print(f"   🔍 关键词: {keywords}")
-                
-                for item in ocr_results:
-                    text = item['text']
-                    # 检查是否包含至少一个关键词
-                    matched_keywords = [kw for kw in keywords if kw in text]
-                    
-                    if matched_keywords and item['confidence'] > 50:
-                        target_match = item
-                        print(f"   ✅ 关键词匹配: \"{item['text']}\" (匹配: {matched_keywords})")
-                        break
-            
-            if not target_match:
-                print(f"   ⚠️  未找到目标 Flair")
-                # 关闭对话框重试
-                self.page.keyboard.press('Escape')
-                time.sleep(1)
-                continue
-            
-            # Step 5: 计算点击坐标并点击
-            print("   Step 5: 点击 Flair...")
-            click_success = self._click_at_coordinates(
-                target_match['center_x'], 
-                target_match['center_y']
+            candidates = self._extract_flair_candidates(grouped_texts)
+            print(f"   📝 OCR 候选 Flair: {len(candidates)} 个")
+            for i, item in enumerate(candidates[:12]):
+                print(f"      [{i}] \"{item['text']}\" score={item['score']:.2f} conf={item['confidence']:.1f}")
+
+            selected = self._choose_flair_candidate(
+                candidates=candidates,
+                target_flair=target_flair,
+                preferred_keywords=preferred_keywords
             )
-            
-            if click_success:
-                print("   ✅ Flair 已点击")
-                time.sleep(1)
-                
-                # Step 6: 点击 Apply 按钮
-                print("   Step 6: 点击 Apply...")
-                apply_result = self._click_apply_button()
-                
-                if not apply_result:
-                    print("   ❌ Apply 按钮点击失败，Flair 未设置")
-                    self.page.keyboard.press('Escape')
-                    time.sleep(1)
-                    continue
-                
-                # 🔧 关键验证：检查 Flair 对话框是否真的关闭了
-                print("   🔍 验证 Flair 对话框是否关闭...")
-                time.sleep(1)  # 使用 time.sleep 而不是 page.wait_for_timeout
-                
-                # 截图检查是否还有 Flair 对话框
-                verify_screenshot = "screenshots/verify_flair_closed.png"
-                self.page.screenshot(path=verify_screenshot, full_page=False)
-                
-                verify_ocr = self.ocr_helper.recognize_with_position(verify_screenshot, lang='chi_sim+eng')
-                has_dialog = any('添加标记' in item['text'] or 'Apply' in item['text'] for item in verify_ocr if item['confidence'] > 50)
-                
-                if has_dialog:
-                    print("   ⚠️  Flair 对话框仍未关闭，可能 Apply 未生效")
-                    self.page.keyboard.press('Escape')
-                    time.sleep(1)
-                    continue
-                else:
-                    print("   ✅ Flair 对话框已关闭")
-                
-                # 🔧 验证 Flair 是否真的被选中：检查页面上是否显示 Flair 标签
-                print("   🔍 验证 Flair 是否已应用到帖子...")
-                flair_applied = self.page.evaluate("""
-                    () => {
-                        const content = document.body.textContent || '';
-                        // 检查是否有 Flair 相关的文本
-                        return content.includes('不适合') || 
-                               content.includes('工作场合') ||
-                               content.includes('Flair');
-                    }
-                """)
-                
-                if flair_applied:
-                    print("   ✅✅✅ Flair 设置成功并验证通过")
-                    return True
-                else:
-                    print("   ⚠️  无法验证 Flair 是否应用，但对话框已关闭")
-                    return True  # 保守认为成功
-            else:
-                print("   ❌ 点击失败")
-            
-            # 关闭对话框重试
-            self.page.keyboard.press('Escape')
+            if not selected:
+                last_error = '未找到可选择的 Flair 候选'
+                print(f"   ❌ {last_error}")
+                self._close_flair_dialog()
+                continue
+
+            print(f"   Step 3: 点击 Flair 候选 \"{selected['text']}\"")
+            if not self._click_flair_candidate(selected):
+                last_error = f"点击 Flair 候选失败: {selected['text']}"
+                print(f"   ❌ {last_error}")
+                self._close_flair_dialog()
+                continue
+
             time.sleep(1)
-        
-        print(f"\n❌ 经过 {max_attempts} 次尝试后仍然失败")
+
+            print("   Step 4: 点击 Apply/确认...")
+            if not self._click_apply_button():
+                last_error = 'Apply/确认按钮点击失败'
+                print(f"   ❌ {last_error}")
+                self._close_flair_dialog()
+                continue
+
+            if not self._wait_for_flair_dialog_closed(timeout=5):
+                last_error = 'Apply 后 Flair 对话框未关闭'
+                print(f"   ❌ {last_error}")
+                self._close_flair_dialog()
+                continue
+
+            if not self._verify_flair_applied(selected['text'], target_flair):
+                last_error = f"Flair 对话框已关闭，但页面未验证到已选择: {selected['text']}"
+                print(f"   ❌ {last_error}")
+                self._save_result_screenshot('flair_apply_unverified')
+                continue
+
+            print(f"   ✅✅✅ Flair 设置成功: {selected['text']}")
+            return {
+                'success': True,
+                'selected_text': selected['text'],
+                'match_type': selected.get('match_type'),
+                'screenshot_path': screenshot_path
+            }
+
+        return {'success': False, 'error': last_error or 'Flair 选择失败'}
+
+    def _default_flair_keywords(self, target_flair: str = None) -> List[str]:
+        """生成 Flair 候选排序关键词，优先匹配目标文本。"""
+        keywords = []
+        if target_flair:
+            keywords.extend(re.findall(r'[\u4e00-\u9fff]+|[a-zA-Z0-9]+', target_flair))
+
+        keywords.extend([
+            'discussion', '讨论', 'question', '问题', 'project', 'showcase',
+            '技术', '分享', 'general', 'other', '其他'
+        ])
+        return [kw.lower() for kw in keywords if kw]
+
+    def _is_flair_dialog_open(self) -> bool:
+        """验证 Flair 弹窗是否打开。"""
+        try:
+            dom_detected = bool(self.page.evaluate("""
+                () => {
+                    const dialogSelectors = [
+                        'shreddit-post-flair-modal',
+                        '[role="dialog"]',
+                        'reddit-post-flair-modal'
+                    ];
+                    for (const selector of dialogSelectors) {
+                        const node = document.querySelector(selector);
+                        if (node) return true;
+                    }
+
+                    const text = document.body?.innerText || '';
+                    const hasDialogWords = text.includes('Apply') ||
+                                           text.includes('Add') ||
+                                           text.includes('添加') ||
+                                           text.includes('确认') ||
+                                           text.includes('确定');
+                    const hasAdultOption = text.includes('不适合工作场合') ||
+                                           (text.includes('适合') && text.includes('工作') && text.includes('场合')) ||
+                                           (text.includes('包含') && text.includes('成'));
+                    const hasOptionWords = hasAdultOption ||
+                                           text.includes('剧透') ||
+                                           text.includes('品牌关联') ||
+                                           text.includes('成人内容');
+                    return hasDialogWords && hasOptionWords;
+                }
+            """))
+            if dom_detected:
+                return True
+        except Exception as e:
+            print(f"   ⚠️  Flair 弹窗状态检测失败: {e}")
+        return self._is_flair_dialog_open_visual()
+
+    def _is_flair_dialog_open_visual(self) -> bool:
+        """
+        用 OCR 视觉证据兜底判断 Flair 弹窗。
+
+        Reddit 的中文 Flair 弹窗文本可能藏在 Web Component/Shadow DOM 中，
+        DOM innerText 不稳定；视觉截图能确认用户实际看到的弹窗。
+        """
+        if not self.ocr_helper:
+            return False
+        try:
+            screenshot_path = str(self.screenshot_dir / "flair_dialog_state.png")
+            self.page.screenshot(path=screenshot_path, full_page=False)
+            ocr_results = self.ocr_helper.recognize_with_position(screenshot_path, lang='chi_sim+eng')
+            grouped = self._group_nearby_texts(ocr_results)
+            text = " ".join(self._normalize_ocr_text(item.get('text', '')) for item in grouped)
+            has_adult_option = (
+                '不适合工作场合' in text
+                or all(keyword in text for keyword in ['适合', '工作', '场合'])
+                or all(keyword in text for keyword in ['包含', '成'])
+            )
+            has_option = has_adult_option or any(keyword in text for keyword in ['剧透', '品牌关联', '成人内容'])
+            has_action = any(keyword in text for keyword in ['添加', '取消', 'Apply', 'Add'])
+            return bool(has_option and has_action)
+        except Exception as exc:
+            print(f"   ⚠️  Flair 弹窗视觉检测失败: {exc}")
+            return False
+
+    def _close_flair_dialog(self):
+        """关闭 Flair 弹窗，避免下一次 OCR 被旧弹窗污染。"""
+        try:
+            for selector in [
+                'button[aria-label="Close"]',
+                'button:has-text("Cancel")',
+                'button:has-text("取消")',
+                '[role="dialog"] button:has-text("Close")'
+            ]:
+                button = self.page.locator(selector).first
+                if button.count() > 0 and button.is_visible():
+                    button.click(timeout=3000)
+                    time.sleep(0.5)
+                    return
+        except Exception:
+            pass
+
+        try:
+            self.page.keyboard.press('Escape')
+            time.sleep(0.5)
+        except Exception:
+            pass
+
+    def _extract_flair_candidates(self, grouped_texts: List[Dict]) -> List[Dict]:
+        """
+        从 OCR 文本行中过滤可点击 Flair 候选。
+
+        Reddit 弹窗中会包含标题、搜索框、Apply/Cancel 等非 Flair 文案；
+        这些必须排除，否则坐标点击会点错控件。
+        """
+        blocked = {
+            'apply', 'cancel', 'search', 'flair', '添加标记', '选择标记',
+            'post flair', 'clear', 'done', '确认', '取消', '搜索'
+        }
+        candidates = []
+        bounds = self._get_flair_dialog_bounds()
+
+        for item in grouped_texts:
+            text = self._normalize_ocr_text(item.get('text', ''))
+            if not text:
+                continue
+            if bounds and not self._point_in_bounds(item.get('center_x'), item.get('center_y'), bounds):
+                continue
+
+            lowered = text.lower()
+            if any(word == lowered or word in lowered for word in blocked):
+                continue
+            if item.get('confidence', 0) < 35:
+                continue
+            if len(text) > 80:
+                continue
+
+            candidate = dict(item)
+            candidate['text'] = text
+            candidate['score'] = item.get('confidence', 0) / 100
+            candidates.append(candidate)
+
+        return candidates
+
+    def _get_flair_dialog_bounds(self) -> Optional[Dict[str, float]]:
+        """
+        返回 Flair 弹窗的大致边界。
+
+        优先使用真实 DOM bounding box；如果 Reddit Web Component 不暴露稳定 DOM，
+        使用居中弹窗的保守视觉区域，避免 OCR 把背景规则栏当成 Flair 候选。
+        """
+        try:
+            bounds = self.page.evaluate("""
+                () => {
+                    const selectors = ['[role="dialog"]', 'shreddit-post-flair-modal', 'reddit-post-flair-modal'];
+                    for (const selector of selectors) {
+                        const node = document.querySelector(selector);
+                        if (!node) continue;
+                        const rect = node.getBoundingClientRect();
+                        if (rect.width > 200 && rect.height > 150) {
+                            return {
+                                left: rect.left,
+                                top: rect.top,
+                                right: rect.right,
+                                bottom: rect.bottom
+                            };
+                        }
+                    }
+                    return null;
+                }
+            """)
+            if isinstance(bounds, dict) and bounds.get('right', 0) > bounds.get('left', 0):
+                parsed = {key: float(bounds[key]) for key in ['left', 'top', 'right', 'bottom']}
+                width = parsed["right"] - parsed["left"]
+                height = parsed["bottom"] - parsed["top"]
+                if 300 <= width <= 900 and 220 <= height <= 650:
+                    return parsed
+        except Exception as exc:
+            print(f"   ⚠️  获取 Flair 弹窗 DOM 边界失败: {exc}")
+
+        try:
+            viewport = self.page.viewport_size or {"width": 1920, "height": 1080}
+        except Exception:
+            viewport = {"width": 1920, "height": 1080}
+        width = float(viewport.get("width") or 1920)
+        height = float(viewport.get("height") or 1080)
+        return {
+            "left": width * 0.35,
+            "top": height * 0.34,
+            "right": width * 0.65,
+            "bottom": height * 0.66,
+        }
+
+    def _point_in_bounds(self, x: Any, y: Any, bounds: Dict[str, float]) -> bool:
+        """判断 OCR 坐标是否在 Flair 弹窗可点击区域内。"""
+        try:
+            px = float(x)
+            py = float(y)
+        except (TypeError, ValueError):
+            return False
+        return bounds["left"] <= px <= bounds["right"] and bounds["top"] <= py <= bounds["bottom"]
+
+    def _choose_flair_candidate(
+        self,
+        candidates: List[Dict],
+        target_flair: str = None,
+        preferred_keywords: List[str] = None
+    ) -> Optional[Dict]:
+        """按目标 Flair、关键词和 OCR 置信度选择最合适的候选项。"""
+        if not candidates:
+            return None
+
+        preferred_keywords = [kw.lower() for kw in (preferred_keywords or [])]
+        target_norm = self._normalize_ocr_text(target_flair or '').lower()
+        best = None
+        best_score = -1
+
+        for item in candidates:
+            text_norm = self._normalize_ocr_text(item['text']).lower()
+            score = item.get('confidence', 0) / 100
+            match_type = 'confidence'
+
+            if target_norm:
+                if target_norm == text_norm:
+                    score += 100
+                    match_type = 'exact'
+                elif target_norm in text_norm or text_norm in target_norm:
+                    score += 50
+                    match_type = 'contains'
+                else:
+                    token_score = self._flair_token_match_score(target_norm, text_norm)
+                    if token_score:
+                        score += token_score
+                        match_type = 'token'
+
+            matched_keywords = [kw for kw in preferred_keywords if kw and kw in text_norm]
+            if matched_keywords:
+                score += 10 * len(matched_keywords)
+                match_type = 'keyword'
+
+            if score > best_score:
+                best = dict(item)
+                best['score'] = score
+                best['match_type'] = match_type
+                best_score = score
+
+        return best
+
+    def _flair_token_match_score(self, target_norm: str, text_norm: str) -> int:
+        """
+        处理 OCR 对中文 Flair 的拆字/插字错误。
+
+        例如“不适合工作场合 (18+)”在真实截图中可能被识别成
+        “©包含不成适合工作场合84”，不能只依赖完整字符串包含。
+        """
+        if '不适合工作场合' in target_norm:
+            if all(token in text_norm for token in ['适合', '工作', '场合']):
+                return 80
+            if all(token in text_norm for token in ['包含', '成']):
+                return 40
+        if '剧透' in target_norm and '剧透' in text_norm:
+            return 80
+        if '品牌' in target_norm and '品牌' in text_norm:
+            return 80
+        return 0
+
+    def _normalize_ocr_text(self, text: str) -> str:
+        """清理 OCR 文本，减少空白和符号噪声。"""
+        if not text:
+            return ''
+        cleaned = re.sub(r'\s+', ' ', text).strip()
+        return cleaned.strip('|·•[](){}')
+
+    def _click_flair_candidate(self, selected: Dict) -> bool:
+        """
+        点击 Flair 候选。
+
+        Reddit 新版弹窗里中文 Flair 行通常由左侧文字和右侧 switch 组成；
+        只点 OCR 文本坐标可能不会触发选择，所以先用 DOM 找同一行的 switch。
+        """
+        text = self._normalize_ocr_text(selected.get('text', ''))
+        if text:
+            try:
+                clicked = self.page.evaluate(
+                    """
+                    (needle) => {
+                        const normalize = (value) => (value || '').replace(/\\s+/g, ' ').trim();
+                        const dialog = document.querySelector('[role="dialog"], shreddit-post-flair-modal, reddit-post-flair-modal');
+                        const root = dialog || document.body;
+                        const nodes = Array.from(root.querySelectorAll('*'))
+                            .filter((node) => normalize(node.innerText).includes(needle));
+
+                        for (const node of nodes) {
+                            const container = node.closest('[role="listitem"], li, label, shreddit-post-flair-row, div');
+                            const switchLike = container?.querySelector?.('[role="switch"], button, input[type="checkbox"], input[type="radio"]');
+                            if (switchLike) {
+                                switchLike.click();
+                                return true;
+                            }
+                            if (container) {
+                                container.click();
+                                return true;
+                            }
+                        }
+                        return false;
+                    }
+                    """,
+                    text,
+                )
+                if clicked:
+                    time.sleep(0.5)
+                    print(f"   ✅ 已通过 DOM 点击 Flair 候选: {text}")
+                    return True
+            except Exception as exc:
+                print(f"   ⚠️  DOM 点击 Flair 候选失败: {exc}")
+
+        center_x = float(selected.get('center_x') or 0)
+        center_y = float(selected.get('center_y') or 0)
+        if center_x <= 0 or center_y <= 0:
+            return False
+        bounds = self._get_flair_dialog_bounds()
+        if bounds and self._point_in_bounds(center_x, center_y, bounds):
+            toggle_x = max(bounds["left"], bounds["right"] - 48)
+            if self._click_at_coordinates(toggle_x, center_y):
+                print(f"   ✅ 已点击 Flair 行右侧开关: {text or selected.get('text')}")
+                return True
+        return self._click_at_coordinates(center_x, center_y)
+
+    def _wait_for_flair_dialog_closed(self, timeout: int = 5) -> bool:
+        """等待 Flair 对话框关闭。"""
+        deadline = time.time() + timeout
+        while time.time() < deadline:
+            if not self._is_flair_dialog_open():
+                return True
+            time.sleep(0.5)
         return False
+
+    def _verify_flair_applied(self, selected_text: str, target_flair: str = None) -> bool:
+        """验证选中的 Flair 已经出现在发帖页上。"""
+        expected_tokens = [
+            token.lower()
+            for source in [selected_text, target_flair]
+            for token in re.findall(r'[\u4e00-\u9fff]+|[a-zA-Z0-9]+', source or '')
+            if len(token) >= 2
+        ]
+
+        if not expected_tokens:
+            return False
+
+        try:
+            page_text = (
+                (self.page.locator('body').inner_text(timeout=3000) or '')
+                + "\n"
+                + self._collect_page_text_deep()
+            ).lower()
+            target_joined = f"{selected_text or ''} {target_flair or ''}".lower()
+            if (
+                '不适合' in target_joined
+                or '工作场合' in target_joined
+                or '18' in target_joined
+                or all(token in target_joined for token in ['适合', '工作', '场合'])
+            ):
+                if any(token in page_text for token in ['18+', 'nsfw', '成人']):
+                    return True
+            return any(token in page_text for token in expected_tokens)
+        except Exception as e:
+            print(f"   ⚠️  Flair 应用状态验证失败: {e}")
+            return False
+
+    def _collect_page_text_deep(self) -> str:
+        """
+        递归读取普通 DOM 和 Shadow DOM 文本/可访问性属性。
+
+        Reddit 的 Flair 有时以图标或 shadow component 呈现，body.innerText
+        看不到完整标签；这里用于验证真实页面状态，不用于伪造成功。
+        """
+        try:
+            return str(self.page.evaluate("""
+                () => {
+                    const parts = [];
+                    const visit = (node, depth = 0) => {
+                        if (!node || depth > 12) return;
+                        if (node.nodeType === Node.TEXT_NODE) {
+                            const text = (node.textContent || '').trim();
+                            if (text) parts.push(text);
+                            return;
+                        }
+                        if (node.nodeType !== Node.ELEMENT_NODE && node !== document) return;
+                        const element = node;
+                        if (element.getAttribute) {
+                            for (const attr of ['aria-label', 'title', 'alt', 'data-testid', 'data-adclicklocation']) {
+                                const value = element.getAttribute(attr);
+                                if (value) parts.push(value);
+                            }
+                        }
+                        if (element.shadowRoot) {
+                            visit(element.shadowRoot, depth + 1);
+                        }
+                        const children = element.childNodes || [];
+                        for (const child of children) {
+                            visit(child, depth + 1);
+                        }
+                    };
+                    visit(document);
+                    return parts.join('\\n');
+                }
+            """))
+        except Exception as exc:
+            print(f"   ⚠️  Shadow DOM 文本读取失败: {exc}")
+            return ""
     
     def _open_flair_dialog(self) -> bool:
         """
@@ -421,11 +792,40 @@ class RedditVisualRecognizer:
         """
         try:
             print("   📸 Step 1: 截图并使用 OCR 查找'添加标记'按钮...")
-            
+
+            if self._is_flair_dialog_open():
+                print("      ✅ Flair 对话框已处于打开状态")
+                return True
+
+            # 先使用 DOM 定位，OCR 作为兜底。这样可以避免按钮文字被拆字后点错位置。
+            for selector in [
+                'button:has-text("Add flair")',
+                'button:has-text("Flair")',
+                'button:has-text("添加标记")',
+                'button:has-text("标记")',
+                '[aria-label*="flair" i]',
+                '[data-testid*="flair" i]'
+            ]:
+                try:
+                    button = self.page.locator(selector).first
+                    if button.count() > 0 and button.is_visible():
+                        button.scroll_into_view_if_needed()
+                        button.click(timeout=5000)
+                        time.sleep(1)
+                        if self._is_flair_dialog_open():
+                            print(f"      ✅ 已通过 DOM 打开 Flair 对话框: {selector}")
+                            return True
+                except Exception as exc:
+                    print(f"      ⚠️  DOM 打开 Flair 失败 {selector}: {exc}")
+
             # 截图
-            screenshot_path = "screenshots/flair_button_search.png"
+            screenshot_path = str(self.screenshot_dir / "flair_button_search.png")
             self.page.screenshot(path=screenshot_path, full_page=False)
             print(f"      截图已保存: {screenshot_path}")
+
+            if self._is_flair_dialog_open_visual():
+                print("      ✅ 已通过 OCR 视觉检测确认 Flair 对话框打开")
+                return True
             
             # 使用 Tesseract OCR 识别
             results = self.ocr_helper.recognize_with_position(screenshot_path, lang='chi_sim+eng')
@@ -458,9 +858,13 @@ class RedditVisualRecognizer:
             print(f"      🖱️  点击坐标: ({target_found['center_x']:.0f}, {target_found['center_y']:.0f})")
             self.page.mouse.click(target_found['center_x'], target_found['center_y'])
             time.sleep(2)  # 等待对话框打开
-            
-            print("      ✅ Flair 对话框已打开")
-            return True
+
+            if self._is_flair_dialog_open():
+                print("      ✅ Flair 对话框已打开")
+                return True
+
+            print("      ❌ 点击后未检测到 Flair 对话框")
+            return False
             
         except Exception as e:
             print(f"      ❌ OCR 识别失败: {e}")
@@ -497,11 +901,24 @@ class RedditVisualRecognizer:
     def _click_apply_button(self) -> bool:
         """点击 Apply/确认按钮"""
         try:
+            bounds = self._get_flair_dialog_bounds()
+            if bounds and self._is_flair_dialog_open():
+                apply_x = max(bounds["left"], bounds["right"] - 42)
+                apply_y = max(bounds["top"], bounds["bottom"] - 32)
+                print(f"   📍 点击 Flair 弹窗右下角确认按钮: ({apply_x:.0f}, {apply_y:.0f})")
+                self.page.mouse.click(apply_x, apply_y)
+                time.sleep(1)
+                return True
+
             # 尝试多种选择器
             apply_selectors = [
                 'button:has-text("Apply")',
+                'button:has-text("Add")',
+                'button:has-text("添加")',
                 'button:has-text("确认")',
                 'button:has-text("确定")',
+                'button:has-text("Done")',
+                'button:has-text("Save")',
                 '[class*="apply"]',
             ]
             
@@ -512,9 +929,21 @@ class RedditVisualRecognizer:
                         btn.click()
                         print(f"   ✅ 已点击 Apply 按钮")
                         return True
-                except:
+                except Exception:
                     continue
-            
+
+            if self.ocr_helper:
+                screenshot_path = str(self.screenshot_dir / f"flair_apply_search_{int(time.time())}.png")
+                self.page.screenshot(path=screenshot_path, full_page=True)
+                ocr_results = self.ocr_helper.recognize_with_position(screenshot_path, lang='chi_sim+eng')
+                grouped = self._group_nearby_texts(ocr_results)
+                for item in grouped:
+                    text = self._normalize_ocr_text(item.get('text', '')).lower()
+                    if any(keyword in text for keyword in ['apply', 'add', '添加', '确认', '确定', 'done', 'save']):
+                        if self._click_at_coordinates(item['center_x'], item['center_y']):
+                            print(f"   ✅ 已通过 OCR 点击 Apply 按钮: {item['text']}")
+                            return True
+
             print("   ⚠️  未找到 Apply 按钮")
             return False
             
@@ -526,7 +955,11 @@ class RedditVisualRecognizer:
     
     def detect_and_read_error_dialog(self, wait_time: int = 5) -> Optional[str]:
         """
-        检测并读取错误提示框的内容（使用 Tesseract OCR）
+        检测并读取错误提示框的内容。
+
+        弹窗文本可能由不同社区自定义，不能只依赖固定中英文关键词。
+        这里复用发帖后弹窗解释流程：DOM/OCR 负责取文本，LLM 负责翻译
+        和判断是否真的是错误。
         
         Args:
             wait_time: 等待时间
@@ -534,40 +967,24 @@ class RedditVisualRecognizer:
         Returns:
             str: 错误消息，如果没有则返回 None
         """
-        if not self.ocr_helper:
-            print("   ❌ TesseractOCRHelper 未初始化")
-            return None
-        
         print(f"\n🔍 检测错误提示框...")
-        
-        # 等待
-        time.sleep(wait_time)
-        
-        # 截图
-        screenshot_path = str(self.screenshot_dir / f"error_dialog_{int(time.time())}.png")
-        self.page.screenshot(path=screenshot_path, full_page=True)
-        print(f"   📸 截图已保存: {screenshot_path}")
-        
-        # 使用 Tesseract OCR 识别
-        ocr_results = self.ocr_helper.recognize_with_position(screenshot_path, lang='eng')
-        
-        # 查找错误相关的文本
-        error_keywords = ['error', 'failed', 'invalid', 'required', 'too short']
-        
-        error_messages = []
-        for item in ocr_results:
-            text_lower = item['text'].lower()
-            if any(kw in text_lower for kw in error_keywords):
-                if item['confidence'] > 40:
-                    error_messages.append(item['text'])
-        
-        if error_messages:
-            error_text = '; '.join(error_messages[:3])
+        popup_result = self.detect_submission_popup_result(wait_time=wait_time, use_ocr=True)
+
+        if popup_result.get('status') == 'error':
+            error_text = (
+                popup_result.get('translated_message_zh')
+                or popup_result.get('summary_zh')
+                or popup_result.get('message')
+            )
             print(f"   ❌ 检测到错误: {error_text}")
             return error_text
-        else:
-            print("   ✅ 未检测到错误提示")
+
+        if popup_result.get('status') == 'unknown' and popup_result.get('message'):
+            print(f"   ⚠️  弹窗内容未能确认是错误: {popup_result.get('summary_zh') or popup_result.get('message')}")
             return None
+
+        print("   ✅ 未检测到错误提示")
+        return None
     
     def handle_error_and_retry(self, original_title: str, original_content: str,
                               max_retries: int = 2) -> Dict:
@@ -650,6 +1067,62 @@ class RedditVisualRecognizer:
             'message': error_message,
             'attempts': max_retries
         }
+
+    def _correction_from_popup_analysis(
+        self,
+        popup_analysis: Dict,
+        title: str,
+        content: str
+    ) -> Dict:
+        """Build retry instructions from the LLM popup interpretation."""
+        category = str(popup_analysis.get('category') or 'unknown')
+        action = str(popup_analysis.get('recommended_action') or 'manual_review')
+        summary = (
+            popup_analysis.get('summary_zh')
+            or popup_analysis.get('translated_message_zh')
+            or popup_analysis.get('reason')
+            or 'LLM 未给出可执行摘要'
+        )
+
+        correction = {
+            'should_retry': bool(popup_analysis.get('should_retry')),
+            'corrected_title': title,
+            'corrected_content': content,
+            'suggestions': [summary],
+            'reason': '',
+            'needs_flair': bool(popup_analysis.get('needs_flair')),
+        }
+
+        if popup_analysis.get('status') != 'error':
+            correction['should_retry'] = False
+            correction['reason'] = '弹窗未被 LLM 判定为错误'
+            return correction
+
+        # Only make mechanical edits for categories where the provider gave a
+        # specific action. Community-rule errors stay manual to avoid fake fixes.
+        if action == 'select_flair' or category == 'flair_required':
+            correction['should_retry'] = True
+            correction['needs_flair'] = True
+            correction['suggestions'].append('LLM 判定需要选择社区 Flair')
+        elif action == 'edit_title' or category == 'title_issue':
+            correction['should_retry'] = True
+            correction['corrected_title'] = (title or "Reddit post").strip() + " - Updated"
+            correction['suggestions'].append('LLM 判定标题需要调整')
+        elif action in {'edit_content', 'edit_post'} or category == 'content_issue':
+            correction['should_retry'] = True
+            correction['corrected_content'] = (
+                (content or '').strip()
+                + "\n\nAdditional details added for community requirements."
+            ).strip()
+            correction['suggestions'].append('LLM 判定正文需要调整')
+        elif action == 'wait_then_retry' or category == 'rate_limit':
+            correction['should_retry'] = False
+            correction['reason'] = 'LLM 判定需要等待，当前流程不自动延迟重试'
+        else:
+            correction['should_retry'] = False
+            correction['reason'] = f'LLM 判定需要人工处理: {category}/{action}'
+
+        return correction
     
     def _analyze_error_and_correct(self, error_message: str, title: str, content: str) -> Dict:
         """分析错误并生成修正"""
@@ -658,7 +1131,8 @@ class RedditVisualRecognizer:
             'corrected_title': title,
             'corrected_content': content,
             'suggestions': [],
-            'reason': ''
+            'reason': '',
+            'needs_flair': False
         }
         
         error_lower = error_message.lower()
@@ -666,31 +1140,31 @@ class RedditVisualRecognizer:
         # 标题问题
         if any(kw in error_lower for kw in ['title', '标题', 'short', '短']):
             correction['should_retry'] = True
-            correction['corrected_title'] = title + " - Updated"
-            correction['suggestions'].append("标题可能太短，已添加后缀")
+            correction['corrected_title'] = (title or "Reddit post").strip() + " - Updated"
+            correction['suggestions'].append("标题可能太短或缺失，已补充标题")
         
         # 内容问题
         elif any(kw in error_lower for kw in ['content', '内容', 'body', '正文']):
             correction['should_retry'] = True
-            correction['corrected_content'] = content + "\n\nAdditional details added."
+            correction['corrected_content'] = (content or "").strip() + "\n\nAdditional details added for context."
             correction['suggestions'].append("内容可能不足，已添加补充")
         
         # Flair 问题
         elif any(kw in error_lower for kw in ['flair', '标记', '标识', 'required', '必填']):
             correction['should_retry'] = True
+            correction['needs_flair'] = True
             correction['suggestions'].append("需要选择 Flair")
         
         # 重复
         elif any(kw in error_lower for kw in ['duplicate', '重复', 'similar']):
             correction['should_retry'] = True
-            correction['corrected_title'] = title + " (v2)"
-            correction['suggestions'].append("帖子可能重复，已修改标题")
+            correction['corrected_title'] = (title or "Reddit post").strip() + f" ({int(time.time())})"
+            correction['suggestions'].append("帖子可能重复，已为测试标题添加时间戳")
         
         # 频率限制
         elif any(kw in error_lower for kw in ['rate limit', '频率', 'wait', '等待']):
-            correction['should_retry'] = True
-            correction['suggestions'].append("触发频率限制，建议等待 60 秒")
-            time.sleep(60)
+            correction['should_retry'] = False
+            correction['reason'] = '触发频率限制，不自动重试'
         
         # 权限
         elif any(kw in error_lower for kw in ['permission', '权限', 'banned']):
@@ -698,8 +1172,8 @@ class RedditVisualRecognizer:
             correction['reason'] = '没有发帖权限'
         
         else:
-            correction['should_retry'] = True
-            correction['suggestions'].append("未知错误，尝试简化内容")
+            correction['should_retry'] = False
+            correction['reason'] = '未知错误，不自动修改内容'
         
         return correction
     
@@ -727,7 +1201,139 @@ class RedditVisualRecognizer:
             print(f"   ⚠️  重新填写失败: {e}")
     
     def _submit_post(self) -> bool:
-        """提交帖子"""
+        """提交帖子并用结果验证保持旧调用兼容。"""
+        result = self.submit_post_and_verify()
+        return result.get('success', False)
+
+    def submit_post_and_verify(
+        self,
+        subreddit: str = None,
+        wait_time: int = 15,
+        title: str = None,
+        content: str = None,
+        target_flair: str = None,
+        max_retries: int = 0
+    ) -> Dict:
+        """
+        提交帖子并验证 Reddit 是否真的创建了帖子。
+
+        Args:
+            subreddit: 目标 subreddit。为空时从当前 URL 推断。
+            wait_time: 最长等待验证时间（秒）
+            title: 当前标题，用于失败后重填。
+            content: 当前正文，用于失败后重填。
+            target_flair: Flair 缺失时用于重新选择。
+            max_retries: 错误后最多重试次数。
+
+        Returns:
+            Dict: {
+                'success': bool,
+                'status': 'success' | 'error' | 'unknown',
+                'post_url': str | None,
+                'error_message': str | None,
+                'screenshot_path': str | None,
+                'click': Dict
+            }
+        """
+        attempts = []
+        current_title = title
+        current_content = content
+
+        for attempt in range(max_retries + 1):
+            url_before = self.page.url
+            subreddit = subreddit or self._infer_subreddit_from_url(url_before)
+            print(f"\n🚀 发帖尝试 {attempt + 1}/{max_retries + 1}")
+
+            click_result = self._click_submit_button()
+            result = {
+                'success': False,
+                'status': 'unknown',
+                'post_url': None,
+                'error_message': None,
+                'screenshot_path': None,
+                'url_before': url_before,
+                'url_after': self.page.url,
+                'click': click_result,
+                'attempt': attempt + 1,
+            }
+
+            if not click_result.get('success'):
+                result['status'] = 'error'
+                result['error_message'] = click_result.get('reason', '提交按钮点击失败')
+                result['screenshot_path'] = self._save_result_screenshot('reddit_submit_click_failed')
+                attempts.append(result)
+                result['attempts'] = self._attempt_history_snapshot(attempts)
+                return result
+
+            verification = self._wait_for_submission_result(
+                url_before=url_before,
+                subreddit=subreddit,
+                wait_time=wait_time
+            )
+            verification['click'] = click_result
+            verification['attempt'] = attempt + 1
+            attempts.append(verification)
+
+            if verification.get('success'):
+                verification['attempts'] = self._attempt_history_snapshot(attempts)
+                return verification
+
+            if attempt >= max_retries:
+                verification['attempts'] = self._attempt_history_snapshot(attempts)
+                return verification
+
+            popup_analysis = (verification.get('popup') or {}).get('analysis') or {}
+            if popup_analysis:
+                correction = self._correction_from_popup_analysis(
+                    popup_analysis=popup_analysis,
+                    title=current_title or '',
+                    content=current_content or ''
+                )
+            else:
+                error_message = verification.get('error_message') or ''
+                correction = self._analyze_error_and_correct(
+                    error_message=error_message,
+                    title=current_title or '',
+                    content=current_content or ''
+                )
+            if not correction.get('should_retry'):
+                verification['attempts'] = self._attempt_history_snapshot(attempts)
+                verification['retry_blocked_reason'] = correction.get('reason') or '错误不可自动修复'
+                return verification
+
+            print("\n🔧 检测到可修复错误，关闭弹窗并修正表单...")
+            self._close_submission_popup()
+
+            if correction.get('needs_flair'):
+                flair_result = self.select_flair_with_ocr(
+                    target_flair=target_flair,
+                    max_attempts=2
+                )
+                if not flair_result.get('success'):
+                    verification['attempts'] = self._attempt_history_snapshot(attempts)
+                    verification['retry_blocked_reason'] = f"Flair 重新选择失败: {flair_result.get('error')}"
+                    return verification
+
+            current_title = correction.get('corrected_title', current_title)
+            current_content = correction.get('corrected_content', current_content)
+            self._refill_form(current_title or '', current_content or '')
+
+        return attempts[-1] if attempts else {'success': False, 'error_message': '未执行发帖'}
+
+    def _attempt_history_snapshot(self, attempts: List[Dict]) -> List[Dict]:
+        """复制尝试历史，避免 result['attempts'] 引用自身导致 JSON 循环。"""
+        return [
+            {key: value for key, value in attempt.items() if key != 'attempts'}
+            for attempt in attempts
+        ]
+
+    def _click_submit_button(self) -> Dict:
+        """
+        点击 Reddit 提交按钮。
+
+        使用 DOM 路径优先是因为 OCR 坐标可能点中“创建帖子”等非提交文本；
+        只有按钮明确可点击时才发出点击。
+        """
         try:
             result = self.page.evaluate("""
                 () => {
@@ -744,17 +1350,469 @@ class RedditVisualRecognizer:
                     return false;
                 }
             """)
-            
+
             if result:
                 print("   ✅ 提交指令已发出")
-                return True
-            else:
-                print("   ❌ 提交失败")
-                return False
-        
+                return {'success': True, 'method': 'reddit-submit-component'}
+
+            for selector in [
+                'button[type="submit"]',
+                'button:has-text("Post")',
+                'button:has-text("发布")',
+                'button:has-text("提交")',
+                '[data-testid="submit-button"]'
+            ]:
+                try:
+                    button = self.page.locator(selector).first
+                    if button.count() > 0 and button.is_visible() and button.is_enabled():
+                        button.scroll_into_view_if_needed()
+                        button.click(timeout=5000)
+                        print(f"   ✅ 提交按钮已点击: {selector}")
+                        return {'success': True, 'method': f'locator:{selector}'}
+                except Exception as exc:
+                    print(f"   ⚠️  提交按钮选择器失败 {selector}: {exc}")
+
+            reason = self._disabled_submit_reason()
+            print(f"   ❌ 提交失败: {reason}")
+            return {'success': False, 'reason': reason}
+
         except Exception as e:
             print(f"   ❌ 提交异常: {e}")
+            return {'success': False, 'reason': str(e)}
+
+    def _wait_for_submission_result(self, url_before: str, subreddit: str = None, wait_time: int = 15) -> Dict:
+        """等待并验证提交结果，禁止把未知状态当作成功。"""
+        deadline = time.time() + wait_time
+        result = {
+            'success': False,
+            'status': 'unknown',
+            'post_url': None,
+            'error_message': None,
+            'screenshot_path': None,
+            'url_before': url_before,
+            'url_after': self.page.url
+        }
+
+        while time.time() < deadline:
+            current_url = self.page.url
+            result['url_after'] = current_url
+
+            if self._is_success_post_url(current_url, subreddit):
+                result.update({
+                    'success': True,
+                    'status': 'success',
+                    'post_url': current_url,
+                    'screenshot_path': self._save_result_screenshot('reddit_post_success')
+                })
+                print(f"   ✅ 发帖成功，帖子 URL: {current_url}")
+                return result
+
+            popup_result = self.detect_submission_popup_result(wait_time=0, use_ocr=False)
+            if popup_result['status'] == 'success':
+                result.update({
+                    'success': True,
+                    'status': 'success',
+                    'post_url': current_url,
+                    'error_message': None,
+                    'popup': popup_result,
+                    'screenshot_path': popup_result.get('screenshot_path')
+                })
+                print(f"   ✅ 弹窗提示发帖成功: {popup_result.get('message')}")
+                return result
+
+            if popup_result['status'] == 'error':
+                popup_error = (
+                    popup_result.get('summary_zh')
+                    or popup_result.get('translated_message_zh')
+                    or popup_result.get('message')
+                )
+                result.update({
+                    'status': 'error',
+                    'error_message': popup_error,
+                    'popup': popup_result,
+                    'screenshot_path': popup_result.get('screenshot_path')
+                })
+                print(f"   ❌ 发帖后弹窗错误: {popup_error}")
+                return result
+
+            page_errors = self._detect_page_errors()
+            if page_errors:
+                result.update({
+                    'status': 'error',
+                    'error_message': '; '.join(page_errors[:3]),
+                    'screenshot_path': self._save_result_screenshot('reddit_post_error')
+                })
+                print(f"   ❌ 检测到 Reddit 错误: {result['error_message']}")
+                return result
+
+            time.sleep(1)
+
+        popup_result = self.detect_submission_popup_result(wait_time=0, use_ocr=True)
+        if popup_result['status'] in ['success', 'error']:
+            result.update({
+                'success': popup_result['status'] == 'success',
+                'status': popup_result['status'],
+                'post_url': self.page.url if popup_result['status'] == 'success' else None,
+                'error_message': None if popup_result['status'] == 'success' else (
+                    popup_result.get('summary_zh')
+                    or popup_result.get('translated_message_zh')
+                    or popup_result.get('message')
+                ),
+                'popup': popup_result,
+                'screenshot_path': popup_result.get('screenshot_path')
+            })
+            return result
+
+        current_url = self.page.url
+        result['url_after'] = current_url
+
+        if current_url == url_before or '/submit' in current_url:
+            result['status'] = 'error'
+            result['error_message'] = '提交后仍停留在提交页面，未观察到帖子 URL'
+        else:
+            result['status'] = 'unknown'
+            result['error_message'] = f'URL 已变化但不是可验证的帖子 URL: {current_url}'
+
+        result['screenshot_path'] = self._save_result_screenshot('reddit_post_unverified')
+        print(f"   ❌ 发帖未验证: {result['error_message']}")
+        return result
+
+    def _is_success_post_url(self, url: str, subreddit: str = None) -> bool:
+        """判断 URL 是否为 Reddit 帖子结果页。"""
+        if not url:
             return False
+
+        normalized_url = url.lower()
+        if subreddit:
+            subreddit_lower = subreddit.replace('r/', '').lower()
+            return (
+                f"/r/{subreddit_lower}/comments/" in normalized_url
+                or f"/r/{subreddit_lower}/posts/" in normalized_url
+            )
+
+        return "/comments/" in normalized_url or "/posts/" in normalized_url
+
+    def _infer_subreddit_from_url(self, url: str) -> Optional[str]:
+        """从当前 Reddit 提交页 URL 推断 subreddit。"""
+        match = re.search(r"/r/([^/]+)/", url or "", flags=re.IGNORECASE)
+        return match.group(1) if match else None
+
+    def detect_submission_popup_result(self, wait_time: int = 3, use_ocr: bool = True) -> Dict:
+        """
+        识别点击发帖后的弹窗或 toast 内容，并判断成功/错误/无弹窗。
+
+        Args:
+            wait_time: 识别前等待秒数。
+            use_ocr: DOM 文本不足时是否使用截图 OCR。
+
+        Returns:
+            Dict: {
+                'status': 'success' | 'error' | 'none' | 'unknown',
+                'message': str,
+                'screenshot_path': str | None,
+                'source': 'dom' | 'ocr' | 'none'
+            }
+        """
+        if wait_time:
+            time.sleep(wait_time)
+
+        screenshot_path = self._save_result_screenshot('reddit_submission_popup')
+        dom_messages = self._read_submission_popup_dom()
+        dom_message = '; '.join(dom_messages)
+        dom_analysis = None
+        if dom_message:
+            dom_analysis = self._interpret_submission_message_fail_closed(dom_message, source='dom')
+            if dom_analysis.get('status') != 'unknown':
+                return self._popup_result_from_analysis(
+                    analysis=dom_analysis,
+                    message=dom_message,
+                    screenshot_path=screenshot_path,
+                    source='dom',
+                )
+
+        if use_ocr and self.ocr_helper and screenshot_path:
+            try:
+                ocr_results = self.ocr_helper.recognize_with_position(screenshot_path, lang='chi_sim+eng')
+                grouped = self._group_nearby_texts(ocr_results)
+                ocr_message = '; '.join(
+                    self._normalize_ocr_text(item.get('text', ''))
+                    for item in grouped
+                    if item.get('confidence', 0) > 35 and item.get('text')
+                )
+            except Exception as e:
+                print(f"   ⚠️  发帖后弹窗 OCR 失败: {e}")
+            else:
+                if ocr_message:
+                    analysis = self._interpret_submission_message_fail_closed(ocr_message, source='ocr')
+                    return self._popup_result_from_analysis(
+                        analysis=analysis,
+                        message=ocr_message,
+                        screenshot_path=screenshot_path,
+                        source='ocr',
+                    )
+
+        if dom_message:
+            return self._popup_result_from_analysis(
+                analysis=dom_analysis or self._interpret_submission_message_fail_closed(dom_message, source='dom'),
+                message=dom_message,
+                screenshot_path=screenshot_path,
+                source='dom',
+            )
+
+        return {
+            'status': 'none',
+            'message': '',
+            'screenshot_path': screenshot_path,
+            'source': 'none'
+        }
+
+    def _interpret_submission_message_fail_closed(self, message: str, source: str) -> Dict:
+        """
+        调用 LLM 解释弹窗；LLM 不可用时返回 unknown，不冒充分类结果。
+
+        这样提交验证可以继续等待真实 permalink，但不会把弹窗语义判断伪装成成功。
+        """
+        failure_key = (source, message)
+        if failure_key in self._failed_popup_interpretations:
+            return {
+                'status': 'unknown',
+                'language': 'unknown',
+                'translated_message_zh': None,
+                'summary_zh': None,
+                'category': 'llm_unavailable',
+                'should_retry': False,
+                'needs_flair': False,
+                'recommended_action': 'manual_review',
+                'confidence': 0.0,
+                'reason': 'LLM popup interpretation previously failed for the same message',
+                'error': 'previous_llm_popup_interpretation_failure',
+            }
+        try:
+            return self._interpret_submission_message(message, source=source)
+        except Exception as exc:
+            self._failed_popup_interpretations.add(failure_key)
+            print(f"   ❌ 弹窗 LLM 解释失败，保持 unknown 并继续等待 URL 验证: {exc}")
+            return {
+                'status': 'unknown',
+                'language': 'unknown',
+                'translated_message_zh': None,
+                'summary_zh': None,
+                'category': 'llm_unavailable',
+                'should_retry': False,
+                'needs_flair': False,
+                'recommended_action': 'manual_review',
+                'confidence': 0.0,
+                'reason': f'LLM popup interpretation failed: {exc}',
+                'error': str(exc),
+            }
+
+    def _popup_result_from_analysis(
+        self,
+        *,
+        analysis: Dict,
+        message: str,
+        screenshot_path: str,
+        source: str,
+    ) -> Dict:
+        """Shape LLM popup analysis into the existing submission result contract."""
+        return {
+            'status': analysis.get('status', 'unknown'),
+            'message': message,
+            'translated_message_zh': analysis.get('translated_message_zh'),
+            'summary_zh': analysis.get('summary_zh'),
+            'category': analysis.get('category'),
+            'should_retry': analysis.get('should_retry'),
+            'needs_flair': analysis.get('needs_flair'),
+            'recommended_action': analysis.get('recommended_action'),
+            'llm_trace_id': analysis.get('trace_id'),
+            'analysis': analysis,
+            'screenshot_path': screenshot_path,
+            'source': source,
+        }
+
+    def _read_submission_popup_dom(self) -> List[str]:
+        """读取 Reddit 弹窗、toast、alert 的 DOM 文本。"""
+        try:
+            return self.page.evaluate("""
+                () => {
+                    const selectors = [
+                        '[role="dialog"]',
+                        '[role="alert"]',
+                        '[aria-live="assertive"]',
+                        '[aria-live="polite"]',
+                        'shreddit-toast',
+                        'reddit-toast',
+                        '.toast',
+                        '.error',
+                        '[class*="toast"]',
+                        '[class*="error"]'
+                    ];
+                    const texts = [];
+                    for (const selector of selectors) {
+                        for (const node of document.querySelectorAll(selector)) {
+                            const visible = !!(node.offsetWidth || node.offsetHeight || node.getClientRects().length);
+                            if (!visible) continue;
+                            const text = (node.innerText || node.textContent || '').trim();
+                            if (text) texts.push(text);
+                        }
+                    }
+                    return [...new Set(texts)].slice(0, 8);
+                }
+            """)
+        except Exception as e:
+            print(f"   ⚠️  读取发帖弹窗 DOM 失败: {e}")
+            return []
+
+    def _interpret_submission_message(self, message: str, source: str) -> Dict:
+        """Interpret popup text with LLM by default; legacy keyword mode is explicit."""
+        if self.enable_llm_popup_interpreter:
+            interpreter = self._get_popup_interpreter()
+            return interpreter.interpret(
+                message=message,
+                subreddit=self._infer_subreddit_from_url(self.page.url),
+                source=source,
+            )
+
+        status = self._classify_submission_message(message)
+        return {
+            'status': status,
+            'language': 'unknown',
+            'translated_message_zh': message,
+            'summary_zh': message,
+            'category': 'unknown',
+            'should_retry': status == 'error',
+            'needs_flair': 'flair' in (message or '').lower() or '标记' in (message or ''),
+            'recommended_action': 'manual_review' if status == 'error' else 'none',
+            'confidence': 0.0,
+            'reason': 'legacy keyword classifier explicitly enabled',
+        }
+
+    def _get_popup_interpreter(self):
+        """Create the LLM popup interpreter lazily so normal page setup is cheap."""
+        if self.llm_popup_interpreter is None:
+            from Agent.reddit_popup_llm_interpreter import RedditPopupLLMInterpreter
+
+            self.llm_popup_interpreter = RedditPopupLLMInterpreter()
+        return self.llm_popup_interpreter
+
+    def _classify_submission_message(self, message: str) -> str:
+        """根据弹窗文本判断发帖成功或错误。"""
+        text = (message or '').lower()
+        if not text:
+            return 'none'
+
+        error_keywords = [
+            'error', 'failed', 'failure', 'required', 'invalid', 'try again',
+            'something went wrong', 'not allowed', 'rate limit', 'karma',
+            'must be', 'too short', 'too long', 'duplicate', 'similar',
+            '错误', '失败', '必填', '无效', '限制', '重复', '太短', '太长'
+        ]
+        success_keywords = [
+            'posted', 'submitted', 'success', 'created', 'your post',
+            '发布成功', '提交成功', '已发布', '已提交', '创建成功'
+        ]
+
+        if any(keyword in text for keyword in error_keywords):
+            return 'error'
+        if any(keyword in text for keyword in success_keywords):
+            return 'success'
+        return 'unknown'
+
+    def _close_submission_popup(self):
+        """关闭发帖后的错误/成功弹窗。"""
+        for selector in [
+            '[role="dialog"] button[aria-label="Close"]',
+            'button[aria-label="Close"]',
+            'button:has-text("Close")',
+            'button:has-text("Got it")',
+            'button:has-text("OK")',
+            'button:has-text("Okay")',
+            'button:has-text("确定")',
+            'button:has-text("关闭")'
+        ]:
+            try:
+                button = self.page.locator(selector).first
+                if button.count() > 0 and button.is_visible():
+                    button.click(timeout=3000)
+                    time.sleep(0.5)
+                    return
+            except Exception:
+                continue
+
+        try:
+            self.page.keyboard.press('Escape')
+            time.sleep(0.5)
+        except Exception:
+            pass
+
+    def _detect_page_errors(self) -> List[str]:
+        """读取页面中的常见错误提示。"""
+        try:
+            return self.page.evaluate("""
+                () => {
+                    const bodyText = document.body?.innerText || '';
+                    const lowerText = bodyText.toLowerCase();
+                    const keywords = [
+                        'error', 'failed', 'required', 'try again', 'something went wrong',
+                        'removed', 'not allowed', 'rate limit', 'karma', 'must be',
+                        '错误', '失败', '必填', '限制', '请稍后'
+                    ];
+                    const bodyKeywords = [
+                        'error', 'failed', 'try again', 'something went wrong',
+                        'removed', 'not allowed', 'rate limit', 'karma',
+                        '错误', '失败', '限制', '请稍后'
+                    ];
+                    const isErrorText = (value) => {
+                        const text = (value || '').toLowerCase();
+                        return keywords.some((keyword) => text.includes(keyword));
+                    };
+                    const matches = [];
+                    for (const keyword of bodyKeywords) {
+                        if (lowerText.includes(keyword)) matches.push(keyword);
+                    }
+
+                    const alertTexts = Array.from(document.querySelectorAll('[role="alert"], [aria-live="assertive"]'))
+                        .map((node) => (node.innerText || node.textContent || '').trim())
+                        .filter(isErrorText)
+                        .filter(Boolean)
+                        .slice(0, 5);
+
+                    const errorClassTexts = Array.from(document.querySelectorAll('.error, [class*="error"]'))
+                        .map((node) => (node.innerText || node.textContent || '').trim())
+                        .filter(Boolean)
+                        .slice(0, 5);
+
+                    return [...new Set([...alertTexts, ...errorClassTexts, ...matches])];
+                }
+            """)
+        except Exception as e:
+            print(f"   ⚠️  错误检测失败: {e}")
+            return []
+
+    def _disabled_submit_reason(self) -> str:
+        """读取提交按钮禁用状态，帮助定位未发帖原因。"""
+        try:
+            return self.page.evaluate("""
+                () => {
+                    const submitBtn = document.querySelector('r-post-form-submit-button#submit-post-button');
+                    if (!submitBtn) return '未找到 Reddit 提交按钮';
+                    if (submitBtn.hasAttribute('disabled')) return 'Reddit 提交按钮仍处于禁用状态';
+                    return '提交按钮存在但无法点击';
+                }
+            """)
+        except Exception:
+            return '无法读取提交按钮状态'
+
+    def _save_result_screenshot(self, prefix: str) -> Optional[str]:
+        """保存提交结果截图作为物理证据。"""
+        try:
+            screenshot_path = self.screenshot_dir / f"{prefix}_{int(time.time())}.png"
+            self.page.screenshot(path=str(screenshot_path), full_page=True)
+            print(f"   📸 结果截图: {screenshot_path}")
+            return str(screenshot_path)
+        except Exception as e:
+            print(f"   ⚠️  结果截图保存失败: {e}")
+            return None
 
 
 # 使用示例

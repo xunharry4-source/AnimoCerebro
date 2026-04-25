@@ -18,6 +18,7 @@ const StatusChip: React.FC<StatusChipProps> = ({ status }) => {
     failed: 'error',
     suspended: 'info',
     archived: 'default',
+    cancelled: 'default',
   };
 
   return (

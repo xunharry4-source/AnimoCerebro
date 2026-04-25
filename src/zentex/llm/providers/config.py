@@ -7,7 +7,7 @@ import functools
 import logging
 import os
 from pathlib import Path
-from typing import Dict, Optional, Union
+from typing import Any, Dict, Optional, Union
 
 logger = logging.getLogger(__name__)
 
@@ -148,3 +148,22 @@ def get_default_provider_key(
         logger.exception("Failed to load default provider from config path %s", config_path)
 
     return "openai" if resolve_env_value("OPENAI_API_KEY") else "openai_compat"
+
+
+@functools.lru_cache(maxsize=1)
+def get_maintenance_llm_config(
+    config_path: Union[str, Path] = DEFAULT_PROVIDER_CONFIG_PATH,
+) -> Dict[str, Any]:
+    """Return the optional maintenance LLM config block from provider_tools.yml."""
+    try:
+        from zentex.launcher.config import load_yaml_config
+
+        payload = load_yaml_config(config_path)
+        block = payload.get("maintenance")
+        return dict(block) if isinstance(block, dict) else {}
+    except Exception:
+        logger.warning(
+            "get_maintenance_llm_config: failed to read config; using provider defaults",
+            exc_info=True,
+        )
+        return {}

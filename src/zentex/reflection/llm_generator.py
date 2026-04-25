@@ -19,6 +19,7 @@ from typing import Any, Dict, Optional, List, Union
 
 from zentex.foundation.specs.model_provider import ModelProviderTimeoutError
 from zentex.foundation.specs.model_provider import ModelProviderCallerContext
+from zentex.llm.providers.config import get_maintenance_llm_config
 from zentex.reflection.models import ReflectionType
 from zentex.reflection.llm_prompt import (
     build_reflection_prompt,
@@ -139,6 +140,7 @@ class LLMReflectionGenerator:
         titles: List[str],
         layer_distribution: Dict[str, Any],
         unverified_count: int,
+        tier_pressure: Dict[str, Any] | None = None,
     ) -> Dict[str, Any]:
         """Call the LLM to produce semantic maintenance insights from memory statistics.
 
@@ -151,6 +153,7 @@ class LLMReflectionGenerator:
             titles=titles,
             layer_distribution=layer_distribution,
             unverified_count=unverified_count,
+            tier_pressure=tier_pressure,
         )
         caller_context = ModelProviderCallerContext(
             source_module="reflection_service.maintenance",
@@ -158,11 +161,14 @@ class LLMReflectionGenerator:
             decision_id="reflection-maintenance-synthesis",
         )
         try:
+            cfg = get_maintenance_llm_config()
             result = self._invoke_with_timeout_fallback(
                 prompt=prompt,
                 context={},
                 caller_context=caller_context,
                 metadata={"top_tags": top_tags, "title_count": len(titles)},
+                provider_key=str(cfg.get("provider_key") or "").strip() or None,
+                model=str(cfg.get("model") or "").strip() or None,
             )
             output = result.output if result is not None else {}
             if not isinstance(output, dict):
@@ -183,6 +189,8 @@ class LLMReflectionGenerator:
         context: Dict[str, Any],
         caller_context: ModelProviderCallerContext,
         metadata: Dict[str, Any],
+        provider_key: Optional[str] = None,
+        model: Optional[str] = None,
     ) -> Any:
         try:
             return self._invoke_generate_json(
@@ -190,8 +198,8 @@ class LLMReflectionGenerator:
                 context=context,
                 caller_context=caller_context,
                 metadata=metadata,
-                provider_key=None,
-                model=None,
+                provider_key=provider_key,
+                model=model,
             )
         except ModelProviderTimeoutError as primary_exc:
             logger.warning(

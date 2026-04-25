@@ -45,6 +45,7 @@ import NineQuestionWorkflowGraphPage from "./pages/nine-questions/NineQuestionWo
 import AgentAssetManager from "./pages/agents/AgentAssetManager";
 import AgentDetail from "./pages/agents/AgentDetail";
 import ZentexTaskManager from "./pages/tasks/ZentexTaskManager";
+import TaskDetailPage from "./pages/tasks/TaskDetailPage";
 import PluginManagement from "./pages/plugins/PluginManagement";
 import CognitivePluginDetailPage from "./pages/plugins/CognitivePluginDetailPage";
 import FunctionalPluginDetailPage from "./pages/plugins/FunctionalPluginDetailPage";
@@ -55,6 +56,10 @@ import CliToolDetailPage from "./pages/cli/CliToolDetailPage";
 import McpServerDashboard from "./pages/mcp/McpServerDashboard";
 import McpServerDetail from "./pages/mcp/McpServerDetail";
 import AuditReplay from "./pages/audit/AuditReplay";
+import AuditTraceCenterPage from "./pages/audit/AuditTraceCenterPage";
+import AuditTraceModePage from "./pages/audit/AuditTraceModePage";
+import AuditReviewLedgerPage from "./pages/audit/AuditReviewLedgerPage";
+import TranscriptReplayPage from "./pages/audit/TranscriptReplayPage";
 import LearningDashboard from "./pages/learning/LearningDashboard";
 import { fetchLlmStatus, type LLMStatus } from "./api/llmStatus";
 import { useEffect, useMemo, useState } from "react";
@@ -264,6 +269,7 @@ export default function App() {
           <Route path="/console/agents" element={<AgentAssetManager />} />
           <Route path="/console/agents/:agentId" element={<AgentDetail />} />
           <Route path="/console/tasks" element={<ZentexTaskManager />} />
+          <Route path="/console/tasks/:task_id" element={<TaskDetailPage />} />
           <Route path="/console/memory" element={<MemoryReasoning />} />
           <Route path="/console/simulation" element={<SimulationExplorer />} />
           <Route path="/console/plugins" element={<PluginManagement />} />
@@ -275,7 +281,11 @@ export default function App() {
           <Route path="/console/cli-tools/:toolName" element={<CliToolDetailPage />} />
           <Route path="/console/mcp-servers" element={<McpServerDashboard />} />
           <Route path="/console/mcp-servers/:server_id" element={<McpServerDetail />} />
-          <Route path="/console/audit" element={<AuditReplay />} />
+          <Route path="/console/audit" element={<AuditTraceCenterPage />} />
+          <Route path="/console/audit/model-provider" element={<AuditReplay />} />
+          <Route path="/console/audit/review-ledger" element={<AuditReviewLedgerPage />} />
+          <Route path="/console/audit/transcript-replay/:event_id" element={<TranscriptReplayPage />} />
+          <Route path="/console/audit/:mode/:view" element={<AuditTraceModePage />} />
           <Route path="/console/learning" element={<LearningDashboard />} />
           <Route path="/console/health" element={<HealthDashboard />} />
           <Route path="/console/workspaces" element={<WorkspacesPage />} />

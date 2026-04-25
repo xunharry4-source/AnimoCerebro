@@ -289,6 +289,7 @@ def build_learning_maintenance_synthesis_prompt(
     top_tags: List[str],
     focus_topics: List[str],
     layer_distribution: Dict[str, int],
+    cross_module_pressure: Dict[str, float] | None = None,
 ) -> str:
     """Return a prompt for LLM-based cross-module learning synthesis.
 
@@ -306,6 +307,11 @@ def build_learning_maintenance_synthesis_prompt(
     tag_block = ", ".join(top_tags[:10]) if top_tags else "（无标签数据）"
     topic_block = "; ".join(focus_topics[:5]) if focus_topics else "（无反思主题数据）"
     layer_block = ", ".join(f"{k}:{v}" for k, v in layer_distribution.items()) if layer_distribution else "（无分层数据）"
+    pressure_block = (
+        ", ".join(f"{k}:{float(v):.2f}" for k, v in cross_module_pressure.items())
+        if cross_module_pressure
+        else "（无跨模块压力数据）"
+    )
 
     return (
         "你是一个【跨模块学习分析师】。根据以下来自记忆与反思模块的统计摘要，识别核心学习主题并提出学习方向建议。\n\n"
@@ -313,6 +319,7 @@ def build_learning_maintenance_synthesis_prompt(
         f"- 高频标签（来自记忆+反思）: {tag_block}\n"
         f"- 近期反思关注主题: {topic_block}\n"
         f"- 记忆分层分布: {layer_block}\n\n"
+        f"- 跨模块压力: {pressure_block}\n\n"
         "## 任务\n"
         "1. 识别跨记忆与反思的核心学习主题（top_learning_themes），最多 3 条。\n"
         "2. 基于主题提出具体的下一步学习方向（recommended_directions），最多 3 条。\n"

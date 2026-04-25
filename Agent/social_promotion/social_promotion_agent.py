@@ -1,18 +1,30 @@
 """
-社交媒体宣传 Agent
-通过浏览器自动化在 X (Twitter) 和 Reddit 上自动发帖宣传
-能够制定宣传计划、查看宣传结果，并根据不同社区要求发布不同内容
-使用 Playwright 进行浏览器自动化操作
+社交媒体宣传 Agent。
+
+文件用途:
+    编排 X 和 Reddit 的社交媒体宣传流程，连接内容计划、浏览器自动化和发布结果记录。
+
+主要职责:
+    - 生成和管理宣传计划
+    - 初始化浏览器自动化上下文
+    - 调用 X/Reddit 发布入口
+    - 记录真实发布结果和失败原因
+
+不负责:
+    - 不绕过平台登录、CAPTCHA、风控或社区规则
+    - 不在缺少真实平台 URL 证据时标记 published
+    - 不用本地假 post_id 冒充平台发帖成功
 """
 import json
+import logging
 import random
-import time
+import os
 import asyncio
 from typing import Dict, Any, List, Optional
 from datetime import datetime, timezone, timedelta
 from pathlib import Path
-import logging
 from dataclasses import dataclass, asdict
+from .reddit_smart_poster import RedditSmartPoster
 
 # 配置日志
 logging.basicConfig(level=logging.INFO)
@@ -27,7 +39,7 @@ class PostContent:
     media_files: List[str] = None
     tags: List[str] = None
     link: str = ""
-    
+
     def __post_init__(self):
         if self.media_files is None:
             self.media_files = []
@@ -46,7 +58,7 @@ class CommunityRequirement:
     posting_frequency_limit: str = "once per day"
     content_type: str = "any"
     special_rules: str = ""
-    
+
     def __post_init__(self):
         if self.required_tags is None:
             self.required_tags = []
@@ -56,19 +68,23 @@ class CommunityRequirement:
 
 class BrowserAutomationManager:
     """浏览器自动化管理器"""
-    
+
     def __init__(self):
         self.playwright = None
         self.browser = None
         self.context = None
         self.page = None
         self.is_initialized = False
-        
+
+    async def get_page(self):
+        """获取当前页面实例"""
+        return self.page
+
     async def initialize(self, headless: bool = True):
         """初始化浏览器"""
         try:
             from playwright.async_api import async_playwright
-            
+
             self.playwright = await async_playwright().start()
             self.browser = await self.playwright.chromium.launch(
                 headless=headless,
@@ -85,7 +101,7 @@ class BrowserAutomationManager:
         except Exception as e:
             logger.error(f"Failed to initialize browser: {e}")
             return False
-    
+
     async def close(self):
         """关闭浏览器"""
         try:
@@ -101,7 +117,7 @@ class BrowserAutomationManager:
             logger.info("Browser automation closed")
         except Exception as e:
             logger.error(f"Error closing browser: {e}")
-    
+
     async def take_screenshot(self, filepath: str):
         """截图"""
         if self.page and self.is_initialized:
@@ -111,7 +127,7 @@ class BrowserAutomationManager:
 
 class SocialMediaPromotionAgent:
     """社交媒体宣传 Agent，通过浏览器自动化在 X 和 Reddit 发帖"""
-    
+
     def __init__(self):
         self.agent_id = "agent-social-promotion"
         self.name = "Social Media Promotion Agent"
@@ -127,25 +143,28 @@ class SocialMediaPromotionAgent:
             "validate_content"
         ]
         self.created_at = datetime.now(timezone.utc)
-        
+
         # 浏览器自动化管理器
         self.browser_manager = BrowserAutomationManager()
-        
+
         # 用户账户信息
         self.x_credentials = {"username": "", "password": ""}
         self.reddit_credentials = {"username": "", "password": ""}
-        
+
         # 存储宣传计划和结果
         self.promotion_plans = {}
         self.post_results = []
-        
+
         # 社区要求数据库
         self.community_requirements = self._load_community_requirements()
-        
+
+        # 初始化智能发帖器 (后续在需要时初始化)
+        self.reddit_poster = None
+
         # 数据存储路径
         self.data_dir = Path(__file__).parent.parent / "testdata" / "promotion_data"
         self.data_dir.mkdir(parents=True, exist_ok=True)
-        
+
     def _load_community_requirements(self) -> Dict[str, CommunityRequirement]:
         """加载社区要求"""
         requirements = {
@@ -191,7 +210,7 @@ class SocialMediaPromotionAgent:
             )
         }
         return requirements
-    
+
     def save_data(self):
         """保存数据到文件"""
         try:
@@ -209,16 +228,16 @@ class SocialMediaPromotionAgent:
                 plans_data[plan_id] = plan_copy
             with open(plans_file, 'w', encoding='utf-8') as f:
                 json.dump(plans_data, f, ensure_ascii=False, indent=2)
-            
+
             # 保存发帖结果
             results_file = self.data_dir / "post_results.json"
             with open(results_file, 'w', encoding='utf-8') as f:
                 json.dump(self.post_results, f, ensure_ascii=False, indent=2, default=str)
-            
+
             logger.info(f"Data saved to {self.data_dir}")
         except Exception as e:
             logger.error(f"Failed to save data: {e}")
-    
+
     def load_data(self):
         """从文件加载数据"""
         try:
@@ -228,61 +247,61 @@ class SocialMediaPromotionAgent:
                 with open(plans_file, 'r', encoding='utf-8') as f:
                     plans_data = json.load(f)
                     self.promotion_plans = plans_data
-            
+
             # 加载发帖结果
             results_file = self.data_dir / "post_results.json"
             if results_file.exists():
                 with open(results_file, 'r', encoding='utf-8') as f:
                     self.post_results = json.load(f)
-            
+
             logger.info(f"Data loaded from {self.data_dir}")
         except Exception as e:
             logger.error(f"Failed to load data: {e}")
-    
+
     async def initialize_browser(self, headless: bool = True):
         """初始化浏览器"""
         return await self.browser_manager.initialize(headless=headless)
-    
+
     async def close_browser(self):
         """关闭浏览器"""
         await self.browser_manager.close()
-    
+
     async def login_to_x(self, username: str, password: str) -> Dict[str, Any]:
         """登录 X (Twitter)"""
         try:
             if not self.browser_manager.is_initialized:
                 await self.initialize_browser()
-            
+
             page = self.browser_manager.page
-            
+
             # 导航到登录页面
             await page.goto("https://twitter.com/i/flow/login", wait_until="networkidle")
             await asyncio.sleep(2)
-            
+
             # 输入用户名
             username_input = await page.query_selector('input[autocomplete="username"]')
             if username_input:
                 await username_input.fill(username)
                 await asyncio.sleep(1)
-                
+
                 # 点击下一步
                 next_button = await page.query_selector('div[role="button"]:has-text("Next")')
                 if next_button:
                     await next_button.click()
                     await asyncio.sleep(2)
-            
+
             # 输入密码
             password_input = await page.query_selector('input[type="password"]')
             if password_input:
                 await password_input.fill(password)
                 await asyncio.sleep(1)
-                
+
                 # 点击登录
                 login_button = await page.query_selector('div[role="button"]:has-text("Log in")')
                 if login_button:
                     await login_button.click()
                     await asyncio.sleep(3)
-            
+
             # 检查是否登录成功
             current_url = page.url
             if "home" in current_url or "timeline" in current_url:
@@ -292,41 +311,41 @@ class SocialMediaPromotionAgent:
             else:
                 logger.warning("Login to X may have failed")
                 return {"success": False, "message": "Login to X failed"}
-                
+
         except Exception as e:
             logger.error(f"Failed to login to X: {e}")
             return {"success": False, "error": str(e)}
-    
+
     async def login_to_reddit(self, username: str, password: str) -> Dict[str, Any]:
         """登录 Reddit"""
         try:
             if not self.browser_manager.is_initialized:
                 await self.initialize_browser()
-            
+
             page = self.browser_manager.page
-            
+
             # 导航到登录页面
             await page.goto("https://www.reddit.com/login", wait_until="networkidle")
             await asyncio.sleep(2)
-            
+
             # 输入用户名
             username_input = await page.query_selector('input[name="username"]')
             if username_input:
                 await username_input.fill(username)
                 await asyncio.sleep(1)
-            
+
             # 输入密码
             password_input = await page.query_selector('input[name="password"]')
             if password_input:
                 await password_input.fill(password)
                 await asyncio.sleep(1)
-            
+
             # 点击登录按钮
             login_button = await page.query_selector('button[type="submit"]')
             if login_button:
                 await login_button.click()
                 await asyncio.sleep(3)
-            
+
             # 检查是否登录成功
             current_url = page.url
             if "reddit.com" in current_url and "login" not in current_url:
@@ -336,12 +355,12 @@ class SocialMediaPromotionAgent:
             else:
                 logger.warning("Login to Reddit may have failed")
                 return {"success": False, "message": "Login to Reddit failed"}
-                
+
         except Exception as e:
             logger.error(f"Failed to login to Reddit: {e}")
             return {"success": False, "error": str(e)}
-    
-    def create_promotion_plan(self, 
+
+    def create_promotion_plan(self,
                              campaign_name: str,
                              platforms: List[str],
                              target_communities: List[str],
@@ -354,9 +373,9 @@ class SocialMediaPromotionAgent:
         try:
             if not start_date:
                 start_date = datetime.now(timezone.utc)
-            
+
             plan_id = f"plan_{int(time.time())}"
-            
+
             plan = {
                 "plan_id": plan_id,
                 "campaign_name": campaign_name,
@@ -381,10 +400,10 @@ class SocialMediaPromotionAgent:
                     "downvotes": 0
                 }
             }
-            
+
             self.promotion_plans[plan_id] = plan
             self.save_data()
-            
+
             return {
                 "success": True,
                 "plan_id": plan_id,
@@ -398,22 +417,22 @@ class SocialMediaPromotionAgent:
                 "error": str(e),
                 "timestamp": datetime.now(timezone.utc).isoformat()
             }
-    
+
     def analyze_community_requirements(self, community: str) -> Dict[str, Any]:
         """分析特定社区的要求"""
         requirements = self.community_requirements.get(community, self.community_requirements["general"])
-        
+
         return {
             "success": True,
             "community": community,
             "requirements": asdict(requirements),
             "recommendations": self._generate_content_recommendations(requirements)
         }
-    
+
     def _generate_content_recommendations(self, requirements: CommunityRequirement) -> List[str]:
         """根据社区要求生成内容建议"""
         recommendations = []
-        
+
         if requirements.content_type == "informative":
             recommendations.append("Focus on providing valuable information")
             recommendations.append("Include relevant statistics or data")
@@ -425,59 +444,59 @@ class SocialMediaPromotionAgent:
             recommendations.append("Be specific about the problem or solution")
         else:
             recommendations.append("Create engaging and relevant content")
-        
+
         if requirements.required_tags:
             recommendations.append(f"Include required tags: {', '.join(requirements.required_tags)}")
-        
+
         if requirements.forbidden_words:
             recommendations.append(f"Avoid these words: {', '.join(requirements.forbidden_words)}")
-        
+
         recommendations.append(f"Keep title under {requirements.max_title_length} characters")
         recommendations.append(f"Keep content under {requirements.max_content_length} characters")
         recommendations.append(f"Posting limit: {requirements.posting_frequency_limit}")
         recommendations.append(f"Special rules: {requirements.special_rules}")
-        
+
         return recommendations
-    
+
     def validate_content_for_community(self, content: PostContent, community: str) -> Dict[str, Any]:
         """验证内容是否符合社区要求"""
         requirements = self.community_requirements.get(community, self.community_requirements["general"])
-        
+
         issues = []
-        
+
         # 检查标题长度
         if content.title and len(content.title) > requirements.max_title_length:
             issues.append(f"Title exceeds {requirements.max_title_length} character limit")
-        
+
         # 检查内容长度
         if len(content.content) > requirements.max_content_length:
             issues.append(f"Content exceeds {requirements.max_content_length} character limit")
-        
+
         # 检查必需标签
         missing_tags = [tag for tag in requirements.required_tags if tag.lower() not in content.content.lower()]
         if missing_tags:
             issues.append(f"Missing required tags: {', '.join(missing_tags)}")
-        
+
         # 检查禁用词
         found_forbidden = [word for word in requirements.forbidden_words if word.lower() in content.content.lower()]
         if found_forbidden:
             issues.append(f"Contains forbidden words: {', '.join(found_forbidden)}")
-        
+
         return {
             "valid": len(issues) == 0,
             "issues": issues,
             "community": community,
             "requirements": asdict(requirements)
         }
-    
+
     async def post_to_x(self, content: PostContent, plan_id: Optional[str] = None) -> Dict[str, Any]:
         """在 X (Twitter) 上发帖"""
         try:
             if not self.browser_manager.is_initialized:
                 await self.initialize_browser()
-            
+
             page = self.browser_manager.page
-            
+
             # 验证内容
             validation = self.validate_content_for_community(content, "general")
             if not validation["valid"]:
@@ -486,17 +505,17 @@ class SocialMediaPromotionAgent:
                     "error": f"Content validation failed: {'; '.join(validation['issues'])}",
                     "timestamp": datetime.now(timezone.utc).isoformat()
                 }
-            
+
             # 导航到发推页面
             await page.goto("https://twitter.com/compose/tweet", wait_until="networkidle")
             await asyncio.sleep(2)
-            
+
             # 输入推文内容
             textarea = await page.query_selector('div[role="textbox"]')
             if textarea:
                 await textarea.fill(content.content)
                 await asyncio.sleep(1)
-            
+
             # 如果有媒体文件，上传
             if content.media_files:
                 for media_file in content.media_files:
@@ -504,13 +523,13 @@ class SocialMediaPromotionAgent:
                     if file_input:
                         await file_input.set_input_files(media_file)
                         await asyncio.sleep(2)
-            
+
             # 点击发布按钮
             post_button = await page.query_selector('div[role="button"]:has-text("Post")')
             if post_button:
                 await post_button.click()
                 await asyncio.sleep(3)
-            
+
             # 记录结果
             post_result = {
                 "platform": "x",
@@ -527,22 +546,22 @@ class SocialMediaPromotionAgent:
                     "impressions": 0
                 }
             }
-            
+
             self.post_results.append(post_result)
-            
+
             # 更新计划统计
             if plan_id and plan_id in self.promotion_plans:
                 self.promotion_plans[plan_id]["posts_published"] += 1
                 self.promotion_plans[plan_id]["status"] = "active"
-            
+
             self.save_data()
-            
+
             return {
                 "success": True,
                 "post_result": post_result,
                 "message": "Post published to X successfully"
             }
-            
+
         except Exception as e:
             logger.error(f"Failed to post to X: {e}")
             return {
@@ -550,104 +569,69 @@ class SocialMediaPromotionAgent:
                 "error": str(e),
                 "timestamp": datetime.now(timezone.utc).isoformat()
             }
-    
-    async def post_to_reddit(self, title: str, content: str, subreddit: str, 
-                           flair: Optional[str] = None, 
+
+    async def post_to_reddit(self, title: str, content: str, subreddit: str,
+                           flair: Optional[str] = None,
                            plan_id: Optional[str] = None) -> Dict[str, Any]:
-        """在 Reddit 上发帖"""
+        """使用 RedditSmartPoster 发布到 Reddit"""
         try:
             if not self.browser_manager.is_initialized:
                 await self.initialize_browser()
-            
+
             page = self.browser_manager.page
-            
-            # 创建 PostContent 对象用于验证
-            post_content = PostContent(title=title, content=content)
-            
-            # 验证内容是否符合社区要求
-            validation = self.validate_content_for_community(post_content, subreddit)
-            if not validation["valid"]:
+            if not page:
+                return {"success": False, "error": "Browser page not available"}
+
+            # 初始化智能发帖器
+            if not self.reddit_poster:
+                self.reddit_poster = RedditSmartPoster(page)
+
+            print(f"\n🚀 使用 RedditSmartPoster 发布到 r/{subreddit}...")
+
+            evidence = await self.reddit_poster.post_custom_content_with_evidence(
+                subreddit=subreddit,
+                title=title,
+                content=content,
+                flair=flair,
+                max_retries=2
+            )
+            success = bool(evidence.get("success"))
+
+            if success:
+                # 记录结果
+                post_result = {
+                    "platform": "reddit",
+                    "title": title,
+                    "content": content,
+                    "subreddit": subreddit,
+                    "flair": flair,
+                    "post_url": evidence.get("post_url"),
+                    "trace_id": evidence.get("trace_id"),
+                    "verification_source": evidence.get("verification_source"),
+                    "verified_at": evidence.get("verified_at"),
+                    "posted_at": datetime.now(timezone.utc).isoformat(),
+                    "status": "published",
+                    "plan_id": plan_id,
+                    "engagement": {"upvotes": 0, "downvotes": 0, "comments": 0, "awards": 0}
+                }
+                self.post_results.append(post_result)
+                if plan_id and plan_id in self.promotion_plans:
+                    self.promotion_plans[plan_id]["posts_published"] += 1
+                    self.promotion_plans[plan_id]["status"] = "active"
+                self.save_data()
+                return {
+                    "success": True,
+                    "post_result": post_result,
+                    "message": f"Post published to r/{subreddit} successfully"
+                }
+            else:
                 return {
                     "success": False,
-                    "error": f"Content validation failed for r/{subreddit}: {'; '.join(validation['issues'])}",
+                    "error": evidence.get("error_message") or "Smart poster failed to publish",
+                    "evidence": evidence,
                     "timestamp": datetime.now(timezone.utc).isoformat()
                 }
-            
-            # 导航到 subreddit 发帖页面
-            await page.goto(f"https://www.reddit.com/r/{subreddit}/submit", wait_until="networkidle")
-            await asyncio.sleep(2)
-            
-            # 选择帖子类型（文本帖子）
-            text_post_button = await page.query_selector('button:has-text("Text")')
-            if text_post_button:
-                await text_post_button.click()
-                await asyncio.sleep(1)
-            
-            # 输入标题
-            title_input = await page.query_selector('input[name="title"]')
-            if title_input:
-                await title_input.fill(title)
-                await asyncio.sleep(1)
-            
-            # 输入内容
-            content_input = await page.query_selector('textarea[name="text"]')
-            if content_input:
-                await content_input.fill(content)
-                await asyncio.sleep(1)
-            
-            # 选择 flair（如果提供）
-            if flair:
-                flair_button = await page.query_selector('button:has-text("Flair")')
-                if flair_button:
-                    await flair_button.click()
-                    await asyncio.sleep(1)
-                    
-                    # 选择指定的 flair
-                    flair_option = await page.query_selector(f'div:has-text("{flair}")')
-                    if flair_option:
-                        await flair_option.click()
-                        await asyncio.sleep(1)
-            
-            # 点击发布按钮
-            post_button = await page.query_selector('button[type="submit"]')
-            if post_button:
-                await post_button.click()
-                await asyncio.sleep(3)
-            
-            # 记录结果
-            post_result = {
-                "platform": "reddit",
-                "title": title,
-                "content": content,
-                "subreddit": subreddit,
-                "flair": flair,
-                "posted_at": datetime.now(timezone.utc).isoformat(),
-                "post_id": f"reddit_post_{int(time.time())}",
-                "status": "published",
-                "plan_id": plan_id,
-                "engagement": {
-                    "upvotes": 0,
-                    "downvotes": 0,
-                    "comments": 0,
-                    "awards": 0
-                }
-            }
-            
-            self.post_results.append(post_result)
-            
-            # 更新计划统计
-            if plan_id and plan_id in self.promotion_plans:
-                self.promotion_plans[plan_id]["posts_published"] += 1
-                self.promotion_plans[plan_id]["status"] = "active"
-            
-            self.save_data()
-            
-            return {
-                "success": True,
-                "post_result": post_result,
-                "message": f"Post published to r/{subreddit} successfully"
-            }
-            
+
         except Exception as e:
             logger.error(f"Failed to post to Reddit: {e}")
             return {
@@ -655,7 +639,7 @@ class SocialMediaPromotionAgent:
                 "error": str(e),
                 "timestamp": datetime.now(timezone.utc).isoformat()
             }
-    
+
     async def schedule_posts(self, plan_id: str, posts: List[Dict[str, Any]]) -> Dict[str, Any]:
         """安排帖子发布（立即执行或定时执行）"""
         try:
@@ -665,23 +649,23 @@ class SocialMediaPromotionAgent:
                     "error": f"Plan {plan_id} not found",
                     "timestamp": datetime.now(timezone.utc).isoformat()
                 }
-            
+
             scheduled_count = 0
             failed_count = 0
-            
+
             for post in posts:
                 platform = post.get("platform")
                 schedule_time = post.get("schedule_time")
-                
+
                 # 如果指定了发布时间，检查是否到达
                 if schedule_time:
                     if isinstance(schedule_time, str):
                         schedule_time = datetime.fromisoformat(schedule_time.replace('Z', '+00:00'))
-                    
+
                     if schedule_time > datetime.now(timezone.utc):
                         # 还未到发布时间，跳过
                         continue
-                
+
                 try:
                     if platform == "x":
                         content = PostContent(
@@ -699,32 +683,32 @@ class SocialMediaPromotionAgent:
                         )
                     else:
                         continue
-                    
+
                     if result["success"]:
                         scheduled_count += 1
                     else:
                         failed_count += 1
-                        
+
                 except Exception as e:
                     logger.error(f"Failed to schedule post: {e}")
                     failed_count += 1
-            
+
             # 更新计划状态
             self.promotion_plans[plan_id]["posts_scheduled"] += scheduled_count
             self.promotion_plans[plan_id]["posts_failed"] += failed_count
-            
+
             if scheduled_count > 0:
                 self.promotion_plans[plan_id]["status"] = "active"
-            
+
             self.save_data()
-            
+
             return {
                 "success": True,
                 "scheduled_count": scheduled_count,
                 "failed_count": failed_count,
                 "message": f"Scheduled {scheduled_count} posts for plan {plan_id} ({failed_count} failed)"
             }
-            
+
         except Exception as e:
             logger.error(f"Failed to schedule posts: {e}")
             return {
@@ -732,22 +716,22 @@ class SocialMediaPromotionAgent:
                 "error": str(e),
                 "timestamp": datetime.now(timezone.utc).isoformat()
             }
-    
-    def get_promotion_results(self, plan_id: Optional[str] = None, 
+
+    def get_promotion_results(self, plan_id: Optional[str] = None,
                              platform: Optional[str] = None,
                              date_range: Optional[tuple] = None) -> Dict[str, Any]:
         """获取宣传结果"""
         try:
             results = self.post_results.copy()
-            
+
             # 按计划ID过滤
             if plan_id:
                 results = [r for r in results if r.get("plan_id") == plan_id]
-            
+
             # 按平台过滤
             if platform:
                 results = [r for r in results if r.get("platform") == platform]
-            
+
             # 按日期范围过滤
             if date_range:
                 start_date, end_date = date_range
@@ -759,12 +743,12 @@ class SocialMediaPromotionAgent:
                         if start_date <= post_date <= end_date:
                             filtered_results.append(result)
                 results = filtered_results
-            
+
             # 计算统计数据
             total_posts = len(results)
             successful_posts = len([r for r in results if r.get("status") == "published"])
             failed_posts = len([r for r in results if r.get("status") == "failed"])
-            
+
             # 计算参与度指标
             total_engagement = {
                 "likes": sum(r.get("engagement", {}).get("likes", 0) for r in results),
@@ -772,7 +756,7 @@ class SocialMediaPromotionAgent:
                 "comments": sum(r.get("engagement", {}).get("replies", 0) + r.get("engagement", {}).get("comments", 0) for r in results),
                 "upvotes": sum(r.get("engagement", {}).get("upvotes", 0) for r in results),
             }
-            
+
             return {
                 "success": True,
                 "total_posts": total_posts,
@@ -782,7 +766,7 @@ class SocialMediaPromotionAgent:
                 "engagement_metrics": total_engagement,
                 "timestamp": datetime.now(timezone.utc).isoformat()
             }
-            
+
         except Exception as e:
             logger.error(f"Failed to get promotion results: {e}")
             return {
@@ -790,7 +774,7 @@ class SocialMediaPromotionAgent:
                 "error": str(e),
                 "timestamp": datetime.now(timezone.utc).isoformat()
             }
-    
+
     def get_plan_details(self, plan_id: str) -> Dict[str, Any]:
         """获取计划详情"""
         try:
@@ -799,12 +783,12 @@ class SocialMediaPromotionAgent:
                     "success": False,
                     "error": f"Plan {plan_id} not found"
                 }
-            
+
             plan = self.promotion_plans[plan_id]
-            
+
             # 获取该计划的所有帖子
             plan_posts = [r for r in self.post_results if r.get("plan_id") == plan_id]
-            
+
             return {
                 "success": True,
                 "plan": plan,
@@ -813,14 +797,14 @@ class SocialMediaPromotionAgent:
                 "published_posts": len([p for p in plan_posts if p.get("status") == "published"]),
                 "failed_posts": len([p for p in plan_posts if p.get("status") == "failed"])
             }
-            
+
         except Exception as e:
             logger.error(f"Failed to get plan details: {e}")
             return {
                 "success": False,
                 "error": str(e)
             }
-    
+
     def get_info(self) -> Dict[str, Any]:
         """获取 Agent 信息"""
         return {

@@ -15,6 +15,53 @@ from .trace_builder import build_trace_detail
 router = APIRouter()
 
 
+def _is_material_llm_trace(payload: Any) -> bool:
+    if not isinstance(payload, dict) or not payload:
+        return False
+    for key in (
+        "provider_name",
+        "model",
+        "system_prompt",
+        "prompt",
+        "context_data",
+        "raw_response",
+        "token_usage",
+        "elapsed_ms",
+        "error_type",
+        "error_message",
+    ):
+        value = payload.get(key)
+        if value not in (None, "", [], {}):
+            return True
+    return False
+
+
+def _merge_trace_payloads(*payloads: Any) -> dict[str, Any]:
+    merged: dict[str, Any] = {}
+    for payload in payloads:
+        if not isinstance(payload, dict):
+            continue
+        for key, value in payload.items():
+            if value in (None, "", [], {}):
+                continue
+            existing = merged.get(key)
+            if isinstance(existing, dict) and isinstance(value, dict):
+                nested = dict(existing)
+                nested.update({k: v for k, v in value.items() if v not in (None, "", [], {})})
+                merged[key] = nested
+            elif existing in (None, "", [], {}):
+                merged[key] = value
+    return merged
+
+
+def _first_non_empty_string(*values: Any) -> str:
+    for value in values:
+        text = str(value or "").strip()
+        if text:
+            return text
+    return ""
+
+
 @router.get("/nine-questions/status", response_model=NineQuestionsReportPayload)
 async def get_nine_questions_status(request: Request):
     session = await get_or_create_session(request)
@@ -114,7 +161,56 @@ async def get_nine_question_inference(request: Request, question_id: str):
 
 @router.get("/nine-questions/{question_id}/trace-payload")
 async def get_nine_question_trace_payload(request: Request, question_id: str):
-    return await _get_question_payload(request, question_id, "get_question_trace")
+    if question_id not in [f"q{i}" for i in range(1, 10)]:
+        raise HTTPException(status_code=400, detail=f"Invalid question ID: {question_id}")
+
+    session = await get_or_create_session(request)
+    service = _get_nine_question_service(request)
+    trace_payload = await service.get_question_trace(question_id)
+    trace_payload = trace_payload if isinstance(trace_payload, dict) else {}
+
+    raw_payload = await service.get_question_raw(question_id)
+    raw_payload = raw_payload if isinstance(raw_payload, dict) else {}
+    raw_llm_payload = raw_payload.get("llm_trace_payload")
+    raw_llm_payload = raw_llm_payload if isinstance(raw_llm_payload, dict) else {}
+
+    snapshot = await service.get_question_snapshot(question_id) or {}
+    snapshot = snapshot if isinstance(snapshot, dict) else {}
+    snapshot_llm_payload = snapshot.get("llm_trace_payload")
+    snapshot_llm_payload = snapshot_llm_payload if isinstance(snapshot_llm_payload, dict) else {}
+
+    trace_id = _first_non_empty_string(
+        trace_payload.get("trace_id"),
+        raw_payload.get("trace_id"),
+        snapshot.get("trace_id"),
+    )
+
+    trace_detail_payload: dict[str, Any] = {}
+    if (
+        trace_id
+        and not trace_id.endswith(":no-trace")
+        and not any(
+            _is_material_llm_trace(candidate)
+            for candidate in (trace_payload, raw_llm_payload, snapshot_llm_payload)
+        )
+    ):
+        trace_detail = await build_trace_detail(
+            request=request,
+            trace_id=trace_id,
+            session_id=session.session_id,
+        )
+        if isinstance(trace_detail, dict):
+            candidate = trace_detail.get("llm_trace_payload")
+            trace_detail_payload = candidate if isinstance(candidate, dict) else {}
+
+    merged = _merge_trace_payloads(
+        {"trace_id": trace_id, "question_id": question_id},
+        trace_payload,
+        raw_llm_payload,
+        snapshot_llm_payload,
+        trace_detail_payload,
+    )
+    return merged if merged else trace_payload
 
 
 @router.get("/nine-questions/{question_id}/raw")

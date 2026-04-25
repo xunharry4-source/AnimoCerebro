@@ -63,6 +63,7 @@ class ReflectionDAO(BaseDAO):
                 tags TEXT,
                 metadata TEXT,
                 governance_status TEXT DEFAULT 'active',
+                suspect_reason TEXT,
                 verified_at TEXT,
                 verified_by TEXT,
                 reflection_list TEXT,
@@ -163,6 +164,12 @@ class ReflectionDAO(BaseDAO):
             except Exception:
                 logger.exception("Failed to migrate reflections.audit_id column")
                 raise
+        if "suspect_reason" not in existing_columns:
+            try:
+                self.db.execute_update("ALTER TABLE reflections ADD COLUMN suspect_reason TEXT")
+            except Exception:
+                logger.exception("Failed to migrate reflections.suspect_reason column")
+                raise
         self.db.execute_update("CREATE INDEX IF NOT EXISTS idx_reflections_audit_id ON reflections(audit_id)")
 
         logger.info("Reflection database tables initialized")
@@ -178,8 +185,8 @@ class ReflectionDAO(BaseDAO):
                     created_at, updated_at, reflection_timestamp, subject, context, summary,
                     confidence, impact_score, actionability,
                     related_decisions, related_actions, related_outcomes, tags, metadata,
-                    governance_status, verified_at, verified_by, reflection_list
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    governance_status, suspect_reason, verified_at, verified_by, reflection_list
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """
 
             # Derive audit_id: prefer explicit field, fall back to context["audit_id"].
@@ -211,6 +218,7 @@ class ReflectionDAO(BaseDAO):
                 json.dumps(reflection.tags) if reflection.tags else None,
                 json.dumps(reflection.metadata) if reflection.metadata else None,
                 reflection.governance_status.value,
+                reflection.suspect_reason,
                 reflection.verified_at.isoformat() if reflection.verified_at else None,
                 reflection.verified_by,
                 json.dumps([item.model_dump(mode='json') for item in reflection.reflection_list]) if reflection.reflection_list else None
@@ -515,6 +523,7 @@ class ReflectionDAO(BaseDAO):
             tags=json.loads(row['tags']) if row['tags'] else [],
             metadata=json.loads(row['metadata']) if row['metadata'] else {},
             governance_status=row['governance_status'],
+            suspect_reason=row["suspect_reason"] if "suspect_reason" in row.keys() else None,
             verified_at=datetime.fromisoformat(row['verified_at']) if row['verified_at'] else None,
             verified_by=row['verified_by'],
             reflection_list=[]  # TODO: 反序列化 reflection_list

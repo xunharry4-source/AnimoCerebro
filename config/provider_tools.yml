@@ -34,3 +34,10 @@ providers:
     api_key_env: ANTHROPIC_API_KEY
     default_model: claude-3-5-sonnet-latest
     timeout_seconds: 30
+
+  ollama:
+    provider_name: ollama
+    api_base: http://localhost:11434
+    api_key_env:
+    default_model: llama3.1:8b
+    timeout_seconds: 30

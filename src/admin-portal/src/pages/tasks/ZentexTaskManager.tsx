@@ -70,13 +70,13 @@ const ZentexTaskManager: React.FC = () => {
       field: 'source_module',
       headerName: t('tasks.sourceModule'),
       width: 140,
-      valueGetter: (params: any) => params.row.metadata?.source_module || 'core',
+      valueGetter: (_value, row: ZentexTask) => row.metadata?.source_module || 'core',
     },
     {
       field: 'workflow_status',
       headerName: t('tasks.workflowStatus'),
       width: 150,
-      valueGetter: (params: any) => params.row.metadata?.workflow_status || '--',
+      valueGetter: (_value, row: ZentexTask) => row.metadata?.workflow_status || '--',
     },
     {
       field: 'status',
@@ -88,7 +88,7 @@ const ZentexTaskManager: React.FC = () => {
       field: 'priority',
       headerName: t('tasks.priority'),
       width: 100,
-      valueGetter: (params: any) => params.row.priority || 'medium',
+      valueGetter: (_value, row: ZentexTask) => row.priority || 'medium',
     },
     {
       field: 'progress',

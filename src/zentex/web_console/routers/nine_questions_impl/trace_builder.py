@@ -6,21 +6,134 @@ Handles transcript query, event extraction, and formatting.
 """
 
 
+import json
 import logging
 from typing import Any, Optional
 from datetime import datetime
 
 from fastapi import HTTPException, Request
 
-from zentex.web_console.dependencies import get_kernel_service_facade
+from zentex.web_console.dependencies import get_kernel_service_facade, get_runtime
 from zentex.web_console.audit_event_serialization import serialize_audit_event
 
 logger = logging.getLogger(__name__)
 
 
 def _entry_type_value(entry: Any) -> str:
+    if isinstance(entry, dict):
+        entry_type = entry.get("entry_type")
+        return str(getattr(entry_type, "value", entry_type) or "")
     entry_type = getattr(entry, "entry_type", None)
     return str(getattr(entry_type, "value", entry_type) or "")
+
+
+def _entry_payload(entry: Any) -> dict[str, Any]:
+    payload = entry.get("payload") if isinstance(entry, dict) else getattr(entry, "payload", None)
+    return payload if isinstance(payload, dict) else {}
+
+
+def _entry_value(entry: Any, key: str, default: Any = None) -> Any:
+    if isinstance(entry, dict):
+        return entry.get(key, default)
+    return getattr(entry, key, default)
+
+
+def _entry_matches_trace(entry: Any, trace_id: str) -> bool:
+    if str(_entry_value(entry, "trace_id", "") or "") == trace_id:
+        return True
+    payload = _entry_payload(entry)
+    if str(payload.get("trace_id") or "") == trace_id:
+        return True
+    caller_context = payload.get("caller_context")
+    return isinstance(caller_context, dict) and str(caller_context.get("trace_id") or "") == trace_id
+
+
+def _dedupe_entries(entries: list[Any]) -> list[Any]:
+    deduped: list[Any] = []
+    seen: set[str] = set()
+    for entry in entries:
+        payload = _entry_payload(entry)
+        try:
+            payload_key = json.dumps(payload, ensure_ascii=False, sort_keys=True, default=str)
+        except Exception:
+            payload_key = str(payload)
+        key = "|".join(
+            [
+                str(_entry_value(entry, "entry_id", "") or ""),
+                _entry_type_value(entry),
+                str(_entry_value(entry, "timestamp", "") or ""),
+                str(_entry_value(entry, "trace_id", "") or ""),
+                payload_key,
+            ]
+        )
+        if key in seen:
+            continue
+        seen.add(key)
+        deduped.append(entry)
+    return deduped
+
+
+def _read_trace_entries_from_store(store: Any, *, trace_id: str, session_id: str) -> list[Any]:
+    if store is None:
+        return []
+
+    query_attempts: list[tuple[str, Any]] = [
+        ("read_by_trace_id", lambda: store.read_by_trace_id(trace_id)),
+        ("list_trace_events", lambda: store.list_trace_events(trace_id)),
+        ("read_entries", lambda: store.read_entries(session_id=session_id)),
+        ("list_entries", lambda: store.list_entries(session_id=session_id)),
+        ("get_entries_snapshot", lambda: store.get_entries_snapshot()),
+        ("query_by_session", lambda: store.query_by_session(session_id, limit=10000)),
+    ]
+    for method_name, call in query_attempts:
+        if not callable(getattr(store, method_name, None)):
+            continue
+        try:
+            rows = list(call() or [])
+        except Exception:
+            logger.warning(
+                "trace_builder: failed to query transcript store via %s",
+                method_name,
+                exc_info=True,
+            )
+            continue
+        matched = [entry for entry in rows if _entry_matches_trace(entry, trace_id)]
+        if matched:
+            return matched
+
+    raw_entries = getattr(store, "entries", None)
+    if isinstance(raw_entries, list):
+        return [entry for entry in raw_entries if _entry_matches_trace(entry, trace_id)]
+    return []
+
+
+def _resolve_transcript_stores(request: Request) -> list[Any]:
+    candidates: list[Any] = [
+        getattr(request.app.state, "transcript_store", None),
+    ]
+
+    try:
+        facade = get_kernel_service_facade(request)
+        getter = getattr(facade, "get_transcript_store", None)
+        if callable(getter):
+            candidates.append(getter())
+    except Exception:
+        logger.debug("trace_builder: kernel facade transcript store is unavailable", exc_info=True)
+
+    try:
+        runtime = get_runtime(request)
+        candidates.append(getattr(runtime, "transcript_store", None))
+    except Exception:
+        logger.debug("trace_builder: runtime transcript store is unavailable", exc_info=True)
+
+    resolved: list[Any] = []
+    seen: set[int] = set()
+    for candidate in candidates:
+        if candidate is None or id(candidate) in seen:
+            continue
+        seen.add(id(candidate))
+        resolved.append(candidate)
+    return resolved
 
 
 def _extract_llm_trace_payload(entries: list[Any]) -> dict[str, Optional[Any]]:
@@ -30,9 +143,7 @@ def _extract_llm_trace_payload(entries: list[Any]) -> dict[str, Optional[Any]]:
 
     for entry in entries:
         entry_type = _entry_type_value(entry)
-        payload = getattr(entry, "payload", None)
-        if not isinstance(payload, dict):
-            continue
+        payload = _entry_payload(entry)
         if entry_type == "model_provider_invoked":
             invoked_payload = payload
         elif entry_type == "model_provider_completed":
@@ -138,6 +249,16 @@ async def build_trace_detail(
             transcript_query_failed = True
             transcript_query_error = str(e)
 
+        for store in _resolve_transcript_stores(request):
+            entries.extend(
+                _read_trace_entries_from_store(
+                    store,
+                    trace_id=trace_id,
+                    session_id=session_id,
+                )
+            )
+        entries = _dedupe_entries(entries)
+
         for entry in entries:
             if all(hasattr(entry, attr) for attr in ("entry_id", "session_id", "turn_id", "entry_type", "timestamp", "source", "trace_id", "payload")):
                 serialized = serialize_audit_event(entry, include_payload=True).model_dump()
@@ -145,9 +266,12 @@ async def build_trace_detail(
                 trace_detail["related_events"].append(serialized)
             else:
                 serialized = {
-                    "entry_type": getattr(entry, "event_type", "unknown"),
-                    "timestamp": str(getattr(entry, "timestamp", "")),
-                    "payload": getattr(entry, "data", {}),
+                    "entry_id": str(_entry_value(entry, "entry_id", "") or ""),
+                    "entry_type": _entry_type_value(entry) or str(_entry_value(entry, "event_type", "unknown")),
+                    "timestamp": str(_entry_value(entry, "timestamp", "") or ""),
+                    "trace_id": str(_entry_value(entry, "trace_id", "") or trace_id),
+                    "source": str(_entry_value(entry, "source", "") or ""),
+                    "payload": _entry_payload(entry) or _entry_value(entry, "data", {}),
                 }
                 trace_detail["events"].append(serialized)
                 trace_detail["related_events"].append(serialized)
@@ -178,10 +302,9 @@ async def build_trace_detail(
             trace_detail["question_driver_refs"] = llm_trace_payload.get("question_driver_refs") or []
 
         for entry in entries:
-            payload = getattr(entry, "payload", None)
-            payload = payload if isinstance(payload, dict) else {}
+            payload = _entry_payload(entry)
             entry_type = _entry_type_value(entry)
-            entry_timestamp = getattr(entry, "timestamp", None)
+            entry_timestamp = _entry_value(entry, "timestamp", None)
             timestamp_value = entry_timestamp.isoformat() if hasattr(entry_timestamp, "isoformat") else str(entry_timestamp or "")
             if entry_type == "model_provider_invoked":
                 trace_detail["invoked_at"] = timestamp_value

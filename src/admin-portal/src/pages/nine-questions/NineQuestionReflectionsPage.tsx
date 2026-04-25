@@ -1,6 +1,7 @@
 import { useEffect, useState } from "react";
 import { Alert, Box, CircularProgress, Stack, Typography, Chip, Button } from "@mui/material";
 import { Link as RouterLink, useLocation, useSearchParams } from "react-router-dom";
+import { FIXED_REFLECTION_QUESTIONS } from "../shared/fixedReflectionLearningQuestions";
 
 import {
   fetchNineQuestionReflectionDetail,
@@ -86,6 +87,21 @@ export default function NineQuestionReflectionsPage() {
       <Alert severity="info" sx={{ mb: 2 }}>
         反思页同样只是监控与审计视图。这里展示的是九问运行后的分析记录，不反向定义九问当前运行语义。
       </Alert>
+
+      <Box sx={{ mb: 2 }}>
+        <Typography variant="h6" sx={{ mb: 1 }}>
+          反思固定问题
+        </Typography>
+        <Alert severity="info">
+          <Stack spacing={0.5}>
+            {FIXED_REFLECTION_QUESTIONS.map((question, index) => (
+              <Typography key={question} variant="body2">
+                {index + 1}. {question}
+              </Typography>
+            ))}
+          </Stack>
+        </Alert>
+      </Box>
 
       {forcedResults.length > 0 ? (
         <Alert severity="success" sx={{ mb: 2 }}>

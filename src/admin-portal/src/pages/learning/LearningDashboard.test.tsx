@@ -69,6 +69,9 @@ describe("LearningDashboard", () => {
       </MemoryRouter>,
     );
 
+    expect(await screen.findByText("学习固定问题")).toBeInTheDocument();
+    expect(screen.getByText("1. 我今天学到了什么？")).toBeInTheDocument();
+    expect(screen.getByText("3. 这些内容下次可以怎么用？")).toBeInTheDocument();
     expect(await screen.findByText("学习循环启动")).toBeInTheDocument();
     expect(await screen.findByRole("link", { name: "q8" })).toHaveAttribute("href", "/console/nine-questions/q8");
     expect(screen.getByRole("link", { name: "查看 trace" })).toHaveAttribute(

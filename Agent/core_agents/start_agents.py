@@ -1,18 +1,29 @@
 #!/usr/bin/env python3
 """
 独立 Agent 启动脚本
-在项目启动时自动运行这两个独立的 Agent
+
+文件用途:
+    从仓库根目录上下文启动基础 Agent，并执行最小冒烟验证。
+
+主要职责:
+    - 初始化 Calculator Agent 和 Data Generator Agent。
+    - 验证基础计算能力。
+    - 生成一份测试 CSV 作为 Agent 写入能力证据。
+
+不负责:
+    - 启动浏览器或执行社交平台发帖。
+    - 调用 LLM 或网络服务。
+    - 伪造上层发帖流程成功。
 """
 import sys
-import os
 from pathlib import Path
 
 # 添加项目根目录到 Python 路径
-project_root = Path(__file__).parent.parent
+project_root = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(project_root))
 
-from Agent.calculator_agent import calculator_agent
-from Agent.data_generator_agent import data_generator_agent
+from Agent.core_agents.calculator_agent import calculator_agent
+from Agent.core_agents.data_generator_agent import data_generator_agent
 
 
 def start_agents():

@@ -5,7 +5,6 @@ from __future__ import annotations
 import asyncio
 import os
 import threading
-from collections import Counter
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Dict, Optional, List, Union
@@ -26,6 +25,7 @@ from zentex.learning.engine import (
     start_learning,
 )
 from zentex.learning.store import LEARNING_EVENT_TYPE, LEARNING_OVERALL_EVENT_TYPE, LearningStore
+from zentex.llm.providers.config import get_maintenance_llm_config
 
 
 class LearningRecord(BaseModel):
@@ -293,6 +293,8 @@ class LearningService:
                 "deleted_entry_count": deleted_entry_count,
                 "top_tags": snapshot["top_tags"],
                 "focus_topics": snapshot["focus_topics"],
+                "cross_module_pressure": snapshot["cross_module_pressure"],
+                "layer_distribution": snapshot["layer_distribution"],
                 "source_memory_ids": snapshot["memory_ids"],
             }
             summary = snapshot["summary"] or "Learning maintenance found no reusable memory or reflection context."
@@ -437,46 +439,26 @@ class LearningService:
         Phase 2 — LLM semantic synthesis (runs when records are available;
                    falls back silently to Phase 1 output on any failure).
         """
-        tag_counter: Counter[str] = Counter()
-        layer_counter: Counter[str] = Counter()
-        focus_topics: List[str] = []
-        memory_ids: List[str] = []
+        from zentex.learning.stats_pipeline import (
+            compute_weighted_cross_summary,
+            merge_cross_module_records,
+        )
 
-        for record in memory_records:
-            layer_counter[str(getattr(record, "memory_layer", "unknown") or "unknown")] += 1
-            memory_ids.append(str(getattr(record, "memory_id", "") or ""))
-            for tag in list(getattr(record, "tags", []) or []):
-                normalized = str(tag or "").strip()
-                if normalized:
-                    tag_counter[normalized] += 1
-
-        for record in reflection_records:
-            subject = str(getattr(record, "subject", "") or "").strip()
-            if subject:
-                focus_topics.append(subject)
-            for tag in list(getattr(record, "tags", []) or []):
-                normalized = str(tag or "").strip()
-                if normalized:
-                    tag_counter[normalized] += 1
-
-        top_tags = [tag for tag, _count in tag_counter.most_common(5)]
-        summary_parts: List[str] = []
-        if layer_counter:
-            summary_parts.append(
-                "memory layers=" + ", ".join(f"{layer}:{count}" for layer, count in dict(layer_counter).items())
+        snapshot = compute_weighted_cross_summary(
+            merge_cross_module_records(
+                memory_records,
+                reflection_records,
+                now=datetime.now(timezone.utc),
             )
-        if top_tags:
-            summary_parts.append("top tags=" + ", ".join(top_tags[:3]))
-        if focus_topics:
-            summary_parts.append("reflection focus=" + "; ".join(focus_topics[:2]))
-
-        baseline_summary = "Learning maintenance: " + "; ".join(summary_parts) if summary_parts else ""
+        )
 
         result: Dict[str, Any] = {
-            "summary": baseline_summary,
-            "top_tags": top_tags,
-            "focus_topics": focus_topics[:5],
-            "memory_ids": [memory_id for memory_id in memory_ids if memory_id][:10],
+            "summary": snapshot["summary"],
+            "top_tags": snapshot["top_weighted_tags"],
+            "focus_topics": snapshot["focus_topics"][:5],
+            "memory_ids": snapshot["memory_ids"],
+            "cross_module_pressure": snapshot["cross_module_pressure"],
+            "layer_distribution": snapshot["layer_distribution"],
         }
 
         # Phase 2 — LLM semantic synthesis (P2-L2)
@@ -486,10 +468,12 @@ class LearningService:
             try:
                 from zentex.llm import get_llm_service
                 llm_service = get_llm_service()
+                cfg = get_maintenance_llm_config()
                 prompt = build_learning_maintenance_synthesis_prompt(
-                    top_tags=top_tags,
-                    focus_topics=focus_topics[:5],
-                    layer_distribution=dict(layer_counter),
+                    top_tags=result["top_tags"],
+                    focus_topics=result["focus_topics"][:5],
+                    layer_distribution=result["layer_distribution"],
+                    cross_module_pressure=result["cross_module_pressure"],
                 )
                 caller_context = ModelProviderCallerContext(
                     source_module="learning_service.maintenance",
@@ -503,6 +487,8 @@ class LearningService:
                     source_module=caller_context.source_module,
                     invocation_phase=caller_context.invocation_phase,
                     decision_id=caller_context.decision_id,
+                    provider_key=str(cfg.get("provider_key") or "").strip() or None,
+                    model=str(cfg.get("model") or "").strip() or None,
                 )
                 output = llm_result.output if llm_result is not None else {}
                 if isinstance(output, dict):

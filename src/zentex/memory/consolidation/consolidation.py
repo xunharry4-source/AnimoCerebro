@@ -13,6 +13,8 @@ Why:
 from concurrent.futures import Future, ThreadPoolExecutor
 from datetime import datetime, timezone
 import logging
+from pathlib import Path
+import re
 from threading import Lock
 from typing import Any, Dict, List, Literal, Optional, Protocol, Tuple, Union
 from zentex.common.locking import get_lock_for_resource
@@ -238,8 +240,16 @@ class ReflectionClusteringPlugin:
         noise_rules: List[ForgettableNoiseRule],
     ) -> ConsolidationPluginOutput:
         input_refs = context.get("input_memory_refs", [])
+        import time
+
+        from zentex.memory.consolidation.stats_pipeline import (
+            compute_pattern_scores,
+            refs_to_dataframe,
+        )
+
         promotion_candidates = []
         pruned_refs = []
+        pattern_scores: list[PatternStabilityScore] = []
         
         # Simple heuristic: cluster by topic tag and outcome type
         clusters: Dict[str, List[Dict[str, Any]]] = {}
@@ -249,12 +259,17 @@ class ReflectionClusteringPlugin:
             
         for topic, refs in clusters.items():
             if len(refs) >= 3:
+                cluster_scores = compute_pattern_scores(refs_to_dataframe(refs, now_ts=time.time()))
+                best_score = cluster_scores[0] if cluster_scores else None
+                stability_score = best_score.stability_score if best_score is not None else 0.0
+                reuse_value = best_score.cross_context_reuse if best_score is not None else 0.0
+                pattern_scores.extend(cluster_scores)
                 promotion_candidates.append(
                     MemoryPromotionCandidate(
                         source_ref=f"cluster:{topic}",
                         candidate_type="pattern",
-                        stability_score=0.8,
-                        reuse_value=0.7,
+                        stability_score=stability_score,
+                        reuse_value=reuse_value,
                         promotion_reason=f"Topic '{topic}' appears in {len(refs)} reflections; stable pattern detected.",
                     )
                 )
@@ -263,6 +278,7 @@ class ReflectionClusteringPlugin:
             plugin_id=self.plugin_id,
             promotion_candidates=promotion_candidates,
             pruned_refs=pruned_refs,
+            pattern_scores=pattern_scores,
         )
 
 
@@ -743,7 +759,7 @@ class ConsolidationEngine:
 
             gov_dir = _Path(get_storage_paths().app_data_dir) / "memory" / "governance"
             gov_dir.mkdir(parents=True, exist_ok=True)
-            target = gov_dir / f"{self._brain_scope}.json"
+            target = self.get_governance_snapshot_path()
             tmp = target.with_suffix(".json.tmp")
             tmp.write_text(_json.dumps(snapshot, ensure_ascii=False, indent=2), encoding="utf-8")
             tmp.replace(target)  # atomic rename on POSIX; best-effort on Windows
@@ -753,6 +769,15 @@ class ConsolidationEngine:
                 self._brain_scope,
                 exc_info=True,
             )
+
+    def get_governance_snapshot_path(self) -> Path:
+        """Return the filesystem path used to persist the current governance snapshot."""
+        from zentex.common.storage_paths import get_storage_paths
+
+        gov_dir = Path(get_storage_paths().app_data_dir) / "memory" / "governance"
+        gov_dir.mkdir(parents=True, exist_ok=True)
+        safe_scope = re.sub(r"[^A-Za-z0-9._-]+", "_", self._brain_scope).strip("._-") or "default"
+        return gov_dir / f"{safe_scope}.json"
 
     def _build_failed_cycle(
         self,
@@ -860,6 +885,17 @@ class ConsolidationEngine:
         plugin_outputs: List[ConsolidationPluginOutput],
     ) -> Dict[str, Any]:
         """Translate internal memory records into model-readable natural-language context."""
+        from zentex.memory.consolidation.stats_pipeline import (
+            compute_tier_pressure,
+            refs_to_dataframe,
+        )
+
+        tier_pressure = compute_tier_pressure(
+            refs_to_dataframe(
+                task_request.input_memory_refs,
+                now_ts=datetime.now(timezone.utc).timestamp(),
+            )
+        )
         return {
             "trigger_stage": task_request.trigger_stage.replace("_", " "),
             "current_memory_state_version": task_request.snapshot_version,
@@ -876,6 +912,7 @@ class ConsolidationEngine:
             ],
             "plugin_findings": [output.model_dump(mode="json") for output in plugin_outputs],
             "noise_rules": [rule.model_dump(mode="json") for rule in task_request.noise_rules],
+            "tier_pressure": tier_pressure,
         }
 
     def _next_backoff_seconds(self) -> int:
@@ -926,35 +963,14 @@ class ConsolidationEngine:
 
     def detect_stable_patterns(self, input_refs: List[Dict[str, Any]]) -> List[PatternStabilityScore]:
         """Detect patterns with historical failure tracking (Convergence Rule 4 gap)."""
-        tag_counts: Dict[str, int] = {}
-        tag_failures: Dict[str, int] = {} # Mock historical failure tracking
-        
-        for ref in input_refs:
-            for tag in ref.get("tags", []):
-                tag_counts[tag] = tag_counts.get(tag, 0) + 1
-                if ref.get("outcome_type") == "failure":
-                    tag_failures[tag] = tag_failures.get(tag, 0) + 1
-        
-        scores = []
-        for tag, count in tag_counts.items():
-            fails = tag_failures.get(tag, 0)
-            # Convergence Rule 4: High failures reduce stability
-            base_stability = min(1.0, count * 0.2)
-            adjusted_stability = max(0.0, base_stability - (fails * 0.15))
-            
-            if count >= 2:
-                scores.append(
-                    PatternStabilityScore(
-                        pattern_id=f"tag:{tag}",
-                        frequency=count,
-                        time_span_seconds=3600,
-                        cross_context_reuse=0.5,
-                        conflict_count=0,
-                        failure_count=fails,
-                        stability_score=adjusted_stability,
-                    )
-                )
-        return scores
+        import time
+
+        from zentex.memory.consolidation.stats_pipeline import (
+            compute_pattern_scores,
+            refs_to_dataframe,
+        )
+
+        return compute_pattern_scores(refs_to_dataframe(input_refs, now_ts=time.time()))
 
     def archive_cold(self, memory_ids: List[str]) -> bool:
         """Move memory references from warm/hot to cold storage (Priority 3)."""

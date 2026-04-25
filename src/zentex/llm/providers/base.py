@@ -20,7 +20,9 @@ logger = logging.getLogger(__name__)
 # ---------------------------------------------------------------------------
 
 DEFAULT_PROVIDER_CONFIG_PATH = CONFIG_DIR / "provider_tools.yml"
-PROJECT_ROOT = Path(__file__).resolve().parents[3]
+# providers/base.py lives at src/zentex/llm/providers; parents[4] is the
+# repository root where .env and config/ live.
+PROJECT_ROOT = Path(__file__).resolve().parents[4]
 DEFAULT_DOTENV_PATH = PROJECT_ROOT / ".env"
 
 

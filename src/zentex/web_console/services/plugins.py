@@ -97,9 +97,13 @@ def build_cognitive_plugin_list(
     """Thin adapter: delegates to plugin_service, filters and maps results."""
     if plugin_service is None:
         return []
-    
-    all_plugins = build_plugin_payloads(cognitive_registry, plugin_registry, managed_records, plugin_service)
-    return [item for item in all_plugins if item.plugin_kind == "cognitive_tool"]
+
+    rows = plugin_service.query_plugins_by_operational_status(
+        category="cognitive",
+        operational_status=None,
+        limit=500,
+    )
+    return [_map_to_cognitive_plugin_status_item(raw) for raw in rows]
 
 
 def build_functional_plugin_list(
@@ -111,9 +115,13 @@ def build_functional_plugin_list(
     """Thin adapter: delegates to plugin_service, filters and maps results."""
     if plugin_service is None:
         return []
-    
-    all_plugins = build_plugin_payloads(cognitive_registry, plugin_registry, managed_records, plugin_service)
-    return [item for item in all_plugins if item.plugin_kind != "cognitive_tool"]
+
+    rows = plugin_service.query_plugins_by_operational_status(
+        category="functional",
+        operational_status=None,
+        limit=500,
+    )
+    return [_map_to_cognitive_plugin_status_item(raw) for raw in rows]
 
 
 def build_plugin_feature_groups(

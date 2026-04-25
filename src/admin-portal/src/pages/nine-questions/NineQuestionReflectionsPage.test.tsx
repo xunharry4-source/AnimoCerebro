@@ -76,6 +76,9 @@ describe("NineQuestionReflectionsPage", () => {
     );
 
     expect(await screen.findByText("九问反思结果")).toBeInTheDocument();
+    expect(screen.getByText("反思固定问题")).toBeInTheDocument();
+    expect(screen.getByText("1. 我今天做了什么？")).toBeInTheDocument();
+    expect(screen.getByText("6. 明天我要优先改进什么？")).toBeInTheDocument();
     expect(await screen.findByRole("link", { name: "查看本问工作流" })).toHaveAttribute(
       "href",
       "/console/nine-questions/q8/workflow",

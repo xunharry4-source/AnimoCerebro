@@ -15,6 +15,7 @@ import {
 import { DataGrid, type GridColDef } from "@mui/x-data-grid";
 import { useCallback, useEffect, useState } from "react";
 import { Link as RouterLink } from "react-router-dom";
+import { FIXED_LEARNING_QUESTIONS } from "../shared/fixedReflectionLearningQuestions";
 
 type PlanDirection = {
   id: string;
@@ -187,6 +188,19 @@ export default function LearningDashboard() {
           </Typography>
         </Paper>
       ) : null}
+
+      <Paper sx={{ p: 2 }}>
+        <Typography variant="subtitle1" gutterBottom>
+          学习固定问题
+        </Typography>
+        <Stack spacing={1}>
+          {FIXED_LEARNING_QUESTIONS.map((question, index) => (
+            <Typography key={question} variant="body2">
+              {index + 1}. {question}
+            </Typography>
+          ))}
+        </Stack>
+      </Paper>
 
       <Paper sx={{ p: 2 }}>
         <Stack direction={{ xs: "column", sm: "row" }} spacing={2} alignItems="center">

@@ -462,6 +462,16 @@ class SystemPluginService(BasePluginService):
             )
 
         effective_trace_id = trace_id or str(context.get("trace_id") or "")
+        
+        # Enforce strict operational status check
+        if str(plugin.get("lifecycle_status") or "").strip().lower() != "active" or \
+           str(plugin.get("operational_status") or "").strip().lower() != "enabled":
+            return ServiceResponse.error(
+                ServiceErrorCode.DEPENDENCY_UNAVAILABLE,
+                message=f"Functional plugin {plugin_id} is not ACTIVE or not enabled",
+                trace_id=effective_trace_id or plugin_id,
+            )
+
         feedback = self.execute_plugin_once_sync(
             plugin_id=plugin_id,
             task_id=f"{effective_trace_id or 'functional'}:{plugin_id}",

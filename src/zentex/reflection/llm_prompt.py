@@ -171,6 +171,7 @@ def build_maintenance_synthesis_prompt(
     titles: List[str],
     layer_distribution: Dict[str, Any],
     unverified_count: int,
+    tier_pressure: Dict[str, Any] | None = None,
 ) -> str:
     """Return a prompt for semantic synthesis of memory-maintenance insights.
 
@@ -191,6 +192,11 @@ def build_maintenance_synthesis_prompt(
     title_block = "; ".join(titles[:5]) if titles else "（无标题数据）"
     layer_block = ", ".join(f"{k}:{v}" for k, v in layer_distribution.items()) if layer_distribution else "（无分层数据）"
     unverified_line = f"{unverified_count} 条记忆尚未验证。" if unverified_count else "所有近期记忆均已验证。"
+    pressure_block = (
+        ", ".join(f"{k}:{float(v):.2f}" for k, v in tier_pressure.items())
+        if tier_pressure
+        else "（无压力数据）"
+    )
 
     return (
         "你是一个【记忆治理分析师】。根据以下记忆统计摘要，生成有价值的认知洞察。\n\n"
@@ -199,6 +205,7 @@ def build_maintenance_synthesis_prompt(
         f"- 代表性记忆标题: {title_block}\n"
         f"- 分层分布: {layer_block}\n"
         f"- 可信度: {unverified_line}\n\n"
+        f"- 压力信号: {pressure_block}\n\n"
         "## 任务\n"
         "1. 识别记忆中反复出现的主题或认知模式（insights）。\n"
         "2. 提炼出可复用的经验教训（lessons）。\n"
