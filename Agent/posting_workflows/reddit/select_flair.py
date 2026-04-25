@@ -27,10 +27,23 @@ class SelectFlairNode:
     def run(self, context: Any, state: Any) -> Any:
         recognizer = context.reddit_recognizer
         if recognizer is None or not recognizer._is_flair_dialog_open():
+            if state.flair_required:
+                raise PostingWorkflowError(
+                    "Flair is required but the dialog is not open for selection",
+                    node=self.name,
+                    code="required_flair_dialog_missing",
+                )
             state.add_evidence(self.name, True, "No Flair dialog open; selection skipped")
             return state
         if not state.selected_flair:
             recognizer._close_flair_dialog()
+            if state.flair_required:
+                raise PostingWorkflowError(
+                    "Flair is required but no suitable Flair was selected",
+                    node=self.name,
+                    code="required_flair_selection_missing",
+                    details={"flair_options": [item.get("text") for item in state.flair_options]},
+                )
             state.add_evidence(self.name, True, "No suitable Flair selected; dialog closed")
             return state
 
@@ -46,19 +59,34 @@ class SelectFlairNode:
                 code="selected_flair_not_found",
                 details={"selected_flair": state.selected_flair},
             )
-        if not recognizer._click_at_coordinates(selected["center_x"], selected["center_y"]):
+        if not recognizer._click_flair_candidate(selected):
             raise PostingWorkflowError(
                 "Could not click selected Flair",
                 node=self.name,
                 code="flair_click_failed",
-                details={"selected_flair": state.selected_flair},
+                details={"selected_flair": state.selected_flair, "matched_flair": selected.get("text")},
             )
         if not recognizer._click_apply_button():
             raise PostingWorkflowError(
                 "Could not apply selected Flair",
                 node=self.name,
                 code="flair_apply_failed",
-                details={"selected_flair": state.selected_flair},
+                details={"selected_flair": state.selected_flair, "matched_flair": selected.get("text")},
             )
+        if not recognizer._wait_for_flair_dialog_closed(timeout=5):
+            raise PostingWorkflowError(
+                "Flair dialog remained open after applying selected Flair",
+                node=self.name,
+                code="flair_dialog_not_closed_after_apply",
+                details={"selected_flair": state.selected_flair, "matched_flair": selected.get("text")},
+            )
+        if not recognizer._verify_flair_applied(selected.get("text"), state.selected_flair):
+            raise PostingWorkflowError(
+                "Selected Flair could not be verified on the Reddit submit page",
+                node=self.name,
+                code="flair_apply_unverified",
+                details={"selected_flair": state.selected_flair, "matched_flair": selected.get("text")},
+            )
+        state.selected_flair = selected.get("text") or state.selected_flair
         state.add_evidence(self.name, True, "Flair selected", selected_flair=state.selected_flair)
         return state

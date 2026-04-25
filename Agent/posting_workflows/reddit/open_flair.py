@@ -31,10 +31,31 @@ class OpenFlairDialogNode:
 
             context.reddit_recognizer = RedditVisualRecognizer(page)
 
+        requirement = context.reddit_recognizer.detect_flair_requirement()
+        state.flair_required = bool(requirement.get("required"))
         opened = context.reddit_recognizer._open_flair_dialog()
         if not opened:
             state.flair_options = []
-            state.add_evidence(self.name, True, "Flair dialog not available", subreddit=state.subreddit)
+            if state.flair_required:
+                raise PostingWorkflowError(
+                    "Flair is required but the dialog could not be opened",
+                    node=self.name,
+                    code="required_flair_dialog_unavailable",
+                    details={"subreddit": state.subreddit, "flair_requirement": requirement},
+                )
+            state.add_evidence(
+                self.name,
+                True,
+                "Flair dialog not available",
+                subreddit=state.subreddit,
+                flair_requirement=requirement,
+            )
             return state
-        state.add_evidence(self.name, True, "Flair dialog opened", subreddit=state.subreddit)
+        state.add_evidence(
+            self.name,
+            True,
+            "Flair dialog opened",
+            subreddit=state.subreddit,
+            flair_requirement=requirement,
+        )
         return state

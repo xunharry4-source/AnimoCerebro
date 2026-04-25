@@ -106,6 +106,7 @@ class RedditPostingState:
     content: Optional[str] = None
     flair_options: List[Dict[str, Any]] = field(default_factory=list)
     selected_flair: Optional[str] = None
+    flair_required: Optional[bool] = None
     post_url: Optional[str] = None
     status: str = "pending"
     attempts: int = 0

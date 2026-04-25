@@ -19,11 +19,22 @@ RedditSmartPoster contract tests.
 import inspect
 
 from Agent.social_promotion.reddit_smart_poster import RedditSmartPoster
+from Agent.reddit_visual_recognizer import RedditVisualRecognizer
 
 
 class _SyncPage:
     def goto(self, *args, **kwargs):
         return None
+
+
+class _RecordingEvaluatePage(_SyncPage):
+    def __init__(self, result):
+        self.result = result
+        self.script = ""
+
+    def evaluate(self, script, *args):
+        self.script = script
+        return self.result
 
 
 def test_should_select_flair_when_required_normal_fixture():
@@ -42,6 +53,43 @@ def test_should_skip_flair_when_detection_failed_edge_fixture():
     poster = RedditSmartPoster(_SyncPage())
 
     assert poster._should_select_flair({"reason": "detection_failed_default_skip"}) is False
+
+
+def test_detect_flair_requirement_supports_chinese_identifier_marker_normal_fixture():
+    page = _RecordingEvaluatePage(
+        {
+            "required": True,
+            "reason": "flair_control_required_marker",
+            "submit_disabled": True,
+            "has_flair_control": True,
+        }
+    )
+    poster = RedditSmartPoster(page)
+
+    result = poster._detect_flair_requirement_sync()
+
+    assert result["required"] is True
+    assert result["reason"] == "flair_control_required_marker"
+    assert "添加标识" in page.script
+    assert "标识和标记" in page.script
+
+
+def test_choose_flair_candidate_matches_emoji_prefixed_project_build_normal_fixture():
+    recognizer = RedditVisualRecognizer(_SyncPage())
+    candidates = [
+        {"text": "📰 News", "confidence": 90},
+        {"text": "🔬 Research", "confidence": 90},
+        {"text": "🛠️ Project / Build", "confidence": 90},
+    ]
+
+    selected = recognizer._choose_flair_candidate(
+        candidates=candidates,
+        target_flair="Project / Build",
+        preferred_keywords=["Project / Build"],
+    )
+
+    assert selected is not None
+    assert selected["text"] == "🛠️ Project / Build"
 
 
 def test_sync_post_custom_content_returns_bool_not_coroutine_fixture(monkeypatch):

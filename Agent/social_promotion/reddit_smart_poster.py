@@ -569,9 +569,10 @@ Thanks in advance for your help!"""
             print(f"   ✍️  填写标题: {title[:50]}...")
             title_filled = False
             title_selectors = [
-                'input[name="title"]',
-                'input[placeholder*="Title"]',
+                'textarea[name="title"]#innerTextArea',
                 'textarea[name="title"]',
+                'input[name="title"]:not([type="hidden"])',
+                'input[placeholder*="Title"]',
                 'shreddit-composer >>> input[name="title"]',
                 '#post-title'
             ]
@@ -581,9 +582,18 @@ Thanks in advance for your help!"""
                     elem = self.page.locator(selector).first
                     if await elem.count() > 0 and await elem.is_visible():
                         await elem.fill(title)
+                        try:
+                            observed_title = await elem.input_value(timeout=3000)
+                        except Exception:
+                            observed_title = await elem.evaluate("(node) => node.value || node.textContent || ''")
+                        if observed_title.strip() != title.strip():
+                            print(f"   ⚠️  标题选择器填写后验证失败: {selector}")
+                            continue
                         title_filled = True
                         break
-                except: continue
+                except Exception as exc:
+                    print(f"   ⚠️  标题选择器失败 {selector}: {exc}")
+                    continue
 
             if not title_filled:
                 # 尝试 JS 注入 (Shadow DOM)
@@ -591,12 +601,12 @@ Thanks in advance for your help!"""
                     (val) => {{
                         const composer = document.querySelector('shreddit-composer');
                         const root = composer ? composer.shadowRoot : document;
-                        const input = root.querySelector('input[name="title"], input[placeholder*="Title"]');
+                        const input = root.querySelector('textarea[name="title"], input[name="title"], input[placeholder*="Title"]');
                         if (input) {{
                             input.value = val;
                             input.dispatchEvent(new Event('input', {{ bubbles: true }}));
                             input.dispatchEvent(new Event('change', {{ bubbles: true }}));
-                            return true;
+                            return (input.value || input.textContent || '').trim() === val.trim();
                         }}
                         return false;
                     }}
@@ -623,7 +633,9 @@ Thanks in advance for your help!"""
                         await elem.fill(content)
                         content_filled = True
                         break
-                except: continue
+                except Exception as exc:
+                    print(f"   ⚠️  正文选择器失败 {selector}: {exc}")
+                    continue
 
             if not content_filled:
                 # 尝试 JS 注入 (Shadow DOM)
@@ -647,12 +659,43 @@ Thanks in advance for your help!"""
                 print("   ❌ 无法找到内容输入框")
                 return False
 
+            await self._dismiss_editor_popups_async()
             print("   ✅ 表单填写完成")
             return True
 
         except Exception as e:
             print(f"   ❌ 表单填写严重错误: {e}")
             return False
+
+    async def _dismiss_editor_popups_async(self) -> None:
+        """异步关闭输入正文后可能出现的标签/建议浮层。"""
+        try:
+            await self.page.keyboard.press("Escape")
+            await asyncio.sleep(0.3)
+        except Exception as exc:
+            print(f"   ⚠️  关闭编辑器浮层快捷键失败: {exc}")
+        try:
+            point = await self.page.evaluate(
+                """
+                () => {
+                    const composer = document.querySelector('shreddit-composer');
+                    const rect = composer?.getBoundingClientRect?.();
+                    const width = window.innerWidth || 1280;
+                    const height = window.innerHeight || 720;
+                    if (!rect || rect.width <= 0 || rect.height <= 0) return null;
+                    const y = Math.max(20, Math.min(height - 20, rect.top + Math.min(48, rect.height / 2)));
+                    const rightX = rect.right + 24;
+                    const leftX = rect.left - 24;
+                    const x = rightX < width - 20 ? rightX : Math.max(20, leftX);
+                    return { x, y };
+                }
+                """
+            )
+            if isinstance(point, dict) and point.get("x") and point.get("y"):
+                await self.page.mouse.click(float(point["x"]), float(point["y"]))
+                await asyncio.sleep(0.3)
+        except Exception as exc:
+            print(f"   ⚠️  点击编辑器旁白区域失败: {exc}")
 
     async def _select_flair(self):
         """选择 Flair（标记）"""
@@ -830,15 +873,23 @@ Thanks in advance for your help!"""
                         '需要选择标记',
                         '帖子标记为必填',
                         '标记是必填',
-                        '必须添加标记'
+                        '标识是必填',
+                        '必须添加标记',
+                        '必须添加标识'
                     ].some((needle) => text.includes(needle));
 
                     const hasFlairControl = [
                         'add flair',
                         'select flair',
                         '添加标记',
-                        '选择标记'
+                        '添加标识',
+                        '选择标记',
+                        '选择标识',
+                        '标识和标记'
                     ].some((needle) => text.includes(needle));
+                    const rawText = parts.join(' ');
+                    const starredRequired = /(?:flair|标记|标识)[^\\n]{0,40}\\*/i.test(rawText) ||
+                        /\\*[^\\n]{0,40}(?:flair|标记|标识)/i.test(rawText);
 
                     const submitComponent = document.querySelector('r-post-form-submit-button#submit-post-button');
                     const shadowButton = submitComponent?.shadowRoot?.querySelector('button');
@@ -856,13 +907,14 @@ Thanks in advance for your help!"""
                         hasFlairControl &&
                         hasTitle &&
                         hasBody &&
-                        ['flair', '标记'].some((needle) => text.includes(needle))
+                        ['flair', '标记', '标识'].some((needle) => text.includes(needle))
                     );
 
                     return {
-                        required: Boolean(explicitRequired || disabledByLikelyFlair),
+                        required: Boolean(explicitRequired || starredRequired || disabledByLikelyFlair),
                         reason: explicitRequired ? 'explicit_required_text' :
-                            (disabledByLikelyFlair ? 'submit_disabled_with_flair_control' : 'no_required_signal'),
+                            (starredRequired ? 'flair_control_required_marker' :
+                                (disabledByLikelyFlair ? 'submit_disabled_with_flair_control' : 'no_required_signal')),
                         submit_disabled: submitDisabled,
                         has_flair_control: hasFlairControl,
                     };
@@ -919,14 +971,22 @@ Thanks in advance for your help!"""
                         '需要选择标记',
                         '帖子标记为必填',
                         '标记是必填',
-                        '必须添加标记'
+                        '标识是必填',
+                        '必须添加标记',
+                        '必须添加标识'
                     ].some((needle) => text.includes(needle));
                     const hasFlairControl = [
                         'add flair',
                         'select flair',
                         '添加标记',
-                        '选择标记'
+                        '添加标识',
+                        '选择标记',
+                        '选择标识',
+                        '标识和标记'
                     ].some((needle) => text.includes(needle));
+                    const rawText = parts.join(' ');
+                    const starredRequired = /(?:flair|标记|标识)[^\\n]{0,40}\\*/i.test(rawText) ||
+                        /\\*[^\\n]{0,40}(?:flair|标记|标识)/i.test(rawText);
                     const submitComponent = document.querySelector('r-post-form-submit-button#submit-post-button');
                     const shadowButton = submitComponent?.shadowRoot?.querySelector('button');
                     const submitDisabled = Boolean(
@@ -942,12 +1002,13 @@ Thanks in advance for your help!"""
                         hasFlairControl &&
                         hasTitle &&
                         hasBody &&
-                        ['flair', '标记'].some((needle) => text.includes(needle))
+                        ['flair', '标记', '标识'].some((needle) => text.includes(needle))
                     );
                     return {
-                        required: Boolean(explicitRequired || disabledByLikelyFlair),
+                        required: Boolean(explicitRequired || starredRequired || disabledByLikelyFlair),
                         reason: explicitRequired ? 'explicit_required_text' :
-                            (disabledByLikelyFlair ? 'submit_disabled_with_flair_control' : 'no_required_signal'),
+                            (starredRequired ? 'flair_control_required_marker' :
+                                (disabledByLikelyFlair ? 'submit_disabled_with_flair_control' : 'no_required_signal')),
                         submit_disabled: submitDisabled,
                         has_flair_control: hasFlairControl,
                     };
@@ -1108,11 +1169,27 @@ Thanks in advance for your help!"""
         """同步填写 Reddit 表单，找不到关键输入框时 fail-closed。"""
         print(f"\n✍️  填写表单: {title[:50]}...")
         try:
-            title_input = self.page.locator('textarea[name="title"], input[name="title"]').first
-            if title_input.count() <= 0:
+            title_input = None
+            for selector in [
+                'textarea[name="title"]#innerTextArea',
+                'textarea[name="title"]',
+                'input[name="title"]:not([type="hidden"])',
+            ]:
+                candidate = self.page.locator(selector).first
+                if candidate.count() > 0 and candidate.is_visible():
+                    title_input = candidate
+                    break
+            if title_input is None:
                 print("   ❌ 未找到标题输入框")
                 return False
             title_input.fill(title)
+            try:
+                observed_title = title_input.input_value(timeout=3000)
+            except Exception:
+                observed_title = title_input.evaluate("(node) => node.value || node.textContent || ''")
+            if observed_title.strip() != title.strip():
+                print("   ❌ 标题输入框填写后验证失败")
+                return False
 
             composer = self.page.locator("shreddit-composer").first
             if composer.count() > 0:
@@ -1122,6 +1199,7 @@ Thanks in advance for your help!"""
                 self.page.keyboard.press("Delete")
                 self._wait_for_timeout_sync(300)
                 self.page.keyboard.type(content, delay=20)
+                self._dismiss_editor_popups_sync()
                 print("   ✅ 表单填写完成")
                 return True
 
@@ -1132,6 +1210,7 @@ Thanks in advance for your help!"""
                 print("   ❌ 未找到正文输入框")
                 return False
             text_input.fill(content)
+            self._dismiss_editor_popups_sync()
             print("   ✅ 表单填写完成")
             return True
         except Exception as exc:
@@ -1270,14 +1349,48 @@ Thanks in advance for your help!"""
         else:
             time.sleep(milliseconds / 1000)
 
+    def _dismiss_editor_popups_sync(self) -> None:
+        """关闭输入正文后可能出现的标签/建议浮层，避免遮挡后续按钮。"""
+        try:
+            self.page.keyboard.press("Escape")
+            self._wait_for_timeout_sync(300)
+        except Exception as exc:
+            print(f"   ⚠️  关闭编辑器浮层快捷键失败: {exc}")
+        try:
+            point = self.page.evaluate(
+                """
+                () => {
+                    const composer = document.querySelector('shreddit-composer');
+                    const rect = composer?.getBoundingClientRect?.();
+                    const width = window.innerWidth || 1280;
+                    const height = window.innerHeight || 720;
+                    if (!rect || rect.width <= 0 || rect.height <= 0) return null;
+                    const y = Math.max(20, Math.min(height - 20, rect.top + Math.min(48, rect.height / 2)));
+                    const rightX = rect.right + 24;
+                    const leftX = rect.left - 24;
+                    const x = rightX < width - 20 ? rightX : Math.max(20, leftX);
+                    return { x, y };
+                }
+                """
+            )
+            if isinstance(point, dict) and point.get("x") and point.get("y"):
+                self.page.mouse.click(float(point["x"]), float(point["y"]))
+                self._wait_for_timeout_sync(300)
+        except Exception as exc:
+            print(f"   ⚠️  点击编辑器旁白区域失败: {exc}")
+
     async def _open_flair_dialog_async(self) -> bool:
         """异步打开 Flair 弹窗，供必选 Flair 路径使用。"""
         for selector in [
+            '#reddit-post-flair-button',
             'button:has-text("Add flair")',
             'button:has-text("Flair")',
+            'button:has-text("添加标识")',
             'button:has-text("添加标记")',
+            'button:has-text("标识")',
             'button:has-text("标记")',
             '[aria-label*="flair" i]',
+            '[aria-label*="标识"]',
             '[data-testid*="flair" i]',
         ]:
             try:
@@ -1291,11 +1404,59 @@ Thanks in advance for your help!"""
             except Exception as exc:
                 print(f"   ⚠️  打开 Flair 弹窗失败 {selector}: {exc}")
 
+        try:
+            clicked = await self.page.evaluate(
+                """
+                () => {
+                    const normalize = (value) => (value || '').replace(/\\s+/g, ' ').trim();
+                    const nodes = [];
+                    const visit = (node, depth = 0) => {
+                        if (!node || depth > 12) return;
+                        if (node.nodeType === Node.ELEMENT_NODE) {
+                            nodes.push(node);
+                            if (node.shadowRoot) visit(node.shadowRoot, depth + 1);
+                        }
+                        for (const child of node.childNodes || []) visit(child, depth + 1);
+                    };
+                    visit(document);
+                    const target = nodes.find((node) => {
+                        const text = normalize(
+                            node.innerText ||
+                            node.textContent ||
+                            node.getAttribute?.('aria-label') ||
+                            node.getAttribute?.('title') ||
+                            node.id ||
+                            ''
+                        );
+                        const lowered = text.toLowerCase();
+                        const rect = node.getBoundingClientRect?.();
+                        return rect && rect.width > 20 && rect.height > 10 && text.length <= 120 &&
+                            (lowered.includes('add flair') ||
+                             lowered.includes('select flair') ||
+                             text.includes('添加标识') ||
+                             text.includes('添加标记') ||
+                             text.includes('标识和标记') ||
+                             node.id === 'reddit-post-flair-button');
+                    });
+                    if (!target) return false;
+                    target.scrollIntoView?.({ block: 'center', inline: 'center' });
+                    target.click();
+                    return true;
+                }
+                """
+            )
+            if clicked:
+                await asyncio.sleep(1)
+                if await self._is_flair_dialog_open_async():
+                    return True
+        except Exception as exc:
+            print(f"   ⚠️  深度 DOM 打开 Flair 弹窗失败: {exc}")
+
         if self.advanced_helper:
             try:
                 await self.advanced_helper.force_click_shadow_element(
                     'shreddit-composer',
-                    "b => (b.textContent || '').toLowerCase().includes('flair') || (b.textContent || '').includes('标记')",
+                    "b => (b.textContent || '').toLowerCase().includes('flair') || (b.textContent || '').includes('标记') || (b.textContent || '').includes('标识')",
                 )
                 await asyncio.sleep(1)
                 return await self._is_flair_dialog_open_async()
@@ -1308,9 +1469,29 @@ Thanks in advance for your help!"""
         try:
             return bool(await self.page.evaluate(
                 """
-                () => Boolean(
-                    document.querySelector('[role="dialog"], shreddit-post-flair-modal, reddit-post-flair-modal')
-                )
+                () => {
+                    const normalize = (value) => (value || '').replace(/\\s+/g, ' ').trim();
+                    const nodes = [];
+                    const visit = (node, depth = 0) => {
+                        if (!node || depth > 12) return;
+                        if (node.nodeType === Node.ELEMENT_NODE) {
+                            nodes.push(node);
+                            if (node.shadowRoot) visit(node.shadowRoot, depth + 1);
+                        }
+                        for (const child of node.childNodes || []) visit(child, depth + 1);
+                    };
+                    visit(document);
+                    return nodes.some((node) => {
+                        const tag = (node.localName || '').toLowerCase();
+                        const role = (node.getAttribute?.('role') || '').toLowerCase();
+                        const ariaModal = node.getAttribute?.('aria-modal') === 'true';
+                        const text = normalize(node.innerText || node.textContent || '');
+                        const rect = node.getBoundingClientRect?.();
+                        return (tag.includes('dialog') || role === 'dialog' || ariaModal ||
+                            (text.includes('添加标识和标记') && text.includes('Project'))) &&
+                            (!rect || (rect.width > 200 && rect.height > 150));
+                    });
+                }
                 """
             ))
         except Exception:
@@ -1327,22 +1508,35 @@ Thanks in advance for your help!"""
                 (targetFlair) => {
                     const normalize = (value) => (value || '').replace(/\\s+/g, ' ').trim();
                     const lower = (value) => normalize(value).toLowerCase();
+                    const canonical = (value) => lower(value).replace(/[^a-z0-9\\u4e00-\\u9fff]+/g, ' ').trim();
                     const target = lower(targetFlair || '');
-                    const preferred = ['discussion', '讨论', 'question', '问题', 'general', 'other', '其他'];
-                    const dialog = document.querySelector('[role="dialog"], shreddit-post-flair-modal, reddit-post-flair-modal') || document.body;
+                    const targetKey = canonical(targetFlair || '');
+                    const preferred = [
+                        'discussion', '讨论', 'question', '问题', 'project', 'build',
+                        'research', 'news', 'general', 'other', '其他'
+                    ];
+                    const dialog = document.querySelector('[role="dialog"], shreddit-post-flair-modal, reddit-post-flair-modal, faceplate-dialog, [aria-modal="true"]') || document.body;
                     const rows = Array.from(dialog.querySelectorAll('shreddit-post-flair-row, [role="radio"], [role="option"], label, li, div'))
                         .map((node) => ({ node, text: normalize(node.innerText || node.textContent || '') }))
-                        .filter((item) => item.text.length >= 2 && !['add', 'apply', 'cancel', '添加', '取消'].includes(lower(item.text)));
+                        .filter((item) => {
+                            const text = lower(item.text);
+                            const key = canonical(item.text);
+                            const blocked = ['add', 'apply', 'cancel', '添加', '取消', 'no flair', '无标识', '无标记', 'nsfw', 'spoiler'];
+                            return item.text.length >= 2 && !blocked.some((word) => text.includes(word) || key === canonical(word));
+                        });
 
                     if (!rows.length) return { success: false, error: '未找到 Flair 候选项' };
 
                     const scored = rows.map((item, index) => {
                         const text = lower(item.text);
+                        const key = canonical(item.text);
                         let score = 0;
                         if (target && text === target) score += 100;
                         else if (target && (text.includes(target) || target.includes(text))) score += 80;
+                        else if (targetKey && key === targetKey) score += 95;
+                        else if (targetKey && (key.includes(targetKey) || targetKey.includes(key))) score += 70;
                         for (const keyword of preferred) {
-                            if (text.includes(keyword)) score += 20;
+                            if (text.includes(keyword) || key.includes(keyword)) score += 20;
                         }
                         score -= index * 0.01;
                         return { ...item, score };
@@ -1396,19 +1590,35 @@ Thanks in advance for your help!"""
         if not await self._fill_form(content_strategy):
             # 备选方案: 强制注入
             print("   ⚠️  常规填写失败，尝试强制注入...")
-            await self.page.evaluate(f"""
+            force_filled = await self.page.evaluate(f"""
                 (t, c) => {{
                     const composer = document.querySelector('shreddit-composer');
                     const root = composer ? composer.shadowRoot : document;
-                    const ti = root.querySelector('input[name="title"]');
+                    const ti = root.querySelector('textarea[name="title"], input[name="title"]');
                     const co = root.querySelector('textarea[name="text"], div[role="textbox"]');
                     if (ti) ti.value = t;
                     if (co) {{
                         if (co.tagName === 'DIV') co.innerText = c;
                         else co.value = c;
                     }}
+                    return Boolean(
+                        ti && co &&
+                        (ti.value || ti.textContent || '').trim() === t.trim() &&
+                        (co.value || co.innerText || co.textContent || '').trim() === c.trim()
+                    );
                 }}
             """, title, content)
+            if not force_filled:
+                return self._failure_result(
+                    trace_id=trace_id,
+                    subreddit=subreddit,
+                    title=title,
+                    status="error",
+                    code="reddit_form_fill_failed",
+                    error_message="无法填写 Reddit 标题或正文",
+                    attempt=attempt,
+                )
+            await self._dismiss_editor_popups_async()
 
         # 步骤 2: 只有 Flair 必选时才选择
         flair_requirement = await self._detect_flair_requirement_async()

@@ -313,21 +313,24 @@ class RedditVisualRecognizer:
                 print(f"   ❌ {last_error}")
                 continue
 
-            print("   Step 2: 截图并 OCR 识别 Flair 选项...")
+            print("   Step 2: 读取 Flair 选项...")
             screenshot_path = str(self.screenshot_dir / f"flair_dialog_{int(time.time())}.png")
             self.page.screenshot(path=screenshot_path, full_page=True)
-            ocr_results = self.ocr_helper.recognize_with_position(screenshot_path, lang='chi_sim+eng')
-            if not ocr_results:
-                last_error = 'OCR 未识别到 Flair 弹窗文字'
+            candidates = self.extract_visible_flair_candidates(screenshot_path=screenshot_path)
+            if not candidates:
+                last_error = '未读取到 Flair 候选项'
                 print(f"   ❌ {last_error}")
                 self._close_flair_dialog()
                 continue
 
-            grouped_texts = self._group_nearby_texts(ocr_results)
-            candidates = self._extract_flair_candidates(grouped_texts)
-            print(f"   📝 OCR 候选 Flair: {len(candidates)} 个")
+            print(f"   📝 候选 Flair: {len(candidates)} 个")
             for i, item in enumerate(candidates[:12]):
-                print(f"      [{i}] \"{item['text']}\" score={item['score']:.2f} conf={item['confidence']:.1f}")
+                print(
+                    f"      [{i}] \"{item['text']}\" "
+                    f"source={item.get('source', 'ocr')} "
+                    f"score={item.get('score', 0):.2f} "
+                    f"conf={item.get('confidence', 0):.1f}"
+                )
 
             selected = self._choose_flair_candidate(
                 candidates=candidates,
@@ -385,36 +388,169 @@ class RedditVisualRecognizer:
             keywords.extend(re.findall(r'[\u4e00-\u9fff]+|[a-zA-Z0-9]+', target_flair))
 
         keywords.extend([
-            'discussion', '讨论', 'question', '问题', 'project', 'showcase',
-            '技术', '分享', 'general', 'other', '其他'
+            'discussion', '讨论', 'question', '问题', 'project', 'build', 'showcase',
+            'research', 'news', '技术', '分享', 'general', 'other', '其他'
         ])
         return [kw.lower() for kw in keywords if kw]
+
+    def detect_flair_requirement(self) -> Dict[str, Any]:
+        """检测当前 Reddit 发帖页是否显示必选 Flair 控件。"""
+        try:
+            result = self.page.evaluate(
+                """
+                () => {
+                    const normalize = (value) => (value || '').replace(/\\s+/g, ' ').trim();
+                    const lower = (value) => normalize(value).toLowerCase();
+                    const parts = [];
+                    const visit = (node, depth = 0) => {
+                        if (!node || depth > 12) return;
+                        if (node.nodeType === Node.TEXT_NODE) {
+                            const text = normalize(node.textContent);
+                            if (text) parts.push(text);
+                            return;
+                        }
+                        if (node.nodeType !== Node.ELEMENT_NODE && node !== document) return;
+                        const element = node;
+                        if (element.getAttribute) {
+                            for (const attr of ['id', 'aria-label', 'title', 'placeholder', 'data-testid']) {
+                                const value = normalize(element.getAttribute(attr));
+                                if (value) parts.push(value);
+                            }
+                        }
+                        if (element.shadowRoot) visit(element.shadowRoot, depth + 1);
+                        for (const child of element.childNodes || []) visit(child, depth + 1);
+                    };
+                    visit(document);
+
+                    const pageText = lower(parts.join(' '));
+                    const explicitRequired = [
+                        'flair is required',
+                        'post flair is required',
+                        'requires flair',
+                        'required flair',
+                        'must contain post flair',
+                        'please add flair',
+                        '请选择标记',
+                        '必须选择标记',
+                        '需要选择标记',
+                        '帖子标记为必填',
+                        '标记是必填',
+                        '标识是必填',
+                        '必须添加标记',
+                        '必须添加标识'
+                    ].some((needle) => pageText.includes(needle));
+
+                    const candidates = Array.from(document.querySelectorAll(
+                        '#reddit-post-flair-button, button, [role="button"]'
+                    ));
+                    const flairControls = candidates
+                        .map((node) => ({
+                            id: normalize(node.id),
+                            text: normalize(
+                                node.innerText ||
+                                node.textContent ||
+                                node.getAttribute('aria-label') ||
+                                node.getAttribute('title') ||
+                                node.getAttribute('data-testid')
+                            ),
+                            required: node.hasAttribute('required') ||
+                                node.getAttribute('aria-required') === 'true',
+                            visible: (() => {
+                                const rect = node.getBoundingClientRect();
+                                return rect.width > 0 && rect.height > 0;
+                            })()
+                        }))
+                        .filter((item) => {
+                            const text = lower(`${item.id} ${item.text}`);
+                            return item.visible &&
+                                item.text.length <= 160 &&
+                                (text.includes('flair') || text.includes('标记') || text.includes('标识'));
+                        });
+                    const controlText = flairControls.map((item) => item.text).filter(Boolean).join(' | ');
+                    const hasFlairControl = flairControls.length > 0 ||
+                        ['add flair', 'select flair', '添加标记', '添加标识', '选择标记', '选择标识', '标识和标记']
+                            .some((needle) => pageText.includes(needle));
+                    const starredRequired = flairControls.some((item) => item.required || item.text.includes('*')) ||
+                        /(?:flair|标记|标识)[^\\n]{0,40}\\*/i.test(parts.join(' ')) ||
+                        /\\*[^\\n]{0,40}(?:flair|标记|标识)/i.test(parts.join(' '));
+                    const submitComponent = document.querySelector('r-post-form-submit-button#submit-post-button');
+                    const shadowButton = submitComponent?.shadowRoot?.querySelector('button');
+                    const submitDisabled = Boolean(
+                        submitComponent?.hasAttribute('disabled') ||
+                        shadowButton?.disabled ||
+                        document.querySelector('button[type="submit"][disabled]')
+                    );
+
+                    return {
+                        required: Boolean(explicitRequired || starredRequired),
+                        reason: explicitRequired ? 'explicit_required_text' :
+                            (starredRequired ? 'flair_control_required_marker' : 'no_required_signal'),
+                        submit_disabled: submitDisabled,
+                        has_flair_control: hasFlairControl,
+                        control_text: controlText
+                    };
+                }
+                """
+            )
+            if isinstance(result, dict):
+                return result
+        except Exception as exc:
+            print(f"   ⚠️  Flair 必选检测失败: {exc}")
+        return {
+            "required": False,
+            "reason": "detection_failed_default_skip",
+            "submit_disabled": None,
+            "has_flair_control": None,
+            "control_text": None,
+        }
 
     def _is_flair_dialog_open(self) -> bool:
         """验证 Flair 弹窗是否打开。"""
         try:
             dom_detected = bool(self.page.evaluate("""
                 () => {
-                    const dialogSelectors = [
-                        'shreddit-post-flair-modal',
-                        '[role="dialog"]',
-                        'reddit-post-flair-modal'
-                    ];
-                    for (const selector of dialogSelectors) {
-                        const node = document.querySelector(selector);
-                        if (node) return true;
+                    const normalize = (value) => (value || '').replace(/\\s+/g, ' ').trim();
+                    const nodes = [];
+                    const visit = (node, depth = 0) => {
+                        if (!node || depth > 12) return;
+                        if (node.nodeType === Node.ELEMENT_NODE) {
+                            nodes.push(node);
+                            if (node.shadowRoot) visit(node.shadowRoot, depth + 1);
+                        }
+                        for (const child of node.childNodes || []) visit(child, depth + 1);
+                    };
+                    visit(document);
+
+                    for (const node of nodes) {
+                        const tag = (node.localName || '').toLowerCase();
+                        const role = (node.getAttribute?.('role') || '').toLowerCase();
+                        const ariaModal = node.getAttribute?.('aria-modal') === 'true';
+                        const text = normalize(node.innerText || node.textContent || '');
+                        const looksLikeDialog = tag.includes('dialog') ||
+                            role === 'dialog' ||
+                            ariaModal ||
+                            (text.includes('添加标识和标记') && text.includes('Project'));
+                        if (!looksLikeDialog) continue;
+                        const rect = node.getBoundingClientRect?.();
+                        if (!rect || (rect.width > 200 && rect.height > 150)) return true;
                     }
 
-                    const text = document.body?.innerText || '';
+                    const text = nodes.map((node) => normalize(node.innerText || node.textContent || '')).join(' ');
                     const hasDialogWords = text.includes('Apply') ||
                                            text.includes('Add') ||
                                            text.includes('添加') ||
                                            text.includes('确认') ||
-                                           text.includes('确定');
+                                           text.includes('确定') ||
+                                           text.includes('查看所有标识');
                     const hasAdultOption = text.includes('不适合工作场合') ||
                                            (text.includes('适合') && text.includes('工作') && text.includes('场合')) ||
                                            (text.includes('包含') && text.includes('成'));
                     const hasOptionWords = hasAdultOption ||
+                                           text.includes('无标识') ||
+                                           text.includes('Project') ||
+                                           text.includes('Build') ||
+                                           text.includes('Research') ||
+                                           text.includes('News') ||
                                            text.includes('剧透') ||
                                            text.includes('品牌关联') ||
                                            text.includes('成人内容');
@@ -442,14 +578,20 @@ class RedditVisualRecognizer:
             ocr_results = self.ocr_helper.recognize_with_position(screenshot_path, lang='chi_sim+eng')
             grouped = self._group_nearby_texts(ocr_results)
             text = " ".join(self._normalize_ocr_text(item.get('text', '')) for item in grouped)
+            has_modal_heading = '添加标识和标记' in text or all(
+                keyword in text for keyword in ['添加', '标识', '标记']
+            )
             has_adult_option = (
                 '不适合工作场合' in text
                 or all(keyword in text for keyword in ['适合', '工作', '场合'])
                 or all(keyword in text for keyword in ['包含', '成'])
             )
-            has_option = has_adult_option or any(keyword in text for keyword in ['剧透', '品牌关联', '成人内容'])
-            has_action = any(keyword in text for keyword in ['添加', '取消', 'Apply', 'Add'])
-            return bool(has_option and has_action)
+            has_option = has_adult_option or any(
+                keyword in text
+                for keyword in ['剧透', '品牌关联', '成人内容', '无标识', 'Project', 'Build', 'Research', 'News']
+            )
+            has_action = any(keyword in text for keyword in ['添加', '取消', 'Apply', 'Add', '查看所有标识'])
+            return bool((has_modal_heading and has_action) or (has_option and has_action))
         except Exception as exc:
             print(f"   ⚠️  Flair 弹窗视觉检测失败: {exc}")
             return False
@@ -477,6 +619,169 @@ class RedditVisualRecognizer:
         except Exception:
             pass
 
+    def extract_visible_flair_candidates(self, screenshot_path: Optional[str] = None) -> List[Dict]:
+        """
+        读取当前 Flair 弹窗中的可选分类。
+
+        Reddit 新版会把 Flair 文案放在 Web Component 中；DOM 能读到时优先
+        使用 DOM，只有 DOM 不可用才回落到 OCR。这样可以保留 emoji 前缀，
+        同时避免 OCR 把 `Project / Build` 拆碎后导致节点选不到。
+        """
+        dom_candidates = self._extract_flair_candidates_from_dom()
+        if dom_candidates:
+            return dom_candidates
+
+        if not self.ocr_helper:
+            return []
+
+        if screenshot_path is None:
+            screenshot_path = str(self.screenshot_dir / f"flair_dialog_{int(time.time())}.png")
+            self.page.screenshot(path=screenshot_path, full_page=True)
+        ocr_results = self.ocr_helper.recognize_with_position(screenshot_path, lang='chi_sim+eng')
+        if not ocr_results:
+            return []
+        grouped_texts = self._group_nearby_texts(ocr_results)
+        return self._extract_flair_candidates(grouped_texts)
+
+    def _extract_flair_candidates_from_dom(self) -> List[Dict]:
+        """从真实 Flair 弹窗 DOM 中读取可点击候选项。"""
+        try:
+            candidates = self.page.evaluate(
+                """
+                () => {
+                    const normalize = (value) => (value || '').replace(/\\s+/g, ' ').trim();
+                    const canonical = (value) => normalize(value)
+                        .toLowerCase()
+                        .replace(/[^a-z0-9\\u4e00-\\u9fff]+/g, ' ')
+                        .trim();
+                    const nodes = [];
+                    const visit = (node, depth = 0) => {
+                        if (!node || depth > 12) return;
+                        if (node.nodeType === Node.ELEMENT_NODE) {
+                            nodes.push(node);
+                            if (node.shadowRoot) visit(node.shadowRoot, depth + 1);
+                        }
+                        for (const child of node.childNodes || []) visit(child, depth + 1);
+                    };
+                    visit(document);
+
+                    const root = nodes.find((node) => {
+                        const tag = (node.localName || '').toLowerCase();
+                        const role = (node.getAttribute?.('role') || '').toLowerCase();
+                        const ariaModal = node.getAttribute?.('aria-modal') === 'true';
+                        const text = normalize(node.innerText || node.textContent || '');
+                        const rect = node.getBoundingClientRect?.();
+                        return (tag.includes('dialog') || role === 'dialog' || ariaModal ||
+                            (text.includes('添加标识和标记') && text.includes('Project'))) &&
+                            (!rect || (rect.width > 200 && rect.height > 150));
+                    });
+                    if (!root) return [];
+                    const rootRect = root.getBoundingClientRect?.();
+
+                    const blocked = new Set([
+                        'no flair', 'none', '无标识', '无标记', 'post flair',
+                        'add flair', '添加标识和标记', '添加标记', '选择标记',
+                        'apply', 'add', 'done', 'save', 'cancel',
+                        '添加', '确认', '确定', '完成', '保存', '取消',
+                        'nsfw', 'spoiler', 'brand affiliate', '剧透', '品牌关联'
+                    ]);
+                    const blockedCanonical = new Set(Array.from(blocked).map(canonical));
+                    const seen = new Set();
+                    const output = [];
+                    const inRoot = (node) => {
+                        if (root.contains?.(node)) return true;
+                        if (!rootRect) return true;
+                        const rect = node.getBoundingClientRect?.();
+                        if (!rect || rect.width <= 0 || rect.height <= 0) return false;
+                        return rect.left >= rootRect.left - 4 &&
+                            rect.right <= rootRect.right + 4 &&
+                            rect.top >= rootRect.top - 4 &&
+                            rect.bottom <= rootRect.bottom + 4;
+                    };
+
+                    const getText = (node) => normalize(
+                        node?.innerText ||
+                        node?.textContent ||
+                        node?.getAttribute?.('aria-label') ||
+                        node?.getAttribute?.('title') ||
+                        ''
+                    );
+                    const pushCandidate = (node, fallbackInput) => {
+                        if (!node) return;
+                        let container = node.closest?.(
+                            'label, shreddit-post-flair-row, [role="radio"], [role="option"], li, div'
+                        ) || node;
+                        let text = getText(container) || getText(node);
+                        if (!text && fallbackInput?.id) {
+                            const label = root.querySelector(`label[for="${CSS.escape(fallbackInput.id)}"]`);
+                            if (label) {
+                                container = label;
+                                text = getText(label);
+                            }
+                        }
+                        const key = canonical(text);
+                        if (!key || seen.has(key) || blockedCanonical.has(key)) return;
+                        if (key.length < 2 || key.length > 80) return;
+                        if ([...blockedCanonical].some((blockedKey) => blockedKey && key.includes(blockedKey))) {
+                            return;
+                        }
+                        const rect = container.getBoundingClientRect();
+                        if (rect.width <= 0 || rect.height <= 0) return;
+                        if (!inRoot(container)) return;
+                        seen.add(key);
+                        output.push({
+                            text,
+                            center_x: rect.left + rect.width / 2,
+                            center_y: rect.top + rect.height / 2,
+                            width: rect.width,
+                            height: rect.height,
+                            confidence: 100,
+                            score: 1,
+                            source: 'dom'
+                        });
+                    };
+
+                    for (const input of nodes.filter((node) => (node.id || '').startsWith('post-flair-radio-input'))) {
+                        if (!inRoot(input)) continue;
+                        const inputKey = canonical(input.id || '');
+                        if (inputKey.includes('no flair') || inputKey.includes('无标识')) continue;
+                        const label = input.id ? nodes.find((node) => node.getAttribute?.('for') === input.id) : null;
+                        pushCandidate(label || input, input);
+                    }
+
+                    for (const node of nodes) {
+                        if (!inRoot(node)) continue;
+                        const tag = (node.localName || '').toLowerCase();
+                        const role = (node.getAttribute?.('role') || '').toLowerCase();
+                        const labelFor = node.getAttribute?.('for') || '';
+                        if (
+                            tag === 'shreddit-post-flair-row' ||
+                            tag === 'faceplate-radio-input' ||
+                            role === 'radio' ||
+                            role === 'option' ||
+                            labelFor.startsWith('post-flair-radio-input')
+                        ) {
+                            pushCandidate(node, node);
+                        }
+                    }
+                    for (const node of nodes) {
+                        if (!inRoot(node)) continue;
+                        const text = getText(node);
+                        const key = canonical(text);
+                        if (['news', 'research', 'project build'].includes(key)) {
+                            pushCandidate(node, node);
+                        }
+                    }
+                    return output;
+                }
+                """
+            )
+            if isinstance(candidates, list):
+                return [item for item in candidates if isinstance(item, dict) and item.get("text")]
+        except Exception as exc:
+            print(f"   ⚠️  DOM 读取 Flair 候选失败: {exc}")
+        return []
+
     def _extract_flair_candidates(self, grouped_texts: List[Dict]) -> List[Dict]:
         """
         从 OCR 文本行中过滤可点击 Flair 候选。
@@ -485,8 +790,10 @@ class RedditVisualRecognizer:
         这些必须排除，否则坐标点击会点错控件。
         """
         blocked = {
-            'apply', 'cancel', 'search', 'flair', '添加标记', '选择标记',
-            'post flair', 'clear', 'done', '确认', '取消', '搜索'
+            'apply', 'cancel', 'search', 'flair', '添加标记', '添加标识和标记',
+            '选择标记', '选择标识', 'post flair', 'clear', 'done', '确认',
+            '取消', '搜索', 'no flair', '无标识', '无标记', 'nsfw',
+            'spoiler', 'brand affiliate', '剧透', '品牌关联'
         }
         candidates = []
         bounds = self._get_flair_dialog_bounds()
@@ -499,7 +806,10 @@ class RedditVisualRecognizer:
                 continue
 
             lowered = text.lower()
+            canonical = self._canonical_flair_text(text)
             if any(word == lowered or word in lowered for word in blocked):
+                continue
+            if canonical in {self._canonical_flair_text(word) for word in blocked}:
                 continue
             if item.get('confidence', 0) < 35:
                 continue
@@ -509,6 +819,7 @@ class RedditVisualRecognizer:
             candidate = dict(item)
             candidate['text'] = text
             candidate['score'] = item.get('confidence', 0) / 100
+            candidate['source'] = 'ocr'
             candidates.append(candidate)
 
         return candidates
@@ -523,10 +834,27 @@ class RedditVisualRecognizer:
         try:
             bounds = self.page.evaluate("""
                 () => {
-                    const selectors = ['[role="dialog"]', 'shreddit-post-flair-modal', 'reddit-post-flair-modal'];
-                    for (const selector of selectors) {
-                        const node = document.querySelector(selector);
-                        if (!node) continue;
+                    const normalize = (value) => (value || '').replace(/\\s+/g, ' ').trim();
+                    const nodes = [];
+                    const visit = (node, depth = 0) => {
+                        if (!node || depth > 12) return;
+                        if (node.nodeType === Node.ELEMENT_NODE) {
+                            nodes.push(node);
+                            if (node.shadowRoot) visit(node.shadowRoot, depth + 1);
+                        }
+                        for (const child of node.childNodes || []) visit(child, depth + 1);
+                    };
+                    visit(document);
+                    for (const node of nodes) {
+                        const tag = (node.localName || '').toLowerCase();
+                        const role = (node.getAttribute?.('role') || '').toLowerCase();
+                        const ariaModal = node.getAttribute?.('aria-modal') === 'true';
+                        const text = normalize(node.innerText || node.textContent || '');
+                        const looksLikeDialog = tag.includes('dialog') ||
+                            role === 'dialog' ||
+                            ariaModal ||
+                            (text.includes('添加标识和标记') && text.includes('Project'));
+                        if (!looksLikeDialog) continue;
                         const rect = node.getBoundingClientRect();
                         if (rect.width > 200 && rect.height > 150) {
                             return {
@@ -583,11 +911,13 @@ class RedditVisualRecognizer:
 
         preferred_keywords = [kw.lower() for kw in (preferred_keywords or [])]
         target_norm = self._normalize_ocr_text(target_flair or '').lower()
+        target_canonical = self._canonical_flair_text(target_flair or '')
         best = None
         best_score = -1
 
         for item in candidates:
             text_norm = self._normalize_ocr_text(item['text']).lower()
+            text_canonical = self._canonical_flair_text(item['text'])
             score = item.get('confidence', 0) / 100
             match_type = 'confidence'
 
@@ -598,13 +928,24 @@ class RedditVisualRecognizer:
                 elif target_norm in text_norm or text_norm in target_norm:
                     score += 50
                     match_type = 'contains'
+                elif target_canonical and target_canonical == text_canonical:
+                    score += 95
+                    match_type = 'canonical_exact'
+                elif target_canonical and (
+                    target_canonical in text_canonical or text_canonical in target_canonical
+                ):
+                    score += 70
+                    match_type = 'canonical_contains'
                 else:
                     token_score = self._flair_token_match_score(target_norm, text_norm)
                     if token_score:
                         score += token_score
                         match_type = 'token'
 
-            matched_keywords = [kw for kw in preferred_keywords if kw and kw in text_norm]
+            matched_keywords = [
+                kw for kw in preferred_keywords
+                if kw and (kw in text_norm or kw in text_canonical)
+            ]
             if matched_keywords:
                 score += 10 * len(matched_keywords)
                 match_type = 'keyword'
@@ -642,6 +983,11 @@ class RedditVisualRecognizer:
         cleaned = re.sub(r'\s+', ' ', text).strip()
         return cleaned.strip('|·•[](){}')
 
+    def _canonical_flair_text(self, text: str) -> str:
+        """把 emoji、斜杠和标点归一化，供 Flair 文案宽松匹配。"""
+        tokens = re.findall(r'[\u4e00-\u9fff]+|[a-zA-Z0-9]+', text or '')
+        return ' '.join(token.lower() for token in tokens)
+
     def _click_flair_candidate(self, selected: Dict) -> bool:
         """
         点击 Flair 候选。
@@ -656,12 +1002,30 @@ class RedditVisualRecognizer:
                     """
                     (needle) => {
                         const normalize = (value) => (value || '').replace(/\\s+/g, ' ').trim();
-                        const dialog = document.querySelector('[role="dialog"], shreddit-post-flair-modal, reddit-post-flair-modal');
-                        const root = dialog || document.body;
-                        const nodes = Array.from(root.querySelectorAll('*'))
-                            .filter((node) => normalize(node.innerText).includes(needle));
+                        const canonical = (value) => normalize(value)
+                            .toLowerCase()
+                            .replace(/[^a-z0-9\\u4e00-\\u9fff]+/g, ' ')
+                            .trim();
+                        const expected = canonical(needle);
+                        const nodes = [];
+                        const visit = (node, depth = 0) => {
+                            if (!node || depth > 12) return;
+                            if (node.nodeType === Node.ELEMENT_NODE) {
+                                nodes.push(node);
+                                if (node.shadowRoot) visit(node.shadowRoot, depth + 1);
+                            }
+                            for (const child of node.childNodes || []) visit(child, depth + 1);
+                        };
+                        visit(document);
+                        const matches = nodes
+                            .filter((node) => {
+                                const text = normalize(node.innerText || node.textContent || node.getAttribute?.('aria-label'));
+                                const key = canonical(text);
+                                return text.includes(needle) ||
+                                    (expected && key && (key.includes(expected) || expected.includes(key)));
+                            });
 
-                        for (const node of nodes) {
+                        for (const node of matches) {
                             const container = node.closest('[role="listitem"], li, label, shreddit-post-flair-row, div');
                             const switchLike = container?.querySelector?.('[role="switch"], button, input[type="checkbox"], input[type="radio"]');
                             if (switchLike) {
@@ -670,6 +1034,10 @@ class RedditVisualRecognizer:
                             }
                             if (container) {
                                 container.click();
+                                return true;
+                            }
+                            if (node.click) {
+                                node.click();
                                 return true;
                             }
                         }
@@ -799,11 +1167,15 @@ class RedditVisualRecognizer:
 
             # 先使用 DOM 定位，OCR 作为兜底。这样可以避免按钮文字被拆字后点错位置。
             for selector in [
+                '#reddit-post-flair-button',
                 'button:has-text("Add flair")',
                 'button:has-text("Flair")',
+                'button:has-text("添加标识")',
                 'button:has-text("添加标记")',
+                'button:has-text("标识")',
                 'button:has-text("标记")',
                 '[aria-label*="flair" i]',
+                '[aria-label*="标识"]',
                 '[data-testid*="flair" i]'
             ]:
                 try:
@@ -817,6 +1189,54 @@ class RedditVisualRecognizer:
                             return True
                 except Exception as exc:
                     print(f"      ⚠️  DOM 打开 Flair 失败 {selector}: {exc}")
+
+            try:
+                clicked = self.page.evaluate("""
+                    () => {
+                        const normalize = (value) => (value || '').replace(/\\s+/g, ' ').trim();
+                        const nodes = [];
+                        const visit = (node, depth = 0) => {
+                            if (!node || depth > 12) return;
+                            if (node.nodeType === Node.ELEMENT_NODE) {
+                                nodes.push(node);
+                                if (node.shadowRoot) visit(node.shadowRoot, depth + 1);
+                            }
+                            for (const child of node.childNodes || []) visit(child, depth + 1);
+                        };
+                        visit(document);
+                        const candidates = nodes.filter((node) => {
+                            const text = normalize(
+                                node.innerText ||
+                                node.textContent ||
+                                node.getAttribute?.('aria-label') ||
+                                node.getAttribute?.('title') ||
+                                node.id ||
+                                ''
+                            );
+                            const lowered = text.toLowerCase();
+                            const rect = node.getBoundingClientRect?.();
+                            return rect && rect.width > 20 && rect.height > 10 && text.length <= 120 &&
+                                (lowered.includes('add flair') ||
+                                 lowered.includes('select flair') ||
+                                 text.includes('添加标识') ||
+                                 text.includes('添加标记') ||
+                                 text.includes('标识和标记') ||
+                                 node.id === 'reddit-post-flair-button');
+                        });
+                        const target = candidates[0];
+                        if (!target) return false;
+                        target.scrollIntoView?.({ block: 'center', inline: 'center' });
+                        target.click();
+                        return true;
+                    }
+                """)
+                if clicked:
+                    time.sleep(1)
+                    if self._is_flair_dialog_open():
+                        print("      ✅ 已通过深度 DOM 打开 Flair 对话框")
+                        return True
+            except Exception as exc:
+                print(f"      ⚠️  深度 DOM 打开 Flair 失败: {exc}")
 
             # 截图
             screenshot_path = str(self.screenshot_dir / "flair_button_search.png")
@@ -832,7 +1252,7 @@ class RedditVisualRecognizer:
             print(f"      🔍 OCR 识别到 {len(results)} 个文字块")
             
             # 查找包含"添加标记"、"Flair"、"标记"的文字
-            target_keywords = ['添加标记', 'flair', '标记', 'add flair']
+            target_keywords = ['添加标识', '添加标记', 'flair', '标识', '标记', 'add flair']
             target_found = None
             
             for item in results:
