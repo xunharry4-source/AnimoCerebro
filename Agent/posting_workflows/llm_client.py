@@ -45,6 +45,7 @@ class WorkflowLLMClient:
         trace_id: str,
         phase: str,
         max_output_tokens: int = 1200,
+        temperature: float = 0.0,
     ) -> Dict[str, Any]:
         """Call the active Agent local LLM service and require a JSON object."""
         service = self._resolve_service()
@@ -65,7 +66,7 @@ class WorkflowLLMClient:
                 decision_id=trace_id,
                 provider_key=self._provider_key,
                 model=self._model,
-                temperature=0.0,
+                temperature=temperature,
                 max_output_tokens=max_output_tokens,
                 metadata={"trace_id": trace_id, "workflow_node": node},
             )

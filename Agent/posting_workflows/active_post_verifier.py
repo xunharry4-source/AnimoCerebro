@@ -19,6 +19,7 @@ Not responsible for:
 from __future__ import annotations
 
 import re
+import time
 from typing import Any, Dict, Optional
 
 from Agent.posting_workflows.errors import PostingWorkflowError
@@ -48,9 +49,16 @@ class ActivePostVerifier:
         ),
     }
 
-    def __init__(self, *, navigation_timeout_ms: int = 30000, text_timeout_ms: int = 8000) -> None:
+    def __init__(
+        self,
+        *,
+        navigation_timeout_ms: int = 30000,
+        text_timeout_ms: int = 8000,
+        content_match_timeout_ms: int = 30000,
+    ) -> None:
         self.navigation_timeout_ms = navigation_timeout_ms
         self.text_timeout_ms = text_timeout_ms
+        self.content_match_timeout_ms = content_match_timeout_ms
 
     def verify(self, context: Any, platform: str, state: Any, *, node: str) -> Dict[str, Any]:
         page = context.require_page(node)
@@ -75,9 +83,9 @@ class ActivePostVerifier:
             )
 
         title = self._read_title(page, node=node)
-        body_text = self._read_body_text(page, node=node)
-        self._reject_unavailable_page(platform, title, body_text, node=node, post_url=post_url)
         expected_text = self._expected_text(platform, state, node=node)
+        body_text = self._read_body_text_until_match(page, expected_text, node=node)
+        self._reject_unavailable_page(platform, title, body_text, node=node, post_url=post_url)
         if not self._text_matches(body_text, expected_text):
             raise PostingWorkflowError(
                 "Active verification could not find expected post text on the permalink page",
@@ -166,6 +174,24 @@ class ActivePostVerifier:
             )
         return body_text
 
+    def _read_body_text_until_match(self, page: Any, expected_text: str, *, node: str) -> str:
+        body_text = self._read_body_text(page, node=node)
+        if self._text_matches(body_text, expected_text):
+            return body_text
+        if not hasattr(page, "wait_for_timeout"):
+            return body_text
+
+        # X permalinks often render shell text first, then hydrate the article.
+        # Wait for browser-visible post text before declaring verification failure.
+        deadline = time.monotonic() + (self.content_match_timeout_ms / 1000)
+        last_body_text = body_text
+        while time.monotonic() < deadline:
+            page.wait_for_timeout(1000)
+            last_body_text = self._read_body_text(page, node=node)
+            if self._text_matches(last_body_text, expected_text):
+                return last_body_text
+        return last_body_text
+
     def _reject_unavailable_page(self, platform: str, title: str, body_text: str, *, node: str, post_url: str) -> None:
         haystack = self._normalize(f"{title}\n{body_text}")
         for marker in self.UNAVAILABLE_MARKERS.get(platform, ()):
@@ -192,7 +218,11 @@ class ActivePostVerifier:
     def _text_matches(self, body_text: str, expected_text: str) -> bool:
         normalized_body = self._normalize(body_text)
         normalized_expected = self._normalize(expected_text)
-        return normalized_expected in normalized_body
+        if normalized_expected in normalized_body:
+            return True
+        if len(normalized_expected) >= 80:
+            return normalized_expected[:80] in normalized_body
+        return False
 
     def _normalize(self, text: str) -> str:
         return re.sub(r"\s+", " ", text).strip().lower()

@@ -57,6 +57,7 @@ def main() -> bool:
         executable_path = get_chrome_path()
         user_data_dir = PROFILE_DIR.resolve()
         user_data_dir.mkdir(parents=True, exist_ok=True)
+        _remove_stale_singleton_links(user_data_dir)
         playwright = sync_playwright().start()
         context = playwright.chromium.launch_persistent_context(
             user_data_dir=str(user_data_dir),
@@ -97,6 +98,7 @@ def main() -> bool:
                 "finished_at": datetime.now(timezone.utc).isoformat(),
             }
         )
+        result["page_evidence"] = _capture_page_evidence(page)
     except PostingWorkflowError as exc:
         result.update(
             {
@@ -138,6 +140,39 @@ def _evidence_to_dict(item: Any) -> Dict[str, Any]:
         "data": getattr(item, "data", {}),
         "timestamp": getattr(item, "timestamp", None),
     }
+
+
+def _capture_page_evidence(page: Any) -> Dict[str, Any]:
+    screenshot_path = Path("Agent/data/x_real_last_page.png")
+    evidence: Dict[str, Any] = {
+        "url": str(getattr(page, "url", "") or ""),
+        "screenshot_path": str(screenshot_path),
+    }
+    try:
+        screenshot_path.parent.mkdir(parents=True, exist_ok=True)
+        page.screenshot(path=str(screenshot_path), full_page=True)
+    except Exception as exc:
+        evidence["screenshot_error"] = f"{exc.__class__.__name__}: {exc}"
+    try:
+        evidence["body_snippet"] = str(page.locator("body").inner_text(timeout=5000) or "")[:2000]
+    except Exception as exc:
+        evidence["body_error"] = f"{exc.__class__.__name__}: {exc}"
+    return evidence
+
+
+def _remove_stale_singleton_links(user_data_dir: Path) -> None:
+    """Remove Chrome singleton links only when their target no longer exists."""
+    for name in ("SingletonLock", "SingletonSocket", "SingletonCookie"):
+        path = user_data_dir / name
+        if not path.exists() and not path.is_symlink():
+            continue
+        try:
+            target = Path(path.resolve(strict=False)) if path.is_symlink() else path
+            if path.is_symlink() and not target.exists():
+                path.unlink()
+        except OSError:
+            # If the profile is genuinely in use, Chrome will fail closed during launch.
+            continue
 
 
 if __name__ == "__main__":
