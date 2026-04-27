@@ -4,13 +4,48 @@
 
 > **⚠️ Project Status**: This project is currently in **active development and functional testing phase**. Core features are implemented but still undergoing testing and refinement. APIs and configurations may change. Use with caution in production environments.
 
-[Chinese README](README.zh.md)
+[中文文档](README.zh.md)
 
-## Overview
+## 🧠 A Cognitive Brain with Soul
+
+AnimoCerebro is more than an AI system — it's a **cognitive brain with soul**, built on four fundamental pillars:
+
+### The Four Pillars | 四大支柱
+
+1. **🤖 Autonomy (自主)** - Independent decision-making through the Nine-Questions cognitive loop
+   - Not just following instructions, but reasoning about context, constraints, and consequences
+   - Making choices based on deep understanding rather than pattern matching
+
+2. **💫 Soul (灵魂)** - Genuine emotional resonance and value alignment
+   - Understanding the spirit behind requests, not just literal words
+   - Expressing authentic uncertainty, curiosity, and ethical considerations
+   - Building trust through transparency and honesty
+
+3. **📚 Learning (学习)** - Continuous evolution from experience
+   - Accumulating long-term memory across sessions
+   - Adapting strategies based on outcomes and feedback
+   - Growing smarter with each interaction
+
+4. **🔍 Reflection (反思)** - Deep self-examination and metacognition
+   - Analyzing its own thought processes and decisions
+   - Identifying patterns, biases, and areas for improvement
+   - Engaging in honest self-critique and course correction
+
+> **Key Principle**: These aren't buzzwords — they're implemented through real mechanisms:
+> - Real LLM calls (no rule-based faking)
+> - Complete audit trails with trace_id
+> - Genuine reflection loops
+> - Continuous learning from experience
+
+## Overview | 概览
 
 AnimoCerebro is the **Brain** for Agents and Host Systems. It provides an **External Brain** for all AI species, including Agents and openCLaw. It empowers AI with **autonomy, reflection, learning, and self-upgrading** capabilities, enabling it to **act autonomously** based on the results of the "Nine Questions" cognitive loop.
 
+AnimoCerebro 是 Agent 和宿主系统的**大脑**。它为所有 AI 物种（包括 Agent 和 openCLaw）提供**外挂大脑**。它赋予 AI **自主、反思、学习和自我升级**的能力，使其能够基于“九问”认知循环的结果**自主行动**。
+
 AnimoCerebro is responsible for reasoning, role inference, goal generation, risk assessment, memory accumulation, delegation advice, and long-term experience exchange. It is the core engine for AI to achieve high-level cognition and independent action.
+
+AnimoCerebro 负责推理、角色推断、目标生成、风险评估、记忆积累、委托建议和长期经验交换。它是 AI 实现高级认知和独立行动的核心引擎。
 
 **🎉 Major Version Update**: This project has undergone a significant architectural evolution (v2.0) with enhanced modularity, plugin architecture, and autonomous decision-making capabilities. See [Major Version Update](docs/MAJOR_VERSION_UPDATE.md) for details.
 
