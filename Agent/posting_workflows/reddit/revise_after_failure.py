@@ -36,9 +36,27 @@ class ReviseAfterFailureNode:
 
         payload = context.require_llm(self.name).generate_json(
             prompt=(
-                "Revise the Reddit title/content after a failed submission. "
-                "Return JSON with title, content, retry_same_community boolean. "
-                "Do not invent success; only produce revised content."
+                "You are an expert at troubleshooting Reddit submission failures. "
+                "The previous submission to r/{subreddit} failed. "
+                "\nDetected Error: {error_message} "
+                "\nAnalysis: {popup_analysis} "
+                "\n\nRules: {rules} "
+                "\n\nCurrent Title: {title} "
+                "\nCurrent Content Preview: {content_preview} "
+                "\n\nInstructions: "
+                "1. Analyze the error and rules to determine why it failed. "
+                "2. If the title is too short/long or contains prohibited words, revise it. "
+                "3. If the content is too short or violates a rule, expand or modify it. "
+                "4. If the error is 'Duplicate post', make the content more unique. "
+                "5. Return JSON: {{\"title\": \"New Title\", \"content\": \"New Content\", \"retry_same_community\": true/false, \"explanation\": \"...\"}}. "
+                "6. If the error is unfixable for this community (e.g. banned/private), set retry_same_community to false."
+            ).format(
+                subreddit=state.subreddit,
+                error_message=state.last_submission_result.get("error_message") or "Unknown error",
+                popup_analysis=state.last_popup_analysis,
+                rules=state.rules,
+                title=state.title,
+                content_preview=(state.content or "")[:500]
             ),
             context={
                 "subreddit": state.subreddit,

@@ -3,17 +3,15 @@ LangGraph orchestrator for Reddit posting.
 
 Purpose:
     Wire Reddit posting nodes into a loop-capable LangGraph StateGraph.
+    Integrated with 6 specific analysis nodes for Flair, Exit Dialogs, and post-submission dispatch.
 
 Main responsibilities:
-    - Define the requested node order and retry loop.
-    - Stop on fail-closed structured errors.
-    - Route every success claim through an active verification node.
-    - Route failed submissions through revision until success or max retries.
+    - Keep Reddit posting nodes connected in the required execution order.
+    - Route optional Flair handling only when the dedicated requirement node says it is needed.
+    - Route failed submission popups through dialog cleanup before retry revision.
 
 Not responsible for:
-    - Implementing browser/OCR/LLM node details.
-    - Installing LangGraph dependencies.
-    - Claiming success without Reddit verification evidence.
+    - Choosing Reddit content, bypassing login/challenges, or treating node-level success as post success.
 """
 
 from __future__ import annotations
@@ -26,6 +24,7 @@ from Agent.posting_workflows.reddit.analyze_flair_popup import AnalyzeFlairPopup
 from Agent.posting_workflows.reddit.analyze_submission_popup import AnalyzeSubmissionPopupNode
 from Agent.posting_workflows.reddit.choose_community_open_page import ChooseCommunityOpenPageNode
 from Agent.posting_workflows.reddit.close_flair_popup import CloseFlairPopupNode
+from Agent.posting_workflows.reddit.fill_form import FillRedditFormNode
 from Agent.posting_workflows.reddit.get_communities import GetRedditCommunitiesNode
 from Agent.posting_workflows.reddit.get_rules import GetCommunityRulesNode
 from Agent.posting_workflows.reddit.open_flair import OpenFlairDialogNode
@@ -35,6 +34,10 @@ from Agent.posting_workflows.reddit.submit_post import SubmitRedditPostNode
 from Agent.posting_workflows.reddit.update_document import UpdateRedditPostingDocumentNode
 from Agent.posting_workflows.reddit.verify_success import VerifyRedditPostSuccessNode
 from Agent.posting_workflows.reddit.write_content import WriteRedditContentNode
+from Agent.posting_workflows.reddit.check_flair_requirement import CheckFlairRequirementNode
+from Agent.posting_workflows.reddit.click_exit_dialog import ClickExitDialogNode
+from Agent.posting_workflows.reddit.close_exit_dialog import CloseExitDialogNode
+from Agent.posting_workflows.reddit.post_submission_dispatch import PostSubmissionDispatchNode
 from Agent.posting_workflows.state import RedditPostingState, WorkflowContext
 
 
@@ -57,12 +60,17 @@ class RedditPostingWorkflow:
             "choose_community_open_page": ChooseCommunityOpenPageNode(),
             "get_rules": GetCommunityRulesNode(),
             "write_content": WriteRedditContentNode(),
+            "fill_form": FillRedditFormNode(),
+            "check_flair_requirement": CheckFlairRequirementNode(),     # Node 1
             "open_flair": OpenFlairDialogNode(),
-            "analyze_flair_popup": AnalyzeFlairPopupNode(),
+            "analyze_flair_popup": AnalyzeFlairPopupNode(),            # Node 2
             "select_flair": SelectFlairNode(),
             "close_flair_popup": CloseFlairPopupNode(),
             "submit_post": SubmitRedditPostNode(),
-            "analyze_submission_popup": AnalyzeSubmissionPopupNode(),
+            "analyze_submission_popup": AnalyzeSubmissionPopupNode(),    # Node 5
+            "post_submission_dispatch": PostSubmissionDispatchNode(),    # Node 6
+            "click_exit_dialog": ClickExitDialogNode(),                  # Node 3
+            "close_exit_dialog": CloseExitDialogNode(),                  # Node 4
             "verify_success": VerifyRedditPostSuccessNode(),
             "revise_after_failure": ReviseAfterFailureNode(),
             "update_document": UpdateRedditPostingDocumentNode(),
@@ -93,36 +101,72 @@ class RedditPostingWorkflow:
         self._guarded_edge(graph, "get_communities", "choose_community_open_page", END)
         self._guarded_edge(graph, "choose_community_open_page", "get_rules", END)
         self._guarded_edge(graph, "get_rules", "write_content", END)
-        self._guarded_edge(graph, "write_content", "open_flair", END)
+        self._guarded_edge(graph, "write_content", "fill_form", END)
+        self._guarded_edge(graph, "fill_form", "check_flair_requirement", END)
+        graph.add_conditional_edges(
+            "check_flair_requirement",
+            self._route_after_flair_requirement,
+            {
+                "flair": "open_flair",
+                "skip": "submit_post",
+                "end": END,
+            },
+        )
         self._guarded_edge(graph, "open_flair", "analyze_flair_popup", END)
         self._guarded_edge(graph, "analyze_flair_popup", "select_flair", END)
         self._guarded_edge(graph, "select_flair", "close_flair_popup", END)
         self._guarded_edge(graph, "close_flair_popup", "submit_post", END)
         self._guarded_edge(graph, "submit_post", "analyze_submission_popup", END)
-        self._guarded_edge(graph, "analyze_submission_popup", "verify_success", END)
+        self._guarded_edge(graph, "analyze_submission_popup", "post_submission_dispatch", END)
 
+        # Node 6 branching
         graph.add_conditional_edges(
-            "verify_success",
-            self._route_after_submission_analysis,
+            "post_submission_dispatch",
+            self._route_dispatch,
             {
-                "success": "update_document",
-                "retry": "revise_after_failure",
+                "success": "verify_success",
+                "retry": "click_exit_dialog",
                 "failed": "update_document",
-                "end": END,
-            },
+            }
         )
+
+        # Cleanup and Revise path
+        self._guarded_edge(graph, "click_exit_dialog", "close_exit_dialog", END)
+        self._guarded_edge(graph, "close_exit_dialog", "revise_after_failure", END)
+
         graph.add_conditional_edges(
             "revise_after_failure",
             self._route_after_revision,
             {
-                "retry_same": "open_flair",
+                "retry_same": "fill_form", # Go back to fill form after revision
                 "retry_new": "choose_community_open_page",
                 "failed": "update_document",
                 "end": END,
             },
         )
+
+        self._guarded_edge(graph, "verify_success", "update_document", END)
         graph.add_edge("update_document", END)
+
         return graph.compile()
+
+    def _route_dispatch(self, graph_state: RedditGraphState) -> str:
+        state = graph_state["state"]
+        if state.error: return "failed"
+        if state.status == "success": return "success"
+        if state.status == "needs_retry" and state.attempts < self.context.max_retries:
+            return "retry"
+        return "failed"
+
+    def _route_after_submission_analysis(self, graph_state: RedditGraphState) -> str:
+        """Backward-compatible route name for older tests and docs."""
+        return self._route_dispatch(graph_state)
+
+    def _route_after_flair_requirement(self, graph_state: RedditGraphState) -> str:
+        state = graph_state["state"]
+        if state.error:
+            return "end"
+        return "flair" if state.flair_required is True else "skip"
 
     def _wrap_node(self, node: Any) -> Callable[[RedditGraphState], Dict[str, RedditPostingState]]:
         def _runner(graph_state: RedditGraphState) -> Dict[str, RedditPostingState]:
@@ -158,16 +202,6 @@ class RedditPostingWorkflow:
 
     def _route_after_node(self, graph_state: RedditGraphState) -> str:
         return "end" if graph_state["state"].error else "next"
-
-    def _route_after_submission_analysis(self, graph_state: RedditGraphState) -> str:
-        state = graph_state["state"]
-        if state.error:
-            return "end"
-        if state.status == "success":
-            return "success"
-        if state.status == "needs_retry" and state.attempts < self.context.max_retries:
-            return "retry"
-        return "failed"
 
     def _route_after_revision(self, graph_state: RedditGraphState) -> str:
         state = graph_state["state"]

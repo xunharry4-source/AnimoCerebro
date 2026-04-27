@@ -21,6 +21,7 @@
 测试文件和真实调用方式见：
 
 - `Agent/docs/social_posting/TESTING.md`
+- `Agent/docs/social_posting/STARTUP.md`
 
 Agent 代码边界：
 

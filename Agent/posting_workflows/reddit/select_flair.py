@@ -42,7 +42,7 @@ class SelectFlairNode:
                     "Flair is required but no suitable Flair was selected",
                     node=self.name,
                     code="required_flair_selection_missing",
-                    details={"flair_options": [item.get("text") for item in state.flair_options]},
+                    details={"flair_options": [_flair_text(item) for item in state.flair_options]},
                 )
             state.add_evidence(self.name, True, "No suitable Flair selected; dialog closed")
             return state
@@ -90,3 +90,9 @@ class SelectFlairNode:
         state.selected_flair = selected.get("text") or state.selected_flair
         state.add_evidence(self.name, True, "Flair selected", selected_flair=state.selected_flair)
         return state
+
+
+def _flair_text(item: Any) -> str:
+    if isinstance(item, dict):
+        return str(item.get("text") or "")
+    return str(item or "")

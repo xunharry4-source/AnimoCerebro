@@ -25,7 +25,13 @@ import pytest
 from Agent.posting_workflows.errors import PostingWorkflowError
 from Agent.posting_workflows.llm_client import WorkflowLLMClient
 from Agent.posting_workflows.reddit.analyze_flair_popup import AnalyzeFlairPopupNode
+from Agent.posting_workflows.reddit.analyze_submission_popup import AnalyzeSubmissionPopupNode
+from Agent.posting_workflows.reddit.check_flair_requirement import CheckFlairRequirementNode
+from Agent.posting_workflows.reddit.click_exit_dialog import ClickExitDialogNode
+from Agent.posting_workflows.reddit.close_exit_dialog import CloseExitDialogNode
+from Agent.posting_workflows.reddit.get_rules import GetCommunityRulesNode
 from Agent.posting_workflows.reddit.orchestrator import RedditPostingWorkflow
+from Agent.posting_workflows.reddit.post_submission_dispatch import PostSubmissionDispatchNode
 from Agent.posting_workflows.reddit.revise_after_failure import ReviseAfterFailureNode
 from Agent.posting_workflows.reddit.select_flair import SelectFlairNode
 from Agent.posting_workflows.reddit.submit_post import SubmitRedditPostNode
@@ -150,12 +156,109 @@ class FakeSubmitFormPage:
         self.locator_calls.append(selector)
         if selector == 'textarea[name="title"]#innerTextArea':
             return self.title
-        if selector == 'textarea[name="text"], div[contenteditable="true"]':
+        if selector in {
+            'textarea[name="text"], div[contenteditable="true"]',
+            'textarea[name="text"], [data-testid="post-body-text"], div[contenteditable="true"]',
+        }:
             return self.body
         return self.empty
 
     def evaluate(self, script):
         return None
+
+
+class FakeExitDialogKeyboard:
+    def __init__(self, page):
+        self.page = page
+        self.pressed = []
+
+    def press(self, key):
+        self.pressed.append(key)
+        if key == "Escape":
+            self.page.dialog_open = False
+
+
+class FakeExitDialogPage:
+    def __init__(self):
+        self.dialog_open = True
+        self.clicked_target = None
+        self.keyboard = FakeExitDialogKeyboard(self)
+
+    def evaluate(self, script, *args):
+        if "target_button_missing" in script:
+            self.clicked_target = args[0]
+            self.dialog_open = False
+            return {"clicked": True, "button_text": "Keep editing", "reason": "matched_target"}
+        if "buttons.map" in script:
+            if not self.dialog_open:
+                return None
+            return {
+                "found": True,
+                "text": "Discard post? Your draft has unsaved changes.",
+                "buttons": ["Discard", "Keep editing"],
+            }
+        if "return dialogs.some" in script:
+            return self.dialog_open
+        if "querySelector(" in script:
+            return False
+        return None
+
+
+class FakePostCheckModalPage:
+    def __init__(self):
+        self.modal_open = True
+
+    def evaluate(self, script, *args):
+        if "edit_post_clicked" in script:
+            self.modal_open = False
+            return {"found": True, "clicked": True, "reason": "edit_post_clicked", "button_text": "Edit Post"}
+        if "return modals.some" in script:
+            return self.modal_open
+        return False
+
+
+class FakeRecognizer:
+    def __init__(self, page=None, *, popup_result=None, flair_requirement=None, page_rules=None):
+        self.page = page
+        self.popup_result = popup_result or {"status": "none", "source": "none"}
+        self.page_rules = page_rules or []
+        self.flair_requirement = flair_requirement or {
+            "required": False,
+            "reason": "no_required_signal",
+            "has_flair_control": False,
+            "alert_text": "",
+        }
+
+    def detect_submission_popup_result(self, wait_time=2, use_ocr=True):
+        return self.popup_result
+
+    def detect_flair_requirement(self):
+        return self.flair_requirement
+
+    def extract_community_rules_from_submit_page_dom(self):
+        return self.page_rules
+
+
+class FakeFlairDialogRecognizer:
+    def __init__(self, tmp_path: Path, *, dom_candidates):
+        self.page = FakeScreenshotPage(tmp_path)
+        self.screenshot_dir = tmp_path
+        self.ocr_helper = None
+        self.dom_candidates = dom_candidates
+        self.expanded = False
+
+    def _is_flair_dialog_open(self):
+        return True
+
+    def expand_all_flair_options(self):
+        self.expanded = True
+        return True
+
+    def extract_flair_candidates_from_dom(self):
+        return self.dom_candidates
+
+    def extract_visible_flair_candidates(self, screenshot_path=None):
+        return []
 
 
 def _reddit_flair_recognizer(tmp_path: Path, candidates):
@@ -316,6 +419,91 @@ def test_reddit_flair_nodes_normal_select_exact_visible_project_build_fixture(tm
     assert state.evidence[-1].node == "reddit_select_flair"
 
 
+def test_reddit_click_exit_dialog_normal_selects_flair_dialog_from_analyze_result_fixture(tmp_path: Path):
+    candidates = [
+        {"text": "📰 News", "confidence": 100, "center_x": 10, "center_y": 10},
+        {"text": "🔬 Research", "confidence": 100, "center_x": 10, "center_y": 20},
+        {"text": "🛠️ Project / Build", "confidence": 100, "center_x": 10, "center_y": 30},
+    ]
+    context = WorkflowContext(
+        page=FakeScreenshotPage(tmp_path),
+        reddit_recognizer=_reddit_flair_recognizer(tmp_path, candidates),
+    )
+    state = RedditPostingState(
+        subreddit="ArtificialInteligence",
+        flair_required=True,
+        flair_options=candidates,
+        selected_flair="Project / Build",
+    )
+
+    ClickExitDialogNode().run(context, state)
+
+    assert state.selected_flair == "🛠️ Project / Build"
+    assert state.evidence[-1].node == "reddit_click_exit_dialog"
+    assert state.evidence[-1].data["dialog_type"] == "flair_selection_dialog"
+    assert state.evidence[-1].data["source_node"] == "reddit_analyze_flair_popup"
+
+
+def test_reddit_click_exit_dialog_abnormal_required_flair_without_analysis_fails_closed_fixture(tmp_path: Path):
+    candidates = [
+        {"text": "📰 News", "confidence": 100, "center_x": 10, "center_y": 10},
+        {"text": "🔬 Research", "confidence": 100, "center_x": 10, "center_y": 20},
+    ]
+    context = WorkflowContext(
+        page=FakeScreenshotPage(tmp_path),
+        reddit_recognizer=_reddit_flair_recognizer(tmp_path, candidates),
+    )
+    state = RedditPostingState(
+        subreddit="ArtificialInteligence",
+        flair_required=True,
+        flair_options=candidates,
+        selected_flair="",
+    )
+
+    with pytest.raises(PostingWorkflowError) as exc_info:
+        ClickExitDialogNode().run(context, state)
+
+    assert exc_info.value.code == "required_flair_selection_missing_for_click_node"
+
+
+def test_reddit_analyze_flair_popup_normal_expands_and_filters_no_flair_fixture(tmp_path: Path):
+    dom_candidates = [
+        {"text": "无标识", "is_none_option": True, "source": "reddit_flair_dialog_radio"},
+        {"text": "📰 News", "source": "reddit_flair_dialog_radio"},
+        {"text": "🔬 Research", "source": "reddit_flair_dialog_radio"},
+        {"text": "🛠️ Project / Build", "source": "reddit_flair_dialog_radio"},
+        {"text": "📚 Tutorial / Guide", "source": "reddit_flair_dialog_radio"},
+        {"text": "📊 Analysis / Opinion", "source": "reddit_flair_dialog_radio"},
+        {"text": "🤖 New Model / Tool", "source": "reddit_flair_dialog_radio"},
+        {"text": "😂 Fun / Meme", "source": "reddit_flair_dialog_radio"},
+    ]
+    recognizer = FakeFlairDialogRecognizer(tmp_path, dom_candidates=dom_candidates)
+    llm = FixedJsonLLMService({"selected_flair": "Research"})
+    context = WorkflowContext(reddit_recognizer=recognizer, llm_client=llm)
+    state = RedditPostingState(
+        subreddit="ArtificialInteligence",
+        title="New benchmark paper for agent evaluation",
+        content="A concise summary of a research benchmark and why it matters.",
+        flair_required=True,
+    )
+
+    AnalyzeFlairPopupNode().run(context, state)
+
+    assert recognizer.expanded is True
+    assert [item["text"] for item in state.flair_options] == [
+        "📰 News",
+        "🔬 Research",
+        "🛠️ Project / Build",
+        "📚 Tutorial / Guide",
+        "📊 Analysis / Opinion",
+        "🤖 New Model / Tool",
+        "😂 Fun / Meme",
+    ]
+    assert "无标识" not in llm.calls[-1]["context"]["flair_options"]
+    assert state.selected_flair == "Research"
+    assert state.evidence[-1].data["expanded_all_options"] is True
+
+
 def test_reddit_flair_nodes_abnormal_fail_when_required_candidates_missing_fixture(tmp_path: Path):
     context = WorkflowContext(
         page=FakeScreenshotPage(tmp_path),
@@ -335,6 +523,31 @@ def test_reddit_flair_nodes_abnormal_fail_when_required_candidates_missing_fixtu
     assert exc_info.value.code == "required_flair_candidates_missing"
 
 
+def test_reddit_get_rules_normal_prefers_current_submit_page_rules_fixture():
+    page_rules = [
+        {
+            "number": "2",
+            "title": "High-Signal Content Only",
+            "description": "Every post should teach something, share something new, or spark substantive discussion.",
+            "source": "reddit_submit_page_dom",
+        },
+        {
+            "number": "7",
+            "title": "Use Correct Flair",
+            "description": "Choose the most specific flair that fits. When in doubt, use Discussion.",
+            "source": "reddit_submit_page_dom",
+        },
+    ]
+    context = WorkflowContext(page=object(), reddit_recognizer=FakeRecognizer(page_rules=page_rules))
+    state = RedditPostingState(subreddit="ArtificialInteligence")
+
+    GetCommunityRulesNode().run(context, state)
+
+    assert state.rules["source"] == "reddit_submit_page_dom"
+    assert state.rules["rule_count"] == 2
+    assert state.rules["rules"][0]["title"] == "High-Signal Content Only"
+
+
 def test_reddit_submit_fill_edge_prefers_exact_title_textarea_fixture():
     page = FakeSubmitFormPage()
 
@@ -345,6 +558,181 @@ def test_reddit_submit_fill_edge_prefers_exact_title_textarea_fixture():
     assert page.body.value == "Expected body"
     assert "input[name=\"q\"]" not in page.locator_calls
     assert "Escape" in page.keyboard.pressed
+
+
+def test_reddit_check_flair_requirement_normal_rule_text_alone_not_required_fixture():
+    recognizer = FakeRecognizer(
+        flair_requirement={
+            "required": False,
+            "reason": "no_required_signal",
+            "has_flair_control": False,
+            "alert_text": "Use Correct Flair",
+        }
+    )
+    context = WorkflowContext(reddit_recognizer=recognizer)
+    state = RedditPostingState(subreddit="ArtificialInteligence")
+
+    CheckFlairRequirementNode().run(context, state)
+
+    assert state.flair_required is False
+    assert state.evidence[-1].data["requirement"]["alert_text"] == "Use Correct Flair"
+
+
+def test_reddit_check_flair_requirement_normal_hidden_required_modal_is_required_fixture():
+    recognizer = FakeRecognizer(
+        flair_requirement={
+            "required": True,
+            "reason": "flair_required_signal_detected",
+            "has_flair_control": True,
+            "markup_required": True,
+            "markup_options": ["📰 News", "🛠️ Project / Build"],
+        }
+    )
+    context = WorkflowContext(reddit_recognizer=recognizer)
+    state = RedditPostingState(subreddit="ArtificialInteligence")
+
+    CheckFlairRequirementNode().run(context, state)
+
+    assert state.flair_required is True
+    assert state.evidence[-1].data["requirement"]["markup_required"] is True
+
+
+def test_reddit_analyze_flair_popup_abnormal_required_without_ocr_or_dom_fails_closed_fixture(tmp_path: Path):
+    recognizer = _reddit_flair_recognizer(tmp_path, [])
+    delattr(recognizer, "extract_visible_flair_candidates")
+    recognizer.ocr_helper = None
+    context = WorkflowContext(
+        page=FakeScreenshotPage(tmp_path),
+        reddit_recognizer=recognizer,
+        llm_client=FixedJsonLLMService({"selected_flair": "Project / Build"}),
+    )
+    state = RedditPostingState(flair_required=True)
+
+    with pytest.raises(PostingWorkflowError) as exc_info:
+        AnalyzeFlairPopupNode().run(context, state)
+
+    assert exc_info.value.code == "required_flair_ocr_unavailable"
+
+
+def test_reddit_exit_dialog_edge_keep_draft_then_close_fixture():
+    page = FakeExitDialogPage()
+    context = WorkflowContext(reddit_recognizer=FakeRecognizer(page=page))
+    state = RedditPostingState(status="needs_retry")
+
+    ClickExitDialogNode().run(context, state)
+    CloseExitDialogNode().run(context, state)
+
+    assert page.clicked_target == "Keep"
+    assert page.dialog_open is False
+    assert page.keyboard.pressed == ["Escape"]
+    assert state.evidence[-2].node == "reddit_click_exit_dialog"
+    assert state.evidence[-1].node == "reddit_close_exit_dialog"
+
+
+def test_reddit_close_exit_dialog_normal_closes_post_check_modal_with_edit_post_fixture():
+    page = FakePostCheckModalPage()
+    context = WorkflowContext(reddit_recognizer=FakeRecognizer(page=page))
+    state = RedditPostingState(status="needs_retry")
+
+    CloseExitDialogNode().run(context, state)
+
+    assert page.modal_open is False
+    assert state.evidence[-1].data["modal_type"] == "reddit_post_check_rule_warning"
+    assert state.evidence[-1].data["close_result"]["button_text"] == "Edit Post"
+
+
+def test_reddit_analyze_submission_popup_normal_flair_error_sets_retry_state_fixture():
+    popup = {
+        "status": "error",
+        "message": "Your post must contain post flair.",
+        "category": "flair_required",
+        "should_retry": True,
+        "needs_flair": True,
+        "recommended_action": "select_flair",
+        "source": "dom",
+        "screenshot_path": "fixture.png",
+    }
+    context = WorkflowContext(reddit_recognizer=FakeRecognizer(popup_result=popup))
+    state = RedditPostingState()
+
+    AnalyzeSubmissionPopupNode().run(context, state)
+
+    assert state.last_popup_analysis["status"] == "error"
+    assert state.last_popup_analysis["needs_flair"] is True
+    assert state.flair_required is True
+
+
+def test_reddit_analyze_submission_popup_normal_preserves_post_check_modal_fixture():
+    popup = {
+        "status": "error",
+        "message": (
+            "Reddit post-check modal: your post may violate rules. "
+            "Rule 2: High-Signal Content Only. Rule 7: Use Correct Flair."
+        ),
+        "category": "community_rule",
+        "should_retry": True,
+        "needs_flair": True,
+        "recommended_action": "edit_post",
+        "source": "dom_post_check_modal",
+        "screenshot_path": "fixture.png",
+        "post_check_modal": {
+            "type": "reddit_post_check_rule_warning",
+            "rules": [
+                {"title": "Rule 2: High-Signal Content Only", "description": "Every post should teach something."},
+                {"title": "Rule 7: Use Correct Flair", "description": "Choose the most specific flair."},
+            ],
+            "buttons": ["Submit without editing", "Edit Post"],
+        },
+    }
+    context = WorkflowContext(reddit_recognizer=FakeRecognizer(popup_result=popup))
+    state = RedditPostingState()
+
+    AnalyzeSubmissionPopupNode().run(context, state)
+
+    assert state.last_popup_analysis["category"] == "community_rule"
+    assert state.last_popup_analysis["recommended_action"] == "edit_post"
+    assert state.last_popup_analysis["post_check_modal"]["buttons"] == ["Submit without editing", "Edit Post"]
+
+
+def test_reddit_post_submission_dispatch_normal_verified_url_routes_success_fixture():
+    state = RedditPostingState(
+        last_popup_analysis={"status": "none", "should_retry": False},
+        last_submission_result={
+            "success": True,
+            "post_url": "https://www.reddit.com/r/AnimoCerebro/comments/abc123/title/",
+        },
+    )
+
+    PostSubmissionDispatchNode().run(WorkflowContext(), state)
+
+    assert state.status == "success"
+    assert state.post_url == "https://www.reddit.com/r/AnimoCerebro/comments/abc123/title/"
+
+
+def test_reddit_post_submission_dispatch_abnormal_popup_success_without_url_fails_fixture():
+    state = RedditPostingState(last_popup_analysis={"status": "success"}, last_submission_result={})
+
+    with pytest.raises(PostingWorkflowError) as exc_info:
+        PostSubmissionDispatchNode().run(WorkflowContext(), state)
+
+    assert exc_info.value.code == "popup_success_without_post_url"
+
+
+def test_reddit_post_submission_dispatch_edge_flair_error_routes_retry_fixture():
+    state = RedditPostingState(
+        last_popup_analysis={
+            "status": "error",
+            "message": "Post flair is required",
+            "needs_flair": True,
+            "should_retry": False,
+        },
+        last_submission_result={"success": False},
+    )
+
+    PostSubmissionDispatchNode().run(WorkflowContext(), state)
+
+    assert state.status == "needs_retry"
+    assert state.evidence[-1].data["should_retry"] is True
 
 
 def test_reddit_verify_success_normal_actively_opens_permalink():

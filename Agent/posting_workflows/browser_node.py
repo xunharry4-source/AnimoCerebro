@@ -39,8 +39,12 @@ class OpenBrowserNode:
             ) from exc
 
         try:
-            manager = BrowserAutomationManager(headless=False, slow_mo=500)
-            manager.start_browser("chromium")
+            import os
+            headless = os.environ.get("HEADLESS", "False").lower() == "true"
+            manager = BrowserAutomationManager(headless=headless, slow_mo=500)
+            # Use provided user_data_dir or default to custom profile
+            profile_path = getattr(context, "user_data_dir", "./chrome_custom_profile")
+            manager.start_browser("chromium", user_data_dir=profile_path)
         except Exception as exc:
             raise PostingWorkflowError(
                 f"Could not open browser: {exc}",

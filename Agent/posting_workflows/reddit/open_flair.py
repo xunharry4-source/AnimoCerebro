@@ -35,7 +35,18 @@ class OpenFlairDialogNode:
         state.flair_required = bool(requirement.get("required"))
         opened = context.reddit_recognizer._open_flair_dialog()
         if not opened:
-            state.flair_options = []
+            dom_candidates = context.reddit_recognizer.extract_flair_candidates_from_dom()
+            state.flair_options = dom_candidates
+            if dom_candidates:
+                state.add_evidence(
+                    self.name,
+                    True,
+                    "Flair modal data available in real Reddit DOM",
+                    subreddit=state.subreddit,
+                    flair_requirement=requirement,
+                    options=[item.get("text") for item in dom_candidates],
+                )
+                return state
             if state.flair_required:
                 raise PostingWorkflowError(
                     "Flair is required but the dialog could not be opened",

@@ -186,48 +186,91 @@ class BrowserAutomationManager:
 
         logger.info(f"✅ BrowserAutomationManager initialized (headless={headless})")
 
-    def start_browser(self, browser_type: str = "chromium") -> None:
+    def start_browser(self, browser_type: str = "chromium", user_data_dir: str = None) -> None:
         """
         启动浏览器
 
         Args:
             browser_type: 浏览器类型 ("chromium", "firefox", "webkit")
+            user_data_dir: 用户数据目录（用于持久化会话）
         """
         self.playwright = sync_playwright().start()
 
-        if browser_type == "chromium":
-            self.browser = self.playwright.chromium.launch(
+        if user_data_dir:
+            from Agent.browser_automation.test_auto_stealth_wait import STEALTH_JS, get_chrome_path
+            user_path = Path(user_data_dir).resolve()
+            user_path.mkdir(parents=True, exist_ok=True)
+            self._remove_stale_singleton_links(user_path)
+            
+            # Use launch_persistent_context for session reuse
+            self.context = self.playwright.chromium.launch_persistent_context(
+                user_data_dir=str(user_path),
+                executable_path=get_chrome_path(),
                 headless=self.headless,
-                slow_mo=self.slow_mo
+                slow_mo=self.slow_mo,
+                viewport={"width": 1920, "height": 1080},
+                args=[
+                    "--disable-blink-features=AutomationControlled",
+                    "--no-sandbox",
+                    "--disable-infobars",
+                    "--disable-search-engine-choice-screen",
+                ]
             )
-        elif browser_type == "firefox":
-            self.browser = self.playwright.firefox.launch(
-                headless=self.headless,
-                slow_mo=self.slow_mo
-            )
-        elif browser_type == "webkit":
-            self.browser = self.playwright.webkit.launch(
-                headless=self.headless,
-                slow_mo=self.slow_mo
-            )
+            self.context.add_init_script(STEALTH_JS)
+            self.page = self.context.pages[0] if self.context.pages else self.context.new_page()
+            self.page.add_init_script(STEALTH_JS)
+            logger.info(f"✅ Persistent browser started with profile: {user_data_dir}")
         else:
-            raise ValueError(f"Unsupported browser type: {browser_type}")
+            if browser_type == "chromium":
+                self.browser = self.playwright.chromium.launch(
+                    headless=self.headless,
+                    slow_mo=self.slow_mo
+                )
+            elif browser_type == "firefox":
+                self.browser = self.playwright.firefox.launch(
+                    headless=self.headless,
+                    slow_mo=self.slow_mo
+                )
+            elif browser_type == "webkit":
+                self.browser = self.playwright.webkit.launch(
+                    headless=self.headless,
+                    slow_mo=self.slow_mo
+                )
+            else:
+                raise ValueError(f"Unsupported browser type: {browser_type}")
 
-        # 创建上下文（模拟真实浏览器）
-        self.context = self.browser.new_context(
-            viewport={"width": 1920, "height": 1080},
-            user_agent="Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) "
-                       "AppleWebKit/537.36 (KHTML, like Gecko) "
-                       "Chrome/120.0.0.0 Safari/537.36",
-            locale="en-US",
-            timezone_id="America/New_York"
-        )
+            # 创建上下文（模拟真实浏览器）
+            self.context = self.browser.new_context(
+                viewport={"width": 1920, "height": 1080},
+                user_agent="Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) "
+                           "AppleWebKit/537.36 (KHTML, like Gecko) "
+                           "Chrome/120.0.0.0 Safari/537.36",
+                locale="en-US",
+                timezone_id="America/New_York"
+            )
+            self.page = self.context.new_page()
+            logger.info(f"✅ Browser started: {browser_type}")
 
-        # 创建新页面
-        self.page = self.context.new_page()
         self.bot_handler = BotDetectionHandler(self.page)
 
-        logger.info(f"✅ Browser started: {browser_type}")
+    def _remove_stale_singleton_links(self, user_data_dir: Path) -> None:
+        """Remove Chrome singleton links only when their target no longer exists."""
+        for name in ("SingletonLock", "SingletonSocket", "SingletonCookie"):
+            path = user_data_dir / name
+            if not path.exists() and not path.is_symlink():
+                continue
+            try:
+                target = Path(path.resolve(strict=False)) if path.is_symlink() else path
+                if path.is_symlink() and not target.exists():
+                    path.unlink()
+                elif not path.is_symlink() and path.exists():
+                    # For non-symlink files, we only remove if we're sure it's stale
+                    # or if the user explicitly called cleanup.
+                    # Here we follow the logic from run_x_real.py but slightly more conservative
+                    # in the manager itself.
+                    pass 
+            except OSError:
+                continue
 
     def stop_browser(self) -> None:
         """关闭浏览器"""

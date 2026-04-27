@@ -31,6 +31,26 @@ class GetCommunityRulesNode:
                 node=self.name,
                 code="missing_subreddit",
             )
+
+        page_rules = self._extract_rules_from_current_page(context)
+        if page_rules:
+            state.rules = {
+                "subreddit": state.subreddit,
+                "rules": page_rules,
+                "source": "reddit_submit_page_dom",
+                "rule_count": len(page_rules),
+            }
+            state.add_evidence(
+                self.name,
+                True,
+                "Community rules loaded from current Reddit submit page",
+                subreddit=state.subreddit,
+                source=state.rules["source"],
+                rule_count=state.rules["rule_count"],
+                titles=[rule.get("title") for rule in page_rules],
+            )
+            return state
+
         if context.rules_manager is None:
             from Agent.social_promotion.community_rules_manager import CommunityRulesManager
 
@@ -54,3 +74,29 @@ class GetCommunityRulesNode:
             rule_count=state.rules.get("rule_count"),
         )
         return state
+
+    def _extract_rules_from_current_page(self, context: Any) -> list[dict[str, Any]]:
+        """Prefer rules already rendered in the open submit page when available."""
+        if context.page is None:
+            return []
+        if context.reddit_recognizer is None:
+            from Agent.reddit_visual_recognizer import RedditVisualRecognizer
+
+            context.reddit_recognizer = RedditVisualRecognizer(context.page)
+
+        extractor = getattr(context.reddit_recognizer, "extract_community_rules_from_submit_page_dom", None)
+        if extractor is None:
+            return []
+        rules = extractor()
+        if not isinstance(rules, list):
+            return []
+        return [
+            {
+                "title": str(rule.get("title") or "").strip(),
+                "description": str(rule.get("description") or "").strip(),
+                "number": str(rule.get("number") or "").strip(),
+                "source": rule.get("source") or "reddit_submit_page_dom",
+            }
+            for rule in rules
+            if isinstance(rule, dict) and rule.get("title") and rule.get("description")
+        ]

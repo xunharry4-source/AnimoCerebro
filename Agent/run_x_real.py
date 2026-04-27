@@ -24,7 +24,7 @@ import json
 import sys
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Dict
+from typing import Any, Dict, Optional
 
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
@@ -40,7 +40,7 @@ RESULT_PATH = Path("Agent/data/x_real_post_last_result.json")
 PROFILE_DIR = Path("./chrome_custom_profile")
 
 
-def main() -> bool:
+def main(*, page: Optional[Any] = None, trace_id: Optional[str] = None) -> bool:
     RESULT_PATH.parent.mkdir(parents=True, exist_ok=True)
     result: Dict[str, Any] = {
         "success": False,
@@ -49,40 +49,43 @@ def main() -> bool:
         "started_at": datetime.now(timezone.utc).isoformat(),
         "post_url": None,
         "realism": "真实运行结果",
+        "browser_reuse": "injected_service_page" if page is not None else "runner_owned_persistent_context",
     }
     playwright = None
     context = None
+    owns_browser = page is None
 
     try:
-        executable_path = get_chrome_path()
-        user_data_dir = PROFILE_DIR.resolve()
-        user_data_dir.mkdir(parents=True, exist_ok=True)
-        _remove_stale_singleton_links(user_data_dir)
-        playwright = sync_playwright().start()
-        context = playwright.chromium.launch_persistent_context(
-            user_data_dir=str(user_data_dir),
-            executable_path=executable_path,
-            headless=False,
-            slow_mo=500,
-            viewport={"width": 1920, "height": 1080},
-            locale="en-US",
-            timezone_id="America/New_York",
-            args=[
-                "--disable-blink-features=AutomationControlled",
-                "--start-maximized",
-                "--no-first-run",
-                "--no-default-browser-check",
-                "--disable-infobars",
-                "--disable-search-engine-choice-screen",
-                "--disable-sync",
-            ],
-            bypass_csp=True,
-        )
-        context.add_init_script(STEALTH_JS)
-        page = context.pages[0] if context.pages else context.new_page()
-        page.add_init_script(STEALTH_JS)
+        if page is None:
+            executable_path = get_chrome_path()
+            user_data_dir = PROFILE_DIR.resolve()
+            user_data_dir.mkdir(parents=True, exist_ok=True)
+            _remove_stale_singleton_links(user_data_dir)
+            playwright = sync_playwright().start()
+            context = playwright.chromium.launch_persistent_context(
+                user_data_dir=str(user_data_dir),
+                executable_path=executable_path,
+                headless=False,
+                slow_mo=500,
+                viewport={"width": 1920, "height": 1080},
+                locale="en-US",
+                timezone_id="America/New_York",
+                args=[
+                    "--disable-blink-features=AutomationControlled",
+                    "--start-maximized",
+                    "--no-first-run",
+                    "--no-default-browser-check",
+                    "--disable-infobars",
+                    "--disable-search-engine-choice-screen",
+                    "--disable-sync",
+                ],
+                bypass_csp=True,
+            )
+            context.add_init_script(STEALTH_JS)
+            page = context.pages[0] if context.pages else context.new_page()
+            page.add_init_script(STEALTH_JS)
 
-        workflow_context = WorkflowContext(page=page)
+        workflow_context = WorkflowContext(page=page, trace_id=trace_id) if trace_id else WorkflowContext(page=page)
         state = XPostingWorkflow(context=workflow_context).run(XPostingState())
         result.update(
             {
@@ -121,9 +124,9 @@ def main() -> bool:
             }
         )
     finally:
-        if context is not None:
+        if owns_browser and context is not None:
             context.close()
-        if playwright is not None:
+        if owns_browser and playwright is not None:
             playwright.stop()
 
     RESULT_PATH.write_text(json.dumps(result, ensure_ascii=False, indent=2, default=str), encoding="utf-8")
