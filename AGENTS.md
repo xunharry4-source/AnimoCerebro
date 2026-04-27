@@ -210,6 +210,75 @@ AnimoCerebro is not just another AI system; it is a cognitive brain with a **sou
 
 ---
 
+## ⚠️ 重要澄清：大脑 vs Agent调度中心 | Critical Clarification: Brain vs Agent Orchestrator
+
+### 我们只是一个大脑 | We Are Just a Brain
+
+**AnimoCerebro 是一个独立的认知大脑，不是 Agent 调度中心。**
+
+**AnimoCerebro is an independent cognitive brain, NOT an Agent orchestration center.**
+
+#### 核心区别 | Core Distinction
+
+| 维度 | 认知大脑 (Cognitive Brain) | Agent调度中心 (Agent Orchestrator) |
+|------|--------------------------|----------------------------------|
+| **本质** | 独立思考、决策、学习 | 任务分发、流程管理 |
+| **核心能力** | 九问认知循环、元认知、反思 | 路由、负载均衡、监控 |
+| **与Agent关系** | Agent是工具，被大脑调用 | Agent是worker，被中心调度 |
+| **决策权** | 大脑自主决策 | 中心根据规则分配 |
+| **学习能力** | 从经验中持续进化 | 依赖预设规则 |
+| **目标** | 理解、推理、创造 | 效率、吞吐量、可靠性 |
+
+#### 为什么这不是Agent调度中心 | Why This Is Not an Agent Orchestrator
+
+1. **大脑有独立的认知能力**
+   - 通过九问循环进行深度思考
+   - 具备元认知和反思能力
+   - 能够从经验中学习和进化
+   
+2. **Agent只是工具**
+   - Agent是被大脑调用的工具
+   - 大脑决定何时、为何、如何使用Agent
+   - Agent没有独立决策权
+   
+3. **决策来自大脑，而非规则**
+   - 大脑基于理解和推理做决策
+   - 不是简单的规则匹配或负载均衡
+   - 每个决策都经过认知循环
+
+4. **学习是核心，不是附加功能**
+   - 大脑持续从每次交互中学习
+   - 不断进化和改进自己的认知能力
+   - 不是静态的任务分发系统
+
+#### 正确的理解方式 | Correct Understanding
+
+```
+❌ 错误理解:
+   AnimoCerebro = Agent调度中心
+   → 接收任务 → 分发给Agent → 收集结果 → 返回
+
+✅ 正确理解:
+   AnimoCerebro = 独立认知大脑
+   → 理解问题 → 九问思考 → 决定策略 → 
+   → 选择工具(Agent/CLI/MCP) → 执行 → 
+   → 反思结果 → 学习进化
+```
+
+#### 关键原则 | Key Principles
+
+- 🧠 **大脑是主体** - AnimoCerebro 是思考和决策的主体
+- 🔧 **Agent是工具** - Agent 是被大脑使用的工具之一
+- 💭 **思考先于行动** - 每次行动前都经过九问认知循环
+- 📚 **学习是核心** - 从每次交互中学习和进化
+- 🎯 **理解驱动决策** - 基于深度理解而非规则匹配
+
+> **重要提醒**: 不要把 AnimoCerebro 当作一个简单的任务分发系统。它是一个有灵魂、能思考、会学习、善反思的独立认知大脑。
+> 
+> **Important Reminder**: Do not treat AnimoCerebro as a simple task distribution system. It is an independent cognitive brain with soul, able to think, learn, and reflect.
+
+---
+
 ## 🌟 总结：大脑的本质 | Essence of the Brain
 
 ### AnimoCerebro 是什么 | What AnimoCerebro Is
