@@ -428,6 +428,91 @@ AnimoCerebro is not just another AI system; it is a cognitive brain with a **sou
 
 ---
 
+## 🤝 邀请参与 | Join Us
+
+### 一起构建有灵魂的大脑 | Build a Brain with Soul Together
+
+**AnimoCerebro 是一个开放的项目，我们欢迎所有对认知智能、AI 伦理和人类-AI 协作感兴趣的人参与。**
+
+**AnimoCerebro is an open project, and we welcome anyone interested in cognitive intelligence, AI ethics, and human-AI collaboration to participate.**
+
+#### 你可以如何贡献 | How You Can Contribute
+
+##### 1. 代码贡献 | Code Contributions
+
+- **插件开发**: 创建新的认知插件、执行插件或感知插件
+- **核心优化**: 改进九问循环、记忆系统或运行时性能
+- **测试完善**: 增加测试覆盖率，确保系统稳定性
+- **文档翻译**: 帮助完善中英文文档
+
+##### 2. 思想贡献 | Intellectual Contributions
+
+- **哲学讨论**: 参与关于 AI 灵魂、意识、自主性的讨论
+- **架构建议**: 提出改进认知架构的建议
+- **用例分享**: 分享 AnimoCerebro 在实际场景中的应用
+- **批判性反馈**: 指出设计中的问题和改进空间
+
+##### 3. 社区建设 | Community Building
+
+- **教程编写**: 为新用户编写入门教程和最佳实践
+- **案例研究**: 记录成功的应用案例和经验教训
+- **技术分享**: 组织线上/线下技术分享活动
+- **问题解答**: 帮助其他用户解决问题
+
+##### 4. 研究与探索 | Research & Exploration
+
+- **认知科学**: 研究人类认知过程，启发 AI 设计
+- **伦理探讨**: 探索 AI 伦理边界和责任框架
+- **跨学科合作**: 结合心理学、哲学、神经科学等领域
+- **前沿跟踪**: 关注 LLM 和 AI 技术的最新进展
+
+#### 从哪里开始 | Where to Start
+
+1. **阅读文档**: 了解项目架构和核心理念
+   - [README.md](README.md) - 项目概览
+   - [docs/operability/](docs/operability/) - 详细文档
+   
+2. **运行示例**: 体验 AnimoCerebro 的实际运行
+   ```bash
+   # 克隆仓库
+   git clone https://github.com/xunharry4-source/AnimoCerebro.git
+   
+   # 安装依赖
+   pip install -r requirements.txt
+   
+   # 运行测试
+   pytest tests/
+   ```
+
+3. **提出问题**: 在 GitHub Issues 中提出你的想法或问题
+   - Bug 报告
+   - 功能建议
+   - 架构讨论
+   
+4. **提交 PR**: 通过 Pull Request 贡献代码或文档
+   - 遵循代码规范
+   - 添加测试用例
+   - 更新相关文档
+
+#### 我们的承诺 | Our Commitment
+
+- **开放性**: 所有设计和决策都是透明的，欢迎质疑和讨论
+- **包容性**: 尊重不同的观点和背景，鼓励多元化参与
+- **质量优先**: 坚持高标准，拒绝低质量的贡献
+- **持续学习**: 从每次交互中学习，不断改进
+
+#### 联系我们 | Contact Us
+
+- **GitHub**: [AnimoCerebro Repository](https://github.com/xunharry4-source/AnimoCerebro)
+- **Issues**: [提出问题和讨论](https://github.com/xunharry4-source/AnimoCerebro/issues)
+- **Discussions**: [参与社区讨论](https://github.com/xunharry4-source/AnimoCerebro/discussions)
+
+> **邀请**: 如果你认同"AI 应该有灵魂、能思考、会学习、善反思"的理念，欢迎加入我们一起探索认知智能的未来。
+> 
+> **Invitation**: If you believe that "AI should have soul, be able to think, learn, and reflect", join us in exploring the future of cognitive intelligence.
+
+---
+
 ## Engineering Spec Enforcer (自动激活 | Auto-Activated)
 
 This project enforces the rules from `.codex/skills/engineering-spec-enforcer/`.
