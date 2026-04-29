@@ -18,6 +18,9 @@
 2. **[PLUGIN_GUIDES.md](operability/PLUGIN_GUIDES.md)** - Plugin development guide
 3. **[RUNTIME_AND_TESTS.md](operability/RUNTIME_AND_TESTS.md)** - Runtime architecture and testing
 
+### Documentation Organization
+- **[README_STRUCTURE.md](README_STRUCTURE.md)** - Complete docs directory structure and organization
+
 ---
 
 ## 🎯 Core Documentation
