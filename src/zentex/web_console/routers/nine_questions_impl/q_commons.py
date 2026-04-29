@@ -16,6 +16,10 @@ from typing import Any, Optional
 from fastapi import Request
 
 from zentex.web_console.contracts.nine_questions import NineQuestionReportItem
+from zentex.nine_questions.question_driver_framework import (
+    ensure_mounted_plugins,
+    ensure_question_driver_trace,
+)
 from .q_state import (
     _get_nine_question_service,
     get_or_create_session,
@@ -28,6 +32,98 @@ from .q_handlers import QUESTION_HANDLERS
 logger = logging.getLogger(__name__)
 
 EXPECTED_QUESTION_IDS = tuple(f"q{i}" for i in range(1, 10))
+
+
+def _model_dump(value: Any) -> dict[str, Any]:
+    if hasattr(value, "model_dump") and callable(getattr(value, "model_dump")):
+        return value.model_dump(mode="json")
+    return dict(value) if isinstance(value, dict) else {}
+
+
+def _q8_task_to_web_binding(task: Any, outcome: dict[str, Any] | None) -> dict[str, Any]:
+    contract = getattr(task, "contract", None)
+    contract_payload = _model_dump(contract)
+    verification = contract_payload.get("verification") if isinstance(contract_payload.get("verification"), dict) else {}
+    metadata = getattr(task, "metadata", None)
+    metadata = metadata if isinstance(metadata, dict) else {}
+    status = getattr(task, "status", "")
+    priority = getattr(task, "priority", "")
+    return {
+        "task_binding_status": "bound",
+        "physical_task_id": str(getattr(task, "task_id", "") or ""),
+        "task_status": str(getattr(status, "value", status) or ""),
+        "task_priority": str(getattr(priority, "value", priority) or ""),
+        "trace_id": str(metadata.get("trace_id") or ""),
+        "queue_name": str(metadata.get("queue_name") or ""),
+        "expected_outcome": contract_payload.get("expected_outcome") or metadata.get("expected_outcome") or {},
+        "success_criteria": contract_payload.get("success_criteria") or metadata.get("success_criteria") or [],
+        "acceptance_conditions": contract_payload.get("acceptance_conditions") or metadata.get("acceptance_conditions") or [],
+        "verification_method": contract_payload.get("verification_method") or metadata.get("verification_method") or "",
+        "risk_assessment": contract_payload.get("risk_assessment") or metadata.get("risk_assessment") or {},
+        "verification_enabled": bool(verification.get("enabled")),
+        "verification_strategy": str(verification.get("strategy") or ""),
+        "task_outcome": outcome or None,
+    }
+
+
+def _enrich_q8_queue_rows_with_task_bindings(
+    request: Request,
+    *,
+    trace_id: str,
+    inference_result: Any,
+) -> Any:
+    if not inference_result:
+        return inference_result
+    app_state = getattr(getattr(request, "app", None), "state", None)
+    task_service = getattr(app_state, "task_service", None)
+    if task_service is None:
+        return inference_result
+
+    list_tasks = getattr(task_service, "list_tasks", None)
+    if not callable(list_tasks):
+        raise RuntimeError("Task service does not expose list_tasks() for Q8 binding")
+
+    q8_tasks = list(list_tasks(metadata_filters={"source": "nine_questions.q8"}) or [])
+    if trace_id and not trace_id.endswith(":no-trace"):
+        q8_tasks = [
+            task
+            for task in q8_tasks
+            if isinstance(getattr(task, "metadata", None), dict)
+            and str(task.metadata.get("trace_id") or "") == trace_id
+        ]
+
+    by_queue_title: dict[tuple[str, str], Any] = {}
+    for task in q8_tasks:
+        metadata = getattr(task, "metadata", None)
+        metadata = metadata if isinstance(metadata, dict) else {}
+        key = (str(metadata.get("queue_name") or ""), str(getattr(task, "title", "") or "").strip())
+        if key[0] and key[1] and key not in by_queue_title:
+            by_queue_title[key] = task
+
+    payload = _model_dump(inference_result)
+    queue = payload.get("task_queue") if isinstance(payload.get("task_queue"), dict) else {}
+
+    def _enrich_rows(queue_key: str, status: str) -> list[dict[str, Any]]:
+        rows = queue.get(queue_key)
+        if not isinstance(rows, list):
+            return []
+        enriched: list[dict[str, Any]] = []
+        for row in rows:
+            item = dict(row) if isinstance(row, dict) else {"title": str(row or ""), "status": status}
+            title = str(item.get("title") or "").strip()
+            task = by_queue_title.get((queue_key, title))
+            if task is None:
+                enriched.append({**item, "task_binding_status": "missing"})
+                continue
+            outcome = task_service.get_task_outcome(task.task_id) if callable(getattr(task_service, "get_task_outcome", None)) else None
+            enriched.append({**item, **_q8_task_to_web_binding(task, outcome)})
+        return enriched
+
+    queue["next_self_tasks"] = _enrich_rows("next_self_tasks", "next")
+    queue["blocked_self_tasks"] = _enrich_rows("blocked_self_tasks", "blocked")
+    queue["proactive_actions"] = _enrich_rows("proactive_actions", "proactive")
+    payload["task_queue"] = queue
+    return payload
 
 
 def _state_has_question_data(state: Any) -> bool:
@@ -80,6 +176,28 @@ def _coerce_string_list(value: Any) -> list[str]:
         text = value.strip()
         return [text] if text else []
     return []
+
+
+def _material_trace_payload(
+    *,
+    question_id: str,
+    snapshot: dict[str, Any],
+    trace_detail: dict[str, Optional[Any]] | None,
+    context_updates: dict[str, Any],
+    result_payload: dict[str, Any],
+) -> dict[str, Any]:
+    payload = snapshot.get("llm_trace_payload")
+    if not isinstance(payload, dict) and trace_detail is not None:
+        candidate = trace_detail.get("llm_trace_payload")
+        payload = candidate if isinstance(candidate, dict) else {}
+    if not isinstance(payload, dict):
+        payload = {}
+    return ensure_question_driver_trace(
+        question_id,
+        payload,
+        context_data=context_updates,
+        raw_response=result_payload,
+    )
 
 
 def _humanize_question_summary(
@@ -486,6 +604,12 @@ async def build_question_report_items(
             inference_result = handler["result"](result_payload)
             if inference_result is None and isinstance(context_updates, dict):
                 inference_result = handler["result"](context_updates)
+        if question_id == "q8":
+            inference_result = _enrich_q8_queue_rows_with_task_bindings(
+                request,
+                trace_id=trace_id,
+                inference_result=inference_result,
+            )
 
         derived_summary = _derive_question_summary(
             question_id,
@@ -509,8 +633,16 @@ async def build_question_report_items(
             q1_llm_upgrade=_extract_q1_llm_upgrade(context_updates) if question_id == "q1" else None,
             cache_status=_derive_cache_status(snapshot, result_payload, context_updates),
             provider_name=_derive_provider_name(snapshot, trace_detail),
-            llm_trace_payload=snapshot.get("llm_trace_payload") or (
-                trace_detail.get("llm_trace_payload") if trace_detail is not None else None
+            mounted_plugins=ensure_mounted_plugins(
+                question_id,
+                snapshot.get("mounted_plugins") if isinstance(snapshot.get("mounted_plugins"), list) else [],
+            ),
+            llm_trace_payload=_material_trace_payload(
+                question_id=question_id,
+                snapshot=snapshot,
+                trace_detail=trace_detail,
+                context_updates=context_updates,
+                result_payload=result_payload,
             ),
         ))
 

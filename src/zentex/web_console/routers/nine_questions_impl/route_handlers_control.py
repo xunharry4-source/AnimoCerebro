@@ -1,8 +1,9 @@
 from __future__ import annotations
 
 import asyncio
+from typing import Any
 
-from fastapi import APIRouter, HTTPException, Request
+from fastapi import APIRouter, HTTPException, Query, Request
 from plugins.nine_questions.q3_what_do_i_have.modules import build_q3_runtime_inventory_context
 from plugins.nine_questions.q9_how_should_i_act.modules import (
     derive_posture_baseline,
@@ -22,8 +23,20 @@ from zentex.nine_questions.module_retry import (
     retry_q9_posture_input_module,
 )
 from zentex.plugins.service import execute_enabled_cognitive_plugin_functionals
+from zentex.nine_questions.plan_verification_data import (
+    PlanVerificationDataError,
+    generate_plan_verification_data,
+)
+from zentex.nine_questions.plan_evidence_registry import (
+    PlanEvidenceRegistryError,
+    register_plan_evidence_manifest,
+)
+from zentex.nine_questions.plan_execution_evidence import (
+    PlanExecutionEvidenceError,
+    register_plan_execution_evidence,
+)
 from zentex.web_console.contracts.nine_questions import NineQuestionsRunRequest, NineQuestionsRunResponse
-from zentex.web_console.dependencies import get_plugin_service
+from zentex.web_console.dependencies import get_learning_service, get_plugin_service, get_task_service
 
 from .q_state import (
     _get_nine_question_service,
@@ -268,6 +281,73 @@ async def recover_q8_task_persistence(request: Request) -> NineQuestionsRunRespo
         snapshot_version=int(state.get("snapshot_version", len(snapshot_map)) if isinstance(state, dict) else getattr(state, "snapshot_version", len(snapshot_map))),
         revision=int(state.get("revision", 0) if isinstance(state, dict) else getattr(state, "revision", 0)),
     )
+
+
+@router.post("/nine-questions/plan/verification-data")
+async def generate_plan_verification_data_endpoint(
+    request: Request,
+    session_id: str | None = Query(default=None, min_length=1),
+    sample_count: int = Query(default=100, ge=1, le=200),
+):
+    session = await get_or_create_session(request)
+    resolved_session_id = str(session_id or session.session_id)
+    try:
+        return await generate_plan_verification_data(
+            task_service=get_task_service(request),
+            session_id=resolved_session_id,
+            sample_count=sample_count,
+        )
+    except PlanVerificationDataError as exc:
+        raise HTTPException(
+            status_code=409,
+            detail={
+                "error": "plan_verification_data_failed",
+                "session_id": resolved_session_id,
+                "failures": exc.failures,
+            },
+        ) from exc
+
+
+@router.post("/nine-questions/plan/evidence-manifests")
+async def register_plan_evidence_manifest_endpoint(
+    request: Request,
+    manifest: dict[str, Any],
+):
+    await get_or_create_session(request)
+    try:
+        return register_plan_evidence_manifest(
+            learning_service=get_learning_service(request),
+            manifest=manifest,
+        )
+    except PlanEvidenceRegistryError as exc:
+        raise HTTPException(
+            status_code=409,
+            detail={
+                "error": "plan_evidence_manifest_failed",
+                "failures": exc.failures,
+            },
+        ) from exc
+
+
+@router.post("/nine-questions/plan/execution-evidence")
+async def register_plan_execution_evidence_endpoint(
+    request: Request,
+    evidence: dict[str, Any],
+):
+    await get_or_create_session(request)
+    try:
+        return register_plan_execution_evidence(
+            learning_service=get_learning_service(request),
+            evidence=evidence,
+        )
+    except PlanExecutionEvidenceError as exc:
+        raise HTTPException(
+            status_code=409,
+            detail={
+                "error": "plan_execution_evidence_failed",
+                "failures": exc.failures,
+            },
+        ) from exc
 
 
 @router.post("/nine-questions/{question_id}/modules/{module_id}/rollback")

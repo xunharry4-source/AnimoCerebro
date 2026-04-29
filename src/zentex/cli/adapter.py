@@ -25,6 +25,8 @@ import json
 from pathlib import Path
 import shutil
 import subprocess
+from datetime import datetime, timezone
+from time import perf_counter
 from typing import Any, Dict, List, Optional, Protocol, Set
 from uuid import uuid4
 
@@ -56,6 +58,26 @@ _MUTATING_TOKENS: Set[str] = {
     "rm", "del", "delete", "format", "mkfs", "dd", "chmod", "chown",
     "write", "overwrite", "truncate", "kill", "stop", "reboot", "shutdown",
     "sudo", "su", "apt", "brew", "npm", "pip", "git", "cp", "mv"
+}
+
+_MUTATING_ARG_FRAGMENTS: Set[str] = {
+    "write_text", "write_bytes", ".write(", "open(", "truncate(", "unlink(",
+    "remove(", "rmtree", "mkdir(", "rename(", "replace(", "chmod(", "chown(",
+    "git commit", "git push", "git reset", "git checkout", "rm ", "rm -",
+    "touch ", "mkdir ", "mv ", "cp ", "tee ", ">",
+}
+
+_DANGEROUS_ARG_FRAGMENTS: Set[str] = {
+    ";",
+    "|",
+    "&&",
+    "||",
+    "`",
+    "$(",
+    ">",
+    "<",
+    "../",
+    "..\\",
 }
 
 try:
@@ -143,6 +165,7 @@ class SubprocessCliTransport:
         command_line = [config.command_executable, *config.command_args, *arguments]
         env = {**config.env}
         cwd = working_directory or config.project_path
+        started_at = perf_counter()
 
         try:
             if pexpect is not None and stdin_input and "\n" in stdin_input:
@@ -186,6 +209,8 @@ class SubprocessCliTransport:
                 stderr=f"Transport error: Command timed out after {timeout_seconds}s",
                 command_line=command_line,
                 working_directory=cwd,
+                duration_ms=_elapsed_ms(started_at),
+                failure_category="timeout",
             )
         except (FileNotFoundError, PermissionError) as e:
             return CliInvocationResult(
@@ -197,6 +222,8 @@ class SubprocessCliTransport:
                 stderr=f"Transport error: {e}",
                 command_line=command_line,
                 working_directory=cwd,
+                duration_ms=_elapsed_ms(started_at),
+                failure_category="transport_error",
             )
         except Exception as e:
             return CliInvocationResult(
@@ -208,6 +235,8 @@ class SubprocessCliTransport:
                 stderr=f"Unexpected transport error: {e}",
                 command_line=command_line,
                 working_directory=cwd,
+                duration_ms=_elapsed_ms(started_at),
+                failure_category="unexpected_transport_error",
             )
 
         return CliInvocationResult(
@@ -219,6 +248,8 @@ class SubprocessCliTransport:
             stderr=stderr,
             command_line=command_line,
             working_directory=cwd,
+            duration_ms=_elapsed_ms(started_at),
+            failure_category=None if exit_code == 0 else "non_zero_exit",
         )
 
 
@@ -346,18 +377,37 @@ class CliAdapterPlugin(FunctionalPluginSpec):
     def register_tool(self, config: CliToolRegistrationConfig) -> CliToolRuntimeState:
         normalized = CliToolRegistrationConfig.model_validate(config.model_dump(mode="json"))
         if normalized.tool_name in self._registered_tools:
+            self._write_registration_rejection_audit(
+                config=normalized,
+                reason=f"CLI tool '{normalized.tool_name}' is already registered",
+                failure_category="duplicate_registration",
+            )
             raise ValueError(f"CLI tool '{normalized.tool_name}' is already registered")
         executable = normalized.command_executable.strip()
         if not executable or any(token in executable for token in (" ", "\t", "|", ";", "&", ">", "<", "$", "`")):
+            self._write_registration_rejection_audit(
+                config=normalized,
+                reason="command_executable must be a bare executable path or command name, not a shell line",
+                failure_category="invalid_executable_schema",
+            )
             raise ValueError(
                 "ValidationError: command_executable must be a bare executable path or command name, not a shell line."
             )
-        lowered = executable.lower().rsplit("/", 1)[-1]
-        if normalized.read_only_flag and lowered in _MUTATING_TOKENS:
+        if normalized.read_only_flag and self._looks_like_mutating_command(normalized):
+            self._write_registration_rejection_audit(
+                config=normalized,
+                reason="read-only CLI tools cannot register mutating executables",
+                failure_category="read_only_masquerade",
+            )
             raise ValueError(
                 "ValidationError: read-only CLI tools cannot register mutating executables."
             )
         if not self._transport.health_probe(normalized):
+            self._write_registration_rejection_audit(
+                config=normalized,
+                reason=f"health probe failed for CLI tool: {normalized.command_executable}",
+                failure_category="command_missing",
+            )
             raise FileNotFoundError(f"health probe failed for CLI tool: {normalized.command_executable}")
         state = self._build_tool_runtime_state(normalized)
         self._registered_tools[normalized.tool_name] = normalized
@@ -475,14 +525,84 @@ class CliAdapterPlugin(FunctionalPluginSpec):
         timeout_seconds: float = 15.0,
     ) -> CliInvocationResult:
         config = self.get_tool_config(tool_name)
-        return self._transport.invoke_tool(
+        state = self._tool_states.get(tool_name)
+        trace = trace_id or f"cli-test:{uuid4().hex}"
+        if state is None or state.status != "active":
+            result = CliInvocationResult(
+                tool_name=config.tool_name,
+                status="failed",
+                trace_id=trace,
+                exit_code=-1,
+                stdout="",
+                stderr=f"CLI tool '{tool_name}' is not active",
+                command_line=[config.command_executable, *config.command_args, *list(arguments or [])],
+                working_directory=working_directory or config.project_path,
+                failure_category="inactive_tool",
+            )
+            self._write_invocation_audit(config=config, result=result, mapped_domain="inactive")
+            return result
+
+        argument_violations = self._find_dangerous_argument_patterns(list(arguments or []))
+        if argument_violations:
+            result = CliInvocationResult(
+                tool_name=config.tool_name,
+                status="failed",
+                trace_id=trace,
+                exit_code=-2,
+                stdout="",
+                stderr=f"ValidationError: dangerous CLI argument pattern blocked: {argument_violations}",
+                command_line=[config.command_executable, *config.command_args, *list(arguments or [])],
+                working_directory=working_directory or config.project_path,
+                failure_category="dangerous_argument",
+                preflight_blocked=True,
+            )
+            self._write_invocation_audit(
+                config=config,
+                result=result,
+                mapped_domain="cognitive" if config.read_only_flag else "execution",
+            )
+            return result
+
+        result = self._transport.invoke_tool(
             config,
             arguments=list(arguments or []),
             stdin_input=stdin_input,
-            trace_id=trace_id or f"cli-test:{uuid4().hex}",
+            trace_id=trace,
             working_directory=working_directory,
             timeout_seconds=timeout_seconds,
         )
+        self._write_invocation_audit(
+            config=config,
+            result=result,
+            mapped_domain="cognitive" if config.read_only_flag else "execution",
+        )
+        return result
+
+    def diagnose_cli_execution_closure(self) -> Dict[str, Any]:
+        from zentex.cli.lifecycle_diagnostics import build_cli_execution_diagnostic_report
+
+        report = build_cli_execution_diagnostic_report(
+            configs=list(self._registered_tools.values()),
+            states=self.list_tool_states(),
+            audit_entries=self._read_cli_audit_entries(limit=1000),
+        )
+        self._write_closure_audit("cli_execution_closure_diagnosed", report.to_dict())
+        return report.to_dict()
+
+    def run_cli_fault_injection_matrix(self) -> Dict[str, Any]:
+        from zentex.cli.lifecycle_diagnostics import (
+            build_cli_execution_diagnostic_report,
+            build_cli_fault_injection_report,
+        )
+
+        diagnostic = build_cli_execution_diagnostic_report(
+            configs=list(self._registered_tools.values()),
+            states=self.list_tool_states(),
+            audit_entries=self._read_cli_audit_entries(limit=1000),
+        )
+        report = build_cli_fault_injection_report(diagnostic)
+        self._write_closure_audit("cli_fault_matrix_executed", report.to_dict())
+        return report.to_dict()
 
     def health_probe(self) -> PluginHealthStatus:
         if not self._registered_tools:
@@ -510,3 +630,105 @@ class CliAdapterPlugin(FunctionalPluginSpec):
             project_name=config.project_name,
             project_description=config.project_description,
         )
+
+    @staticmethod
+    def _looks_like_mutating_command(config: CliToolRegistrationConfig) -> bool:
+        executable = config.command_executable.strip().lower().rsplit("/", 1)[-1]
+        if executable in _MUTATING_TOKENS:
+            return True
+        rendered_args = " ".join(str(arg or "") for arg in config.command_args).lower()
+        return any(fragment in rendered_args for fragment in _MUTATING_ARG_FRAGMENTS)
+
+    @staticmethod
+    def _find_dangerous_argument_patterns(arguments: List[Optional[str]]) -> List[str]:
+        rendered = " ".join(str(arg or "") for arg in arguments).lower()
+        found = sorted(fragment for fragment in _DANGEROUS_ARG_FRAGMENTS if fragment in rendered)
+        mutating = sorted(fragment for fragment in _MUTATING_ARG_FRAGMENTS if fragment in rendered)
+        return [*found, *mutating]
+
+    def _write_registration_rejection_audit(
+        self,
+        *,
+        config: CliToolRegistrationConfig,
+        reason: str,
+        failure_category: str,
+    ) -> None:
+        if self._transcript_store is None:
+            return
+        trace_id = f"cli-register:{uuid4().hex}"
+        self._transcript_store.write_entry(
+            session_id="cli-management",
+            turn_id=trace_id,
+            entry_type=AuditEventType.PLUGIN_AUDIT_EVENT,
+            timestamp=datetime.now(timezone.utc).isoformat(),
+            payload={
+                "tool_name": config.tool_name,
+                "status": "rejected",
+                "trace_id": trace_id,
+                "command_executable": config.command_executable,
+                "command_args": list(config.command_args),
+                "read_only": config.read_only_flag,
+                "reason": reason,
+                "failure_category": failure_category,
+            },
+            source="cli.adapter.registration",
+            trace_id=trace_id,
+        )
+
+    def _write_closure_audit(self, event_name: str, payload: Dict[str, Any]) -> None:
+        if self._transcript_store is None:
+            return
+        trace_id = f"cli-closure:{uuid4().hex}"
+        self._transcript_store.write_entry(
+            session_id="cli-management",
+            turn_id=trace_id,
+            entry_type=AuditEventType.PLUGIN_AUDIT_EVENT,
+            timestamp=datetime.now(timezone.utc).isoformat(),
+            payload={"event": event_name, **payload},
+            source="cli.adapter.closure",
+            trace_id=trace_id,
+        )
+
+    def _read_cli_audit_entries(self, *, limit: int) -> List[Any]:
+        if self._transcript_store is None:
+            return []
+        if hasattr(self._transcript_store, "list_entries"):
+            return list(
+                self._transcript_store.list_entries(
+                    session_id=None,
+                    entry_type=AuditEventType.PLUGIN_AUDIT_EVENT.value,
+                    limit=limit,
+                )
+            )
+        if hasattr(self._transcript_store, "read_entries"):
+            return list(self._transcript_store.read_entries(session_id="cli-management") or [])
+        return []
+
+    def _write_invocation_audit(
+        self,
+        *,
+        config: CliToolRegistrationConfig,
+        result: CliInvocationResult,
+        mapped_domain: str,
+    ) -> None:
+        self._transcript_store.write_entry(
+            session_id="cli-management",
+            turn_id=result.trace_id,
+            entry_type=AuditEventType.PLUGIN_AUDIT_EVENT,
+            timestamp=datetime.now(timezone.utc).isoformat(),
+            payload={
+                "tool_name": config.tool_name,
+                "mapped_domain": mapped_domain,
+                "read_only": config.read_only_flag,
+                "side_effect_free": config.read_only_flag,
+                "mutates_state": not config.read_only_flag,
+                "requires_cloud_audit": not config.read_only_flag,
+                **result.model_dump(mode="json"),
+            },
+            source="cli.adapter.test_call",
+            trace_id=result.trace_id,
+        )
+
+
+def _elapsed_ms(started_at: float) -> int:
+    return max(0, int((perf_counter() - started_at) * 1000))

@@ -49,7 +49,7 @@ class EnhancedMemoryRecordItem(BaseModel):
     compressed_by: Optional[str] = None
     compression_summary: Optional[str] = None
     is_tombstone: bool = False
-    g38_audit_id: Optional[str] = None
+    memory_governance_audit_id: Optional[str] = None
     
     memory_tier: str = "hot"
     emotional_valence: str = "neutral"

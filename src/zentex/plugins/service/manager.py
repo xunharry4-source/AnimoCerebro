@@ -125,6 +125,7 @@ class SystemPluginService(BasePluginService):
             plugin_instances=self._plugin_instances,
             query_service=self._query_service,
             determine_category_fn=self._determine_category,
+            runtime_loader_fn=self.ensure_runtime_instance_loaded,
         )
         
         self._test_service = TestService(
@@ -462,16 +463,6 @@ class SystemPluginService(BasePluginService):
             )
 
         effective_trace_id = trace_id or str(context.get("trace_id") or "")
-        
-        # Enforce strict operational status check
-        if str(plugin.get("lifecycle_status") or "").strip().lower() != "active" or \
-           str(plugin.get("operational_status") or "").strip().lower() != "enabled":
-            return ServiceResponse.error(
-                ServiceErrorCode.DEPENDENCY_UNAVAILABLE,
-                message=f"Functional plugin {plugin_id} is not ACTIVE or not enabled",
-                trace_id=effective_trace_id or plugin_id,
-            )
-
         feedback = self.execute_plugin_once_sync(
             plugin_id=plugin_id,
             task_id=f"{effective_trace_id or 'functional'}:{plugin_id}",

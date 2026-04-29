@@ -993,6 +993,143 @@
     "loadHistoryError": "加载历史记录失败",
     "toolNotFound": "工具不存在"
   },
+  "memory": {
+    "title": "记忆治理台",
+    "subtitle": "管理增强记忆的状态、可信度、纠正说明、来源链和审计记录。",
+    "partialApiFailure": "部分 API 调用失败（数据可能不完整）：",
+    "errors": {
+      "allApisFailed": "所有 API 调用都失败了。请确认 Zentex 服务已启动并检查网络连接。\n\n错误详情:\n{{details}}",
+      "pageLoadUnexpected": "页面加载出现异常，请检查浏览器控制台日志",
+      "searchFailed": "增强记忆查询失败，请检查后端状态",
+      "managementFailed": "记忆管理操作失败，请检查后端状态",
+      "verifyFailed": "记忆校验失败",
+      "repairFailed": "记忆修复失败",
+      "repairAllFailed": "全量修复触发失败"
+    },
+    "overview": {
+      "title": "记忆概览",
+      "semantic": "Semantic: {{count}}",
+      "procedural": "Procedural: {{count}}",
+      "episodic": "Episodic: {{count}}",
+      "active": "Active: {{count}}",
+      "deprecated": "Deprecated: {{count}}",
+      "archived": "Archived: {{count}}",
+      "suspect": "Suspect: {{count}}",
+      "health": "Health: {{status}}",
+      "projectionFailures": "投影失败：{{failures}}"
+    },
+    "bridge": {
+      "title": "外部记忆桥状态"
+    },
+    "values": {
+      "on": "on",
+      "off": "off",
+      "encrypted": "encrypted",
+      "plain": "plain"
+    },
+    "chips": {
+      "repair": "repair:{{value}}",
+      "intervalSeconds": "interval:{{value}}s",
+      "last": "last:{{value}}",
+      "status": "status:{{value}}",
+      "tickets": "tickets:{{value}}",
+      "triggered": "triggered:{{value}}",
+      "repaired": "repaired:{{value}}",
+      "quarantined": "quarantined:{{value}}",
+      "projection": "projection:{{value}}",
+      "write": "write:{{value}}",
+      "recall": "recall:{{value}}",
+      "score": "score {{value}}",
+      "visible": "visible:{{value}}",
+      "healthFilter": "health-filter:{{value}}",
+      "repairFilter": "repair-filter:{{value}}",
+      "schemaFilter": "schema-filter:{{value}}",
+      "schema": "schema:{{value}}",
+      "health": "health:{{value}}",
+      "compress": "compress:{{value}}"
+    },
+    "actions": {
+      "repairAll": "全量修复",
+      "viewTrace": "查看 trace",
+      "viewTraceReplay": "查看 trace 回放",
+      "viewSourceEvent": "查看源事件",
+      "verify": "校验",
+      "repair": "修复",
+      "markTrusted": "标记可信",
+      "markSuspect": "标记可疑",
+      "deprecate": "废弃",
+      "archiveHidden": "归档隐藏"
+    },
+    "repair": {
+      "recentRepairAll": "最近一次全量修复",
+      "noRepairAllItems": "这次 repair_all 没有发现需要处理的记录。",
+      "ticketSummary": "repaired: {{repaired}} | quarantined: {{quarantined}} | projection: {{projection}}"
+    },
+    "search": {
+      "title": "增强记忆查询",
+      "label": "搜索经验、失败教训、版本链",
+      "searching": "查询中…",
+      "action": "查询",
+      "emptyHint": "输入关键词后可检索 semantic / procedural / episodic 记忆。"
+    },
+    "records": {
+      "title": "记忆记录",
+      "noMatches": "当前筛选条件下没有匹配记录。",
+      "columns": {
+        "title": "Title",
+        "layer": "Layer",
+        "trust": "Trust",
+        "storage": "Storage",
+        "trace": "Trace"
+      }
+    },
+    "filters": {
+      "repairQueue": "只看待修",
+      "degradedOnly": "只看降级",
+      "legacyOnly": "只看旧结构",
+      "clearPreset": "清除预设",
+      "allLayers": "全部层",
+      "allStatuses": "全部状态",
+      "allTrust": "全部可信度",
+      "allHealth": "全部健康",
+      "allRepairStatuses": "全部修复状态",
+      "allSchemas": "全部结构",
+      "modularOnly": "仅模块化",
+      "legacyOnlyOption": "仅旧结构"
+    },
+    "detail": {
+      "title": "记忆详情",
+      "selectHint": "选择一条记忆后可查看来源链、审计和治理动作。",
+      "trace": "trace: {{traceId}}",
+      "identity": "trace: {{traceId}} | target: {{targetId}} | version: {{versionId}}",
+      "sources": "来源: {{sources}}",
+      "evidence": "证据: {{evidence}}",
+      "lastAction": "最近动作: {{action}} | {{reason}}",
+      "timestamps": "更新时间: {{updatedAt}} | 最近验证: {{verifiedAt}}"
+    },
+    "diagnostics": {
+      "title": "块级诊断",
+      "descriptorSummary": "required: {{required}} | derived: {{derived}} | repairable: {{repairable}} | verified: {{verified}}"
+    },
+    "management": {
+      "reason": "治理原因",
+      "note": "治理备注",
+      "correction": "纠正说明"
+    },
+    "audit": {
+      "title": "审计记录",
+      "empty": "当前记忆还没有额外治理审计。"
+    },
+    "agenda": {
+      "title": "当前认知待办",
+      "empty": "当前没有待办 agenda 项。",
+      "columns": {
+        "title": "标题",
+        "priority": "优先级",
+        "nextReview": "下次复查条件"
+      }
+    }
+  },
   "upgrades": {
     "title": "升级管理",
     "subtitle": "查看和管理 LLM 升级、插件升级、插件创建的完整生命周期状态。",

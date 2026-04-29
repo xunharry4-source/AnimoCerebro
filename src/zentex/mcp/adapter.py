@@ -21,6 +21,7 @@ from __future__ import annotations
 
 
 from collections.abc import Callable
+import json
 from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional, Protocol, Set
 from uuid import uuid4
@@ -47,6 +48,7 @@ from zentex.common.cognitive_result import CognitiveToolResult
 from zentex.plugins.service import CognitiveToolRegistry
 from zentex.kernel import AuditEventStore, AuditEventType
 from zentex.supervision.service import get_ai_supervisor
+from zentex.mcp.lifecycle_diagnostics import SUPPORTED_PROTOCOL_VERSIONS
 
 
 class McpTransportClient(Protocol):
@@ -303,6 +305,8 @@ class McpAdapterPlugin(FunctionalPluginSpec):
     _execution_registry: ExecutionDomainRegistry = PrivateAttr()
     _server_states: Dict[str, McpServerRuntimeState] = PrivateAttr(default_factory=dict)
     _registered_tool_ids: Set[str] = PrivateAttr(default_factory=set)
+    _tool_schema_cache: Dict[str, Dict[str, Any]] = PrivateAttr(default_factory=dict)
+    _schema_drift_events: List[Dict[str, Any]] = PrivateAttr(default_factory=list)
 
     @classmethod
     def plugin_kind(cls) -> str:
@@ -332,7 +336,13 @@ class McpAdapterPlugin(FunctionalPluginSpec):
 
     def register_server(self, config: McpServerConfig) -> McpServerRuntimeState:
         if any(item.server_id == config.server_id for item in self.server_configs):
+            self._write_registration_rejection_audit(
+                config=config,
+                reason=f"MCP server '{config.server_id}' is already registered",
+                error_code="mcp_duplicate_server",
+            )
             raise ValueError(f"MCP server '{config.server_id}' is already registered")
+        self._validate_server_profile(config)
         self.server_configs.append(config)
         return self._sync_single_server(config)
 
@@ -385,13 +395,116 @@ class McpAdapterPlugin(FunctionalPluginSpec):
         config = next((item for item in self.server_configs if item.server_id == server_id), None)
         if config is None:
             raise KeyError(server_id)
+        state = self._server_states.get(server_id)
+        request_payload = {"server_id": server_id, "tool_name": tool_name, "arguments": dict(arguments or {}), "trace_id": trace_id}
+        if state is None or state.status != "online":
+            result = {
+                "status": "failed",
+                "error_code": "mcp_server_unavailable",
+                "error_message": state.error_message if state else "MCP server is not online",
+                "server_id": server_id,
+                "tool_name": tool_name,
+                "trace_id": trace_id,
+                "request": request_payload,
+                "response": None,
+                "_execution_contract": True,
+            }
+            self._write_invocation_audit(result)
+            return result
+        if tool_name not in {tool.tool_name for tool in state.tools}:
+            result = {
+                "status": "failed",
+                "error_code": "mcp_tool_not_registered",
+                "error_message": f"MCP tool '{tool_name}' is not registered for server '{server_id}'",
+                "server_id": server_id,
+                "tool_name": tool_name,
+                "trace_id": trace_id,
+                "request": request_payload,
+                "response": None,
+                "_execution_contract": True,
+            }
+            self._write_invocation_audit(result)
+            return result
         client = self._client_factory(config)
-        return client.invoke_tool(
-            config,
-            tool_name=tool_name,
-            arguments=arguments,
-            trace_id=trace_id,
+        try:
+            raw = client.invoke_tool(
+                config,
+                tool_name=tool_name,
+                arguments=arguments,
+                trace_id=trace_id,
+            )
+        except Exception as exc:
+            result = {
+                "status": "failed",
+                "error_code": self._classify_invocation_error(exc),
+                "error_message": str(exc),
+                "server_id": server_id,
+                "tool_name": tool_name,
+                "trace_id": trace_id,
+                "request": request_payload,
+                "response": None,
+                "_execution_contract": True,
+            }
+            self._write_invocation_audit(result)
+            return result
+        if not isinstance(raw, dict):
+            result = {
+                "status": "failed",
+                "error_code": "mcp_bad_json",
+                "error_message": "MCP tool response must be a JSON object",
+                "server_id": server_id,
+                "tool_name": tool_name,
+                "trace_id": trace_id,
+                "request": request_payload,
+                "response": raw,
+                "_execution_contract": True,
+            }
+            self._write_invocation_audit(result)
+            return result
+        result = {
+            "status": "completed",
+            "error_code": None,
+            "error_message": None,
+            "data": raw,
+            "server_id": server_id,
+            "tool_name": tool_name,
+            "trace_id": trace_id,
+            "request": request_payload,
+            "response": raw,
+            "_execution_contract": True,
+        }
+        self._write_invocation_audit(result)
+        return result
+
+    def diagnose_mcp_management_closure(self) -> Dict[str, Any]:
+        from zentex.mcp.lifecycle_diagnostics import build_mcp_management_diagnostic_report
+
+        report = build_mcp_management_diagnostic_report(
+            configs=list(self.server_configs),
+            states=self.list_server_states(),
+            schema_cache=dict(self._tool_schema_cache),
+            schema_drift_events=list(self._schema_drift_events),
+            audit_entries=self._read_mcp_audit_entries(limit=1000),
         )
+        self._write_closure_audit("mcp_management_closure_diagnosed", report.to_dict())
+        return report.to_dict()
+
+    def run_mcp_fault_injection_matrix(self) -> Dict[str, Any]:
+        from zentex.mcp.lifecycle_diagnostics import (
+            build_mcp_fault_injection_report,
+            build_mcp_management_diagnostic_report,
+        )
+
+        diagnostic = build_mcp_management_diagnostic_report(
+            configs=list(self.server_configs),
+            states=self.list_server_states(),
+            schema_cache=dict(self._tool_schema_cache),
+            schema_drift_events=list(self._schema_drift_events),
+            audit_entries=self._read_mcp_audit_entries(limit=1000),
+        )
+        report = build_mcp_fault_injection_report(diagnostic)
+        self._write_closure_audit("mcp_fault_matrix_executed", report.to_dict())
+        return report.to_dict()
 
     def health_probe(self) -> PluginHealthStatus:
         statuses = {state.status for state in self._server_states.values()}
@@ -403,7 +516,49 @@ class McpAdapterPlugin(FunctionalPluginSpec):
             return PluginHealthStatus.DEGRADED
         return PluginHealthStatus.UNHEALTHY
 
+    def _validate_server_profile(self, config: McpServerConfig) -> None:
+        if config.transport_type in {"http", "sse"} and not config.command.startswith(("http://", "https://")):
+            self._write_registration_rejection_audit(
+                config=config,
+                reason="http/sse MCP transport requires command to be an HTTP endpoint",
+                error_code="mcp_endpoint_invalid",
+            )
+            raise ValueError("http/sse MCP transport requires command to be an HTTP endpoint")
+        if config.protocol_version not in SUPPORTED_PROTOCOL_VERSIONS:
+            self._write_registration_rejection_audit(
+                config=config,
+                reason=f"Unsupported MCP protocol_version: {config.protocol_version}",
+                error_code="mcp_protocol_incompatible",
+            )
+            raise ValueError(f"Unsupported MCP protocol_version: {config.protocol_version}")
+        if not config.scope:
+            self._write_registration_rejection_audit(
+                config=config,
+                reason="MCP server scope must not be empty",
+                error_code="mcp_scope_missing",
+            )
+            raise ValueError("MCP server scope must not be empty")
+
     def _sync_single_server(self, config: McpServerConfig) -> McpServerRuntimeState:
+        if config.protocol_version not in SUPPORTED_PROTOCOL_VERSIONS:
+            state = McpServerRuntimeState(
+                server_id=config.server_id,
+                transport_type=config.transport_type,
+                status="degraded",
+                tool_count=0,
+                error_message=f"Unsupported MCP protocol_version: {config.protocol_version}",
+                tools=[],
+                protocol_version=config.protocol_version,
+                scope=list(config.scope),
+                auth_mode=config.auth_mode,
+            )
+            self._server_states[config.server_id] = state
+            self._write_registration_rejection_audit(
+                config=config,
+                reason=state.error_message or "unsupported MCP protocol version",
+                error_code="mcp_protocol_incompatible",
+            )
+            return state
         client = self._client_factory(config)
         try:
             if not client.health_probe(config):
@@ -417,12 +572,18 @@ class McpAdapterPlugin(FunctionalPluginSpec):
                 tool_count=0,
                 error_message=str(exc),
                 tools=[],
+                protocol_version=config.protocol_version,
+                scope=list(config.scope),
+                auth_mode=config.auth_mode,
             )
             self._server_states[config.server_id] = state
             return state
 
         runtime_tools: List[McpToolRuntimeState] = []
+        drifted_tools: List[str] = []
         for tool in tools:
+            if self._record_schema_snapshot(config, tool):
+                drifted_tools.append(tool.tool_name)
             binding = self._resolve_binding(config, tool)
             reg = self._register_tool(config, tool, binding, client)
             if reg is not None:
@@ -431,13 +592,40 @@ class McpAdapterPlugin(FunctionalPluginSpec):
         state = McpServerRuntimeState(
             server_id=config.server_id,
             transport_type=config.transport_type,
-            status="online",
+            status="degraded" if drifted_tools else "online",
             tool_count=len(runtime_tools),
-            error_message=None,
+            error_message=f"tool schema drift detected: {', '.join(sorted(drifted_tools))}" if drifted_tools else None,
             tools=runtime_tools,
+            protocol_version=config.protocol_version,
+            scope=list(config.scope),
+            auth_mode=config.auth_mode,
         )
         self._server_states[config.server_id] = state
         return state
+
+    def _record_schema_snapshot(self, config: McpServerConfig, tool: McpToolDescriptor) -> bool:
+        server_cache = self._tool_schema_cache.setdefault(config.server_id, {})
+        current = {
+            "tool_name": tool.tool_name,
+            "description": tool.description,
+            "input_schema": tool.input_schema,
+            "mutates_state": tool.mutates_state,
+            "read_only_hint": tool.read_only_hint,
+        }
+        previous = server_cache.get(tool.tool_name)
+        server_cache[tool.tool_name] = current
+        if previous is not None and previous != current:
+            event = {
+                "server_id": config.server_id,
+                "tool_name": tool.tool_name,
+                "previous_schema": previous,
+                "current_schema": current,
+                "detected_at": datetime.now(timezone.utc).isoformat(),
+            }
+            self._schema_drift_events.append(event)
+            self._write_schema_drift_audit(event)
+            return True
+        return False
 
     def _resolve_binding(self, config: McpServerConfig, tool: McpToolDescriptor) -> McpToolBindingConfig:
         explicit = next((item for item in config.tool_bindings if item.tool_name == tool.tool_name), None)
@@ -581,6 +769,124 @@ class McpAdapterPlugin(FunctionalPluginSpec):
             mutates_state=binding.mutates_state,
             requires_cloud_audit=binding.requires_cloud_audit,
         )
+
+    def _write_registration_rejection_audit(
+        self,
+        *,
+        config: McpServerConfig,
+        reason: str,
+        error_code: str,
+    ) -> None:
+        if self._transcript_store is None:
+            return
+        trace_id = f"mcp-register:{uuid4().hex}"
+        self._transcript_store.write_entry(
+            session_id="mcp-management",
+            turn_id=trace_id,
+            entry_type=AuditEventType.PLUGIN_AUDIT_EVENT,
+            payload={
+                "server_id": config.server_id,
+                "phase": "registration",
+                "status": "rejected",
+                "trace_id": trace_id,
+                "transport_type": config.transport_type,
+                "protocol_version": config.protocol_version,
+                "auth_mode": config.auth_mode,
+                "scope": list(config.scope),
+                "error_code": error_code,
+                "error_message": reason,
+            },
+            source="mcp.adapter.registration",
+            trace_id=trace_id,
+        )
+
+    def _write_invocation_audit(self, result: Dict[str, Any]) -> None:
+        if self._transcript_store is None:
+            return
+        trace_id = str(result.get("trace_id") or f"mcp-test:{uuid4().hex}")
+        status = str(result.get("status") or "failed")
+        self._transcript_store.write_entry(
+            session_id="mcp-management",
+            turn_id=trace_id,
+            entry_type=AuditEventType.PLUGIN_AUDIT_EVENT,
+            payload={
+                "server_id": result.get("server_id"),
+                "tool_name": result.get("tool_name"),
+                "phase": "completed" if status == "completed" else "failed",
+                "status": status,
+                "trace_id": trace_id,
+                "request": result.get("request"),
+                "response": result.get("response"),
+                "error_code": result.get("error_code"),
+                "error_message": result.get("error_message"),
+            },
+            source="mcp.adapter.test_call",
+            trace_id=trace_id,
+        )
+
+    def _write_schema_drift_audit(self, event: Dict[str, Any]) -> None:
+        if self._transcript_store is None:
+            return
+        trace_id = f"mcp-schema:{uuid4().hex}"
+        self._transcript_store.write_entry(
+            session_id="mcp-management",
+            turn_id=trace_id,
+            entry_type=AuditEventType.PLUGIN_AUDIT_EVENT,
+            payload={
+                "server_id": event.get("server_id"),
+                "tool_name": event.get("tool_name"),
+                "phase": "schema_drift",
+                "status": "review_required",
+                "trace_id": trace_id,
+                "error_code": "mcp_schema_drift",
+                "error_message": "MCP tool schema drift detected",
+                "schema_drift": event,
+            },
+            source="mcp.adapter.schema",
+            trace_id=trace_id,
+        )
+
+    def _write_closure_audit(self, event_name: str, payload: Dict[str, Any]) -> None:
+        if self._transcript_store is None:
+            return
+        trace_id = f"mcp-closure:{uuid4().hex}"
+        self._transcript_store.write_entry(
+            session_id="mcp-management",
+            turn_id=trace_id,
+            entry_type=AuditEventType.PLUGIN_AUDIT_EVENT,
+            payload={"event": event_name, **payload},
+            source="mcp.adapter.closure",
+            trace_id=trace_id,
+        )
+
+    def _read_mcp_audit_entries(self, *, limit: int) -> List[Any]:
+        if self._transcript_store is None:
+            return []
+        if hasattr(self._transcript_store, "list_entries"):
+            return list(
+                self._transcript_store.list_entries(
+                    session_id=None,
+                    entry_type=AuditEventType.PLUGIN_AUDIT_EVENT.value,
+                    limit=limit,
+                )
+            )
+        if hasattr(self._transcript_store, "read_entries"):
+            return list(self._transcript_store.read_entries(session_id="mcp-management") or [])
+        return []
+
+    @staticmethod
+    def _classify_invocation_error(exc: Exception) -> str:
+        name = exc.__class__.__name__.lower()
+        message = str(exc).lower()
+        if isinstance(exc, PermissionError) or "permission" in message or "forbidden" in message or "403" in message:
+            return "mcp_permission_denied"
+        if "timeout" in name or "timed out" in message or "timeout" in message:
+            return "mcp_timeout"
+        if "empty" in message or "no content" in message:
+            return "mcp_empty_response"
+        if "json" in name or "json" in message or "expecting value" in message:
+            return "mcp_bad_json"
+        return "mcp_transport_error"
 
 
 def create_mcp_adapter_plugin(

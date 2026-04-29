@@ -1,7 +1,7 @@
 import { fireEvent, render, screen } from "@testing-library/react";
 import { describe, expect, it } from "vitest";
 
-import Q1EvidencePanel from "./Q1EvidencePanel";
+import Q1EvidencePanel from "../../components/Q1EvidencePanel";
 import { Q1PreprocessedEvidence, WorkspaceDomainInferenceView } from "./nineQuestionsApi";
 
 const mockEvidence: Q1PreprocessedEvidence = {

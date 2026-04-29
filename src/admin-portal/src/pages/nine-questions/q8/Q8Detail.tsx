@@ -143,10 +143,12 @@ export const Q8Detail: React.FC = () => {
 
       const hardFailures = [summaryResult, rawResult, modulesResult].every((result) => result.status === "rejected");
       if (hardFailures) {
+        const rejectionMessage = (result: PromiseSettledResult<Record<string, any>>) =>
+          result.status === "rejected" ? result.reason?.message : "";
         const baseFailureReason =
-          summaryResult.reason?.message ||
-          rawResult.reason?.message ||
-          modulesResult.reason?.message ||
+          rejectionMessage(summaryResult) ||
+          rejectionMessage(rawResult) ||
+          rejectionMessage(modulesResult) ||
           "Q8 基础分区全部加载失败，当前无法建立页面上下文。";
         throw new Error(baseFailureReason);
       }
@@ -198,6 +200,13 @@ export const Q8Detail: React.FC = () => {
   const traceId = String(rawPayload?.trace_id || "");
   const toolId = String(rawPayload?.tool_id || `nine_questions.${qId}`);
   const pageStatus = String(summary?.status || modulesPayload?.status?.status || "partial");
+  const v1EvidenceGates =
+    rawPayload?.context_updates?.v1_evidence_gates ||
+    modulesPayload?.v1_evidence_gates ||
+    null;
+  const v1GateItems = v1EvidenceGates && typeof v1EvidenceGates === "object"
+    ? Object.entries(v1EvidenceGates as Record<string, any>)
+    : [];
 
   return (
     <Box data-testid="q8-detail-root" sx={{ display: "flex", flexDirection: "column", gap: 3 }}>
@@ -276,7 +285,7 @@ export const Q8Detail: React.FC = () => {
           <Stack spacing={1}>
             {workspaceTaskGoals.map((goal, index) => (
               <Typography key={index} variant="body2" sx={{ display: "flex", alignItems: "center", gap: 1 }}>
-                <span sx={{ fontWeight: "bold" }}>{index + 1}.</span> {goal}
+                <Box component="span" sx={{ fontWeight: "bold" }}>{index + 1}.</Box> {goal}
               </Typography>
             ))}
           </Stack>
@@ -296,6 +305,33 @@ export const Q8Detail: React.FC = () => {
         <Alert severity="warning">
           当前没有可用的结构化证据，以下区域保留布局并显示可恢复的空态。
         </Alert>
+      ) : null}
+      {v1GateItems.length > 0 ? (
+        <NineQuestionSectionBoundary title="V1.0 证据门禁">
+          <Stack spacing={1.5} data-testid="q8-v1-evidence-gates">
+            {v1GateItems.map(([gateName, rawGate]) => {
+              const gate = rawGate && typeof rawGate === "object" ? rawGate : {};
+              const status = String(gate.status || "unknown");
+              const statusColor: "success" | "warning" =
+                status === "passed" || status === "completed" ? "success" : "warning";
+              return (
+                <Box
+                  key={gateName}
+                  sx={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 2 }}
+                  data-testid={`q8-v1-gate-${gateName}`}
+                >
+                  <Box>
+                    <Typography variant="subtitle2" fontWeight="bold">{gateName}</Typography>
+                    <Typography variant="body2" color="text.secondary">
+                      {String(gate.reason || gate.summary || "waiting_for_real_evidence")}
+                    </Typography>
+                  </Box>
+                  <Chip label={status} color={statusColor} size="small" />
+                </Box>
+              );
+            })}
+          </Stack>
+        </NineQuestionSectionBoundary>
       ) : null}
       <NineQuestionSectionBoundary title="Q8 结构化证据">
         {sectionErrors.modules ? <Alert severity="warning" sx={{ mb: 2 }}>{sectionErrors.modules}</Alert> : null}

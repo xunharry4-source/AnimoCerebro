@@ -105,6 +105,10 @@ export interface NineQuestionRecoveryPlan {
 export interface NineQuestionWorkflowModuleRun {
   module_id: string;
   status: string;
+  used_fallback?: boolean;
+  source?: string | null;
+  started_at?: string | null;
+  finished_at?: string | null;
   error_code?: string | null;
   error_message?: string | null;
 }
@@ -120,6 +124,10 @@ export interface NineQuestionWorkflowPluginRun {
   plugin_id: string;
   feature_code?: string | null;
   status: string;
+  expected?: boolean;
+  attempted?: boolean;
+  duration_ms?: number | null;
+  output_summary?: string | null;
   error_code?: string | null;
   error_message?: string | null;
 }
@@ -715,6 +723,7 @@ export interface NineQuestionItem {
   q1_llm_upgrade?: Q1LLMUpgradeView | null;
 }
 export interface ReportPayload {
+  session_id?: string;
   status: string;
   status_message: string | null;
   last_turn_id: string;

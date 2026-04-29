@@ -73,7 +73,7 @@ class EvolutionPublisher:
 
     def publish_candidate(self, decision: PromotionDecision, patch: CandidatePatch) -> bool:
         """Register a validated candidate as a new active version."""
-        if decision.decision != "promote":
+        if (decision.decision or decision.action) != "promote":
             return False
         # Physically move files/config to active path
         # In a real system, this updates symbolic links or deployment versions.
@@ -468,12 +468,25 @@ class UpgradeExecutionService:
                     summary="Plugin creation candidate scaffold completed; real worker started.",
                 )
                 result = self._plugin_worker(candidate)
+                verification_evidence = self._plugin_runtime.validate_worker_evidence(
+                    worker_result=result,
+                    candidate_path=candidate.candidate_plugin_path,
+                    commands=[
+                        *candidate.execution_plan.startup_commands,
+                        *candidate.execution_plan.validation_commands,
+                    ],
+                )
                 record.current_status = UpgradeLifecycleStatus.COMPLETED
                 record.current_progress = 100
                 record.audit_status = "completed"
                 record.memory_status = "persisted"
                 record.finished_at = utc_now()
                 record.change_summary = str(result.get("status") or record.change_summary)
+                record.payload = {
+                    **dict(result),
+                    **verification_evidence,
+                    "registered_as_active": False,
+                }
                 self._apply_success_profile(
                     record,
                     stage="plugin_creation",
@@ -492,7 +505,7 @@ class UpgradeExecutionService:
                     record,
                     event_type="plugin_creation_completed",
                     summary="Plugin creation completed successfully.",
-                    payload=result,
+                    payload=record.payload,
                 )
             except Exception as exc:
                 record.current_status = UpgradeLifecycleStatus.FAILED
@@ -608,6 +621,10 @@ class UpgradeExecutionService:
                 source_plugin_path=candidate.source_plugin_path,
                 candidate_plugin_path=candidate.candidate_plugin_path,
             )
+            metadata_updated = self._plugin_runtime.update_plugin_metadata(
+                candidate.candidate_plugin_path,
+                candidate.candidate_version,
+            )
             record.current_status = UpgradeLifecycleStatus.RUNNING
             record.current_progress = 40
             self._management_store.upsert(record)
@@ -615,7 +632,8 @@ class UpgradeExecutionService:
             self._evidence_service.record_event(
                 record,
                 event_type="plugin_upgrade_worker_started",
-                summary="Plugin candidate copy completed; real worker started.",
+                summary="Plugin candidate copy and version metadata update completed; real worker started.",
+                payload={"metadata_updated": metadata_updated},
             )
             
             # Security: scan for forbidden calls before execution (Function 58 gap)
@@ -628,12 +646,26 @@ class UpgradeExecutionService:
                 raise SecurityError(f"Upgrade rejected due to security violations: {violations}")
 
             result = self._plugin_worker(candidate)
+            verification_evidence = self._plugin_runtime.validate_worker_evidence(
+                worker_result=result,
+                candidate_path=candidate.candidate_plugin_path,
+                commands=[
+                    *candidate.execution_plan.startup_commands,
+                    *candidate.execution_plan.validation_commands,
+                ],
+            )
             record.current_status = UpgradeLifecycleStatus.COMPLETED
             record.current_progress = 100
             record.audit_status = "completed"
             record.memory_status = "persisted"
             record.finished_at = utc_now()
             record.change_summary = str(result.get("status") or record.change_summary)
+            record.payload = {
+                **dict(result),
+                **verification_evidence,
+                "metadata_updated": metadata_updated,
+                "registered_as_active": False,
+            }
             self._apply_success_profile(
                 record,
                 stage="plugin_upgrade",
@@ -652,7 +684,7 @@ class UpgradeExecutionService:
                 record,
                 event_type="plugin_upgrade_completed",
                 summary="Plugin upgrade completed successfully.",
-                payload=result,
+                payload=record.payload,
             )
         except Exception as exc:
             record.current_status = UpgradeLifecycleStatus.FAILED
@@ -760,8 +792,19 @@ class UpgradeExecutionService:
     def generate_candidate_patch(self, proposal: SelfUpgradeProposal) -> CandidatePatch:
         """Use evolution workers to generate a physical patch (Sub-function 1.2)."""
         patch = CandidatePatch(
+            patch_id=f"candidate-patch-{uuid4().hex[:12]}",
             proposal_id=proposal.proposal_id,
+            target_component=proposal.program_id,
+            changes={
+                "candidate_version": proposal.candidate_version,
+                "proposed_changes": list(proposal.proposed_changes),
+                "affected_modules": list(proposal.affected_modules),
+            },
+            risk_level="high" if proposal.risk_score >= 0.7 else "medium",
+            patch_type="self_upgrade",
             files_to_modify=["unknown_at_this_stage.py"],
+            validation_commands=[],
+            source_path="",
             diff_summary="Candidate patch generated by evolution worker.",
         )
         return patch
@@ -871,7 +914,7 @@ class UpgradeExecutionService:
         success = all(res.get("success") for res in verification_result.values())
         
         # 2. G25 Audit Check - Now fully implemented
-        g25_status = "verified" if success else "failed"
+        audit_status = "verified" if success else "failed"
         
         decision = "promote" if success else "reject"
         
@@ -879,16 +922,17 @@ class UpgradeExecutionService:
             decision_id=f"decision-{uuid4().hex[:8]}",
             candidate_id=patch.patch_id,
             candidate_version=patch.changes.get("candidate_version", "unknown"),
+            decision=decision,
             action=decision,  # Use 'action' field instead of 'decision'
-            rationale=f"Sandbox verification {g25_status}. G25 audit passed. Interface integrity confirmed.",
+            rationale=f"Sandbox verification {audit_status}. G25 audit passed. Interface integrity confirmed.",
             final_version=patch.changes.get("candidate_version", "v0.0.1-candidate"),
             reviewer_id="G25_audit",
-            confirmed_by_g25=success,
+            audit_confirmed=success,
             conditions=["sandbox_pass", "g25_audit_pass", "interface_check_pass"],
             timestamp=datetime.now(UTC).isoformat()
         )
 
-    def verify_proposal_via_g25(self, proposal: SelfUpgradeProposal) -> bool:
+    def verify_proposal_via_self_mod_gate(self, proposal: SelfUpgradeProposal) -> bool:
         """Integration with G25 nine-question validation for proposals (Priority 2).
         
         Implements the complete G25 nine-question audit framework:
@@ -951,24 +995,27 @@ class UpgradeExecutionService:
         all_passed = all(audit_results.values())
         
         # Update proposal with audit results
-        proposal.g25_q1_necessity = audit_results["q1_necessity"]
-        proposal.g25_q2_risk_acceptable = audit_results["q2_risk_acceptable"]
-        proposal.g25_q3_impact_assessed = audit_results["q3_impact_assessed"]
-        proposal.g25_q4_rollback_plan = audit_results["q4_rollback_plan"]
-        proposal.g25_q5_validation_complete = audit_results["q5_validation_complete"]
-        proposal.g25_q6_compliance = audit_results["q6_compliance"]
-        proposal.g25_q7_performance = audit_results["q7_performance"]
-        proposal.g25_q8_dependencies = audit_results["q8_dependencies"]
-        proposal.g25_q9_maintainability = audit_results["q9_maintainability"]
-        proposal.g25_audit_verified = all_passed
-        proposal.g25_audit_details = audit_results
+        proposal.audit_q1_necessity = audit_results["q1_necessity"]
+        proposal.audit_q2_risk_acceptable = audit_results["q2_risk_acceptable"]
+        proposal.audit_q3_impact_assessed = audit_results["q3_impact_assessed"]
+        proposal.audit_q4_rollback_plan = audit_results["q4_rollback_plan"]
+        proposal.audit_q5_validation_complete = audit_results["q5_validation_complete"]
+        proposal.audit_q6_compliance = audit_results["q6_compliance"]
+        proposal.audit_q7_performance = audit_results["q7_performance"]
+        proposal.audit_q8_dependencies = audit_results["q8_dependencies"]
+        proposal.audit_q9_maintainability = audit_results["q9_maintainability"]
+        proposal.rational_audit_verified = all_passed
+        proposal.rational_audit_details = audit_results
         
         return all_passed
 
     def execute_rollback(self, record_id: str) -> bool:
         """Revert a completed upgrade to the previous baseline (Sub-function 1.5)."""
         record = self._management_store.get(record_id)
-        if not record or record.current_status != UpgradeLifecycleStatus.COMPLETED:
+        if not record or record.current_status not in {
+            UpgradeLifecycleStatus.COMPLETED,
+            UpgradeLifecycleStatus.ACTIVE,
+        }:
             self._logger.error(f"Cannot rollback record {record_id}: record missing or not completed.")
             return False
 

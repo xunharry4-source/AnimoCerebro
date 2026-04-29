@@ -6,6 +6,8 @@ Semantic clustering plugin for memory consolidation.
 RESPONSIBILITY:
   - Build real text vectors from memory fragment summaries/titles.
   - Cluster related fragments with HDBSCAN when available, otherwise DBSCAN.
+  - In auto mode only, use token-overlap clustering when vector dependencies
+    are unavailable.
   - Emit promotion candidates, pruned refs, and pattern scores.
 
 DOES NOT:
@@ -15,13 +17,23 @@ DOES NOT:
 """
 
 import logging
+import re
 import time
 from typing import Any, Dict, List, Literal
 
-import numpy as np
-from sklearn.cluster import DBSCAN
-from sklearn.feature_extraction.text import TfidfVectorizer
-from sklearn.metrics.pairwise import cosine_distances
+try:
+    import numpy as np
+except ImportError:  # pragma: no cover
+    np = None  # type: ignore[assignment]
+
+try:
+    from sklearn.cluster import DBSCAN
+    from sklearn.feature_extraction.text import TfidfVectorizer
+    from sklearn.metrics.pairwise import cosine_distances
+except ImportError:  # pragma: no cover
+    DBSCAN = None  # type: ignore[assignment]
+    TfidfVectorizer = None  # type: ignore[assignment]
+    cosine_distances = None  # type: ignore[assignment]
 
 from zentex.memory.consolidation.consolidation import (
     ConsolidationPluginOutput,
@@ -68,7 +80,7 @@ class SemanticClusteringPlugin:
         self._min_cluster_size = int(min_cluster_size)
         self._noise_prune_threshold = float(noise_prune_threshold)
         self._model: Any = None
-        self._vectorizer: TfidfVectorizer | None = None
+        self._vectorizer: Any = None
         self._last_backend_used: str | None = None
         self._last_encoder_used: str | None = None
 
@@ -86,8 +98,8 @@ class SemanticClusteringPlugin:
         text = " ".join(part for part in [title, summary] if part).strip()
         return text or str(ref.get("ref_id") or ref.get("id") or "")
 
-    def _encode_texts(self, texts: List[str]) -> np.ndarray:
-        if SentenceTransformer is not None:
+    def _encode_texts(self, texts: List[str]) -> Any:
+        if SentenceTransformer is not None and np is not None:
             try:
                 if self._model is None:
                     self._model = SentenceTransformer(self._model_name)
@@ -101,14 +113,26 @@ class SemanticClusteringPlugin:
                     self._model_name,
                     exc_info=True,
                 )
+        if TfidfVectorizer is not None and np is not None:
+            if self._vectorizer is None:
+                self._vectorizer = TfidfVectorizer(analyzer="char_wb", ngram_range=(2, 4))
+            matrix = self._vectorizer.fit_transform(texts)
+            self._last_encoder_used = "tfidf"
+            return matrix.toarray().astype(np.float32)
+        self._last_encoder_used = "token_overlap"
+        return [_token_set(text) for text in texts]
+
+    def _encode_with_tfidf(self, texts: List[str]) -> Any:
+        if TfidfVectorizer is None or np is None:
+            raise ImportError("sklearn and numpy are required for TF-IDF vector clustering")
         if self._vectorizer is None:
             self._vectorizer = TfidfVectorizer(analyzer="char_wb", ngram_range=(2, 4))
         matrix = self._vectorizer.fit_transform(texts)
         self._last_encoder_used = "tfidf"
         return matrix.toarray().astype(np.float32)
 
-    def _cluster_with_hdbscan(self, vectors: np.ndarray) -> np.ndarray:
-        if HDBSCAN is None:
+    def _cluster_with_hdbscan(self, vectors: Any) -> Any:
+        if HDBSCAN is None or np is None or cosine_distances is None:
             raise ImportError(
                 "hdbscan is required for SemanticClusteringPlugin(cluster_backend='hdbscan'). "
                 "Install hdbscan>=0.8.33."
@@ -124,16 +148,48 @@ class SemanticClusteringPlugin:
         self._last_backend_used = "hdbscan"
         return np.asarray(clusterer.fit_predict(distance_matrix), dtype=int)
 
-    def _cluster_with_dbscan(self, vectors: np.ndarray) -> np.ndarray:
+    def _cluster_with_dbscan(self, vectors: Any) -> Any:
+        if DBSCAN is None or np is None:
+            raise ImportError("sklearn and numpy are required for DBSCAN vector clustering")
         clustering = DBSCAN(metric="cosine", eps=self._eps, min_samples=self._min_samples)
         self._last_backend_used = "dbscan"
         return np.asarray(clustering.fit_predict(vectors), dtype=int)
 
-    def _cluster_vectors(self, vectors: np.ndarray) -> np.ndarray:
+    def _cluster_with_token_overlap(self, token_sets: list[set[str]]) -> list[int]:
+        labels = [-1 for _ in token_sets]
+        next_label = 0
+        for idx, tokens in enumerate(token_sets):
+            if labels[idx] != -1:
+                continue
+            cluster = [idx]
+            threshold = max(0.05, min(1.0, self._eps))
+            for other_idx in range(idx + 1, len(token_sets)):
+                if _jaccard(tokens, token_sets[other_idx]) >= threshold:
+                    cluster.append(other_idx)
+            if len(cluster) >= self._min_samples:
+                for member in cluster:
+                    labels[member] = next_label
+                next_label += 1
+        self._last_backend_used = "token_overlap"
+        return labels
+
+    def _cluster_vectors(self, vectors: Any) -> Any:
         if self._cluster_backend == "hdbscan":
+            if isinstance(vectors, list):
+                raise ImportError(
+                    "hdbscan clustering requires sentence-transformers or sklearn/numpy vector encoding; "
+                    "token-overlap fallback is only allowed in auto mode."
+                )
             return self._cluster_with_hdbscan(vectors)
         if self._cluster_backend == "dbscan":
+            if isinstance(vectors, list):
+                raise ImportError(
+                    "dbscan clustering requires sklearn/numpy vector encoding; "
+                    "token-overlap fallback is only allowed in auto mode."
+                )
             return self._cluster_with_dbscan(vectors)
+        if isinstance(vectors, list):
+            return self._cluster_with_token_overlap(vectors)
         if HDBSCAN is not None:
             try:
                 labels = self._cluster_with_hdbscan(vectors)
@@ -147,7 +203,12 @@ class SemanticClusteringPlugin:
                     "SemanticClusteringPlugin: HDBSCAN failed in auto mode; falling back to DBSCAN",
                     exc_info=True,
                 )
-        return self._cluster_with_dbscan(vectors)
+        try:
+            return self._cluster_with_dbscan(vectors)
+        except ImportError:
+            if isinstance(vectors, list):
+                return self._cluster_with_token_overlap(vectors)
+            raise
 
     def analyze_memory(
         self,
@@ -204,3 +265,13 @@ class SemanticClusteringPlugin:
             pruned_refs=[ref_id for ref_id in pruned_refs if ref_id],
             pattern_scores=pattern_scores,
         )
+
+
+def _token_set(text: str) -> set[str]:
+    return {token for token in re.findall(r"[A-Za-z0-9_\u4e00-\u9fff]+", text.lower()) if token}
+
+
+def _jaccard(left: set[str], right: set[str]) -> float:
+    if not left or not right:
+        return 0.0
+    return len(left & right) / float(len(left | right))

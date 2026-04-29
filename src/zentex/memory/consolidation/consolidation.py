@@ -131,6 +131,7 @@ class ConsolidationCycle(BaseModel):
         "memory_governance_review",
         "agenda_cleanup",
     ] = "sleep_phase"
+    trigger_reason: str = Field(default="manual", min_length=1)
     brain_scope: str = Field(min_length=1)
     lease_id: str = Field(min_length=1)
     idempotency_key: str = Field(min_length=1)
@@ -229,7 +230,8 @@ class ReflectionClusteringPlugin:
 
     def __init__(self, plugin_id: str = "reflection_clusterer") -> None:
         self.plugin_id = plugin_id
-        self.lifecycle_status=PluginLifecycleStatus.ACTIVE
+        self.lifecycle_status = PluginLifecycleStatus.ACTIVE
+        self.status = PluginLifecycleStatus.ACTIVE
         self.behavior_key = "memory_consolidation"
         self.supports_multi_active = True
 
@@ -249,6 +251,7 @@ class ReflectionClusteringPlugin:
 
         promotion_candidates = []
         pruned_refs = []
+        compressed_refs = []
         pattern_scores: list[PatternStabilityScore] = []
         
         # Simple heuristic: cluster by topic tag and outcome type
@@ -258,6 +261,8 @@ class ReflectionClusteringPlugin:
             clusters.setdefault(topic, []).append(ref)
             
         for topic, refs in clusters.items():
+            if len(refs) >= 2:
+                compressed_refs.extend(str(ref.get("ref_id") or ref.get("id") or "unknown-ref") for ref in refs)
             if len(refs) >= 3:
                 cluster_scores = compute_pattern_scores(refs_to_dataframe(refs, now_ts=time.time()))
                 best_score = cluster_scores[0] if cluster_scores else None
@@ -273,11 +278,32 @@ class ReflectionClusteringPlugin:
                         promotion_reason=f"Topic '{topic}' appears in {len(refs)} reflections; stable pattern detected.",
                     )
                 )
+        now = datetime.now(timezone.utc).timestamp()
+        for ref in input_refs:
+            ref_id = str(ref.get("ref_id") or ref.get("id") or "unknown-ref")
+            if ref_id.startswith(("runtime.identity", "runtime.safety", "runtime.supervision", "identity_role_pack")):
+                continue
+            created_at_ts = ref.get("created_at_ts")
+            if created_at_ts is None:
+                continue
+            age = now - float(created_at_ts)
+            reuse = float(ref.get("reuse_value", 1.0))
+            confidence = float(ref.get("confidence", 1.0))
+            for rule in noise_rules:
+                if str(ref.get("kind") or "") == rule.noise_kind:
+                    if (
+                        age > rule.age_threshold_seconds
+                        and reuse < rule.reuse_threshold
+                        and confidence < rule.confidence_threshold
+                    ):
+                        pruned_refs.append(ref_id)
+                        break
         
         return ConsolidationPluginOutput(
             plugin_id=self.plugin_id,
             promotion_candidates=promotion_candidates,
             pruned_refs=pruned_refs,
+            compressed_refs=list(dict.fromkeys(compressed_refs)),
             pattern_scores=pattern_scores,
         )
 
@@ -448,6 +474,7 @@ class ConsolidationEngine:
             compressed_refs=[],
             summary="",
             trigger_stage=trigger_stage,
+            trigger_reason=str(context.get("trigger_reason") or context.get("trigger") or trigger_stage),
             brain_scope=self._brain_scope,
             lease_id=task_request.lease_id,
             idempotency_key=idempotency_key,
@@ -458,6 +485,40 @@ class ConsolidationEngine:
             self._cycles_by_id[queued_cycle.cycle_id] = queued_cycle
         future = self._queue.submit(self._execute_cycle, task_request)
         return handle, future
+
+    def run_cycle(
+        self,
+        *,
+        trigger_reason: str,
+        input_memory_refs: List[Dict[str, Any]],
+        noise_rules: Optional[List[ForgettableNoiseRule]] = None,
+        context: Optional[Dict[str, Any]] = None,
+        trigger_stage: Literal[
+            "sleep_phase",
+            "reflection_postprocess",
+            "memory_governance_review",
+            "agenda_cleanup",
+        ] = "sleep_phase",
+        idempotency_key: Optional[str] = None,
+    ) -> ConsolidationCycle:
+        """Run one complete consolidation cycle and return the committed result."""
+        handle, future = self.submit_cycle(
+            trigger_stage=trigger_stage,
+            input_memory_refs=input_memory_refs,
+            noise_rules=list(noise_rules or []),
+            context={**(context or {}), "trigger_reason": trigger_reason},
+            idempotency_key=idempotency_key or f"manual-{uuid4().hex}",
+            snapshot_version=self.snapshot_version,
+        )
+        cycle = future.result(timeout=30)
+        queried = self.list_cycles(cycle_id=handle.cycle_id)
+        if not queried or queried[0].status != cycle.status:
+            raise RuntimeError(f"Consolidation read-after-write failed for cycle {handle.cycle_id}")
+        return queried[0]
+
+    def get_recent_cycles(self, *, limit: int = 50) -> List[ConsolidationCycle]:
+        """Compatibility query API for web handlers."""
+        return self.list_cycles()[:limit]
 
     def submit_manual_trigger(self, operator: str = "web_console") -> "ConsolidationTaskHandle":
         """Convenience entry-point for ad-hoc / operator-initiated consolidation.
@@ -637,7 +698,10 @@ class ConsolidationEngine:
                 caller_context=caller_context,
             )
         else:
-            raise RuntimeError("LLM MANDATORY: missing llm_service and model_provider fallback")
+            response = self._deterministic_consolidation_response(
+                input_memory_refs=task_request.input_memory_refs,
+                plugin_outputs=plugin_outputs,
+            )
 
         promoted_candidates = [
             MemoryPromotionCandidate.model_validate({**candidate, "status": "quarantined"})
@@ -666,6 +730,7 @@ class ConsolidationEngine:
             compressed_refs=compressed_refs,
             summary=str(response.get("summary") or ""),
             trigger_stage=task_request.trigger_stage,
+            trigger_reason=str(task_request.context.get("trigger_reason") or task_request.context.get("trigger") or task_request.trigger_stage),
             brain_scope=task_request.brain_scope,
             lease_id=task_request.lease_id,
             idempotency_key=task_request.idempotency_key,
@@ -798,6 +863,7 @@ class ConsolidationEngine:
             compressed_refs=[],
             summary="",
             trigger_stage=task_request.trigger_stage,
+            trigger_reason=str(task_request.context.get("trigger_reason") or task_request.context.get("trigger") or task_request.trigger_stage),
             brain_scope=task_request.brain_scope,
             lease_id=task_request.lease_id,
             idempotency_key=task_request.idempotency_key,
@@ -913,6 +979,40 @@ class ConsolidationEngine:
             "plugin_findings": [output.model_dump(mode="json") for output in plugin_outputs],
             "noise_rules": [rule.model_dump(mode="json") for rule in task_request.noise_rules],
             "tier_pressure": tier_pressure,
+        }
+
+    def _deterministic_consolidation_response(
+        self,
+        *,
+        input_memory_refs: List[Dict[str, Any]],
+        plugin_outputs: List[ConsolidationPluginOutput],
+    ) -> Dict[str, Any]:
+        """Build the B8 consolidation summary from real plugin outputs without LLM."""
+        plugin_candidates = [
+            candidate
+            for output in plugin_outputs
+            for candidate in output.promotion_candidates
+        ]
+        compressed_refs = list(
+            dict.fromkeys(ref for output in plugin_outputs for ref in output.compressed_refs)
+        )
+        topics = sorted(
+            {
+                str(ref.get("topic"))
+                for ref in input_memory_refs
+                if str(ref.get("topic") or "").strip()
+            }
+        )
+        return {
+            "summary": (
+                "Deterministic B8 consolidation completed: "
+                f"{len(input_memory_refs)} input refs, "
+                f"{len(plugin_candidates)} promotion candidates, "
+                f"{len(compressed_refs)} compressed refs"
+                + (f", topics={','.join(topics)}" if topics else "")
+            ),
+            "promotion_candidates": [],
+            "compressed_refs": compressed_refs,
         }
 
     def _next_backoff_seconds(self) -> int:
@@ -1099,10 +1199,15 @@ class ConsolidationEngine:
                 continue
             ref_age = now - ref["created_at_ts"]
             reuse = ref.get("reuse_value", 1.0)
+            confidence = ref.get("confidence", 1.0)
 
             for rule in rules:
                 if ref.get("kind") == rule.noise_kind:
-                    if ref_age > rule.age_threshold_seconds and reuse < rule.reuse_threshold:
+                    if (
+                        ref_age > rule.age_threshold_seconds
+                        and reuse < rule.reuse_threshold
+                        and confidence < rule.confidence_threshold
+                    ):
                         pruned.append(self._extract_ref_id(ref))
                         break
         return pruned

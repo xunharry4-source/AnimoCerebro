@@ -8,6 +8,8 @@ upgrade service so optimization jobs have explicit evidence, metrics, and
 release targets before any runtime execution starts.
 """
 
+from typing import Optional
+
 from pydantic import BaseModel, ConfigDict, Field
 
 from zentex.upgrade.versioning import UpgradeChangeScope

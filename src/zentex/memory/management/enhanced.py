@@ -62,7 +62,7 @@ def utc_now() -> datetime:
     return datetime.now(UTC)
 
 
-class G38NineQuestionState(BaseModel):
+class MemoryNineQuestionState(BaseModel):
     model_config = ConfigDict(extra="allow")
 
     snapshot_version: int = 0
@@ -120,7 +120,7 @@ class EnhancedMemoryRecord(BaseModel):
     compressed_by: Optional[str] = None
     compression_summary: Optional[str] = None
     is_tombstone: bool = False
-    g38_audit_id: Optional[str] = None  # Unified trace ID for audit lifecycle
+    memory_governance_audit_id: Optional[str] = None  # Unified trace ID for audit lifecycle
 
     # ── classification axes (G39 three-tier + affect signal) ────────────
     memory_tier: str = Field(default=MemoryTier.HOT)
@@ -1787,7 +1787,7 @@ class _EnhancedMemorySQLiteStore:
 
 class _QuarantinedMemorySQLiteStore(_EnhancedMemorySQLiteStore):
     """Independent physical isolation for quarantined memory (Sub-function 59.3 gap)."""
-    def list_awaiting_g38(self) -> list[EnhancedMemoryRecord]:
+    def list_awaiting_governance(self) -> list[EnhancedMemoryRecord]:
         return [r for r in self.list_records() if not r.payload.get("g38_verified")]
 
 
@@ -2534,7 +2534,7 @@ class EnhancedMemoryService:
         audit_id = f"g38-audit-{uuid4().hex[:8]}"
         
         # Fixed: EnhancedMemoryRecord is frozen, must use model_copy
-        record = record.model_copy(update={"g38_audit_id": audit_id})
+        record = record.model_copy(update={"memory_governance_audit_id": audit_id})
         
         for q_id, q_text in questions:
             # Simulation of Nine-Question engine call
@@ -2544,7 +2544,7 @@ class EnhancedMemoryService:
         # Real G38 Integration (Priority 1)
         if self._nine_question_executor:
             # Prepare state for validation
-            state = G38NineQuestionState(snapshot_version=1)
+            state = MemoryNineQuestionState(snapshot_version=1)
             
             # Execute validation loop (Sub-function 59.3 Gap)
             self._nine_question_executor.run_questions(

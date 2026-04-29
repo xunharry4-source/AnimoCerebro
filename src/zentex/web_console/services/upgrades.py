@@ -131,7 +131,15 @@ def build_upgrade_record_item(record: UpgradeManagementRecord) -> UpgradeRecordI
         prompt_upgrade_sections=prompt_upgrade_sections,
         prompt_upgrade_notes=prompt_upgrade_notes,
         prompt_upgrade_summary=prompt_upgrade_summary,
-        can_cancel=record.current_status in Union[WAITING_STATUSES, ONGOING_STATUSES],
+        can_cancel=record.current_status in (WAITING_STATUSES | ONGOING_STATUSES),
+        can_promote=record.current_status.value in {"canary_running", "validating", "registered"},
+        can_rollback=record.current_status.value in {"active", "canary_running", "degraded", "completed"},
+        can_activate_phase_d=(
+            record.action == "phase_d_self_evolution"
+            and record.current_status.value == "queued"
+        ),
+        activation_receipts=dict(payload.get("activation_receipts") or payload.get("phase_d_activation") or {}),
+        rollback_receipts=dict(payload.get("rollback_receipts") or payload.get("phase_d_rollback") or {}),
         can_cleanup_failed_candidate=(
             record.target_kind is UpgradeTargetKind.PLUGIN
             and record.current_status in FAILED_STATUSES

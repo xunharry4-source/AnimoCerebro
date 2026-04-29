@@ -125,8 +125,10 @@ class TaskManager:
         overdue_only: bool = False,
         source_module: Optional[str] = None,
         metadata_filters: Optional[Dict[str, Any]] = None,
+        limit: int = 100,
+        offset: int = 0,
     ) -> List[ZentexTask]:
-        """List tasks with optional filtering"""
+        """List tasks with optional database-backed filtering and pagination."""
         return self.service.list_tasks(
             status=status,
             priority=priority,
@@ -136,6 +138,8 @@ class TaskManager:
             overdue_only=overdue_only,
             source_module=source_module,
             metadata_filters=metadata_filters,
+            limit=limit,
+            offset=offset,
         )
     
     def update_task_status(self, task_id: str, new_status: TaskStatus, remarks: Optional[str] = None) -> ZentexTask:
@@ -186,9 +190,9 @@ class TaskManager:
         """Resume a suspended task"""
         return self.service.resume_task(task_id, remarks)
     
-    def get_suspended_tasks(self) -> List[SuspendedTask]:
-        """Get all suspended tasks"""
-        return self.service.list_suspended_tasks()
+    def get_suspended_tasks(self, *, limit: int = 100, offset: int = 0) -> List[SuspendedTask]:
+        """Get suspended tasks with pagination."""
+        return self.service.list_suspended_tasks(limit=limit, offset=offset)
     
     async def check_auto_resume(self) -> List[ZentexTask]:
         """Check and auto-resume tasks"""
@@ -300,37 +304,16 @@ class TaskManager:
     
     # === Statistics and monitoring ===
     def get_task_statistics(self) -> Dict[str, Any]:
-        """Get task statistics"""
-        all_tasks = self.service.list_tasks()
-        stats = {
-            "total_tasks": len(all_tasks),
-            "by_status": {},
-            "by_priority": {},
-            "overdue_count": 0,
-            "suspended_count": len(self.service.list_suspended_tasks()),
-            "ready_to_execute": 0
+        """Get task statistics using aggregate service queries."""
+        service_stats = self.service.get_task_statistics()
+        return {
+            "total_tasks": service_stats.get("total_tasks", 0),
+            "by_status": service_stats.get("tasks_by_status", {}),
+            "by_priority": service_stats.get("tasks_by_priority", {}),
+            "overdue_count": service_stats.get("overdue_count", 0),
+            "suspended_count": service_stats.get("suspended_tasks", 0),
+            "ready_to_execute": service_stats.get("active_tasks", 0),
         }
-        
-        for task in all_tasks:
-            # Count by status
-            status_key = task.status.value
-            stats["by_status"][status_key] = stats["by_status"].get(status_key, 0) + 1
-            
-            # Count by priority
-            priority_key = task.priority.value
-            stats["by_priority"][priority_key] = stats["by_priority"].get(priority_key, 0) + 1
-            
-            # Count overdue
-            if task.is_overdue():
-                stats["overdue_count"] += 1
-            
-            # Count ready to execute
-            if task.status == TaskStatus.TODO:
-                can_execute = self.service.can_execute_task(task.task_id)
-                if can_execute["can_execute"]:
-                    stats["ready_to_execute"] += 1
-        
-        return stats
     
     def get_persistence_stats(self) -> Optional[Dict[str, Any]]:
         """Get persistence statistics"""

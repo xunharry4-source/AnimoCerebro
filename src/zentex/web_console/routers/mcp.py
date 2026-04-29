@@ -59,6 +59,20 @@ def list_mcp_servers(
     return handle_list_mcp_servers(service)
 
 
+@router.get("/mcp-servers/closure/diagnostics")
+def diagnose_mcp_management_closure(
+    service: McpIntegrationService = Depends(_require_mcp_service),
+) -> dict[str, Any]:
+    return service.diagnose_mcp_management_closure()
+
+
+@router.post("/mcp-servers/closure/fault-injection")
+def run_mcp_fault_injection_matrix(
+    service: McpIntegrationService = Depends(_require_mcp_service),
+) -> dict[str, Any]:
+    return service.run_mcp_fault_injection_matrix()
+
+
 @router.post("/mcp-servers/register", response_model=McpServerStatusItem)
 def register_mcp_server(
     payload: McpServerRegistrationRequest,

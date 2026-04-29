@@ -1,9 +1,33 @@
 from __future__ import annotations
 
 from datetime import datetime, timezone
-from typing import Any
+from typing import Any, Optional
 
-from zentex.tasks.models import TaskPriority, TaskStatus, TaskType, ZentexTask
+from zentex.nine_questions.q8_evaluation_planner import (
+    apply_evaluation_profile_to_task_priority,
+    derive_q8_evaluation_plan,
+)
+from zentex.nine_questions.q8_phase_b_realtime_gate import (
+    evaluate_q8_phase_b_realtime_task_gate,
+    resolve_phase_b_realtime_gate_config,
+)
+from zentex.tasks.models import TaskContract, TaskPriority, TaskStatus, TaskType, ZentexTask
+from zentex.tasks.verification.models import (
+    VerificationStrategy,
+    VerificationType,
+)
+
+
+def _string_list(value: object) -> list[str]:
+    if isinstance(value, list):
+        return [str(item).strip() for item in value if str(item).strip()]
+    if isinstance(value, str) and value.strip():
+        return [value.strip()]
+    return []
+
+
+def _dict_value(value: object) -> dict[str, Any]:
+    return dict(value) if isinstance(value, dict) else {}
 
 
 def normalize_q8_task_rows(raw: object) -> list[dict[str, Any]]:
@@ -21,6 +45,13 @@ def normalize_q8_task_rows(raw: object) -> list[dict[str, Any]]:
                     "title": title,
                     "reason": str(item.get("reason") or "").strip(),
                     "priority": item.get("priority"),
+                    "expected_outcome": _dict_value(item.get("expected_outcome")),
+                    "success_criteria": _string_list(item.get("success_criteria")),
+                    "acceptance_conditions": _string_list(item.get("acceptance_conditions")),
+                    "verification_method": str(item.get("verification_method") or "").strip(),
+                    "risk_assessment": _dict_value(item.get("risk_assessment")),
+                    "pause_conditions": _string_list(item.get("pause_conditions")),
+                    "escalation_conditions": _string_list(item.get("escalation_conditions")),
                 }
             )
         else:
@@ -32,6 +63,13 @@ def normalize_q8_task_rows(raw: object) -> list[dict[str, Any]]:
                         "title": title,
                         "reason": "",
                         "priority": None,
+                        "expected_outcome": {},
+                        "success_criteria": [],
+                        "acceptance_conditions": [],
+                        "verification_method": "",
+                        "risk_assessment": {},
+                        "pause_conditions": [],
+                        "escalation_conditions": [],
                     }
                 )
     return normalized
@@ -65,6 +103,74 @@ def coerce_task_priority(value: object, default_priority: TaskPriority) -> TaskP
     return default_priority
 
 
+def build_q8_task_contract(
+    task: dict[str, Any],
+    objective_profile: dict[str, Any],
+) -> TaskContract:
+    title = str(task.get("title") or "").strip()
+    completion_conditions = _string_list(objective_profile.get("completion_conditions"))
+    pause_conditions = list(
+        dict.fromkeys(
+            _string_list(task.get("pause_conditions"))
+            + _string_list(objective_profile.get("pause_conditions"))
+        )
+    )
+    escalation_conditions = list(
+        dict.fromkeys(
+            _string_list(task.get("escalation_conditions"))
+            + _string_list(objective_profile.get("escalation_conditions"))
+        )
+    )
+    success_criteria = _string_list(task.get("success_criteria"))
+    fallback_generated = False
+    if not success_criteria:
+        success_criteria = completion_conditions or ([f"完成任务: {title}"] if title else [])
+        fallback_generated = True
+
+    acceptance_conditions = _string_list(task.get("acceptance_conditions")) or success_criteria
+    expected_outcome = _dict_value(task.get("expected_outcome")) or {
+        "summary": title,
+        "source": "q8_task_contract_fallback",
+    }
+
+    risk_assessment = _dict_value(task.get("risk_assessment"))
+    if fallback_generated:
+        risk_assessment = {
+            **risk_assessment,
+            "acceptance_fallback_generated": True,
+        }
+
+    return TaskContract(
+        expected_outcome=expected_outcome,
+        success_criteria=success_criteria,
+        acceptance_conditions=acceptance_conditions,
+        verification_method=str(task.get("verification_method") or "rule_based_outcome_contract"),
+        risk_assessment=risk_assessment,
+        pause_conditions=pause_conditions,
+        escalation_conditions=escalation_conditions,
+        verification={
+            "enabled": True,
+            "strategy": VerificationStrategy.ALL_MUST_PASS.value,
+            "fallback_action": "fail",
+            "max_total_retries": 0,
+            "verifiers": [
+                {
+                    "verifier_id": "q8_required_outcome_evidence",
+                    "verifier_type": VerificationType.RULE_BASED.value,
+                    "retry_on_failure": False,
+                    "max_retries": 0,
+                    "config": {
+                        "rules": [
+                            {"type": "required_field", "field": "actual_outcome"},
+                            {"type": "required_field", "field": "evidence"},
+                        ]
+                    },
+                }
+            ],
+        },
+    )
+
+
 def sync_task_record_fields(
     task_service: Any,
     task: ZentexTask,
@@ -74,12 +180,15 @@ def sync_task_record_fields(
     priority: TaskPriority,
     tags: list[str],
     metadata: dict[str, Any],
+    contract: TaskContract | None = None,
 ) -> None:
     task.title = title
     task.remarks = remarks
     task.priority = priority
     task.tags = list(tags)
     task.metadata = dict(metadata)
+    if contract is not None:
+        task.contract = contract
     task.last_updated_at = datetime.now(timezone.utc)
     if hasattr(task_service, "_shared_tasks"):
         task_service._shared_tasks.set(task.task_id, task)
@@ -132,6 +241,13 @@ async def sync_q8_tasks_to_task_service(
         ("blocked_self_tasks", TaskStatus.BLOCKED, TaskPriority.MEDIUM),
         ("proactive_actions", TaskStatus.TODO, TaskPriority.MEDIUM),
     ]
+    evaluation_plan = derive_q8_evaluation_plan(snapshot_map)
+    phase_b_realtime_gate_config = resolve_phase_b_realtime_gate_config(
+        _dict_value(
+            context_updates.get("phase_b_realtime_gate")
+            or result_payload.get("phase_b_realtime_gate")
+        )
+    )
 
     existing_tasks = []
     list_tasks_fn = getattr(task_service, "list_tasks", None)
@@ -156,21 +272,51 @@ async def sync_q8_tasks_to_task_service(
             remarks = current_mission
             if reason:
                 remarks = f"{current_mission}\n阻塞/说明: {reason}"
+            base_priority = coerce_task_priority(item.get("priority"), default_priority)
+            priority_decision = apply_evaluation_profile_to_task_priority(
+                task=item,
+                base_priority=base_priority,
+                evaluation_plan=evaluation_plan,
+            )
             metadata = {
                 "source": "nine_questions.q8",
                 "session_id": session_id,
                 "question_id": "q8",
                 "queue_name": queue_name,
                 "objective": current_mission,
+                "objective_profile": objective_profile,
+                "evaluation_profile": evaluation_plan.evaluation_profile,
+                "phase_a_evaluation": priority_decision.metadata,
+                "completion_conditions": _string_list(objective_profile.get("completion_conditions")),
+                "pause_conditions": _string_list(objective_profile.get("pause_conditions")),
+                "escalation_conditions": _string_list(objective_profile.get("escalation_conditions")),
+                "expected_outcome": _dict_value(item.get("expected_outcome")),
+                "success_criteria": _string_list(item.get("success_criteria")),
+                "acceptance_conditions": _string_list(item.get("acceptance_conditions")),
+                "verification_method": str(item.get("verification_method") or "").strip(),
+                "risk_assessment": _dict_value(item.get("risk_assessment")),
                 "trace_id": str(q8_snapshot.get("trace_id") or ""),
             }
             tags = ["nine-questions", "q8", queue_name]
-            priority = coerce_task_priority(item.get("priority"), default_priority)
+            priority = priority_decision.priority
+            effective_status = target_status
+            if phase_b_realtime_gate_config["enabled"]:
+                phase_b_decision = evaluate_q8_phase_b_realtime_task_gate(
+                    task=item,
+                    target_status=target_status,
+                    base_priority=priority,
+                    accept_threshold=phase_b_realtime_gate_config["accept_threshold"],
+                    reject_threshold=phase_b_realtime_gate_config["reject_threshold"],
+                )
+                priority = phase_b_decision.final_priority
+                effective_status = phase_b_decision.final_status
+                metadata["phase_b_realtime_gate"] = phase_b_decision.to_metadata()
+            contract = build_q8_task_contract(item, objective_profile)
             existing = existing_by_key.get(idempotency_key)
             if existing is not None:
-                if existing.status != target_status:
+                if existing.status != effective_status:
                     try:
-                        task_service.update_task_status(existing.task_id, target_status, remarks)
+                        await task_service.update_task_status(existing.task_id, effective_status, remarks)
                     except Exception:
                         if logger is not None:
                             logger.warning(
@@ -185,6 +331,7 @@ async def sync_q8_tasks_to_task_service(
                     priority=priority,
                     tags=tags,
                     metadata=metadata,
+                    contract=contract,
                 )
                 continue
 
@@ -195,12 +342,13 @@ async def sync_q8_tasks_to_task_service(
                         "idempotency_key": idempotency_key,
                         "title": str(item["title"]),
                         "task_type": TaskType.COGNITIVE_STEP,
-                        "status": target_status,
+                        "status": effective_status,
                         "priority": priority,
                         "originator_id": session_id,
                         "remarks": remarks,
                         "tags": tags,
                         "metadata": metadata,
+                        "contract": contract,
                     }
                 )
 
@@ -209,7 +357,7 @@ async def sync_q8_tasks_to_task_service(
             continue
         if task.status in {TaskStatus.TODO, TaskStatus.BLOCKED, TaskStatus.SUSPENDED, TaskStatus.DONE}:
             try:
-                task_service.update_task_status(
+                await task_service.update_task_status(
                     task.task_id,
                     TaskStatus.ARCHIVED,
                     remarks="Archived because Q8 regenerated a new task set.",

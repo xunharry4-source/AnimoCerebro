@@ -6,6 +6,7 @@ try:
         TaskDAO,
         SuspendedTaskDAO,
         TaskAuditLogDAO,
+        TaskOutcomeDAO,
         InterventionReceiptDAO,
         IdempotencyLogDAO,
     )
@@ -15,6 +16,7 @@ except ImportError:
     TaskDAO = None
     SuspendedTaskDAO = None
     TaskAuditLogDAO = None
+    TaskOutcomeDAO = None
     InterventionReceiptDAO = None
     IdempotencyLogDAO = None
 
@@ -22,6 +24,7 @@ __all__ = [
     "TaskDAO",
     "SuspendedTaskDAO",
     "TaskAuditLogDAO",
+    "TaskOutcomeDAO",
     "InterventionReceiptDAO",
     "IdempotencyLogDAO",
 ]

@@ -82,7 +82,9 @@ describe("ZentexTaskManager", () => {
     fireEvent.click(screen.getByText("tasks.sourceModules.upgrade"));
 
     await waitFor(() => {
-      expect(mockFetch).toHaveBeenLastCalledWith("/api/web/tasks/by-status?source_module=upgrade");
+      expect(mockFetch).toHaveBeenLastCalledWith(
+        "/api/web/tasks/by-status?source_module=upgrade&limit_per_group=100&offset=0",
+      );
     });
   });
 

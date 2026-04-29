@@ -37,6 +37,7 @@ def canonicalize_plugin_id(plugin_id: str) -> str:
 
 def iter_plugin_id_aliases(plugin_id: str) -> Iterator[str]:
     canonical_plugin_id = canonicalize_plugin_id(plugin_id)
+    yield canonical_plugin_id
     for alias, canonical in LEGACY_PLUGIN_ID_ALIASES.items():
         if canonical == canonical_plugin_id:
             yield alias

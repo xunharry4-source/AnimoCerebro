@@ -128,6 +128,12 @@ class BrainTranscriptStore:
             self._revision_condition.notify_all()
         return entries_list
 
+    def add_entry_listener(self, listener: Callable[[BrainTranscriptEntry], Optional[None]]) -> None:
+        """Subscribe a projection listener without changing transcript ownership."""
+        if listener in self._entry_listeners:
+            return
+        self._entry_listeners.append(listener)
+
     def append_entry(self, entry: BrainTranscriptEntry) -> BrainTranscriptEntry:
         self.append_entries([entry])
         return entry

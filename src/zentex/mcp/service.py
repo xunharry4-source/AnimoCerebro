@@ -2,7 +2,7 @@ from __future__ import annotations
 
 """Public MCP integration facade used by external callers."""
 
-from typing import Any, Dict, List
+from typing import Any, Dict, List, Optional
 from uuid import uuid4
 
 from zentex.common.storage_paths import get_storage_paths
@@ -56,6 +56,16 @@ class _AssemblyFailedAdapter:
             "_execution_contract": True,
         }
 
+    def diagnose_mcp_management_closure(self) -> Dict[str, Any]:
+        from zentex.mcp.lifecycle_diagnostics import build_mcp_unavailable_diagnostic_report
+
+        return build_mcp_unavailable_diagnostic_report(self._error_message)
+
+    def run_mcp_fault_injection_matrix(self) -> Dict[str, Any]:
+        from zentex.mcp.lifecycle_diagnostics import build_mcp_unavailable_fault_report
+
+        return build_mcp_unavailable_fault_report(self._error_message)
+
 
 class McpIntegrationService:
     def __init__(self, adapter: McpAdapterPlugin) -> None:
@@ -78,6 +88,12 @@ class McpIntegrationService:
 
     def get_server_health(self, server_id: str) -> Dict[str, Any]:
         return self._adapter.get_server_health(server_id)
+
+    def diagnose_mcp_management_closure(self) -> Dict[str, Any]:
+        return self._adapter.diagnose_mcp_management_closure()
+
+    def run_mcp_fault_injection_matrix(self) -> Dict[str, Any]:
+        return self._adapter.run_mcp_fault_injection_matrix()
 
     def test_call(
         self,

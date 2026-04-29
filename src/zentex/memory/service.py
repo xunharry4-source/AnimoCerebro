@@ -21,6 +21,15 @@ from zentex.memory.management.enhanced import (
     ManagedEnhancedMemoryRecord,
     MemoryRecallHit,
 )
+from zentex.memory.memory_governance import (
+    MemoryExperiencePackage,
+    MemoryGovernance,
+    build_default_memory_governance,
+)
+from zentex.memory.memory_lifecycle_governance import (
+    MemoryLifecycleGovernance,
+    build_memory_lifecycle_governance,
+)
 from zentex.memory.storage.kuzu_backend import KuzuGraphMemoryClient
 from zentex.memory.storage.asset_store import AssetDatabaseStore
 from zentex.common.storage_paths import get_storage_paths
@@ -68,6 +77,12 @@ class MemoryService:
         self._asset_stores: dict[Path, AssetDatabaseStore] = {}
         self._consolidation_lock = threading.Lock()
         self._consolidation_bridge: Any = None
+        self._memory_governance: MemoryGovernance = build_default_memory_governance(
+            instance_id=f"memory-service:{self.storage_root.resolve()}",
+        )
+        self._memory_lifecycle_governance: MemoryLifecycleGovernance = build_memory_lifecycle_governance(
+            self._internal_service,
+        )
         logger.info(f"MemoryService initialized at {self.storage_root}")
 
     def get_sharing_bridge(self, aes_key: Optional[bytes] = None) -> Any:
@@ -292,6 +307,97 @@ class MemoryService:
 
     def ingest_upgrade_memory_record(self, record: Any, *, skip_seen_check: bool = False) -> None:
         self._internal_service.ingest_upgrade_memory_record(record, skip_seen_check=skip_seen_check)
+
+    def get_memory_governance(self) -> MemoryGovernance:
+        return self._memory_governance
+
+    def submit_quarantined_memory(self, *args: Any, **kwargs: Any) -> Any:
+        return self._memory_governance.submit_quarantined_memory(*args, **kwargs)
+
+    def promote_memory(self, *args: Any, **kwargs: Any) -> Any:
+        return self._memory_governance.promote_memory(*args, **kwargs)
+
+    def recall_memories(self, *args: Any, **kwargs: Any) -> Any:
+        return self._memory_governance.recall_memories(*args, **kwargs)
+
+    def export_package(
+        self,
+        memory_ids: list[str],
+        *,
+        target_instance_id: str,
+        expires_at: Any,
+    ) -> MemoryExperiencePackage:
+        return self._memory_governance.export_package(
+            memory_ids,
+            target_instance_id=target_instance_id,
+            expires_at=expires_at,
+        )
+
+    def authorize_package_import(self, *args: Any, **kwargs: Any) -> Any:
+        return self._memory_governance.authorize_package_import(*args, **kwargs)
+
+    def import_package(self, *args: Any, **kwargs: Any) -> Any:
+        return self._memory_governance.import_package(*args, **kwargs)
+
+    def revoke_package_import(self, *args: Any, **kwargs: Any) -> Any:
+        return self._memory_governance.revoke_package_import(*args, **kwargs)
+
+    def revoke_memory(self, *args: Any, **kwargs: Any) -> Any:
+        return self._memory_governance.revoke_memory(*args, **kwargs)
+
+    def mark_contamination(self, *args: Any, **kwargs: Any) -> Any:
+        return self._memory_governance.mark_contamination(*args, **kwargs)
+
+    def rollback_contamination(self, *args: Any, **kwargs: Any) -> Any:
+        return self._memory_governance.rollback_contamination(*args, **kwargs)
+
+    def list_quarantine(self) -> Any:
+        return self._memory_governance.list_quarantine()
+
+    def list_main_memory(self) -> Any:
+        return self._memory_governance.list_main_memory()
+
+    def list_imports(self) -> Any:
+        return self._memory_governance.list_imports()
+
+    def list_contamination(self) -> Any:
+        return self._memory_governance.list_contamination()
+
+    def list_rollbacks(self) -> Any:
+        return self._memory_governance.list_rollbacks()
+
+    def list_memory_governance_audit_events(self) -> Any:
+        return self._memory_governance.list_memory_governance_audit_events()
+
+    def get_memory_lifecycle_governance(self) -> MemoryLifecycleGovernance:
+        return self._memory_lifecycle_governance
+
+    def run_memory_lifecycle_cycle(self, *args: Any, **kwargs: Any) -> Any:
+        return self._memory_lifecycle_governance.run_cycle(*args, **kwargs)
+
+    def recall_memory_lifecycle(self, *args: Any, **kwargs: Any) -> Any:
+        return self._memory_lifecycle_governance.governed_recall(*args, **kwargs)
+
+    def compress_lifecycle_memories(self, *args: Any, **kwargs: Any) -> Any:
+        return self._memory_lifecycle_governance.compress_memories(*args, **kwargs)
+
+    def rewarm_lifecycle_memory(self, *args: Any, **kwargs: Any) -> Any:
+        return self._memory_lifecycle_governance.rewarm_memory(*args, **kwargs)
+
+    def mark_lifecycle_memory_contaminated(self, *args: Any, **kwargs: Any) -> Any:
+        return self._memory_lifecycle_governance.mark_contaminated(*args, **kwargs)
+
+    def restore_lifecycle_compressed_chain(self, *args: Any, **kwargs: Any) -> Any:
+        return self._memory_lifecycle_governance.restore_compressed_chain(*args, **kwargs)
+
+    def list_memory_lifecycle_states(self) -> Any:
+        return self._memory_lifecycle_governance.list_states()
+
+    def list_memory_lifecycle_cycles(self) -> Any:
+        return self._memory_lifecycle_governance.list_cycles()
+
+    def list_memory_lifecycle_compactions(self) -> Any:
+        return self._memory_lifecycle_governance.list_compaction_reports()
 
     def _ensure_consolidation_stack(self) -> tuple[Any, Any]:
         engine = getattr(self._internal_service, "consolidation_engine", None)

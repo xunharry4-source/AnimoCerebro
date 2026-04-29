@@ -44,7 +44,7 @@ class LearningHistoryResponse(BaseModel):
 class LearningRunCycleRequest(BaseModel):
     direction: str = Field(
         ...,
-        description="LearningDirection value, e.g. g24_curiosity",
+        description="LearningDirection value, e.g. curiosity",
     )
     dry_run: bool = Field(default=False, description="If true, only records intent; no LLM.")
     load_factor: float = Field(default=0.0, ge=0.0, le=1.0, description="System load 0-1; high values pause learning.")

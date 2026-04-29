@@ -2,10 +2,81 @@ from __future__ import annotations
 
 from typing import Any
 
-from fastapi import APIRouter, HTTPException, Request
+from fastapi import APIRouter, HTTPException, Query, Request
 
+from zentex.nine_questions.objective_engine import NineQDrivenObjectiveEngine, ObjectiveProfileMissingError
+from zentex.kernel.prompt_contracts import build_contract_summary
+from zentex.nine_questions.q8_phase_a_observability import (
+    DEFAULT_PHASE_A_LENSES,
+    Q8PhaseAExitGateError,
+    Q8PhaseALensDistributionError,
+    Q8PhaseAObservationGateError,
+    Q8PhaseAObservationError,
+    build_q8_phase_a_exit_gate_report,
+    build_q8_phase_a_lens_distribution_report,
+    build_q8_phase_a_observation_gate_report,
+    build_q8_phase_a_observation_report,
+)
+from zentex.nine_questions.q8_phase_b_value_scorer import (
+    DEFAULT_REQUIRED_LENSES,
+    Q8PhaseBValueScoringError,
+    build_q8_phase_b_value_score_report,
+)
+from zentex.nine_questions.q8_phase_b_llm_value_scorer import (
+    DEFAULT_LLM_SAMPLE_COUNT,
+    DEFAULT_MINIMUM_CONFIDENCE,
+    DEFAULT_MINIMUM_SEMANTIC_SCORE,
+    Q8PhaseBLLMValueScoringError,
+    build_q8_phase_b_llm_value_score_report,
+)
+from zentex.nine_questions.q8_phase_b_manual_review import (
+    DEFAULT_MANUAL_REVIEW_RATIO,
+    DEFAULT_MINIMUM_AGREEMENT_RATE,
+    DEFAULT_MINIMUM_REVIEW_COUNT,
+    Q8PhaseBManualReviewError,
+    build_q8_phase_b_manual_review_report,
+)
+from zentex.nine_questions.q8_phase_b_production_observation_gate import (
+    Q8PhaseBProductionObservationGateError,
+    build_q8_phase_b_production_observation_gate_report,
+)
+from zentex.nine_questions.q8_prompt_v2_gate import (
+    DEFAULT_EXPECTED_REPLAY_COUNT,
+    DEFAULT_MAX_AVERAGE_LLM_CALLS,
+    DEFAULT_MIN_LATENCY_REDUCTION_RATE,
+    DEFAULT_MIN_PROMPT_REDUCTION_RATE,
+    DEFAULT_MIN_QUALITY_DELTA,
+    DEFAULT_MIN_TOKEN_REDUCTION_RATE,
+    Q8PromptV2GateError,
+    build_q8_prompt_v2_gate_report,
+)
+from zentex.nine_questions.q8_replay_integrity import Q8ReplayIntegrityError, build_q8_replay_integrity_report
+from zentex.nine_questions.plan_completion_gate import (
+    PlanCompletionGateError,
+    build_plan_completion_gate_report,
+)
+from zentex.nine_questions.plan_evidence_registry import (
+    PlanEvidenceRegistryError,
+    build_plan_evidence_summary,
+)
+from zentex.nine_questions.plan_execution_evidence import (
+    PlanExecutionEvidenceError,
+    build_plan_execution_evidence_summary,
+)
+from zentex.nine_questions.plan_remaining_work import (
+    PlanRemainingWorkError,
+    assert_plan_remaining_work_complete,
+    build_plan_remaining_work_report,
+)
 from zentex.nine_questions.workflow import build_workflow_question_entry
+from zentex.reflection.living_self_model import LivingSelfModelError, build_living_self_model_report
 from zentex.web_console.contracts.nine_questions import NineQuestionsReportPayload
+from zentex.web_console.dependencies import (
+    get_enhanced_memory_service,
+    get_learning_service,
+    get_reflection_service,
+    get_task_service,
+)
 
 from .q_commons import build_question_report_items
 from .q_state import _get_nine_question_service, build_trace_id_map, get_nine_question_state, get_or_create_session
@@ -60,6 +131,27 @@ def _first_non_empty_string(*values: Any) -> str:
         if text:
             return text
     return ""
+
+
+def _parse_lens_csv(value: str | None) -> tuple[str, ...]:
+    if not value:
+        return DEFAULT_PHASE_A_LENSES
+    return tuple(dict.fromkeys(item.strip() for item in value.split(",") if item.strip()))
+
+
+def _parse_phase_b_lens_csv(value: str | None) -> tuple[str, ...]:
+    if not value:
+        return DEFAULT_REQUIRED_LENSES
+    return tuple(dict.fromkeys(item.strip() for item in value.split(",") if item.strip()))
+
+
+def _get_llm_service(request: Request) -> Any:
+    candidate = getattr(request.app.state, "llm_service", None)
+    if candidate is not None and callable(getattr(candidate, "generate_json", None)):
+        return candidate
+    from zentex.llm.service import get_service as get_llm_service
+
+    return get_llm_service()
 
 
 @router.get("/nine-questions/status", response_model=NineQuestionsReportPayload)
@@ -134,6 +226,509 @@ async def get_nine_questions_workflow(request: Request):
         "event_count": len(all_events),
         "summary_counts": summary_counts,
     }
+
+
+@router.get("/nine-questions/objectives")
+async def get_nine_questions_objectives(request: Request):
+    await get_or_create_session(request)
+    service = _get_nine_question_service(request)
+    snapshot_map = await service.get_snapshot_map()
+    engine = NineQDrivenObjectiveEngine()
+    try:
+        export = engine.derive_profiles(snapshot_map)
+    except ObjectiveProfileMissingError as exc:
+        raise HTTPException(
+            status_code=409,
+            detail={
+                "error": "nine_question_objective_profiles_incomplete",
+                "missing_sources": exc.missing_sources,
+            },
+        ) from exc
+    boundary_inputs = _objective_boundary_inputs(snapshot_map)
+    violations = engine.check_hard_boundary_violation(
+        export,
+        non_bypassable_constraints=boundary_inputs["non_bypassable_constraints"],
+        forbidden_directions=boundary_inputs["forbidden_directions"],
+        identity_locked_fields=boundary_inputs["identity_locked_fields"],
+    )
+    payload = export.model_dump(mode="json")
+    payload["hard_boundary_check"] = {
+        "status": "blocked" if violations else "passed",
+        "violation_count": len(violations),
+        "non_bypassable_constraints_checked": boundary_inputs["non_bypassable_constraints"],
+        "forbidden_directions_checked": boundary_inputs["forbidden_directions"],
+        "identity_locked_fields_checked": boundary_inputs["identity_locked_fields"],
+        "violations": [violation.model_dump(mode="json") for violation in violations],
+    }
+    return payload
+
+
+def _objective_boundary_inputs(snapshot_map: dict[str, dict]) -> dict[str, list[str]]:
+    q2 = snapshot_map.get("q2") if isinstance(snapshot_map.get("q2"), dict) else {}
+    context_updates = q2.get("context_updates") if isinstance(q2.get("context_updates"), dict) else {}
+    result = q2.get("result") if isinstance(q2.get("result"), dict) else {}
+    identity = (
+        context_updates.get("identity_kernel_snapshot")
+        or result.get("identity_kernel_snapshot")
+        or context_updates.get("identity_kernel")
+        or result.get("identity_kernel")
+        or {}
+    )
+    identity = identity if isinstance(identity, dict) else {}
+    continuity_lock = identity.get("continuity_lock") if isinstance(identity.get("continuity_lock"), dict) else {}
+    return {
+        "non_bypassable_constraints": _string_list(identity.get("non_bypassable_constraints")),
+        "forbidden_directions": _string_list(identity.get("forbidden_directions")),
+        "identity_locked_fields": _string_list(continuity_lock.get("locked_fields")),
+    }
+
+
+def _string_list(value: object) -> list[str]:
+    if isinstance(value, list):
+        return [str(item).strip() for item in value if str(item).strip()]
+    if isinstance(value, tuple):
+        return [str(item).strip() for item in value if str(item).strip()]
+    text = str(value or "").strip()
+    return [text] if text else []
+
+
+@router.get("/nine-questions/q8/replay-integrity")
+async def get_q8_replay_integrity(
+    request: Request,
+    session_id: str | None = Query(default=None, min_length=1),
+    expected_task_count: int = Query(..., ge=1),
+    require_writebacks: bool = Query(default=False),
+):
+    session = await get_or_create_session(request)
+    resolved_session_id = str(session_id or session.session_id)
+    try:
+        return build_q8_replay_integrity_report(
+            task_service=get_task_service(request),
+            session_id=resolved_session_id,
+            expected_task_count=expected_task_count,
+            require_writebacks=require_writebacks,
+            reflection_service=get_reflection_service(request) if require_writebacks else None,
+            memory_service=get_enhanced_memory_service(request) if require_writebacks else None,
+            learning_service=get_learning_service(request) if require_writebacks else None,
+        )
+    except Q8ReplayIntegrityError as exc:
+        raise HTTPException(
+            status_code=409,
+            detail={
+                "error": "q8_replay_integrity_failed",
+                "session_id": resolved_session_id,
+                "failures": exc.failures,
+            },
+        ) from exc
+
+
+@router.get("/nine-questions/q8/prompt-v2-gate")
+async def get_q8_prompt_v2_gate(
+    request: Request,
+    session_id: str | None = Query(default=None, min_length=1),
+    expected_replay_count: int = Query(default=DEFAULT_EXPECTED_REPLAY_COUNT, ge=1),
+    min_prompt_reduction_rate: float = Query(default=DEFAULT_MIN_PROMPT_REDUCTION_RATE, ge=0, le=1),
+    max_average_llm_calls: float = Query(default=DEFAULT_MAX_AVERAGE_LLM_CALLS, gt=0),
+    min_latency_reduction_rate: float = Query(default=DEFAULT_MIN_LATENCY_REDUCTION_RATE, ge=0, le=1),
+    min_token_reduction_rate: float = Query(default=DEFAULT_MIN_TOKEN_REDUCTION_RATE, ge=0, le=1),
+    min_quality_delta: float = Query(default=DEFAULT_MIN_QUALITY_DELTA, ge=-1, le=1),
+):
+    session = await get_or_create_session(request)
+    resolved_session_id = str(session_id or session.session_id)
+    try:
+        return build_q8_prompt_v2_gate_report(
+            task_service=get_task_service(request),
+            session_id=resolved_session_id,
+            expected_replay_count=expected_replay_count,
+            min_prompt_reduction_rate=min_prompt_reduction_rate,
+            max_average_llm_calls=max_average_llm_calls,
+            min_latency_reduction_rate=min_latency_reduction_rate,
+            min_token_reduction_rate=min_token_reduction_rate,
+            min_quality_delta=min_quality_delta,
+        )
+    except Q8PromptV2GateError as exc:
+        raise HTTPException(
+            status_code=409,
+            detail={
+                "error": "q8_prompt_v2_gate_failed",
+                "session_id": resolved_session_id,
+                "failures": exc.failures,
+            },
+        ) from exc
+
+
+@router.get("/nine-questions/prompt-contracts")
+async def get_prompt_contracts():
+    summary = build_contract_summary()
+    if summary["consistency_errors"]:
+        raise HTTPException(
+            status_code=409,
+            detail={
+                "error": "prompt_contract_consistency_failed",
+                "failures": summary["consistency_errors"],
+            },
+        )
+    return summary
+
+
+@router.get("/nine-questions/plan/completion-gate")
+async def get_plan_completion_gate(
+    request: Request,
+    session_id: str | None = Query(default=None, min_length=1),
+    expected_generated_count: int = Query(default=1, ge=1),
+):
+    session = await get_or_create_session(request)
+    resolved_session_id = str(session_id or session.session_id)
+    try:
+        return build_plan_completion_gate_report(
+            task_service=get_task_service(request),
+            learning_service=get_learning_service(request),
+            session_id=resolved_session_id,
+            expected_generated_count=expected_generated_count,
+        )
+    except PlanCompletionGateError as exc:
+        raise HTTPException(
+            status_code=409,
+            detail={
+                "error": "plan_completion_gate_failed",
+                "session_id": resolved_session_id,
+                "failures": exc.failures,
+                "report": exc.report,
+            },
+        ) from exc
+
+
+@router.get("/nine-questions/plan/evidence-manifests")
+async def get_plan_evidence_manifests(request: Request):
+    try:
+        return build_plan_evidence_summary(learning_service=get_learning_service(request))
+    except PlanEvidenceRegistryError as exc:
+        raise HTTPException(
+            status_code=409,
+            detail={
+                "error": "plan_evidence_summary_failed",
+                "failures": exc.failures,
+            },
+        ) from exc
+
+
+@router.get("/nine-questions/plan/execution-evidence")
+async def get_plan_execution_evidence(request: Request):
+    try:
+        return build_plan_execution_evidence_summary(learning_service=get_learning_service(request))
+    except PlanExecutionEvidenceError as exc:
+        raise HTTPException(
+            status_code=409,
+            detail={
+                "error": "plan_execution_evidence_summary_failed",
+                "failures": exc.failures,
+            },
+        ) from exc
+
+
+@router.get("/nine-questions/plan/remaining-work")
+async def get_plan_remaining_work(
+    request: Request,
+    require_complete: bool = Query(default=False),
+):
+    try:
+        if require_complete:
+            return assert_plan_remaining_work_complete(learning_service=get_learning_service(request))
+        return build_plan_remaining_work_report(learning_service=get_learning_service(request))
+    except (PlanEvidenceRegistryError, PlanExecutionEvidenceError, PlanRemainingWorkError) as exc:
+        raise HTTPException(
+            status_code=409,
+            detail={
+                "error": "plan_remaining_work_not_complete",
+                "failures": getattr(exc, "failures", [{"reason": "plan_remaining_work_failed"}]),
+                "report": getattr(exc, "report", None),
+            },
+        ) from exc
+
+
+@router.get("/nine-questions/q8/phase-a-observation")
+async def get_q8_phase_a_observation(
+    request: Request,
+    session_id: str | None = Query(default=None, min_length=1),
+    expected_task_count: int = Query(..., ge=1),
+):
+    session = await get_or_create_session(request)
+    resolved_session_id = str(session_id or session.session_id)
+    try:
+        return build_q8_phase_a_observation_report(
+            task_service=get_task_service(request),
+            session_id=resolved_session_id,
+            expected_task_count=expected_task_count,
+        )
+    except Q8PhaseAObservationError as exc:
+        raise HTTPException(
+            status_code=409,
+            detail={
+                "error": "q8_phase_a_observation_failed",
+                "session_id": resolved_session_id,
+                "failures": exc.failures,
+            },
+        ) from exc
+
+
+@router.get("/nine-questions/q8/phase-a-lens-distribution")
+async def get_q8_phase_a_lens_distribution(
+    request: Request,
+    session_id: str | None = Query(default=None, min_length=1),
+    expected_task_count: int = Query(..., ge=1),
+    required_lenses: str | None = Query(default=None, min_length=1),
+):
+    session = await get_or_create_session(request)
+    resolved_session_id = str(session_id or session.session_id)
+    try:
+        return build_q8_phase_a_lens_distribution_report(
+            task_service=get_task_service(request),
+            session_id=resolved_session_id,
+            expected_task_count=expected_task_count,
+            required_lenses=_parse_lens_csv(required_lenses),
+        )
+    except Q8PhaseALensDistributionError as exc:
+        raise HTTPException(
+            status_code=409,
+            detail={
+                "error": "q8_phase_a_lens_distribution_failed",
+                "session_id": resolved_session_id,
+                "failures": exc.failures,
+            },
+        ) from exc
+
+
+@router.get("/nine-questions/q8/phase-a-observation-gate")
+async def get_q8_phase_a_observation_gate(
+    request: Request,
+    session_id: str | None = Query(default=None, min_length=1),
+    expected_task_count: int = Query(..., ge=1),
+    required_lenses: str | None = Query(default=None, min_length=1),
+    minimum_manual_reviews: int = Query(default=0, ge=0),
+    max_weight_delta: float = Query(default=0.75, ge=0),
+    max_obvious_drift_rate: float = Query(default=0.05, ge=0, le=1),
+):
+    session = await get_or_create_session(request)
+    resolved_session_id = str(session_id or session.session_id)
+    try:
+        return build_q8_phase_a_observation_gate_report(
+            task_service=get_task_service(request),
+            session_id=resolved_session_id,
+            expected_task_count=expected_task_count,
+            required_lenses=_parse_lens_csv(required_lenses),
+            minimum_manual_reviews=minimum_manual_reviews,
+            max_weight_delta=max_weight_delta,
+            max_obvious_drift_rate=max_obvious_drift_rate,
+        )
+    except Q8PhaseAObservationGateError as exc:
+        raise HTTPException(
+            status_code=409,
+            detail={
+                "error": "q8_phase_a_observation_gate_failed",
+                "session_id": resolved_session_id,
+                "failures": exc.failures,
+            },
+        ) from exc
+
+
+@router.get("/nine-questions/q8/phase-a-exit-gate")
+async def get_q8_phase_a_exit_gate(
+    request: Request,
+    session_id: str | None = Query(default=None, min_length=1),
+    expected_task_count: int = Query(..., ge=1),
+    required_lenses: str | None = Query(default=None, min_length=1),
+    minimum_manual_reviews: int = Query(default=0, ge=0),
+    max_weight_delta: float = Query(default=0.75, ge=0),
+    max_obvious_drift_rate: float = Query(default=0.05, ge=0, le=1),
+    max_open_p1_quality_issues: int = Query(default=0, ge=0),
+):
+    session = await get_or_create_session(request)
+    resolved_session_id = str(session_id or session.session_id)
+    try:
+        return build_q8_phase_a_exit_gate_report(
+            task_service=get_task_service(request),
+            session_id=resolved_session_id,
+            expected_task_count=expected_task_count,
+            required_lenses=_parse_lens_csv(required_lenses),
+            minimum_manual_reviews=minimum_manual_reviews,
+            max_weight_delta=max_weight_delta,
+            max_obvious_drift_rate=max_obvious_drift_rate,
+            max_open_p1_quality_issues=max_open_p1_quality_issues,
+        )
+    except Q8PhaseAExitGateError as exc:
+        raise HTTPException(
+            status_code=409,
+            detail={
+                "error": "q8_phase_a_exit_gate_failed",
+                "session_id": resolved_session_id,
+                "phase_b_required": True,
+                "phase_b_skip_allowed": False,
+                "failures": exc.failures,
+            },
+        ) from exc
+
+
+@router.get("/nine-questions/q8/phase-b/value-score")
+async def get_q8_phase_b_value_score(
+    request: Request,
+    session_id: str | None = Query(default=None, min_length=1),
+    expected_task_count: int = Query(..., ge=1),
+    minimum_overall_score: float = Query(default=0.75, ge=0, le=1),
+    required_lenses: str | None = Query(default=None, min_length=1),
+):
+    session = await get_or_create_session(request)
+    resolved_session_id = str(session_id or session.session_id)
+    try:
+        return build_q8_phase_b_value_score_report(
+            task_service=get_task_service(request),
+            session_id=resolved_session_id,
+            expected_task_count=expected_task_count,
+            minimum_overall_score=minimum_overall_score,
+            required_lenses=_parse_phase_b_lens_csv(required_lenses),
+        )
+    except Q8PhaseBValueScoringError as exc:
+        raise HTTPException(
+            status_code=409,
+            detail={
+                "error": "q8_phase_b_value_scoring_failed",
+                "session_id": resolved_session_id,
+                "failures": exc.failures,
+            },
+        ) from exc
+
+
+@router.get("/nine-questions/q8/phase-b/llm-value-score")
+async def get_q8_phase_b_llm_value_score(
+    request: Request,
+    session_id: str | None = Query(default=None, min_length=1),
+    expected_task_count: int = Query(..., ge=1),
+    generation_provider_key: str = Query(..., min_length=1),
+    scoring_provider_key: str = Query(..., min_length=1),
+    generation_model: str | None = Query(default=None, min_length=1),
+    scoring_model: str | None = Query(default=None, min_length=1),
+    expected_review_count: int | None = Query(default=None, ge=0),
+    sample_count: int = Query(default=DEFAULT_LLM_SAMPLE_COUNT, ge=1, le=5),
+    minimum_semantic_score: float = Query(default=DEFAULT_MINIMUM_SEMANTIC_SCORE, ge=0, le=1),
+    minimum_confidence: float = Query(default=DEFAULT_MINIMUM_CONFIDENCE, ge=0, le=1),
+):
+    session = await get_or_create_session(request)
+    resolved_session_id = str(session_id or session.session_id)
+    try:
+        return build_q8_phase_b_llm_value_score_report(
+            task_service=get_task_service(request),
+            llm_service=_get_llm_service(request),
+            session_id=resolved_session_id,
+            expected_task_count=expected_task_count,
+            generation_provider_key=generation_provider_key,
+            scoring_provider_key=scoring_provider_key,
+            generation_model=generation_model,
+            scoring_model=scoring_model,
+            expected_review_count=expected_review_count,
+            sample_count=sample_count,
+            minimum_semantic_score=minimum_semantic_score,
+            minimum_confidence=minimum_confidence,
+        )
+    except Q8PhaseBLLMValueScoringError as exc:
+        raise HTTPException(
+            status_code=409,
+            detail={
+                "error": "q8_phase_b_llm_value_scoring_failed",
+                "session_id": resolved_session_id,
+                "failures": exc.failures,
+            },
+        ) from exc
+
+
+@router.get("/nine-questions/q8/phase-b/manual-review-calibration")
+async def get_q8_phase_b_manual_review_calibration(
+    request: Request,
+    session_id: str | None = Query(default=None, min_length=1),
+    expected_task_count: int = Query(..., ge=1),
+    minimum_review_count: int = Query(default=DEFAULT_MINIMUM_REVIEW_COUNT, ge=0),
+    minimum_review_ratio: float = Query(default=DEFAULT_MANUAL_REVIEW_RATIO, ge=0, le=1),
+    minimum_agreement_rate: float = Query(default=DEFAULT_MINIMUM_AGREEMENT_RATE, ge=0, le=1),
+):
+    session = await get_or_create_session(request)
+    resolved_session_id = str(session_id or session.session_id)
+    try:
+        return build_q8_phase_b_manual_review_report(
+            task_service=get_task_service(request),
+            session_id=resolved_session_id,
+            expected_task_count=expected_task_count,
+            minimum_review_count=minimum_review_count,
+            minimum_review_ratio=minimum_review_ratio,
+            minimum_agreement_rate=minimum_agreement_rate,
+        )
+    except Q8PhaseBManualReviewError as exc:
+        raise HTTPException(
+            status_code=409,
+            detail={
+                "error": "q8_phase_b_manual_review_failed",
+                "session_id": resolved_session_id,
+                "failures": exc.failures,
+            },
+        ) from exc
+
+
+@router.get("/nine-questions/q8/phase-b/production-observation-gate")
+async def get_q8_phase_b_production_observation_gate(
+    request: Request,
+    session_id: str | None = Query(default=None, min_length=1),
+    expected_task_count: int = Query(..., ge=1),
+    minimum_production_history_count: int = Query(default=100, ge=1),
+    minimum_manual_label_count: int = Query(default=100, ge=1),
+    minimum_observation_days: int = Query(default=7, ge=1),
+    maximum_false_kill_rate: float = Query(default=0.05, ge=0, le=1),
+):
+    session = await get_or_create_session(request)
+    resolved_session_id = str(session_id or session.session_id)
+    try:
+        return build_q8_phase_b_production_observation_gate_report(
+            task_service=get_task_service(request),
+            session_id=resolved_session_id,
+            expected_task_count=expected_task_count,
+            minimum_production_history_count=minimum_production_history_count,
+            minimum_manual_label_count=minimum_manual_label_count,
+            minimum_observation_days=minimum_observation_days,
+            maximum_false_kill_rate=maximum_false_kill_rate,
+        )
+    except Q8PhaseBProductionObservationGateError as exc:
+        raise HTTPException(
+            status_code=409,
+            detail={
+                "error": "q8_phase_b_production_observation_gate_failed",
+                "session_id": resolved_session_id,
+                "failures": exc.failures,
+            },
+        ) from exc
+
+
+@router.get("/nine-questions/q8/phase-m/living-self-model")
+async def get_q8_phase_m_living_self_model(
+    request: Request,
+    session_id: str | None = Query(default=None, min_length=1),
+    expected_task_count: int = Query(..., ge=1),
+    minimum_signal_count: int = Query(default=2, ge=1),
+):
+    session = await get_or_create_session(request)
+    resolved_session_id = str(session_id or session.session_id)
+    try:
+        return build_living_self_model_report(
+            task_service=get_task_service(request),
+            learning_service=get_learning_service(request),
+            session_id=resolved_session_id,
+            expected_task_count=expected_task_count,
+            minimum_signal_count=minimum_signal_count,
+        )
+    except LivingSelfModelError as exc:
+        raise HTTPException(
+            status_code=409,
+            detail={
+                "error": "q8_phase_m_living_self_model_failed",
+                "session_id": resolved_session_id,
+                "failures": exc.failures,
+            },
+        ) from exc
 
 
 async def _get_question_payload(request: Request, question_id: str, attr: str):

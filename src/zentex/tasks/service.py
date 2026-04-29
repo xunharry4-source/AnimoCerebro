@@ -22,6 +22,13 @@ from zentex.tasks.schema import ensure_task_database_schema
 from zentex.common.storage_paths import get_storage_paths
 from zentex.tasks.execution.dispatch_manager import TaskDispatchManager
 from zentex.kernel.state_domain.transcript import NullTranscriptStore, TranscriptStore
+from zentex.tasks import outcomes as task_outcomes
+from zentex.tasks.verification.status_bridge import maybe_route_done_status_update_through_verification
+from zentex.tasks.lifecycle_diagnostics import (
+    build_task_fault_injection_report,
+    build_task_lifecycle_diagnostic_report,
+)
+from zentex.tasks.timeout_recovery import build_timeout_recovery_action
 
 # Database support
 try:
@@ -29,6 +36,7 @@ try:
         TaskDAO,
         SuspendedTaskDAO,
         TaskAuditLogDAO,
+        TaskOutcomeDAO,
         InterventionReceiptDAO,
         IdempotencyLogDAO,
     )
@@ -39,6 +47,7 @@ except ImportError:
     TaskDAO = None
     SuspendedTaskDAO = None
     TaskAuditLogDAO = None
+    TaskOutcomeDAO = None
     InterventionReceiptDAO = None
     IdempotencyLogDAO = None
     DatabaseConnection = None
@@ -89,6 +98,7 @@ class TaskManagementService:
         self._task_dao = TaskDAO(self._db, self._cache)
         self._suspended_dao = SuspendedTaskDAO(self._db, self._cache)
         self._audit_dao = TaskAuditLogDAO(self._db)
+        self._outcome_dao = TaskOutcomeDAO(self._db, self._cache)
         self._intervention_dao = InterventionReceiptDAO(self._db)
         self._idempotency_dao = IdempotencyLogDAO(self._db, self._cache)
         logger.info(f"Task database layer initialized: {resolved_db_path}")
@@ -264,61 +274,129 @@ class TaskManagementService:
                  priority: Optional[TaskPriority] = None,
                  tags: Optional[List[str]] = None,
                  parent_task_id: Optional[str] = None,
+                 task_type: Optional[TaskType] = None,
+                 originator_id: Optional[str] = None,
                  target_id: Optional[str] = None,
                  overdue_only: bool = False,
                  source_module: Optional[str] = None,
-                 metadata_filters: Optional[Dict[str, Any]] = None) -> List[ZentexTask]:
-        """List tasks with optional filtering."""
+                 metadata_filters: Optional[Dict[str, Any]] = None,
+                 limit: int = 100,
+                 offset: int = 0) -> List[ZentexTask]:
+        """List tasks with database-backed filtering and pagination."""
         if not self._task_dao:
             raise RuntimeError("Task DAO is unavailable")
+        capped_limit = max(1, min(int(limit), 500))
+        normalized_offset = max(0, int(offset))
         db_tasks = self._task_dao.list_tasks(
             status=status.value if status else None,
             priority=priority.value if priority else None,
+            task_type=task_type.value if task_type else None,
             parent_task_id=parent_task_id,
-            originator_id=None,
+            originator_id=originator_id,
+            target_id=target_id,
+            source_module=source_module,
+            metadata_filters=metadata_filters,
+            tags=tags,
             overdue_only=overdue_only,
-            limit=1000,
-            offset=0,
+            limit=capped_limit,
+            offset=normalized_offset,
         )
-        tasks = [self._dict_to_task(item) for item in db_tasks]
+        return [self._dict_to_task(item) for item in db_tasks]
 
-        if tags:
-            tasks = [t for t in tasks if any(tag in t.tags for tag in tags)]
-        if target_id:
-            tasks = [t for t in tasks if t.target_id == target_id]
-        if source_module:
-            tasks = [
-                t for t in tasks if str(t.metadata.get("source_module", "")) == source_module
-            ]
-        if metadata_filters:
-            tasks = [
-                t
-                for t in tasks
-                if all(t.metadata.get(key) == value for key, value in metadata_filters.items())
-            ]
+    def count_tasks(self,
+                    status: Optional[TaskStatus] = None,
+                    priority: Optional[TaskPriority] = None,
+                    tags: Optional[List[str]] = None,
+                    parent_task_id: Optional[str] = None,
+                    task_type: Optional[TaskType] = None,
+                    originator_id: Optional[str] = None,
+                    target_id: Optional[str] = None,
+                    overdue_only: bool = False,
+                    source_module: Optional[str] = None,
+                    metadata_filters: Optional[Dict[str, Any]] = None) -> int:
+        """Count tasks using the same database-backed filters as list_tasks."""
+        if not self._task_dao:
+            raise RuntimeError("Task DAO is unavailable")
+        return self._task_dao.count_tasks(
+            status=status.value if status else None,
+            priority=priority.value if priority else None,
+            task_type=task_type.value if task_type else None,
+            parent_task_id=parent_task_id,
+            originator_id=originator_id,
+            target_id=target_id,
+            source_module=source_module,
+            metadata_filters=metadata_filters,
+            tags=tags,
+            overdue_only=overdue_only,
+        )
 
-        tasks.sort(key=lambda t: (t.get_priority_score(), t.created_at), reverse=True)
-        return tasks
-
-    def list_tasks_grouped(self) -> Dict[str, List[ZentexTask]]:
+    def list_tasks_grouped(
+        self,
+        *,
+        source_module: Optional[str] = None,
+        limit_per_group: int = 100,
+        offset: int = 0,
+    ) -> Dict[str, List[ZentexTask]]:
         """Return tasks partitioned into presentation groups.
 
         Business rule: which statuses belong to each group is a domain
         decision and must not leak into web_console routers.
         """
+        capped_limit = max(1, min(int(limit_per_group), 500))
+        normalized_offset = max(0, int(offset))
         return {
-            "in_progress": self.list_tasks(status=TaskStatus.IN_PROGRESS),
+            "in_progress": self.list_tasks(
+                status=TaskStatus.IN_PROGRESS,
+                source_module=source_module,
+                limit=capped_limit,
+                offset=normalized_offset,
+            ),
             "pending": (
-                self.list_tasks(status=TaskStatus.TODO)
-                + self.list_tasks(status=TaskStatus.BLOCKED)
+                self.list_tasks(
+                    status=TaskStatus.TODO,
+                    source_module=source_module,
+                    limit=capped_limit,
+                    offset=normalized_offset,
+                )
+                + self.list_tasks(
+                    status=TaskStatus.BLOCKED,
+                    source_module=source_module,
+                    limit=capped_limit,
+                    offset=normalized_offset,
+                )
+            )[:capped_limit],
+            "waiting_confirmation": self.list_tasks(
+                status=TaskStatus.WAITING_CONFIRMATION,
+                source_module=source_module,
+                limit=capped_limit,
+                offset=normalized_offset,
             ),
-            "waiting_confirmation": self.list_tasks(status=TaskStatus.WAITING_CONFIRMATION),
-            "completed": self.list_tasks(status=TaskStatus.DONE),
+            "completed": self.list_tasks(
+                status=TaskStatus.DONE,
+                source_module=source_module,
+                limit=capped_limit,
+                offset=normalized_offset,
+            ),
             "cancelled": (
-                self.list_tasks(status=TaskStatus.FAILED)
-                + self.list_tasks(status=TaskStatus.SUSPENDED)
-                + self.list_tasks(status=TaskStatus.ARCHIVED)
-            ),
+                self.list_tasks(
+                    status=TaskStatus.FAILED,
+                    source_module=source_module,
+                    limit=capped_limit,
+                    offset=normalized_offset,
+                )
+                + self.list_tasks(
+                    status=TaskStatus.SUSPENDED,
+                    source_module=source_module,
+                    limit=capped_limit,
+                    offset=normalized_offset,
+                )
+                + self.list_tasks(
+                    status=TaskStatus.ARCHIVED,
+                    source_module=source_module,
+                    limit=capped_limit,
+                    offset=normalized_offset,
+                )
+            )[:capped_limit],
         }
 
     @property
@@ -617,6 +695,16 @@ class TaskManagementService:
         if not task:
             raise KeyError(f"Task {task_id} not found")
 
+        bridged_task = await maybe_route_done_status_update_through_verification(
+            self,
+            task=task,
+            task_id=task_id,
+            new_status=new_status,
+            remarks=remarks,
+        )
+        if bridged_task is not None:
+            return bridged_task
+
         # Define legal transitions
         legal_from: Dict[TaskStatus, List[TaskStatus]] = {
             TaskStatus.TODO: [TaskStatus.IN_PROGRESS, TaskStatus.BLOCKED, TaskStatus.FAILED, TaskStatus.SUSPENDED, TaskStatus.ARCHIVED],
@@ -851,18 +939,34 @@ class TaskManagementService:
                 return SuspendedTask.model_validate(payload)
         return self._shared_suspensions.get(task_id, SuspendedTask)
 
-    def list_suspended_tasks(self) -> List[SuspendedTask]:
-        """List all suspended tasks"""
+    def list_suspended_tasks(
+        self,
+        *,
+        task_id: Optional[str] = None,
+        limit: int = 100,
+        offset: int = 0,
+    ) -> List[SuspendedTask]:
+        """List suspended tasks with database-backed filtering and pagination."""
         if self._suspended_dao:
-            return [SuspendedTask.model_validate(item) for item in self._suspended_dao.list_suspended_tasks()]
+            return [
+                SuspendedTask.model_validate(item)
+                for item in self._suspended_dao.list_suspended_tasks(
+                    task_id=task_id,
+                    limit=limit,
+                    offset=offset,
+                )
+            ]
         all_suspensions = self._shared_suspensions.list_all(SuspendedTask)
-        return list(all_suspensions.values())
+        suspensions = list(all_suspensions.values())
+        if task_id:
+            suspensions = [item for item in suspensions if item.task_id == task_id]
+        return suspensions[max(0, int(offset)): max(0, int(offset)) + max(1, min(int(limit), 500))]
 
     def trigger_negotiation_scans(self) -> List[Any]:
         """
         Scan all current suspended tasks and generate negotiation requests.
         """
-        suspended = self.list_suspended_tasks()
+        suspended = self._list_suspended_tasks_for_internal_scan()
         new_negs = self.negotiation_generator.scan_for_gaps(suspended)
         
         for neg in new_negs:
@@ -915,10 +1019,16 @@ class TaskManagementService:
                     # and makes the scheduler look healthier than it is.
                     logger.exception("Failed to auto-resume task %s: %s", task_id, e)
         
-        # 2. Reclaim stale IN_PROGRESS tasks (G39)
-        # We scan all tasks. In a production environment with millions of tasks, 
-        # this would be optimized with a dedicated 'in_progress' index.
-        in_progress_tasks = self.list_tasks(status=TaskStatus.IN_PROGRESS)
+        # 2. Reclaim stale IN_PROGRESS tasks (G39) in bounded database pages.
+        in_progress_tasks: List[ZentexTask] = []
+        offset = 0
+        page_size = 500
+        while True:
+            page = self.list_tasks(status=TaskStatus.IN_PROGRESS, limit=page_size, offset=offset)
+            in_progress_tasks.extend(page)
+            if len(page) < page_size:
+                break
+            offset += page_size
         stale_threshold = 300 # Default 5 minutes
         
         for task in in_progress_tasks:
@@ -950,24 +1060,6 @@ class TaskManagementService:
         
         return processed_tasks
 
-    def _parse_task_lease_timestamp(
-        self,
-        raw_value: Any,
-        *,
-        task_id: str,
-        field_name: str,
-    ) -> datetime:
-        """Parse a lease timestamp and fail loudly on malformed runtime state."""
-        if not raw_value or not isinstance(raw_value, str):
-            raise ValueError(
-                f"Task {task_id} lease field '{field_name}' is missing or not an ISO timestamp."
-            )
-
-        parsed = datetime.fromisoformat(raw_value.replace("Z", "+00:00"))
-        if parsed.tzinfo is None:
-            parsed = parsed.replace(tzinfo=timezone.utc)
-        return parsed
-
     async def check_timeout_and_republish_tasks(
         self,
         limit: Optional[int] = None,
@@ -981,85 +1073,53 @@ class TaskManagementService:
         """
         now = datetime.now(timezone.utc)
         recovered: List[Dict[str, Any]] = []
-        in_progress_tasks = self.list_tasks(status=TaskStatus.IN_PROGRESS)
-
-        if limit is not None:
-            in_progress_tasks = in_progress_tasks[: max(0, int(limit))]
+        in_progress_tasks = self.list_tasks(
+            status=TaskStatus.IN_PROGRESS,
+            limit=max(1, min(int(limit), 500)) if limit is not None else 100,
+            offset=0,
+        )
 
         for task in in_progress_tasks:
             try:
-                lease = task.metadata.get("lease")
-                if not isinstance(lease, dict):
-                    raise ValueError(
-                        f"Task {task.task_id} is in_progress without lease metadata."
-                    )
-
-                heartbeat_at = self._parse_task_lease_timestamp(
-                    lease.get("heartbeat_at") or lease.get("acquired_at"),
-                    task_id=task.task_id,
-                    field_name="heartbeat_at",
-                )
-
-                timeout_seconds_raw = lease.get("timeout_seconds", 300)
-                timeout_seconds = int(timeout_seconds_raw)
-                if timeout_seconds <= 0:
-                    raise ValueError(
-                        f"Task {task.task_id} has invalid lease timeout_seconds={timeout_seconds_raw!r}."
-                    )
-
-                elapsed_seconds = (now - heartbeat_at).total_seconds()
-                if elapsed_seconds <= timeout_seconds:
+                action = build_timeout_recovery_action(task, now=now)
+                if action is None:
                     continue
 
                 original_metadata = copy.deepcopy(task.metadata)
-                task.metadata = {
-                    **task.metadata,
-                    "lease": {
-                        **lease,
-                        "status": "expired",
-                        "expired_at": now.isoformat(),
-                        "heartbeat_at": heartbeat_at.isoformat(),
-                        "timeout_seconds": timeout_seconds,
-                    },
-                    "timeout_recovery": {
-                        "timed_out": True,
-                        "detected_at": now.isoformat(),
-                        "heartbeat_at": heartbeat_at.isoformat(),
-                        "timeout_seconds": timeout_seconds,
-                        "elapsed_seconds": elapsed_seconds,
-                        "recovery_source": "check_timeout_and_republish_tasks",
-                    },
-                }
-
-                next_status = TaskStatus.TODO if task.contract.retriable else TaskStatus.FAILED
-                remarks = (
-                    f"Timeout recovery after {elapsed_seconds:.0f}s without heartbeat; "
-                    f"lease expired at {now.isoformat()}."
-                )
 
                 try:
-                    await self.update_task_status(task.task_id, next_status, remarks=remarks)
+                    await self.update_task_metadata(task.task_id, action.metadata)
+                    await self.update_task_status(
+                        task.task_id,
+                        action.new_status,
+                        remarks=action.remarks,
+                    )
+                    if action.last_error is not None:
+                        if not self._task_dao:
+                            raise RuntimeError("Task DAO is unavailable")
+                        extra_updates = {
+                            "last_error": action.last_error[:2000],
+                            "execution_finished_at": action.execution_finished_at,
+                        }
+                        if not self._task_dao.update_task(task.task_id, extra_updates):
+                            raise TaskStateError(
+                                f"Failed to persist timeout recovery fault for task {task.task_id}"
+                            )
                 except Exception:
-                    task.metadata = original_metadata
-                    self._shared_tasks.set(task.task_id, task)
-                    self._tasks[task.task_id] = task
+                    current_task = self.get_task(task.task_id) or task
+                    current_task.metadata = original_metadata
+                    self._shared_tasks.set(task.task_id, current_task)
+                    self._tasks[task.task_id] = current_task
+                    if self.use_database:
+                        self._sync_task_to_database(current_task)
                     raise
 
                 logger.warning(
-                    "Recovered timed-out task %s from in_progress to %s after %.0fs without heartbeat.",
+                    "Recovered in_progress task %s to %s during timeout recovery.",
                     task.task_id,
-                    next_status.value,
-                    elapsed_seconds,
+                    action.new_status.value,
                 )
-                recovered.append(
-                    {
-                        "task_id": task.task_id,
-                        "republished": next_status == TaskStatus.TODO,
-                        "new_status": next_status.value,
-                        "timeout_seconds": timeout_seconds,
-                        "elapsed_seconds": elapsed_seconds,
-                    }
-                )
+                recovered.append(action.result)
             except Exception as exc:
                 # Forbidden: silently skipping broken lease state would make the scheduler
                 # look healthy while timed-out tasks remain stuck forever.
@@ -1207,7 +1267,7 @@ class TaskManagementService:
                     continue
                     
                 # Check for dependent tasks
-                dependent_tasks = [t for t in self._tasks.values() if task_id in t.depends_on]
+                dependent_tasks = self.get_dependent_tasks(task_id, limit=1)
                 if dependent_tasks and not force:
                     results["failed"].append({
                         "task_id": task_id,
@@ -1326,9 +1386,27 @@ class TaskManagementService:
             
         return build_tree(task_id, 0)
 
-    def get_dependent_tasks(self, task_id: str) -> List[ZentexTask]:
-        """Get all tasks that depend on the given task"""
-        return [task for task in self._tasks.values() if task_id in task.depends_on]
+    def get_dependent_tasks(
+        self,
+        task_id: str,
+        *,
+        limit: int = 100,
+        offset: int = 0,
+    ) -> List[ZentexTask]:
+        """Get tasks that depend on the given task using database filtering."""
+        if self.use_database and self._task_dao:
+            rows = self._task_dao.list_tasks_depending_on(
+                task_id,
+                limit=limit,
+                offset=offset,
+            )
+            tasks = [self._dict_to_task(row) for row in rows]
+            for task in tasks:
+                self._tasks[task.task_id] = task
+                self._shared_tasks.set(task.task_id, task)
+            return tasks
+        tasks = [task for task in self._tasks.values() if task_id in task.depends_on]
+        return tasks[max(0, int(offset)): max(0, int(offset)) + max(1, min(int(limit), 500))]
 
     def can_execute_task(self, task_id: str) -> Dict[str, Any]:
         """Check if a task can be executed based on its dependencies"""
@@ -1421,6 +1499,34 @@ class TaskManagementService:
         if isinstance(value, (list, tuple, set)):
             return [self._normalize_audit_value(v) for v in value]
         return str(value)
+
+    def _record_task_outcome(
+        self,
+        *,
+        task: ZentexTask,
+        result: Dict[str, Any],
+        verification_result: Any,
+    ) -> Dict[str, Any]:
+        return task_outcomes.record_task_outcome(
+            outcome_dao=self._outcome_dao,
+            task=task,
+            result=result,
+            verification_result=verification_result,
+        )
+
+    def get_task_outcome(self, task_id: str) -> Optional[Dict[str, Any]]:
+        if not self._outcome_dao:
+            raise RuntimeError("Task outcome DAO is unavailable")
+        return self._outcome_dao.get_outcome(task_id)
+
+    def write_task_outcome_to_reflection(self, reflection_service: Any, task_id: str) -> Dict[str, Any]:
+        return task_outcomes.write_task_outcome_to_reflection(self, reflection_service, task_id)
+
+    def write_task_outcome_to_memory(self, memory_service: Any, task_id: str) -> Dict[str, Any]:
+        return task_outcomes.write_task_outcome_to_memory(self, memory_service, task_id)
+
+    def write_task_outcome_to_learning(self, learning_service: Any, task_id: str) -> Dict[str, Any]:
+        return task_outcomes.write_task_outcome_to_learning(self, learning_service, task_id)
     
     def get_task_statistics(self) -> Dict[str, Any]:
         """获取任务统计信息，支持数据库和内存两种模式"""
@@ -1432,8 +1538,7 @@ class TaskManagementService:
                 # Get suspended tasks count
                 suspended_count = 0
                 if self._suspended_dao:
-                    suspended_tasks = self._suspended_dao.list_suspended_tasks()
-                    suspended_count = len(suspended_tasks)
+                    suspended_count = self._suspended_dao.count_suspended_tasks()
                 
                 # Calculate active tasks
                 active_tasks = db_stats.get('todo_count', 0) + db_stats.get('in_progress_count', 0)
@@ -1574,6 +1679,14 @@ class TaskManagementService:
             )
         
         try:
+            if task.status == TaskStatus.TODO:
+                await self.update_task_status(
+                    task_id,
+                    TaskStatus.IN_PROGRESS,
+                    "Auto-claimed before verification",
+                )
+                task = self.get_task(task_id) or task
+
             # Step 1: Transition to WAITING_CONFIRMATION
             logger.info(f"Task {task_id} entering verification phase")
             await self.update_task_status(
@@ -1615,12 +1728,18 @@ class TaskManagementService:
                     TaskStatus.DONE,
                     remarks=final_remarks
                 )
+                task_outcome = self._record_task_outcome(
+                    task=updated_task,
+                    result=result,
+                    verification_result=verification_result,
+                )
                 
                 logger.info(f"Task {task_id} verified and completed successfully")
                 return {
                     "success": True,
                     "task": updated_task.model_dump(),
                     "verification_result": verification_result.model_dump(),
+                    "task_outcome": task_outcome,
                     "message": "Task completed and verified successfully"
                 }
             
@@ -1629,6 +1748,7 @@ class TaskManagementService:
                 return await self._handle_verification_failure(
                     task_id, 
                     verification_result,
+                    result,
                     remarks
                 )
                 
@@ -1662,6 +1782,7 @@ class TaskManagementService:
         self,
         task_id: str,
         verification_result: Any,
+        result: Optional[Dict[str, Any]] = None,
         remarks: Optional[str] = None
     ) -> Dict[str, Any]:
         """
@@ -1689,10 +1810,15 @@ class TaskManagementService:
             if remarks:
                 retry_remarks += f" | {remarks}"
                 
-            updated_task = self.update_task_status(
+            updated_task = await self.update_task_status(
                 task_id,
                 TaskStatus.IN_PROGRESS,
                 remarks=retry_remarks
+            )
+            task_outcome = self._record_task_outcome(
+                task=updated_task,
+                result=result or {},
+                verification_result=verification_result,
             )
             
             logger.info(f"Task {task_id} set to IN_PROGRESS for retry")
@@ -1700,6 +1826,7 @@ class TaskManagementService:
                 "success": True,
                 "task": updated_task.model_dump(),
                 "verification_result": verification_result.model_dump(),
+                "task_outcome": task_outcome,
                 "action_taken": "retry",
                 "message": "Task set to IN_PROGRESS for automatic retry"
             }
@@ -1726,10 +1853,15 @@ class TaskManagementService:
                 
                 # Suspend the task pending manual review
                 suspension_reason = f"Verification failed, escalated to {escalation_target}"
-                suspended_task = self.suspend_task(
+                suspended_task = await self.suspend_task(
                     task_id,
                     reason=suspension_reason,
                     recovery_conditions=[f"Manual review by {escalation_target}"]
+                )
+                task_outcome = self._record_task_outcome(
+                    task=suspended_task,
+                    result=result or {},
+                    verification_result=verification_result,
                 )
                 
                 logger.info(f"Task {task_id} escalated to {escalation_target}")
@@ -1737,6 +1869,7 @@ class TaskManagementService:
                     "success": True,
                     "task": suspended_task.model_dump(),
                     "verification_result": verification_result.model_dump(),
+                    "task_outcome": task_outcome,
                     "action_taken": "escalated",
                     "escalation_target": escalation_target,
                     "message": f"Task escalated to {escalation_target} for manual review"
@@ -1747,16 +1880,22 @@ class TaskManagementService:
                 if remarks:
                     fail_remarks += f" | {remarks}"
                     
-                updated_task = self.update_task_status(
+                updated_task = await self.update_task_status(
                     task_id,
                     TaskStatus.FAILED,
                     remarks=fail_remarks
+                )
+                task_outcome = self._record_task_outcome(
+                    task=updated_task,
+                    result=result or {},
+                    verification_result=verification_result,
                 )
                 
                 return {
                     "success": False,
                     "task": updated_task.model_dump(),
                     "verification_result": verification_result.model_dump(),
+                    "task_outcome": task_outcome,
                     "action_taken": "failed",
                     "message": "Task failed verification (no escalation target configured)"
                 }
@@ -1767,10 +1906,15 @@ class TaskManagementService:
             if remarks:
                 fail_remarks += f" | {remarks}"
                 
-            updated_task = self.update_task_status(
+            updated_task = await self.update_task_status(
                 task_id,
                 TaskStatus.FAILED,
                 remarks=fail_remarks
+            )
+            task_outcome = self._record_task_outcome(
+                task=updated_task,
+                result=result or {},
+                verification_result=verification_result,
             )
             
             logger.info(f"Task {task_id} failed verification and rejected")
@@ -1778,6 +1922,7 @@ class TaskManagementService:
                 "success": False,
                 "task": updated_task.model_dump(),
                 "verification_result": verification_result.model_dump(),
+                "task_outcome": task_outcome,
                 "action_taken": "rejected",
                 "message": "Task failed verification and rejected"
             }
@@ -1897,6 +2042,73 @@ class TaskManagementService:
                 "error": str(e),
                 "message": "Database layer error"
             }
+
+    def _list_tasks_for_internal_scan(self, *, page_size: int = 500) -> List[ZentexTask]:
+        """Read task rows in bounded database pages for whole-state diagnostics."""
+        tasks: List[ZentexTask] = []
+        offset = 0
+        capped_page_size = max(1, min(int(page_size), 500))
+        while True:
+            page = self.list_tasks(limit=capped_page_size, offset=offset)
+            tasks.extend(page)
+            if len(page) < capped_page_size:
+                return tasks
+            offset += capped_page_size
+
+    def _list_suspended_tasks_for_internal_scan(self, *, page_size: int = 500) -> List[SuspendedTask]:
+        """Read suspended task rows in bounded database pages for diagnostics."""
+        suspended_tasks: List[SuspendedTask] = []
+        offset = 0
+        capped_page_size = max(1, min(int(page_size), 500))
+        while True:
+            page = self.list_suspended_tasks(limit=capped_page_size, offset=offset)
+            suspended_tasks.extend(page)
+            if len(page) < capped_page_size:
+                return suspended_tasks
+            offset += capped_page_size
+
+    def diagnose_task_management_closure(self, *, stale_after_seconds: int = 300) -> Dict[str, Any]:
+        """Return the feature-61 task lifecycle diagnostic report."""
+        tasks = self._list_tasks_for_internal_scan()
+        suspended_tasks = self._list_suspended_tasks_for_internal_scan()
+        audit_history = self._collect_task_audit_history(tasks)
+        report = build_task_lifecycle_diagnostic_report(
+            tasks=tasks,
+            suspended_tasks=suspended_tasks,
+            audit_history_by_task_id=audit_history,
+            stale_after_seconds=stale_after_seconds,
+        )
+        self._record_audit(
+            "task_management",
+            "TASK_MANAGEMENT_CLOSURE_DIAGNOSED",
+            report.model_dump(mode="json"),
+        )
+        return report.model_dump(mode="json")
+
+    def run_task_fault_injection_matrix(self, *, stale_after_seconds: int = 300) -> Dict[str, Any]:
+        """Return the feature-61 fault injection matrix derived from real task state."""
+        tasks = self._list_tasks_for_internal_scan()
+        diagnostic = build_task_lifecycle_diagnostic_report(
+            tasks=tasks,
+            suspended_tasks=self._list_suspended_tasks_for_internal_scan(),
+            audit_history_by_task_id=self._collect_task_audit_history(tasks),
+            stale_after_seconds=stale_after_seconds,
+        )
+        report = build_task_fault_injection_report(diagnostic)
+        self._record_audit(
+            "task_management",
+            "TASK_MANAGEMENT_FAULT_MATRIX_EXECUTED",
+            report.model_dump(mode="json"),
+        )
+        return report.model_dump(mode="json")
+
+    def _collect_task_audit_history(self, tasks: List[ZentexTask]) -> Dict[str, List[Dict[str, Any]]]:
+        if not self._audit_dao:
+            return {task.task_id: [] for task in tasks}
+        return {
+            task.task_id: self._audit_dao.get_audit_history(task.task_id, limit=200)
+            for task in tasks
+        }
 
 
 _TASK_RISK_ORDER = {"low": 1, "medium": 2, "high": 3, "critical": 4}

@@ -21,10 +21,10 @@ Usage:
     db = DatabaseConnection(get_storage_paths().core_db)
     cache = LRUCache(max_size=1000, ttl_seconds=60)
     dao = TaskDAO(db, cache)
-    
+
     # Create task
     dao.create_task(task_data)
-    
+
     # Query tasks
     tasks = dao.list_tasks(status="in_progress")
 """
@@ -116,14 +116,89 @@ class TaskDAO(BaseDAO):
         task_type: Optional[str] = None,
         parent_task_id: Optional[str] = None,
         originator_id: Optional[str] = None,
+        target_id: Optional[str] = None,
+        source_module: Optional[str] = None,
+        metadata_filters: Optional[Dict[str, Any]] = None,
+        tags: Optional[List[str]] = None,
         overdue_only: bool = False,
         limit: int = 100,
         offset: int = 0
     ) -> List[Dict[str, Any]]:
-        """List tasks with optional filters."""
-        conditions = []
-        params = []
+        """List tasks with optional filters applied in SQLite."""
+        where_clause, params = self._build_task_filter_clause(
+            status=status,
+            priority=priority,
+            task_type=task_type,
+            parent_task_id=parent_task_id,
+            originator_id=originator_id,
+            target_id=target_id,
+            source_module=source_module,
+            metadata_filters=metadata_filters,
+            tags=tags,
+            overdue_only=overdue_only,
+        )
+
+        # Build query with ordering
+        order_by = (
+            "CASE priority "
+            "WHEN 'critical' THEN 4 "
+            "WHEN 'high' THEN 3 "
+            "WHEN 'medium' THEN 2 "
+            "WHEN 'low' THEN 1 "
+            "ELSE 2 END DESC, created_at DESC"
+        )
+        query = f"SELECT * FROM tasks WHERE {where_clause} ORDER BY {order_by} LIMIT ? OFFSET ?"
+        params.extend([max(1, min(int(limit), 500)), max(0, int(offset))])
         
+        tasks = self.db.execute_query(query, tuple(params))
+        return [self._deserialize_task(t) for t in tasks]
+
+    def count_tasks(
+        self,
+        status: Optional[str] = None,
+        priority: Optional[str] = None,
+        task_type: Optional[str] = None,
+        parent_task_id: Optional[str] = None,
+        originator_id: Optional[str] = None,
+        target_id: Optional[str] = None,
+        source_module: Optional[str] = None,
+        metadata_filters: Optional[Dict[str, Any]] = None,
+        tags: Optional[List[str]] = None,
+        overdue_only: bool = False,
+    ) -> int:
+        """Count tasks with the same database-backed filters used by list_tasks."""
+        where_clause, params = self._build_task_filter_clause(
+            status=status,
+            priority=priority,
+            task_type=task_type,
+            parent_task_id=parent_task_id,
+            originator_id=originator_id,
+            target_id=target_id,
+            source_module=source_module,
+            metadata_filters=metadata_filters,
+            tags=tags,
+            overdue_only=overdue_only,
+        )
+        rows = self.db.execute_query(f"SELECT COUNT(*) AS count FROM tasks WHERE {where_clause}", tuple(params))
+        return int(rows[0]["count"]) if rows else 0
+
+    def _build_task_filter_clause(
+        self,
+        *,
+        status: Optional[str] = None,
+        priority: Optional[str] = None,
+        task_type: Optional[str] = None,
+        parent_task_id: Optional[str] = None,
+        originator_id: Optional[str] = None,
+        target_id: Optional[str] = None,
+        source_module: Optional[str] = None,
+        metadata_filters: Optional[Dict[str, Any]] = None,
+        tags: Optional[List[str]] = None,
+        overdue_only: bool = False,
+    ) -> tuple[str, list[Any]]:
+        conditions = []
+        params: list[Any] = []
+
         if status:
             conditions.append("status = ?")
             params.append(status)
@@ -139,17 +214,49 @@ class TaskDAO(BaseDAO):
         if originator_id:
             conditions.append("originator_id = ?")
             params.append(originator_id)
+        if target_id:
+            conditions.append("target_id = ?")
+            params.append(target_id)
+        if source_module:
+            conditions.append("json_extract(metadata, '$.source_module') = ?")
+            params.append(source_module)
+        if metadata_filters:
+            for key, value in metadata_filters.items():
+                conditions.append("json_extract(metadata, ?) = ?")
+                params.extend([f"$.{key}", value])
+        if tags:
+            placeholders = ", ".join("?" for _ in tags)
+            conditions.append(
+                f"EXISTS (SELECT 1 FROM json_each(tasks.tags) WHERE json_each.value IN ({placeholders}))"
+            )
+            params.extend(tags)
         if overdue_only:
             conditions.append("deadline < datetime('now') AND status NOT IN ('done', 'failed', 'archived')")
-        
-        where_clause = " AND ".join(conditions) if conditions else "1=1"
-        
-        # Build query with ordering
-        order_by = "created_at DESC"
-        query = f"SELECT * FROM tasks WHERE {where_clause} ORDER BY {order_by} LIMIT ? OFFSET ?"
-        params.extend([limit, offset])
-        
-        tasks = self.db.execute_query(query, tuple(params))
+
+        return " AND ".join(conditions) if conditions else "1=1", params
+
+    def list_tasks_depending_on(
+        self,
+        dependency_task_id: str,
+        *,
+        limit: int = 100,
+        offset: int = 0,
+    ) -> List[Dict[str, Any]]:
+        """List tasks whose depends_on JSON array contains dependency_task_id."""
+        query = (
+            "SELECT * FROM tasks "
+            "WHERE EXISTS ("
+            "SELECT 1 FROM json_each(tasks.depends_on) "
+            "WHERE json_each.value = ?"
+            ") "
+            "ORDER BY created_at DESC LIMIT ? OFFSET ?"
+        )
+        params = (
+            dependency_task_id,
+            max(1, min(int(limit), 500)),
+            max(0, int(offset)),
+        )
+        tasks = self.db.execute_query(query, params)
         return [self._deserialize_task(t) for t in tasks]
     
     def get_subtasks(self, parent_task_id: str) -> List[Dict[str, Any]]:
@@ -158,15 +265,8 @@ class TaskDAO(BaseDAO):
         return [self._deserialize_task(t) for t in tasks]
     
     def get_dependent_tasks(self, task_id: str) -> List[Dict[str, Any]]:
-        """Get all tasks that depend on the given task."""
-        # This requires checking the depends_on JSON field
-        all_tasks = self.find_all()
-        dependent_tasks = []
-        for task in all_tasks:
-            deserialized = self._deserialize_task(task)
-            if task_id in deserialized.get('depends_on', []):
-                dependent_tasks.append(deserialized)
-        return dependent_tasks
+        """Get tasks that depend on the given task."""
+        return self.list_tasks_depending_on(task_id)
     
     def delete_task(self, task_id: str, force: bool = False) -> bool:
         """Delete a task (with safety checks)."""
@@ -305,9 +405,25 @@ class SuspendedTaskDAO(BaseDAO):
             return data
         return None
     
-    def list_suspended_tasks(self) -> List[Dict[str, Any]]:
-        """List all suspended tasks."""
-        suspensions = self.find_all()
+    def list_suspended_tasks(
+        self,
+        *,
+        task_id: Optional[str] = None,
+        limit: int = 100,
+        offset: int = 0,
+    ) -> List[Dict[str, Any]]:
+        """List suspended tasks with database-backed filtering and pagination."""
+        capped_limit = max(1, min(int(limit), 500))
+        normalized_offset = max(0, int(offset))
+        if task_id:
+            suspensions = self.find_by_condition(
+                "task_id = ?",
+                (task_id,),
+                limit=capped_limit,
+                offset=normalized_offset,
+            )
+        else:
+            suspensions = self.find_all(limit=capped_limit, offset=normalized_offset)
         result = []
         for s in suspensions:
             if isinstance(s, dict):
@@ -325,11 +441,25 @@ class SuspendedTaskDAO(BaseDAO):
             
             result.append(data)
         return result
-    
-    def get_auto_resume_tasks(self) -> List[Dict[str, Any]]:
-        """Get tasks ready for auto-resume."""
-        query = "SELECT * FROM suspended_tasks WHERE auto_resume_at IS NOT NULL AND auto_resume_at <= datetime('now')"
-        results = self.db.execute_query(query)
+
+    def count_suspended_tasks(self) -> int:
+        """Count suspended tasks in the database without loading rows."""
+        row = self.db.execute_query("SELECT COUNT(*) AS count FROM suspended_tasks")
+        if not row:
+            return 0
+        first = row[0]
+        if isinstance(first, dict):
+            return int(first.get("count") or 0)
+        return int(first["count"])
+
+    def get_auto_resume_tasks(self, *, limit: int = 100, offset: int = 0) -> List[Dict[str, Any]]:
+        """Get tasks ready for auto-resume with pagination."""
+        query = (
+            "SELECT * FROM suspended_tasks "
+            "WHERE auto_resume_at IS NOT NULL AND auto_resume_at <= datetime('now') "
+            "ORDER BY auto_resume_at ASC LIMIT ? OFFSET ?"
+        )
+        results = self.db.execute_query(query, (max(1, min(int(limit), 500)), max(0, int(offset))))
         return [dict(r) for r in results]
 
 
@@ -400,6 +530,137 @@ class TaskAuditLogDAO(BaseDAO):
             result.append(data)
         
         return result
+
+
+class TaskOutcomeDAO(BaseDAO):
+    """Data Access Object for task outcome binding records."""
+
+    JSON_FIELDS = {
+        "objective_profile",
+        "evaluation_profile",
+        "expected_outcome",
+        "success_criteria",
+        "acceptance_conditions",
+        "risk_assessment",
+        "actual_outcome",
+        "deviation_report",
+        "verification_result",
+        "user_feedback",
+    }
+
+    def __init__(self, db: DatabaseConnection, cache: Optional[LRUCache] = None):
+        super().__init__(db, cache)
+        self.table_name = "task_outcomes"
+
+    def _get_id_column(self) -> str:
+        return "task_id"
+
+    def upsert_outcome(self, outcome_data: Dict[str, Any]) -> bool:
+        if not outcome_data.get("task_id"):
+            raise ValueError("task_outcomes requires task_id")
+
+        if not outcome_data.get("created_at"):
+            outcome_data = {
+                **outcome_data,
+                "created_at": datetime.now(timezone.utc).isoformat(),
+            }
+
+        processed: Dict[str, Any] = {}
+        for key, value in outcome_data.items():
+            if key in self.JSON_FIELDS and value is not None:
+                processed[key] = json.dumps(value, ensure_ascii=False, default=str)
+            elif key == "overall_passed" and isinstance(value, bool):
+                processed[key] = 1 if value else 0
+            else:
+                processed[key] = value
+
+        columns = list(processed.keys())
+        placeholders = ", ".join("?" for _ in columns)
+        column_sql = ", ".join(columns)
+        update_sql = ", ".join(
+            f"{column}=excluded.{column}"
+            for column in columns
+            if column not in {"task_id", "created_at"}
+        )
+        query = (
+            f"INSERT INTO {self.table_name} ({column_sql}) VALUES ({placeholders}) "
+            f"ON CONFLICT(task_id) DO UPDATE SET {update_sql}"
+        )
+        affected = self.db.execute_update(query, tuple(processed[column] for column in columns))
+        self._invalidate_cache(f"{self.table_name}:")
+        return affected > 0
+
+    def get_outcome(self, task_id: str) -> Optional[Dict[str, Any]]:
+        row = self.find_by_id(task_id)
+        if not row:
+            return None
+        return self._deserialize_outcome(row)
+
+    def mark_reflection_written(self, task_id: str, reflection_id: str) -> bool:
+        if not task_id:
+            raise ValueError("task_outcomes reflection writeback requires task_id")
+        if not reflection_id:
+            raise ValueError("task_outcomes reflection writeback requires reflection_id")
+        affected = self.db.execute_update(
+            f"""
+            UPDATE {self.table_name}
+            SET written_back_to_reflection = 1,
+                reflection_id = ?
+            WHERE task_id = ?
+            """,
+            (reflection_id, task_id),
+        )
+        self._invalidate_cache(f"{self.table_name}:")
+        return affected > 0
+
+    def mark_memory_written(self, task_id: str, memory_id: str) -> bool:
+        if not task_id:
+            raise ValueError("task_outcomes memory writeback requires task_id")
+        if not memory_id:
+            raise ValueError("task_outcomes memory writeback requires memory_id")
+        affected = self.db.execute_update(
+            f"""
+            UPDATE {self.table_name}
+            SET written_back_to_memory = 1,
+                memory_id = ?
+            WHERE task_id = ?
+            """,
+            (memory_id, task_id),
+        )
+        self._invalidate_cache(f"{self.table_name}:")
+        return affected > 0
+
+    def mark_learning_written(self, task_id: str, learning_trace_id: str) -> bool:
+        if not task_id:
+            raise ValueError("task_outcomes learning writeback requires task_id")
+        if not learning_trace_id:
+            raise ValueError("task_outcomes learning writeback requires learning_trace_id")
+        affected = self.db.execute_update(
+            f"""
+            UPDATE {self.table_name}
+            SET written_back_to_learning = 1,
+                learning_trace_id = ?
+            WHERE task_id = ?
+            """,
+            (learning_trace_id, task_id),
+        )
+        self._invalidate_cache(f"{self.table_name}:")
+        return affected > 0
+
+    def _deserialize_outcome(self, row: Dict[str, Any]) -> Dict[str, Any]:
+        data = dict(row)
+        for field in self.JSON_FIELDS:
+            if field in data and isinstance(data[field], str) and data[field]:
+                try:
+                    data[field] = json.loads(data[field])
+                except (json.JSONDecodeError, TypeError):
+                    data[field] = None
+        if data.get("overall_passed") is not None:
+            data["overall_passed"] = bool(data["overall_passed"])
+        for field in ("written_back_to_reflection", "written_back_to_learning", "written_back_to_memory"):
+            if data.get(field) is not None:
+                data[field] = bool(data[field])
+        return data
 
 
 class InterventionReceiptDAO(BaseDAO):

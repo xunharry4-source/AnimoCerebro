@@ -168,7 +168,7 @@ export default function HealthDashboard() {
           </Typography>
           <Divider sx={{ mb: 2 }} />
           <Grid container spacing={2}>
-            <Grid item xs={12} sm={6} md={3}>
+            <Grid size={{ xs: 12, sm: 6, md: 3 }}>
               <Box sx={{ textAlign: "center", p: 2, bgcolor: "background.paper", borderRadius: 1 }}>
                 <Typography variant="h4" color="primary">
                   {formatNumber(health.token_usage.total_request_count)}
@@ -178,7 +178,7 @@ export default function HealthDashboard() {
                 </Typography>
               </Box>
             </Grid>
-            <Grid item xs={12} sm={6} md={3}>
+            <Grid size={{ xs: 12, sm: 6, md: 3 }}>
               <Box sx={{ textAlign: "center", p: 2, bgcolor: "background.paper", borderRadius: 1 }}>
                 <Typography variant="h4" color="info.main">
                   {formatNumber(health.token_usage.total_input_tokens)}
@@ -188,7 +188,7 @@ export default function HealthDashboard() {
                 </Typography>
               </Box>
             </Grid>
-            <Grid item xs={12} sm={6} md={3}>
+            <Grid size={{ xs: 12, sm: 6, md: 3 }}>
               <Box sx={{ textAlign: "center", p: 2, bgcolor: "background.paper", borderRadius: 1 }}>
                 <Typography variant="h4" color="success.main">
                   {formatNumber(health.token_usage.total_output_tokens)}
@@ -198,7 +198,7 @@ export default function HealthDashboard() {
                 </Typography>
               </Box>
             </Grid>
-            <Grid item xs={12} sm={6} md={3}>
+            <Grid size={{ xs: 12, sm: 6, md: 3 }}>
               <Box sx={{ textAlign: "center", p: 2, bgcolor: "background.paper", borderRadius: 1 }}>
                 <Typography variant="h4" color="warning.main">
                   {formatNumber(health.token_usage.total_tokens)}
@@ -234,22 +234,22 @@ export default function HealthDashboard() {
                         </Typography>
                       )}
                       <Grid container spacing={1}>
-                        <Grid item xs={3}>
+                        <Grid size={{ xs: 3 }}>
                           <Typography variant="caption" color="text.secondary">
                             {copy.requests}: {formatNumber(provider.request_count)}
                           </Typography>
                         </Grid>
-                        <Grid item xs={3}>
+                        <Grid size={{ xs: 3 }}>
                           <Typography variant="caption" color="text.secondary">
                             {copy.input}: {formatNumber(provider.input_tokens)}
                           </Typography>
                         </Grid>
-                        <Grid item xs={3}>
+                        <Grid size={{ xs: 3 }}>
                           <Typography variant="caption" color="text.secondary">
                             {copy.output}: {formatNumber(provider.output_tokens)}
                           </Typography>
                         </Grid>
-                        <Grid item xs={3}>
+                        <Grid size={{ xs: 3 }}>
                           <Typography variant="caption" color="text.secondary">
                             {copy.total}: {formatNumber(provider.total_tokens)}
                           </Typography>

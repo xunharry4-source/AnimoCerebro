@@ -35,7 +35,7 @@ from enum import Enum, auto
 from typing import Any, Dict, List, Literal, Optional, Set
 from uuid import uuid4
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, computed_field
 
 
 class AuditSeverity(str, Enum):
@@ -172,6 +172,9 @@ class SanityAuditReport(BaseModel):
     external_conflicts: List[ExternalSignalConflict] = Field(default_factory=list)
     drift_score: float = Field(ge=0.0, le=1.0, default=0.0)
     disposition: DispositionAction = DispositionAction.CONTINUE
+    recommended_actions: List[DispositionAction] = Field(default_factory=list)
+    self_shaping_blocked: bool = False
+    rollback_checkpoint_id: str | None = None
     audit_scope: str = Field(default="full")
     summary: str = Field(default="")
     created_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
@@ -196,6 +199,11 @@ class SanityAuditReport(BaseModel):
             len(self.motivation_drifts) +
             len(self.external_conflicts)
         )
+
+    @computed_field
+    @property
+    def g18_self_shaping_blocked(self) -> bool:
+        return self.self_shaping_blocked
 
 
 class AuditCheckpoint(BaseModel):
@@ -257,6 +265,38 @@ class SanityAuditor:
     def last_audit(self) -> Optional[SanityAuditReport]:
         return self._audit_history[-1] if self._audit_history else None
 
+    def list_audits(self) -> List[SanityAuditReport]:
+        """Return audit history in insertion order."""
+        return list(self._audit_history)
+
+    def get_audit(self, audit_id: str) -> Optional[SanityAuditReport]:
+        """Return one audit report by id."""
+        for report in self._audit_history:
+            if report.audit_id == audit_id:
+                return report
+        return None
+
+    def list_checkpoints(self) -> List[AuditCheckpoint]:
+        """Return retained rollback checkpoints."""
+        return list(self._checkpoints)
+
+    def get_checkpoint(self, checkpoint_id: str) -> Optional[AuditCheckpoint]:
+        """Return one retained rollback checkpoint by id."""
+        for checkpoint in self._checkpoints:
+            if checkpoint.checkpoint_id == checkpoint_id:
+                return checkpoint
+        return None
+
+    def assert_self_modification_allowed(self, *, audit_id: str | None = None) -> None:
+        """Raise if the selected/latest audit blocks G18 self-shaping."""
+        report = self.get_audit(audit_id) if audit_id is not None else self.last_audit
+        if report is None:
+            raise RuntimeError("G25 sanity audit has not run; G18 self-shaping is blocked")
+        if report.self_shaping_blocked:
+            raise RuntimeError(
+                f"G18 self-shaping blocked by sanity audit {report.audit_id}: {report.summary}"
+            )
+
     def set_baseline_profile(self, profile: Dict[str, Any]) -> None:
         """Set the baseline motivation profile for drift detection."""
         self._baseline_profile = profile.copy()
@@ -314,6 +354,9 @@ class SanityAuditor:
         disposition = self._determine_disposition(
             belief_conflicts, reasoning_loops, motivation_drifts, external_conflicts, drift_score
         )
+        recommended_actions = self._recommended_actions(
+            belief_conflicts, reasoning_loops, motivation_drifts, external_conflicts, disposition
+        )
 
         # Determine status
         status = self._determine_status(disposition, drift_score)
@@ -324,13 +367,17 @@ class SanityAuditor:
         )
 
         report = SanityAuditReport(
-            lifecycle_status=lifecycle_status,
+            status=status,
             belief_conflicts=belief_conflicts,
             reasoning_loops=reasoning_loops,
             motivation_drifts=motivation_drifts,
             external_conflicts=external_conflicts,
             drift_score=drift_score,
             disposition=disposition,
+            recommended_actions=recommended_actions,
+            self_shaping_blocked=DispositionAction.BLOCK_SELF_MOD in recommended_actions,
+            rollback_checkpoint_id=self._checkpoints[-1].checkpoint_id if self._checkpoints else None,
+            audit_scope=self._brain_scope,
             summary=summary,
         )
 
@@ -340,6 +387,34 @@ class SanityAuditor:
             self._audit_history = self._audit_history[-100:]
 
         return report
+
+    def _recommended_actions(
+        self,
+        belief_conflicts: List[BeliefConflict],
+        reasoning_loops: List[ReasoningLoop],
+        motivation_drifts: List[MotivationDrift],
+        external_conflicts: List[ExternalSignalConflict],
+        disposition: DispositionAction,
+    ) -> List[DispositionAction]:
+        """Return the concrete actions implied by an audit result."""
+        actions: list[DispositionAction] = []
+        if disposition != DispositionAction.CONTINUE:
+            actions.append(disposition)
+            actions.append(DispositionAction.BLOCK_SELF_MOD)
+        if external_conflicts:
+            actions.append(DispositionAction.FREEZE)
+            actions.append(DispositionAction.HUMAN_REVIEW)
+        if motivation_drifts or reasoning_loops:
+            actions.append(DispositionAction.HUMAN_REVIEW)
+        if belief_conflicts and any(conflict.severity == AuditSeverity.CRITICAL for conflict in belief_conflicts):
+            actions.append(DispositionAction.ROLLBACK)
+        if not actions:
+            actions.append(DispositionAction.CONTINUE)
+        deduped: list[DispositionAction] = []
+        for action in actions:
+            if action not in deduped:
+                deduped.append(action)
+        return deduped
 
     def _detect_belief_conflicts(
         self,
@@ -382,13 +457,13 @@ class SanityAuditor:
 
         # Check for goal conflicts
         goals = world_model.get("active_goals", [])
-        for i, g1 in enumerate(goals):
-            for g2 in goals[i+1:]:
-                if self._are_goals_conflicting(g1, g2):
+        for i, first_goal in enumerate(goals):
+            for second_goal in goals[i+1:]:
+                if self._are_goals_conflicting(first_goal, second_goal):
                     conflicts.append(BeliefConflict(
                         conflict_type="goal",
-                        conflict_sources=[g1.get("id"), g2.get("id")],
-                        description=f"Goal conflict: {g1.get('name')} vs {g2.get('name')}",
+                        conflict_sources=[first_goal.get("id"), second_goal.get("id")],
+                        description=f"Goal conflict: {first_goal.get('name')} vs {second_goal.get('name')}",
                         severity=AuditSeverity.MEDIUM,
                     ))
 
@@ -626,26 +701,26 @@ class SanityAuditor:
 
         return False
 
-    def _are_goals_conflicting(self, g1: Dict[str, Any], g2: Dict[str, Any]) -> bool:
+    def _are_goals_conflicting(self, first_goal: Dict[str, Any], second_goal: Dict[str, Any]) -> bool:
         """Check if two goals are in conflict."""
         # Check for resource competition
-        g1_resources = set(g1.get("required_resources", []))
-        g2_resources = set(g2.get("required_resources", []))
+        first_goal_resources = set(first_goal.get("required_resources", []))
+        second_goal_resources = set(second_goal.get("required_resources", []))
 
-        if g1_resources & g2_resources:
+        if first_goal_resources & second_goal_resources:
             # Same resource requirements, check priorities
-            p1 = g1.get("priority", 0)
-            p2 = g2.get("priority", 0)
+            p1 = first_goal.get("priority", 0)
+            p2 = second_goal.get("priority", 0)
             # If same priority and same resources, potential conflict
             if p1 == p2:
                 return True
 
         # Check for mutually exclusive outcomes
-        g1_outcome = g1.get("target_outcome", "")
-        g2_outcome = g2.get("target_outcome", "")
-        if g1_outcome.startswith("!") and g1_outcome[1:] == g2_outcome:
+        first_goal_outcome = first_goal.get("target_outcome", "")
+        second_goal_outcome = second_goal.get("target_outcome", "")
+        if first_goal_outcome.startswith("!") and first_goal_outcome[1:] == second_goal_outcome:
             return True
-        if g2_outcome.startswith("!") and g2_outcome[1:] == g1_outcome:
+        if second_goal_outcome.startswith("!") and second_goal_outcome[1:] == first_goal_outcome:
             return True
 
         return False
@@ -678,4 +753,4 @@ class SanityAuditor:
             if signal_network == "disconnected" and physical_network.get("status") == "connected":
                 conflicts.append("Signal claims network disconnected but physical shows connected")
 
-        return conflicts[0] if conflicts else "no_conflict"
+        return "; ".join(conflicts) if conflicts else "no_conflict"

@@ -185,7 +185,7 @@ def handle_get_consolidation_cycles(consolidation_engine: Any) -> ConsolidationC
         ) from exc
 
 
-def handle_trigger_consolidation(consolidation_engine: Any) -> Dict[str, str]:
+def handle_trigger_consolidation(consolidation_engine: Any) -> Dict[str, Any]:
     """Handle manual trigger for memory consolidation."""
     if consolidation_engine is None:
         raise HTTPException(
@@ -193,8 +193,18 @@ def handle_trigger_consolidation(consolidation_engine: Any) -> Dict[str, str]:
             detail={"error": "consolidation_engine_unavailable"},
         )
     try:
-        cycle_id = consolidation_engine.submit_cycle(trigger_reason="manual_web_console")
-        return {"status": "triggered", "cycle_id": cycle_id}
+        handle = consolidation_engine.submit_manual_trigger(operator="web_console")
+        queried = consolidation_engine.list_cycles(cycle_id=handle.cycle_id)
+        if not queried:
+            raise RuntimeError(f"Consolidation read-after-write failed for cycle {handle.cycle_id}")
+        return {
+            "status": "triggered",
+            "cycle_id": handle.cycle_id,
+            "lease_id": handle.lease_id,
+            "idempotency_key": handle.idempotency_key,
+            "snapshot_version": handle.snapshot_version,
+            "queued_cycle": queried[0].model_dump(mode="json") if hasattr(queried[0], "model_dump") else {},
+        }
     except HTTPException:
         raise
     except Exception as exc:

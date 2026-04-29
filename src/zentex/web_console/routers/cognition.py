@@ -9,13 +9,11 @@ from zentex.safety.service import CognitiveConflictEngine
 from zentex.web_console.contracts.runtime import (
     CognitiveAgendaPayload,
     CognitiveConflictPayload,
-    ConsolidationCyclesPayload,
     InteractionMindPayload,
     SimulationBundlePayload,
 )
 from zentex.web_console.dependencies import (
     get_conflict_engine,
-    get_consolidation_engine,
     get_interaction_mind_engine,
     get_simulation_engine,
     get_temporal_engine,
@@ -23,10 +21,8 @@ from zentex.web_console.dependencies import (
 from .cognition_handlers import (
     handle_get_cognitive_agenda,
     handle_get_cognitive_conflicts,
-    handle_get_consolidation_cycles,
     handle_get_interaction_mind,
     handle_get_simulation_bundle,
-    handle_trigger_consolidation,
 )
 
 
@@ -64,18 +60,3 @@ def get_interaction_mind(
     interaction_mind_engine: Annotated[Any, Depends(get_interaction_mind_engine)],
 ) -> InteractionMindPayload:
     return handle_get_interaction_mind(entity_id, interaction_mind_engine)
-
-
-@router.get("/memory/consolidation-cycles", response_model=ConsolidationCyclesPayload)
-def get_consolidation_cycles(
-    consolidation_engine: Annotated[Any, Depends(get_consolidation_engine)],
-) -> ConsolidationCyclesPayload:
-    return handle_get_consolidation_cycles(consolidation_engine)
-
-
-@router.post("/memory/consolidation/trigger")
-def trigger_consolidation(
-    consolidation_engine: Annotated[Any, Depends(get_consolidation_engine)],
-) -> dict[str, str]:
-    """Manual trigger for memory consolidation via Web Console (Sub-function 59 gap)."""
-    return handle_trigger_consolidation(consolidation_engine)

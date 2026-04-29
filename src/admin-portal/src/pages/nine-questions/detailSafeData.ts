@@ -329,6 +329,8 @@ export function sanitizeQ3Evidence(rawEvidence: unknown): SanitizedDetailData<Q3
       },
       tools_agents: {
         ...toolsAgents,
+        cognitive_tools: asStringArray(toolsAgents.cognitive_tools),
+        execution_tools: asStringArray(toolsAgents.execution_tools),
         connected_agents: asArray(toolsAgents.connected_agents),
         cognitive_tool_rows: asArray(toolsAgents.cognitive_tool_rows),
         execution_tool_rows: asArray(toolsAgents.execution_tool_rows),

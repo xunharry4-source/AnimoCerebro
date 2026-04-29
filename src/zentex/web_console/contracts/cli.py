@@ -74,6 +74,9 @@ class CliToolTestCallResult(BaseModel):
     stderr: str = ""
     command_line: List[str] = Field(default_factory=list)
     working_directory: Optional[str] = None
+    duration_ms: int = 0
+    failure_category: Optional[str] = None
+    preflight_blocked: bool = False
 
 
 class CliToolDetailResponse(BaseModel):

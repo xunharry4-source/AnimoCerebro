@@ -38,6 +38,8 @@ import time
 from datetime import datetime, timezone
 from enum import Enum
 from typing import Any, Dict, List, Literal, Optional
+from urllib import error as urllib_error
+from urllib import request as urllib_request
 from uuid import uuid4
 
 from pydantic import BaseModel, ConfigDict, Field
@@ -142,6 +144,18 @@ class DegradationRecord(BaseModel):
     timestamp: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
 
 
+class CloudBoundaryDefinition(BaseModel):
+    """Open-source body / private soul / cloud audit boundary statement."""
+    model_config = ConfigDict(extra="forbid")
+
+    open_source_components: List[str] = Field(default_factory=list)
+    private_components: List[str] = Field(default_factory=list)
+    cloud_components: List[str] = Field(default_factory=list)
+    high_risk_requires_cloud_audit: bool = True
+    missing_credentials_fail_closed: bool = True
+    invalid_response_signature_rejected: bool = True
+
+
 class CloudAuditorClient:
     """G26 Cloud Audit Client - External safety validation.
 
@@ -175,6 +189,7 @@ class CloudAuditorClient:
         self._brain_scope = brain_scope
         self._degradation_history: List[DegradationRecord] = []
         self._decision_cache: Dict[str, CloudAuditDecision] = {}
+        self._decision_history: List[CloudAuditDecision] = []
         self._request_history: List[CloudAuditRequest] = []
 
     @property
@@ -238,7 +253,7 @@ class CloudAuditorClient:
             CloudAuditDecision with status and constraints
         """
         if not self.is_configured:
-            return self._handle_unconfigured(action_type, action_payload)
+            return self._handle_unconfigured(action_type, action_payload, risk_level, context)
 
         # Build request
         request = self._build_request(action_type, action_payload, risk_level, context)
@@ -261,6 +276,8 @@ class CloudAuditorClient:
         # Verify decision signature
         if not self._verify_decision_signature(decision):
             return self._handle_degradation(request, "Decision signature verification failed")
+
+        self._decision_history.append(decision)
 
         # Cache and return
         if use_cache:
@@ -321,6 +338,42 @@ class CloudAuditorClient:
     def get_degradation_history(self) -> List[DegradationRecord]:
         """Get history of degradation events."""
         return self._degradation_history.copy()
+
+    def get_request_history(self) -> List[CloudAuditRequest]:
+        """Get signed cloud audit requests sent or recorded by the client."""
+        return self._request_history.copy()
+
+    def get_decision_history(self) -> List[CloudAuditDecision]:
+        """Get accepted or degraded cloud audit decisions."""
+        return self._decision_history.copy()
+
+    def get_decision(self, decision_id: str) -> Optional[CloudAuditDecision]:
+        """Return a decision by decision_id."""
+        for decision in self._decision_history:
+            if decision.decision_id == decision_id:
+                return decision
+        return None
+
+    def get_boundary_definition(self) -> CloudBoundaryDefinition:
+        """Return the architectural boundary defined by G26."""
+        return CloudBoundaryDefinition(
+            open_source_components=[
+                "CloudAuditorClient request signing",
+                "response signature verification",
+                "explicit degradation records",
+                "local execution consumption of audit decision",
+            ],
+            private_components=[
+                "policy authoring",
+                "risk scoring policy corpus",
+                "human review workflow",
+            ],
+            cloud_components=[
+                "remote independent policy decision service",
+                "decision_id/request_id/policy_version issuance",
+                "server-side response signing",
+            ],
+        )
 
     def clear_cache(self) -> None:
         """Clear decision cache."""
@@ -399,7 +452,8 @@ class CloudAuditorClient:
 
         # Reconstruct expected signature
         timestamp = int(decision.created_at.timestamp())
-        canonical = f"{decision.decision_id}|{decision.request_id}|{timestamp}|{decision.status}"
+        status_value = decision.status.value if hasattr(decision.status, "value") else str(decision.status)
+        canonical = f"{decision.decision_id}|{decision.request_id}|{timestamp}|{status_value}"
 
         expected = hmac.new(
             self._config.api_secret.encode("utf-8"),
@@ -410,14 +464,29 @@ class CloudAuditorClient:
         return hmac.compare_digest(decision.signature, f"hmac-sha256={expected}")
 
     def _call_cloud_service(self, request: CloudAuditRequest) -> CloudAuditDecision:
-        """Make HTTP call to cloud audit service.
+        """Make a real HTTP JSON call to the configured cloud audit service."""
+        body = json.dumps(request.model_dump(mode="json"), sort_keys=True).encode("utf-8")
+        http_request = urllib_request.Request(
+            self._config.endpoint,
+            data=body,
+            headers={
+                "Content-Type": "application/json",
+                "X-Zentex-Api-Key": self._config.api_key,
+                "X-Zentex-Signature": request.client_signature,
+            },
+            method="POST",
+        )
+        try:
+            with urllib_request.urlopen(http_request, timeout=self._config.timeout_seconds) as response:
+                response_body = response.read().decode("utf-8")
+        except (urllib_error.URLError, TimeoutError, OSError) as exc:
+            raise CloudServiceUnavailable(str(exc)) from exc
 
-        Note: This is a placeholder for actual HTTP implementation.
-        In production, this would make a real HTTP request.
-        """
-        # Placeholder: In production, this calls the actual cloud service
-        # For now, simulate with local decision
-        raise CloudServiceUnavailable("Cloud service integration not implemented")
+        try:
+            payload = json.loads(response_body)
+            return CloudAuditDecision.model_validate(payload)
+        except Exception as exc:
+            raise CloudServiceUnavailable(f"Invalid cloud audit response JSON: {exc}") from exc
 
     def _call_cloud_service_batch(
         self,
@@ -431,12 +500,16 @@ class CloudAuditorClient:
         self,
         action_type: str,
         action_payload: Dict[str, Any],
+        risk_level: Literal["low", "medium", "high", "critical"] = "medium",
+        context: Optional[Dict[str, Any]] = None,
     ) -> CloudAuditDecision:
         """Handle case when cloud auditor is not configured."""
         # Create a request for recording purposes
         request = CloudAuditRequest(
             action_type=action_type,
             action_payload=action_payload,
+            risk_level=risk_level,
+            context=context or {},
             brain_scope=self._brain_scope,
         )
 
@@ -455,7 +528,9 @@ class CloudAuditorClient:
         )
         self._degradation_history.append(record)
 
-        return self._create_local_fallback_decision(request, reason)
+        decision = self._create_local_fallback_decision(request, reason)
+        self._decision_history.append(decision)
+        return decision
 
     def _create_local_fallback_decision(
         self,
@@ -471,7 +546,7 @@ class CloudAuditorClient:
 
         return CloudAuditDecision(
             request_id=request.request_id,
-            lifecycle_status=lifecycle_status,
+            status=status,
             reason=f"[DEGRADED MODE] {reason}. Using local policy fallback.",
             policy_version=self._config.degraded_policy_version,
             constraints={
@@ -505,3 +580,6 @@ class CloudServiceUnavailable(Exception):
 
 class InvalidSignature(Exception):
     """Raised when response signature verification fails."""
+
+
+CloudSanityAuditorClient = CloudAuditorClient

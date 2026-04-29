@@ -141,6 +141,6 @@ async def update_record_management(
 
 
 @router.post("/consolidation/trigger")
-async def trigger_consolidation(request: Request) -> dict[str, str]:
+async def trigger_consolidation(request: Request) -> dict[str, object]:
     """Trigger manual memory consolidation cycle."""
     return await trigger_consolidation_cycle(request)

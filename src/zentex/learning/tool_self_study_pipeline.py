@@ -1,9 +1,9 @@
 from __future__ import annotations
 """
-G16 Tool Self-Study Pipeline — zentex.learning.g16_pipeline
+Tool Self-Study Pipeline — zentex.learning.tool_self_study_pipeline
 
 RESPONSIBILITY:
-  Orchestrates the Voyager-style iterative loop for G16 tool distillation.
+  Orchestrates the Voyager-style iterative loop for tool distillation.
   Input preprocessing and prompt construction are fully delegated to
   zentex.learning.llm_prompt — this module MUST NOT build or inline any
   prompt string sent to the LLM.
@@ -24,24 +24,24 @@ import dspy
 from zentex.foundation.specs.model_provider import ModelProviderCallerContext, ModelProviderSpec
 from zentex.foundation.specs.cognitive_tool_spec import CognitiveToolSpec
 from zentex.plugins.contracts import PluginLifecycleStatus, PluginHealthStatus
-from zentex.learning.g16_models import SandboxValidationResult, ToolKnowledgeRecord
+from zentex.learning.models import SandboxValidationResult, ToolKnowledgeRecord
 from zentex.learning.sandbox import ThoughtSandbox
 from zentex.llm.service import LLMService
 from zentex.learning.llm_prompt import (
-    build_g16_distillation_inputs,
-    build_g16_critic_inputs,
+    build_tool_distillation_inputs,
+    build_tool_critic_inputs,
     summarise_feedback_for_next_attempt,
 )
 
 from zentex.learning.dspy_adapter import ZentexDSPyLM
-from zentex.learning.g16_dspy_signatures import ToolDistillationModule, ToolCriticModule
+from zentex.learning.tool_dspy_signatures import ToolDistillationModule, ToolCriticModule
 from zentex.learning.store import LEARNING_EVENT_TYPE, LearningStore
 
 MAX_ATTEMPTS = 3
 MAX_CPU_SEC = 2.0
 MAX_MEM_MB = 100.0
 
-async def run_g16_dynamic_tool_self_study(
+async def run_dynamic_tool_self_study(
     *,
     doc_url: str,
     provider: Optional[ModelProviderSpec] = None,
@@ -51,16 +51,16 @@ async def run_g16_dynamic_tool_self_study(
     trace_id: str,
 ) -> Optional[ToolKnowledgeRecord]:
     """
-    Execute G16 Tool Self-Study pipeline using Voyager Iterative loop and DSPy:
+    Execute Tool Self-Study pipeline using Voyager Iterative loop and DSPy:
     1. Distill tool info from documentation using DSPy (with error回放 if failed).
     2. Sandbox verification of distilled tool.
     3. Return validated ToolKnowledgeRecord for promotion or feed error back to DSPy.
     """
     sandbox = ThoughtSandbox()
     caller = ModelProviderCallerContext(
-        source_module="zentex.learning.g16_pipeline",
-        invocation_phase="g16_tool_distillation",
-        question_driver_refs=["G16", "Voyager", "DSPy"],
+        source_module="zentex.learning.tool_self_study_pipeline",
+        invocation_phase="tool_self_study_distillation",
+        question_driver_refs=["tool_self_study", "Voyager", "DSPy"],
         trace_id=trace_id,
         decision_id=None,
     )
@@ -82,16 +82,16 @@ async def run_g16_dynamic_tool_self_study(
     for attempt in range(MAX_ATTEMPTS):
         store.write_entry(
             session_id="learning_engine",
-            turn_id=f"g16_learning_attempt_{attempt + 1}",
+            turn_id=f"tool_self_study_learning_attempt_{attempt + 1}",
             entry_type=LEARNING_EVENT_TYPE,
             payload={"kind": "attempt_started", "attempt": attempt + 1, "feedback": feedback_history},
-            source="zentex.learning.g16_pipeline",
+            source="zentex.learning.tool_self_study_pipeline",
             trace_id=trace_id,
         )
 
         try:
             # All input preprocessing delegated to llm_prompt.py
-            distillation_inputs = build_g16_distillation_inputs(
+            distillation_inputs = build_tool_distillation_inputs(
                 doc_url=doc_url,
                 feedback_history=feedback_history,
             )
@@ -113,10 +113,10 @@ async def run_g16_dynamic_tool_self_study(
         except Exception as exc:
             store.write_entry(
                 session_id="learning_engine",
-                turn_id=f"g16_learning_attempt_{attempt + 1}",
+                turn_id=f"tool_self_study_learning_attempt_{attempt + 1}",
                 entry_type=LEARNING_EVENT_TYPE,
                 payload={"kind": "retry", "reason": f"DSPy or LLM parsing error: {str(exc)}"},
-                source="zentex.learning.g16_pipeline",
+                source="zentex.learning.tool_self_study_pipeline",
                 trace_id=trace_id,
             )
             feedback_history = summarise_feedback_for_next_attempt(
@@ -127,7 +127,7 @@ async def run_g16_dynamic_tool_self_study(
             continue
 
         # 2a. Pre-Sandbox Critic Review — inputs preprocessed via llm_prompt.py
-        critic_inputs = build_g16_critic_inputs(
+        critic_inputs = build_tool_critic_inputs(
             doc_url=doc_url,
             proposed_tool_name=record.tool_name,
             proposed_code_schema=json.dumps(record.input_schema),
@@ -144,18 +144,18 @@ async def run_g16_dynamic_tool_self_study(
             )
             store.write_entry(
                 session_id="learning_engine",
-                turn_id=f"g16_learning_attempt_{attempt + 1}",
+                turn_id=f"tool_self_study_learning_attempt_{attempt + 1}",
                 entry_type=LEARNING_EVENT_TYPE,
                 payload={"kind": "retry", "reason": "critic_rejected", "critique": critique_res.critique_feedback},
-                source="zentex.learning.g16_pipeline",
+                source="zentex.learning.tool_self_study_pipeline",
                 trace_id=trace_id,
             )
             continue
 
         spec = CognitiveToolSpec(
-            plugin_id=f"g16_candidate_{uuid.uuid4().hex[:8]}",
+            plugin_id=f"tool_self_study_candidate_{uuid.uuid4().hex[:8]}",
             version="0.1.0",
-            feature_code="g16.dynamic_study",
+            feature_code="tool_self_study.dynamic_study",
             is_concurrency_safe=True,
             lifecycle_status=PluginLifecycleStatus.CANDIDATE,
             health_status=PluginHealthStatus.HEALTHY,
@@ -189,20 +189,20 @@ async def run_g16_dynamic_tool_self_study(
                 )
                 store.write_entry(
                     session_id="learning_engine",
-                    turn_id=f"g16_learning_attempt_{attempt + 1}",
+                    turn_id=f"tool_self_study_learning_attempt_{attempt + 1}",
                     entry_type=LEARNING_EVENT_TYPE,
                     payload={"kind": "retry", "reason": "performance_overload", "metrics": validation.performance_metrics},
-                    source="zentex.learning.g16_pipeline",
+                    source="zentex.learning.tool_self_study_pipeline",
                     trace_id=trace_id,
                 )
                 continue
 
             store.write_entry(
                 session_id="learning_engine",
-                turn_id="g16_learning_success",
+                turn_id="tool_self_study_learning_success",
                 entry_type=LEARNING_EVENT_TYPE,
                 payload={"kind": "completed", "attempt_needed": attempt + 1, "tool_name": record.tool_name},
-                source="zentex.learning.g16_pipeline",
+                source="zentex.learning.tool_self_study_pipeline",
                 trace_id=trace_id,
             )
             return record
@@ -214,19 +214,19 @@ async def run_g16_dynamic_tool_self_study(
             )
             store.write_entry(
                 session_id="learning_engine",
-                turn_id=f"g16_learning_attempt_{attempt + 1}",
+                turn_id=f"tool_self_study_learning_attempt_{attempt + 1}",
                 entry_type=LEARNING_EVENT_TYPE,
                 payload={"kind": "retry", "reason": feedback_history},
-                source="zentex.learning.g16_pipeline",
+                source="zentex.learning.tool_self_study_pipeline",
                 trace_id=trace_id,
             )
 
     store.write_entry(
         session_id="learning_engine",
-        turn_id="g16_learning_exhausted",
+        turn_id="tool_self_study_learning_exhausted",
         entry_type=LEARNING_EVENT_TYPE,
         payload={"kind": "aborted", "reason": "Max attempts exhausted"},
-        source="zentex.learning.g16_pipeline",
+        source="zentex.learning.tool_self_study_pipeline",
         trace_id=trace_id,
     )
     return None

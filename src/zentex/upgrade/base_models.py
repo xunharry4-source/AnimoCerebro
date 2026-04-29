@@ -9,6 +9,7 @@ These are shared base classes used across LLM and plugin upgrade systems.
 from enum import Enum
 from typing import List, Dict, Any, Optional
 from pydantic import BaseModel, ConfigDict, Field
+from uuid import uuid4
 
 
 class UpgradeTargetKind(str, Enum):
@@ -29,6 +30,7 @@ class SelfUpgradeProposal(BaseModel):
     model_config = ConfigDict(extra="forbid")
     
     # Core identification fields
+    proposal_id: str = Field(default_factory=lambda: f"self-upgrade-proposal-{uuid4().hex[:12]}")
     program_id: str = Field(..., description="Unique identifier for the upgrade program")
     target_metric: str = Field(..., description="Primary metric being optimized")
     baseline_version: str = Field(..., description="Current version being upgraded from")
@@ -46,19 +48,19 @@ class SelfUpgradeProposal(BaseModel):
     affected_modules: List[str] = Field(default_factory=list, description="Modules affected by this upgrade")
     
     # G25 nine-question audit results
-    g25_q1_necessity: bool = Field(default=False, description="Q1: Is upgrade necessary?")
-    g25_q2_risk_acceptable: bool = Field(default=False, description="Q2: Is risk acceptable?")
-    g25_q3_impact_assessed: bool = Field(default=False, description="Q3: Is impact assessed?")
-    g25_q4_rollback_plan: bool = Field(default=False, description="Q4: Is rollback plan ready?")
-    g25_q5_validation_complete: bool = Field(default=False, description="Q5: Is validation complete?")
-    g25_q6_compliance: bool = Field(default=False, description="Q6: Is it compliant?")
-    g25_q7_performance: bool = Field(default=False, description="Q7: Is performance acceptable?")
-    g25_q8_dependencies: bool = Field(default=False, description="Q8: Are dependencies managed?")
-    g25_q9_maintainability: bool = Field(default=False, description="Q9: Is it maintainable?")
+    audit_q1_necessity: bool = Field(default=False, description="Q1: Is upgrade necessary?")
+    audit_q2_risk_acceptable: bool = Field(default=False, description="Q2: Is risk acceptable?")
+    audit_q3_impact_assessed: bool = Field(default=False, description="Q3: Is impact assessed?")
+    audit_q4_rollback_plan: bool = Field(default=False, description="Q4: Is rollback plan ready?")
+    audit_q5_validation_complete: bool = Field(default=False, description="Q5: Is validation complete?")
+    audit_q6_compliance: bool = Field(default=False, description="Q6: Is it compliant?")
+    audit_q7_performance: bool = Field(default=False, description="Q7: Is performance acceptable?")
+    audit_q8_dependencies: bool = Field(default=False, description="Q8: Are dependencies managed?")
+    audit_q9_maintainability: bool = Field(default=False, description="Q9: Is it maintainable?")
     
     # Overall G25 audit result
-    g25_audit_verified: bool = Field(default=False, description="Overall G25 audit result")
-    g25_audit_details: Dict[str, Any] = Field(default_factory=dict, description="Detailed G25 audit results")
+    rational_audit_verified: bool = Field(default=False, description="Overall G25 audit result")
+    rational_audit_details: Dict[str, Any] = Field(default_factory=dict, description="Detailed G25 audit results")
     
 
 class CandidatePatch(BaseModel):
@@ -69,9 +71,13 @@ class CandidatePatch(BaseModel):
     model_config = ConfigDict(extra="forbid")
     
     patch_id: str = Field(..., description="Unique patch identifier")
+    proposal_id: str = Field(default="", description="Reference to the originating proposal")
     target_component: str = Field(..., description="Component being patched")
     changes: Dict[str, Any] = Field(default_factory=dict, description="Description of changes")
     risk_level: str = Field(default="medium", description="Risk assessment: low, medium, high")
+    patch_type: str = Field(default="upgrade", description="Patch type")
+    files_to_modify: List[str] = Field(default_factory=list, description="Files expected to change")
+    diff_summary: str = Field(default="", description="Human-readable diff summary")
     
     # Sandbox verification fields
     isolation_path: str = Field(default="", description="Path to isolated sandbox directory")
@@ -114,6 +120,7 @@ class PromotionDecision(BaseModel):
     
     decision_id: str = Field(..., description="Unique decision identifier")
     candidate_version: str = Field(..., description="Version under consideration")
+    decision: str = Field(default="", description="promote, reject, defer")
     action: str = Field(..., description="promote, reject, defer")
     rationale: str = Field(default="", description="Reasoning for the decision")
     conditions: List[str] = Field(default_factory=list, description="Conditions that must be met")
@@ -121,7 +128,7 @@ class PromotionDecision(BaseModel):
     
     # G25 audit fields
     reviewer_id: str = Field(default="G25_audit", description="Reviewer identifier")
-    confirmed_by_g25: bool = Field(default=False, description="Whether G25 audit confirmed")
+    audit_confirmed: bool = Field(default=False, description="Whether G25 audit confirmed")
     final_version: str = Field(default="", description="Final version after promotion")
     
     # Candidate reference

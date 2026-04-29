@@ -9,181 +9,44 @@ request, checks runtime readiness, and returns a candidate plan that can later
 be executed by a real optimization worker.
 """
 
-from importlib.util import find_spec
-from zentex.foundation.specs.model_provider import ModelProviderCallerContext
-
-from zentex.upgrade.llm.models import (
-    LLMUpgradeCandidate,
-    LLMUpgradeExecutionPlan,
-    LLMUpgradeRequest,
-)
-from zentex.upgrade.versioning import derive_candidate_version
-from zentex.upgrade.base_models import SelfUpgradeProposal, UpgradeTargetKind
+from zentex.upgrade.llm.models import LLMUpgradeCandidate, LLMUpgradeRequest
+from zentex.upgrade.base_models import SelfUpgradeProposal
 from typing import Any
 from zentex.common.prompt_upgrade_contract import ModulePromptUpgradeContract, build_section_policy
-from zentex.upgrade.llm.prompt_builders import (
-    build_dspy_primitive_generation_request,
-    build_optimization_needs_request,
-    build_target_identification_request,
+from zentex.upgrade.llm.planner import (
+    LLMEvolutionTargetPlanner,
+    LLMUpgradePlanner,
+    OptimizationNeedsDetector,
 )
 
 
 class DSPyLLMUpgradeService:
     """Fail-closed planner for DSPy-driven LLM optimization candidates."""
 
+    def __init__(self, *, planner: LLMUpgradePlanner | None = None) -> None:
+        self._planner = planner or LLMUpgradePlanner()
+
     def assert_runtime_ready(self) -> None:
-        if find_spec("dspy") is None:
-            raise RuntimeError(
-                "DSPy is not installed; configure the LLM upgrade runtime before "
-                "running optimization jobs."
-            )
+        self._planner.assert_runtime_ready()
 
     def plan_candidate(self, request: LLMUpgradeRequest) -> LLMUpgradeCandidate:
-        self.assert_runtime_ready()
-
-        candidate_version = derive_candidate_version(
-            request.baseline_version,
-            request.change_scope,
-        )
-        execution_plan = LLMUpgradeExecutionPlan(
-            optimizer_name=request.optimizer_name,
-            target_metric=request.target_metric,
-            dataset_refs=request.dataset_refs,
-            validation_commands=request.validation_commands,
-            required_artifacts=[
-                "optimizer_report.json",
-                "evaluation_summary.json",
-                "candidate_prompt_bundle.json",
-            ],
-            metadata=self._build_prompt_upgrade_metadata(request),
-        )
-        
-        # Function 59 gap: Native DSPy Signatures and Metrics generation
-        dspy_primitives = self.generate_dspy_primitives(
-            objective_summary=request.objective_summary,
-            target_metric=request.target_metric
-        )
-        
-        return LLMUpgradeCandidate(
-            program_id=request.program_id,
-            target_component=request.target_component,
-            baseline_version=request.baseline_version,
-            candidate_version=candidate_version,
-            objective_summary=request.objective_summary,
-            execution_plan=execution_plan,
-            release_gate=[
-                "Optimization metrics must beat or match the active baseline.",
-                "Validation commands must pass before candidate promotion.",
-                "Candidate artifacts must be persisted for audit and rollback.",
-            ],
-            dspy_signature=dspy_primitives.get("signature"),
-            dspy_module=dspy_primitives.get("module"),
-            metadata=self._build_prompt_upgrade_metadata(request),
-        )
-
-    def _build_prompt_upgrade_metadata(self, request: LLMUpgradeRequest) -> dict[str, object]:
-        metadata: dict[str, object] = {}
-        if request.upgrade_kind:
-            metadata["upgrade_kind"] = request.upgrade_kind
-        if request.prompt_file_path:
-            metadata["prompt_file_path"] = request.prompt_file_path
-        if request.prompt_builder_symbol:
-            metadata["prompt_builder_symbol"] = request.prompt_builder_symbol
-        if request.immutable_intent:
-            metadata["immutable_intent"] = request.immutable_intent
-        if request.forbidden_prompt_changes:
-            metadata["forbidden_prompt_changes"] = list(request.forbidden_prompt_changes)
-        if request.allowed_prompt_change_scope:
-            metadata["allowed_prompt_change_scope"] = list(request.allowed_prompt_change_scope)
-        if request.prompt_contract:
-            metadata["prompt_contract"] = dict(request.prompt_contract)
-        return metadata
+        return self._planner.plan_candidate(request)
 
     def generate_dspy_primitives(self, objective_summary: str, target_metric: str) -> dict[str, str]:
-        """Real-time generation of DSPy Signature and Metric strings via LLM."""
-        from zentex.llm.gateway import LLMGateway
-        
-        gateway = LLMGateway()
-        caller_context = ModelProviderCallerContext(
-            source_module="llm_upgrade_service",
-            invocation_phase="primitive_generation",
-            decision_id=f"dspy-gen-{objective_summary[:8]}"
-        )
-        
-        request = build_dspy_primitive_generation_request(
+        return self._planner.generate_primitives(
             objective_summary=objective_summary,
             target_metric=target_metric,
         )
-        
-        try:
-            response = gateway.invoke_generate_json(
-                prompt=request["prompt"],
-                context={"target_metric": target_metric},
-                caller_context=caller_context,
-                system_prompt=str(request["system_prompt"]),
-            )
-            return response.output
-        except Exception as e:
-            raise RuntimeError(f"[LLM MANDATORY] Failed to generate DSPy primitives: {e}") from e
 
     def detect_optimization_needs(self, failure_logs: list[dict[str, Any]]) -> list[SelfUpgradeProposal]:
-        """Analyze failure logs to identify LLM optimization opportunities via LLM reasoning."""
-        from zentex.llm.gateway import LLMGateway
-        
-        if not failure_logs:
-            return []
-            
-        gateway = LLMGateway()
-        caller_context = ModelProviderCallerContext(
-            source_module="llm_upgrade_service",
-            invocation_phase="needs_detection",
-            decision_id="llm-needs-analysis"
-        )
-        
-        request = build_optimization_needs_request(failure_logs)
-        
-        try:
-            response = gateway.invoke_generate_json(
-                prompt=str(request["prompt"]),
-                context=dict(request["model_context"]),
-                caller_context=caller_context,
-                system_prompt=str(request["system_prompt"]),
-            )
-            # In a real implementation we would convert JSON to SelfUpgradeProposal objects
-            # For now, we raise if LLM fails, satisfying mandatory LLM rule.
-            return [] # Logic to map response.output to proposals...
-        except Exception as e:
-            raise RuntimeError(f"[LLM MANDATORY] Optimization needs detection failed: {e}") from e
+        return OptimizationNeedsDetector().detect(failure_logs)
 
 
 class LLMEvolutionPlanner:
     """Automatic target metric and capability identification via LLM reasoning."""
 
     def identify_optimal_targets(self, failure_history: list[dict[str, Any]]) -> list[dict[str, Any]]:
-        """Identify which LLM capabilities need optimization based on history using LLM."""
-        from zentex.llm.gateway import LLMGateway
-        
-        if not failure_history:
-            return []
-            
-        gateway = LLMGateway()
-        caller_context = ModelProviderCallerContext(
-            source_module="evolution_planner",
-            invocation_phase="target_identification",
-            decision_id="evolution-targets"
-        )
-        
-        request = build_target_identification_request(failure_history)
-        
-        try:
-            response = gateway.invoke_generate_json(
-                prompt=str(request["prompt"]),
-                context=dict(request["model_context"]),
-                caller_context=caller_context
-            )
-            return response.output.get("findings", [])
-        except Exception as e:
-            raise RuntimeError(f"[LLM MANDATORY] Target identification failed: {e}") from e
+        return LLMEvolutionTargetPlanner().identify_optimal_targets(failure_history)
 
 
 class LLMUpgradeValidator:
@@ -191,13 +54,10 @@ class LLMUpgradeValidator:
 
     def run_offline_evaluation(self, candidate: LLMUpgradeCandidate, dataset: list[dict[str, Any]]) -> dict[str, Any]:
         """Run programmatic evaluation of a candidate LLM program."""
-        # Simulated evaluation results
-        return {
-            "score": 0.85,
-            "beat_baseline": True,
-            "regression_detected": False,
-            "latency_ms": 120,
-        }
+        raise RuntimeError(
+            "LLM upgrade evaluation requires a real evaluator runner and persisted artifact refs; "
+            "simulated metrics are not allowed."
+        )
 
 
 def list_prompt_upgrade_contracts() -> list[ModulePromptUpgradeContract]:

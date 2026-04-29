@@ -33,7 +33,14 @@ class InfoService:
     - Generate compatibility matrices
     """
     
-    def __init__(self, storage, plugin_instances, query_service, determine_category_fn=None):
+    def __init__(
+        self,
+        storage,
+        plugin_instances,
+        query_service,
+        determine_category_fn=None,
+        runtime_loader_fn=None,
+    ):
         """
         Initialize info service.
         
@@ -42,11 +49,40 @@ class InfoService:
             plugin_instances: In-memory plugin registry
             query_service: QueryService for querying plugins
             determine_category_fn: Function to determine plugin category
+            runtime_loader_fn: Optional function that loads a registered plugin
+                instance on demand.
         """
         self._storage = storage
         self._plugin_instances = plugin_instances
         self._query_service = query_service
         self._determine_category = determine_category_fn
+        self._runtime_loader = runtime_loader_fn
+
+    def _resolve_plugin_id(self, plugin_id: str) -> tuple[str, Optional[Dict[str, Any]]]:
+        resolved_plugin_id = plugin_id
+        plugin_meta = None
+        for alias in iter_plugin_id_aliases(plugin_id):
+            plugin_meta = self._storage.get_plugin(alias)
+            if plugin_meta is not None:
+                resolved_plugin_id = alias
+                break
+        return resolved_plugin_id, plugin_meta
+
+    def _get_or_load_instance(self, plugin_id: str) -> tuple[str, Optional[Dict[str, Any]], Any]:
+        resolved_plugin_id, plugin_meta = self._resolve_plugin_id(plugin_id)
+        plugin = self._plugin_instances.get(resolved_plugin_id)
+        if plugin is None and plugin_meta is not None and callable(self._runtime_loader):
+            try:
+                self._runtime_loader(resolved_plugin_id)
+            except Exception as exc:
+                logger.error(
+                    "Plugin runtime load failed for %s: %s",
+                    resolved_plugin_id,
+                    exc,
+                    exc_info=True,
+                )
+            plugin = self._plugin_instances.get(resolved_plugin_id)
+        return resolved_plugin_id, plugin_meta, plugin
 
     def get_plugin_documentation(self, plugin_id: str) -> Optional[str]:
         """
@@ -64,18 +100,9 @@ class InfoService:
             Documentation string or None if not found
         """
         try:
-            resolved_plugin_id = plugin_id
-            plugin_meta = None
-            for alias in iter_plugin_id_aliases(plugin_id):
-                plugin_meta = self._storage.get_plugin(alias)
-                if plugin_meta is not None:
-                    resolved_plugin_id = alias
-                    break
-
+            resolved_plugin_id, plugin_meta, plugin = self._get_or_load_instance(plugin_id)
             # Try to get from plugin instance first
-            if resolved_plugin_id in self._plugin_instances:
-                plugin = self._plugin_instances[resolved_plugin_id]
-                
+            if plugin is not None:
                 # Get class docstring
                 class_doc = inspect.getdoc(plugin.__class__)
                 
@@ -142,11 +169,15 @@ class InfoService:
                 'primary_method': None,
             }
             
-            if plugin_id not in self._plugin_instances:
-                logger.warning(f"Plugin instance not found: {plugin_id}")
+            resolved_plugin_id, plugin_meta, plugin = self._get_or_load_instance(plugin_id)
+            protocol["plugin_id"] = resolved_plugin_id
+            if plugin is None:
+                if plugin_meta is None:
+                    logger.warning(f"Plugin instance not found: {plugin_id}")
+                else:
+                    protocol["registered"] = True
+                    protocol["runtime_loaded"] = False
                 return protocol
-            
-            plugin = self._plugin_instances[plugin_id]
             
             # Check for supported execution methods
             for method_name in ['execute', 'process', 'run', 'handle']:
@@ -272,12 +303,30 @@ class InfoService:
         """
         try:
             capabilities = []
-            
-            if plugin_id not in self._plugin_instances:
-                logger.warning(f"Plugin instance not found: {plugin_id}")
+            resolved_plugin_id, plugin_meta, plugin = self._get_or_load_instance(plugin_id)
+            if plugin is None:
+                if plugin_meta is None:
+                    logger.warning(f"Plugin instance not found: {plugin_id}")
+                else:
+                    spec_dict = plugin_meta.get("spec_json")
+                    if isinstance(spec_dict, str) and spec_dict:
+                        try:
+                            import json
+                            spec_payload = json.loads(spec_dict)
+                        except Exception:
+                            spec_payload = {}
+                    else:
+                        spec_payload = spec_dict if isinstance(spec_dict, dict) else {}
+                    for field_name in ("capability_tags", "capabilities"):
+                        values = spec_payload.get(field_name) if isinstance(spec_payload, dict) else None
+                        if isinstance(values, list):
+                            capabilities.extend(str(value) for value in values if str(value).strip())
                 return capabilities
-            
-            plugin = self._plugin_instances[plugin_id]
+
+            for field_name in ("capability_tags", "capabilities"):
+                values = getattr(plugin, field_name, None)
+                if isinstance(values, list):
+                    capabilities.extend(str(value) for value in values if str(value).strip())
             
             # Check for method capabilities
             if hasattr(plugin, 'execute'):
@@ -301,7 +350,7 @@ class InfoService:
                 if plugin_meta.get('is_concurrency_safe'):
                     capabilities.append("Thread-safe for concurrent execution")
             
-            return capabilities
+            return list(dict.fromkeys(capabilities))
             
         except Exception as e:
             logger.error(f"Error retrieving capabilities for {plugin_id}: {e}")

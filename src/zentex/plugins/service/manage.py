@@ -126,7 +126,11 @@ class ManagementService:
             return False
 
         try:
-            self._plugin_instances[plugin_id] = factory()
+            instance = factory()
+            if self._index_fn is not None:
+                self._index_fn(plugin_id, instance=instance)
+            else:
+                self._plugin_instances[plugin_id] = instance
             logger.info("[Plugins] Rehydrated runtime instance for ACTIVE plugin %s", plugin_id)
             return True
         except Exception as exc:

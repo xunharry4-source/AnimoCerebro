@@ -30,7 +30,7 @@ interface SupervisionStatus {
   active_alerts: number;
 }
 
-interface Alert {
+interface SupervisionAlert {
   alert_id: string;
   timestamp: string;
   severity: string;
@@ -56,9 +56,92 @@ interface ExecutionRecord {
   supervisor_notes: string[];
 }
 
+const Button: React.FC<React.ButtonHTMLAttributes<HTMLButtonElement> & { variant?: string; size?: string }> = ({
+  children,
+  variant: _variant,
+  size: _size,
+  className,
+  ...props
+}) => <button type="button" className={className} {...props}>{children}</button>;
+
+const Card: React.FC<React.HTMLAttributes<HTMLDivElement>> = ({ children, className, ...props }) => (
+  <div className={className} {...props}>{children}</div>
+);
+const CardHeader = Card;
+const CardContent = Card;
+const CardTitle: React.FC<React.HTMLAttributes<HTMLHeadingElement>> = ({ children, className, ...props }) => (
+  <h3 className={className} {...props}>{children}</h3>
+);
+const Badge: React.FC<React.HTMLAttributes<HTMLSpanElement> & { variant?: string }> = ({
+  children,
+  variant: _variant,
+  className,
+  ...props
+}) => <span className={className} {...props}>{children}</span>;
+const Alert: React.FC<React.HTMLAttributes<HTMLDivElement> & { variant?: string }> = ({
+  children,
+  variant: _variant,
+  className,
+  ...props
+}) => <div className={className} role="status" {...props}>{children}</div>;
+const AlertTitle: React.FC<React.HTMLAttributes<HTMLHeadingElement>> = ({ children, className, ...props }) => (
+  <h4 className={className} {...props}>{children}</h4>
+);
+const AlertDescription = Card;
+const Tabs: React.FC<React.HTMLAttributes<HTMLDivElement> & { defaultValue?: string }> = ({
+  children,
+  defaultValue: _defaultValue,
+  className,
+  ...props
+}) => <div className={className} {...props}>{children}</div>;
+const TabsList = Card;
+const TabsTrigger: React.FC<React.ButtonHTMLAttributes<HTMLButtonElement> & { value: string }> = ({
+  children,
+  value: _value,
+  className,
+  ...props
+}) => <button type="button" className={className} {...props}>{children}</button>;
+const TabsContent: React.FC<React.HTMLAttributes<HTMLDivElement> & { value: string }> = ({
+  children,
+  value: _value,
+  className,
+  ...props
+}) => <div className={className} {...props}>{children}</div>;
+const Select: React.FC<React.HTMLAttributes<HTMLDivElement> & { value?: string; onValueChange?: (value: string) => void }> = ({
+  children,
+  value: _value,
+  onValueChange: _onValueChange,
+  ...props
+}) => <div {...props}>{children}</div>;
+const SelectTrigger = Card;
+const SelectValue: React.FC<{ placeholder?: string }> = ({ placeholder }) => <span>{placeholder}</span>;
+const SelectContent = Card;
+const SelectItem: React.FC<React.HTMLAttributes<HTMLDivElement> & { value: string }> = ({
+  children,
+  value: _value,
+  ...props
+}) => <div {...props}>{children}</div>;
+const Table: React.FC<React.TableHTMLAttributes<HTMLTableElement>> = ({ children, ...props }) => <table {...props}>{children}</table>;
+const TableHeader: React.FC<React.HTMLAttributes<HTMLTableSectionElement>> = ({ children, ...props }) => <thead {...props}>{children}</thead>;
+const TableBody: React.FC<React.HTMLAttributes<HTMLTableSectionElement>> = ({ children, ...props }) => <tbody {...props}>{children}</tbody>;
+const TableRow: React.FC<React.HTMLAttributes<HTMLTableRowElement>> = ({ children, ...props }) => <tr {...props}>{children}</tr>;
+const TableHead: React.FC<React.ThHTMLAttributes<HTMLTableCellElement>> = ({ children, ...props }) => <th {...props}>{children}</th>;
+const TableCell: React.FC<React.TdHTMLAttributes<HTMLTableCellElement>> = ({ children, ...props }) => <td {...props}>{children}</td>;
+const Dialog: React.FC<React.HTMLAttributes<HTMLDivElement> & { open: boolean; onOpenChange?: (open: boolean) => void }> = ({
+  children,
+  open,
+  onOpenChange: _onOpenChange,
+  ...props
+}) => (open ? <div role="dialog" {...props}>{children}</div> : null);
+const DialogContent = Card;
+const DialogHeader = Card;
+const DialogTitle: React.FC<React.HTMLAttributes<HTMLHeadingElement>> = ({ children, ...props }) => <h2 {...props}>{children}</h2>;
+const Label: React.FC<React.LabelHTMLAttributes<HTMLLabelElement>> = ({ children, ...props }) => <label {...props}>{children}</label>;
+const Textarea: React.FC<React.TextareaHTMLAttributes<HTMLTextAreaElement>> = (props) => <textarea {...props} />;
+
 const AISupervisionDashboard: React.FC = () => {
   const [status, setStatus] = useState<SupervisionStatus | null>(null);
-  const [alerts, setAlerts] = useState<Alert[]>([]);
+  const [alerts, setAlerts] = useState<SupervisionAlert[]>([]);
   const [executions, setExecutions] = useState<ExecutionRecord[]>([]);
   const [loading, setLoading] = useState(true);
   const [selectedSeverity, setSelectedSeverity] = useState<string>('all');
@@ -150,7 +233,7 @@ const AISupervisionDashboard: React.FC = () => {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
-          task_id: interventionForm.taskId,
+          task_id: interventionDialog.taskId,
           action: interventionForm.action,
           reason: interventionForm.reason,
           operator_id: interventionForm.operator_id

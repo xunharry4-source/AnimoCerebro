@@ -306,7 +306,7 @@ export function Q3EvidencePanel({
     <Grid container spacing={3} sx={{ mt: 0.5 }}>
       {/* 0. 推理元数据 (Transparency Metadata) */}
       {(providerName || elapsedMs > 0) && (
-        <Grid item xs={12}>
+        <Grid size={{ xs: 12 }}>
           <Box sx={{ display: "flex", gap: 1, mb: 1 }}>
             {providerName && <Chip label={`Resource Engine: ${providerName}`} size="small" variant="outlined" color="info" />}
             {elapsedMs > 0 && <Chip label={`Latency: ${elapsedMs}ms`} size="small" variant="outlined" />}

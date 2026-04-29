@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from typing import Any
+from typing import Any, Optional
 
 from pydantic import BaseModel, ConfigDict, Field
 
@@ -31,3 +31,7 @@ class LLMTracePayload(BaseModel):
     elapsed_ms: Optional[int] = None
     error_type: Optional[str] = None
     error_message: Optional[str] = None
+
+
+LLMTokenUsagePayload.model_rebuild()
+LLMTracePayload.model_rebuild()

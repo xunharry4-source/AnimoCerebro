@@ -34,9 +34,14 @@ class UpgradeLifecycleStatus(str, Enum):
     SCAFFOLDING_CANDIDATE = "scaffolding_candidate"
     RUNNING = "running"
     VALIDATING = "validating"
+    SHADOW_RUNNING = "shadow_running"
+    CANARY_RUNNING = "canary_running"
     REGISTERED = "registered"
     ACTIVE = "active"
+    DEGRADED = "degraded"
     COMPLETED = "completed"
+    ROLLED_BACK = "rolled_back"
+    REVOKED = "revoked"
     FAILED = "failed"
     CANCELLED = "cancelled"
     CLEANED_UP = "cleaned_up"
@@ -64,17 +69,22 @@ ONGOING_STATUSES = {
     UpgradeLifecycleStatus.SCAFFOLDING_CANDIDATE,
     UpgradeLifecycleStatus.RUNNING,
     UpgradeLifecycleStatus.VALIDATING,
+    UpgradeLifecycleStatus.SHADOW_RUNNING,
+    UpgradeLifecycleStatus.CANARY_RUNNING,
     UpgradeLifecycleStatus.REGISTERED,
     UpgradeLifecycleStatus.ACTIVE,
+    UpgradeLifecycleStatus.DEGRADED,
 }
 COMPLETED_STATUSES = {
     UpgradeLifecycleStatus.COMPLETED,
     UpgradeLifecycleStatus.CLEANED_UP,
+    UpgradeLifecycleStatus.ROLLED_BACK,
 }
 FAILED_STATUSES = {
     UpgradeLifecycleStatus.FAILED,
     UpgradeLifecycleStatus.RESTORE_FAILED,
     UpgradeLifecycleStatus.ROLLBACK_FAILED,
+    UpgradeLifecycleStatus.REVOKED,
 }
 CANCELLED_STATUSES = {
     UpgradeLifecycleStatus.CANCELLED,
@@ -257,7 +267,7 @@ class UpgradeManagementStore:
     ) -> UpgradeManagementRecord:
         with self._lock:
             record = self._records[record_id]
-            if record.current_status not in Union[WAITING_STATUSES, ONGOING_STATUSES]:
+            if record.current_status not in (WAITING_STATUSES | ONGOING_STATUSES):
                 raise ValueError("Only waiting or ongoing upgrade records can be cancelled")
             if record.current_status in ONGOING_STATUSES:
                 handler = self._cancel_handlers.get(record_id)

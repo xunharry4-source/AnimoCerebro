@@ -9,6 +9,7 @@ Routing Priority: Internal plugins have highest priority (executed before extern
 import logging
 import inspect
 from typing import Any, Dict, List, Optional
+from zentex.foundation.contracts import ActionIntent
 from zentex.tasks.models import SubtaskIntent
 from zentex.tasks.dispatch.models import (
     ExecutorCandidate,
@@ -192,12 +193,14 @@ class InternalPluginExecutor:
                 "task_id": task_id,
                 "local_id": subtask.local_id,
                 "title": subtask.title,
+                "task_type": str(subtask.task_type),
                 "objective": subtask.objective,
                 "content": subtask.content,
                 "input_data": {
                     "task_id": task_id,
                     "local_id": subtask.local_id,
                     "title": subtask.title,
+                    "task_type": str(subtask.task_type),
                     "objective": subtask.objective,
                     "content": subtask.content,
                 },
@@ -284,7 +287,7 @@ class InternalPluginExecutor:
 
     def _resolve_family_method(self, plugin: Any, parameters: Dict[str, Any]) -> tuple[Any, Dict[str, Any]]:
         family_methods: list[tuple[str, Dict[str, Any]]] = [
-            ("execute_action", {"intent": parameters.get("input_data", parameters), "context": parameters}),
+            ("execute_action", {"intent": self._build_action_intent(parameters), "context": parameters}),
             ("refine_task_queue", {"task_queue": [parameters.get("input_data", parameters)], "context": parameters}),
             ("apply_posture", {"decision_trace": parameters}),
             ("get_downgrade_options", {"block_context": parameters}),
@@ -302,6 +305,53 @@ class InternalPluginExecutor:
             if callable(method):
                 return method, kwargs
         return None, {}
+
+    @staticmethod
+    def _build_action_intent(parameters: Dict[str, Any]) -> ActionIntent:
+        raw_intent = parameters.get("intent")
+        if isinstance(raw_intent, ActionIntent):
+            return raw_intent
+        if isinstance(raw_intent, dict):
+            return ActionIntent.model_validate(raw_intent)
+
+        input_data = parameters.get("input_data")
+        if not isinstance(input_data, dict):
+            input_data = {}
+
+        action_parameters = dict(parameters.get("parameters") or parameters.get("action_payload") or {})
+        if not action_parameters:
+            action_parameters = {
+                "task_id": parameters.get("task_id") or input_data.get("task_id"),
+                "local_id": parameters.get("local_id") or input_data.get("local_id"),
+                "title": parameters.get("title") or input_data.get("title"),
+                "objective": parameters.get("objective") or input_data.get("objective"),
+                "content": parameters.get("content") or input_data.get("content"),
+                "required_capabilities": list(
+                    (parameters.get("constraints") or {}).get("required_capabilities") or []
+                ),
+            }
+
+        return ActionIntent(
+            action_type=str(
+                parameters.get("action_type")
+                or parameters.get("action_name")
+                or input_data.get("action_type")
+                or input_data.get("task_type")
+                or parameters.get("task_type")
+                or "describe_capability"
+            ),
+            target=str(
+                parameters.get("target")
+                or input_data.get("target")
+                or parameters.get("title")
+                or input_data.get("title")
+                or parameters.get("content")
+                or input_data.get("content")
+                or ""
+            ),
+            parameters=action_parameters,
+            requester_id=str(parameters.get("requester_id") or parameters.get("originator_id") or ""),
+        )
     
     def _record_plugin_failure(self, plugin_id: str) -> None:
         """Update metrics after plugin failure."""

@@ -958,6 +958,143 @@
     "loadHistoryError": "Failed to load history",
     "toolNotFound": "Tool not found"
   },
+  "memory": {
+    "title": "Memory Governance",
+    "subtitle": "Manage enhanced memory status, trust, correction notes, source links, and audit records.",
+    "partialApiFailure": "Some API calls failed. Data may be incomplete:",
+    "errors": {
+      "allApisFailed": "All API calls failed. Confirm that the Zentex service is running and check the network connection.\n\nError details:\n{{details}}",
+      "pageLoadUnexpected": "Unexpected page load error. Check the browser console logs.",
+      "searchFailed": "Enhanced memory search failed. Check backend status.",
+      "managementFailed": "Memory management action failed. Check backend status.",
+      "verifyFailed": "Memory verification failed",
+      "repairFailed": "Memory repair failed",
+      "repairAllFailed": "Failed to trigger full repair"
+    },
+    "overview": {
+      "title": "Memory Overview",
+      "semantic": "Semantic: {{count}}",
+      "procedural": "Procedural: {{count}}",
+      "episodic": "Episodic: {{count}}",
+      "active": "Active: {{count}}",
+      "deprecated": "Deprecated: {{count}}",
+      "archived": "Archived: {{count}}",
+      "suspect": "Suspect: {{count}}",
+      "health": "Health: {{status}}",
+      "projectionFailures": "Projection failures: {{failures}}"
+    },
+    "bridge": {
+      "title": "External Memory Bridge Status"
+    },
+    "values": {
+      "on": "on",
+      "off": "off",
+      "encrypted": "encrypted",
+      "plain": "plain"
+    },
+    "chips": {
+      "repair": "repair:{{value}}",
+      "intervalSeconds": "interval:{{value}}s",
+      "last": "last:{{value}}",
+      "status": "status:{{value}}",
+      "tickets": "tickets:{{value}}",
+      "triggered": "triggered:{{value}}",
+      "repaired": "repaired:{{value}}",
+      "quarantined": "quarantined:{{value}}",
+      "projection": "projection:{{value}}",
+      "write": "write:{{value}}",
+      "recall": "recall:{{value}}",
+      "score": "score {{value}}",
+      "visible": "visible:{{value}}",
+      "healthFilter": "health-filter:{{value}}",
+      "repairFilter": "repair-filter:{{value}}",
+      "schemaFilter": "schema-filter:{{value}}",
+      "schema": "schema:{{value}}",
+      "health": "health:{{value}}",
+      "compress": "compress:{{value}}"
+    },
+    "actions": {
+      "repairAll": "Full Repair",
+      "viewTrace": "View trace",
+      "viewTraceReplay": "View trace replay",
+      "viewSourceEvent": "View source event",
+      "verify": "Verify",
+      "repair": "Repair",
+      "markTrusted": "Mark trusted",
+      "markSuspect": "Mark suspect",
+      "deprecate": "Deprecate",
+      "archiveHidden": "Archive hidden"
+    },
+    "repair": {
+      "recentRepairAll": "Most Recent Full Repair",
+      "noRepairAllItems": "This repair_all run did not find records that need handling.",
+      "ticketSummary": "repaired: {{repaired}} | quarantined: {{quarantined}} | projection: {{projection}}"
+    },
+    "search": {
+      "title": "Enhanced Memory Search",
+      "label": "Search experiences, failure lessons, and version chains",
+      "searching": "Searching...",
+      "action": "Search",
+      "emptyHint": "Enter keywords to search semantic / procedural / episodic memory."
+    },
+    "records": {
+      "title": "Memory Records",
+      "noMatches": "No records match the current filters.",
+      "columns": {
+        "title": "Title",
+        "layer": "Layer",
+        "trust": "Trust",
+        "storage": "Storage",
+        "trace": "Trace"
+      }
+    },
+    "filters": {
+      "repairQueue": "Repair queue",
+      "degradedOnly": "Degraded only",
+      "legacyOnly": "Legacy only",
+      "clearPreset": "Clear preset",
+      "allLayers": "All layers",
+      "allStatuses": "All statuses",
+      "allTrust": "All trust levels",
+      "allHealth": "All health states",
+      "allRepairStatuses": "All repair statuses",
+      "allSchemas": "All schemas",
+      "modularOnly": "Modular only",
+      "legacyOnlyOption": "Legacy only"
+    },
+    "detail": {
+      "title": "Memory Details",
+      "selectHint": "Select a memory record to view source links, audits, and governance actions.",
+      "trace": "trace: {{traceId}}",
+      "identity": "trace: {{traceId}} | target: {{targetId}} | version: {{versionId}}",
+      "sources": "Sources: {{sources}}",
+      "evidence": "Evidence: {{evidence}}",
+      "lastAction": "Last action: {{action}} | {{reason}}",
+      "timestamps": "Updated: {{updatedAt}} | Last verified: {{verifiedAt}}"
+    },
+    "diagnostics": {
+      "title": "Block Diagnostics",
+      "descriptorSummary": "required: {{required}} | derived: {{derived}} | repairable: {{repairable}} | verified: {{verified}}"
+    },
+    "management": {
+      "reason": "Governance reason",
+      "note": "Governance note",
+      "correction": "Correction note"
+    },
+    "audit": {
+      "title": "Audit Records",
+      "empty": "This memory does not have extra governance audits yet."
+    },
+    "agenda": {
+      "title": "Current Cognitive Agenda",
+      "empty": "There are no agenda items.",
+      "columns": {
+        "title": "Title",
+        "priority": "Priority",
+        "nextReview": "Next review condition"
+      }
+    }
+  },
   "upgrades": {
     "title": "Upgrade Management",
     "subtitle": "View and manage the full lifecycle status of LLM upgrades, plugin evolutions, and plugin creations.",

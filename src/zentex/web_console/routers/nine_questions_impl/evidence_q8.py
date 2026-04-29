@@ -213,6 +213,11 @@ def _extract_q8_inference_result(result_payload: object) -> Optional[Q8WhatShoul
     return Q8WhatShouldIDoNowInferenceView(
         objective_profile=Q8ObjectiveProfileView(
             current_primary_objective=str(objective_raw.get("current_mission") or objective_raw.get("current_primary_objective") or ""),
+            primary_objectives=_coerce_string_list(objective_raw.get("primary_objectives")),
+            secondary_objectives=_coerce_string_list(objective_raw.get("secondary_objectives")),
+            completion_conditions=_coerce_string_list(objective_raw.get("completion_conditions")),
+            pause_conditions=_coerce_string_list(objective_raw.get("pause_conditions")),
+            escalation_conditions=_coerce_string_list(objective_raw.get("escalation_conditions")),
             current_phase_tasks=_coerce_string_list(objective_raw.get("current_phase_tasks")),
             priority_order=_coerce_string_list(objective_raw.get("priority_order")),
         ),

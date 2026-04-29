@@ -1,0 +1,15 @@
+version: "1.0"
+meta_value_lens_mapping:
+  user_value_lens:
+    name: "用户收益镜头"
+    source_axes:
+      - accuracy
+      - creativity
+  user_efficiency_lens:
+    name: "用户效率镜头"
+    source_axes:
+      - speed
+  system_capability_lens:
+    name: "系统能力沉淀镜头"
+    source_axes:
+      - continuity

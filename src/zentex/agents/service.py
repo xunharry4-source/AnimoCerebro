@@ -10,9 +10,15 @@ from zentex.agents.manager import AgentManager, AgentAsset, AgentStatus, AgentTr
 from zentex.agents.bridge import AgentBridge, AgentBridgeError
 from zentex.foundation.contracts.service_response import ServiceResponse, ServiceStatus, ServiceErrorCode
 from zentex.kernel import BrainTranscriptEntryType
-from zentex.tasks.service import TaskStatus, ZentexTask
+from zentex.tasks.service import TaskStatus, TaskType, ZentexTask
 
 logger = logging.getLogger(__name__)
+
+_TASK_STATUS_ALIASES = {
+    "pending": TaskStatus.TODO.value,
+    "completed": TaskStatus.DONE.value,
+    "in-progress": TaskStatus.IN_PROGRESS.value,
+}
 
 
 class AgentRegistrationRequest(BaseModel):
@@ -388,10 +394,9 @@ class AgentCoordinationService:
         if not asset:
             raise KeyError(f"Agent {agent_id} not found")
         
-        all_tasks = [task for task in task_service.list_tasks() if task.target_id == agent_id]
-        total_tasks = len(all_tasks)
-        completed_tasks = len([t for t in all_tasks if str(t.status.value).lower() in ["done", "completed"]])
-        failed_tasks = len([t for t in all_tasks if str(t.status.value).lower() == "failed"])
+        total_tasks = task_service.count_tasks(target_id=agent_id)
+        completed_tasks = task_service.count_tasks(target_id=agent_id, status=TaskStatus.DONE)
+        failed_tasks = task_service.count_tasks(target_id=agent_id, status=TaskStatus.FAILED)
 
         # POLICY[no-fake-impl]: return None total_score when there is no task history.
         # An agent that has never run a task has no earned score — not a perfect score.
@@ -507,17 +512,16 @@ class AgentCoordinationService:
         task_service: Any,
     ) -> Dict[str, Any]:
         """Aggregate performance statistics for an agent."""
-        all_tasks = [task for task in task_service.list_tasks() if task.target_id == agent_id]
-        total_tasks = len(all_tasks)
-        completed_tasks = len([t for t in all_tasks if str(t.status.value).lower() in ["done", "completed"]])
-        failed_tasks = len([t for t in all_tasks if str(t.status.value).lower() == "failed"])
-        in_progress_tasks = len([t for t in all_tasks if str(t.status.value).lower() == "in_progress"])
+        total_tasks = task_service.count_tasks(target_id=agent_id)
+        completed_tasks = task_service.count_tasks(target_id=agent_id, status=TaskStatus.DONE)
+        failed_tasks = task_service.count_tasks(target_id=agent_id, status=TaskStatus.FAILED)
+        in_progress_tasks = task_service.count_tasks(target_id=agent_id, status=TaskStatus.IN_PROGRESS)
         pending_tasks = total_tasks - completed_tasks - failed_tasks - in_progress_tasks
         
         # Avg completion time
         completed_with_time = [
-            t for t in all_tasks 
-            if str(t.status.value).lower() in ["done", "completed"] and t.started_at and t.completed_at
+            t for t in task_service.list_tasks(target_id=agent_id, status=TaskStatus.DONE, limit=500, offset=0)
+            if t.started_at and t.completed_at
         ]
         avg_completion_time = (
             sum((t.completed_at - t.started_at).total_seconds() for t in completed_with_time) / len(completed_with_time)
@@ -556,8 +560,49 @@ class AgentCoordinationService:
         Advanced task querying with filtering and pagination.
         Migrated from web_console for zero-logic UI.
         """
-        # 1. Base query
-        tasks = [task for task in task_service.list_tasks() if task.target_id == agent_id]
+        status_values = [
+            _TASK_STATUS_ALIASES.get(s.strip().lower(), s.strip().lower())
+            for s in status_filter.split(",")
+        ] if status_filter else []
+        db_status = TaskStatus(status_values[0]) if len(status_values) == 1 and status_values[0] else None
+        db_task_type = TaskType(task_type) if task_type else None
+        offset = max(0, (page - 1) * page_size)
+
+        can_page_in_db = not search and not date_from and not date_to and sort_by == "started_at" and order.lower() == "desc"
+        if can_page_in_db:
+            total = task_service.count_tasks(
+                target_id=agent_id,
+                status=db_status,
+                task_type=db_task_type,
+                originator_id=originator or None,
+            )
+            tasks = task_service.list_tasks(
+                target_id=agent_id,
+                status=db_status,
+                task_type=db_task_type,
+                originator_id=originator or None,
+                limit=page_size,
+                offset=offset,
+            )
+            total_pages = (total + page_size - 1) // page_size if page_size > 0 else 0
+            return {
+                "tasks": tasks,
+                "pagination": {
+                    "page": page,
+                    "page_size": page_size,
+                    "total": total,
+                    "total_pages": total_pages,
+                }
+            }
+
+        tasks = task_service.list_tasks(
+            target_id=agent_id,
+            status=db_status,
+            task_type=db_task_type,
+            originator_id=originator or None,
+            limit=500,
+            offset=0,
+        )
         
         # 2. Status filter
         if status_filter:

@@ -8,7 +8,7 @@ from zentex.common.flow_audit import FlowAudit
 from zentex.common.startup_markers import log_once
 from zentex.foundation.specs.model_provider import ModelProviderSpec
 from zentex.learning.budget import ReasoningBudget
-from zentex.learning.directions import LearningDirection, describe_direction
+from zentex.learning.directions import LearningDirection, describe_direction, parse_learning_direction
 from zentex.learning.store import LEARNING_EVENT_TYPE, LEARNING_OVERALL_EVENT_TYPE
 from zentex.llm.service import LLMService
 
@@ -163,8 +163,8 @@ async def run_learning_cycle(
         )
         return LearningCycleResult(status="budget_hold", trace_id=trace_id)
 
-    if direction == LearningDirection.G16_TOOL_SELF_STUDY:
-        from zentex.learning.g16_pipeline import run_g16_dynamic_tool_self_study
+    if direction == LearningDirection.TOOL_SELF_STUDY:
+        from zentex.learning.tool_self_study_pipeline import run_dynamic_tool_self_study
 
         doc_url = (extra_context or {}).get("doc_url")
         if not doc_url or (provider is None and llm_service is None):
@@ -172,7 +172,7 @@ async def run_learning_cycle(
                 store,
                 turn_id=turn_id,
                 trace_id=trace_id,
-                payload={"kind": "aborted", "reason": "G16 requires 'doc_url' and an LLM service/provider", **_audit_payload},
+                payload={"kind": "aborted", "reason": "Tool self-study requires 'doc_url' and an LLM service/provider", **_audit_payload},
             )
             _write_learning_overall_record(
                 store,
@@ -180,13 +180,13 @@ async def run_learning_cycle(
                 trace_id=trace_id,
                 direction=direction,
                 status="aborted",
-                summary="G16 self-study aborted because required inputs were missing.",
+                summary="Tool self-study aborted because required inputs were missing.",
                 detail={"reason": "missing_doc_url_or_provider", "doc_url": doc_url},
                 audit_payload=_audit_payload,
             )
             return LearningCycleResult(status="aborted", trace_id=trace_id)
 
-        record = await run_g16_dynamic_tool_self_study(
+        record = await run_dynamic_tool_self_study(
             doc_url=doc_url,
             provider=provider,
             llm_service=llm_service,
@@ -228,7 +228,7 @@ async def run_learning_cycle(
                 store,
                 turn_id=turn_id,
                 trace_id=trace_id,
-                payload={"kind": "aborted", "reason": "G16 pipeline returned no record (sandbox rejection or max attempts exhausted)", **_audit_payload},
+                payload={"kind": "aborted", "reason": "Tool self-study pipeline returned no record (sandbox rejection or max attempts exhausted)", **_audit_payload},
             )
             _write_learning_overall_record(
                 store,
@@ -236,8 +236,8 @@ async def run_learning_cycle(
                 trace_id=trace_id,
                 direction=direction,
                 status="aborted",
-                summary="G16 self-study produced no durable knowledge record.",
-                detail={"reason": "g16_pipeline_returned_no_record", "doc_url": doc_url},
+                summary="Tool self-study produced no durable knowledge record.",
+                detail={"reason": "tool_self_study_pipeline_returned_no_record", "doc_url": doc_url},
                 audit_payload=_audit_payload,
             )
             return LearningCycleResult(status="aborted", trace_id=trace_id)
@@ -316,9 +316,9 @@ async def start_learning(
 
     Args:
         store:        LearningStore 或兼容存储实例。
-        direction:    学习方向，可传字符串（如 "g16_tool_self_study"）或枚举。
-        provider:     模型 Provider（G16 等方向必需）。
-        doc_url:      文档 URL（G16 方向必需）。
+        direction:    学习方向，可传字符串（如 "tool_self_study"）或枚举。
+        provider:     模型 Provider（工具自学等方向必需）。
+        doc_url:      文档 URL（工具自学方向必需）。
         dry_run:      是否为模拟运行。
         load_factor:  当前系统负载因子（0.0 ~ 1.0）。
 
@@ -327,7 +327,7 @@ async def start_learning(
     """
     if isinstance(direction, str):
         try:
-            direction = LearningDirection(direction)
+            direction = parse_learning_direction(direction)
         except ValueError:
             return LearningCycleResult(
                 status="invalid_direction",
@@ -438,7 +438,7 @@ def get_learning_status(
 #    └────────┬─────────┘
 #             │
 #    ┌────────▼──────────────────────────────┐
-#    │  G16 Tool Self-Study Pipeline         │
+#    │  Tool Self-Study Pipeline             │
 #    │  (DSPy Distiller → Critic → Sandbox)  │
 #    └───────────────────────────────────────┘
 #
@@ -451,7 +451,7 @@ def get_learning_status(
 #
 #  学习方向（Learning Directions）：
 #
-#    G16_TOOL_SELF_STUDY  — 基于文档的自主工具发现与验证
+#    TOOL_SELF_STUDY      — 基于文档的自主工具发现与验证
 #    G24_CURIOSITY        — 好奇心驱动的探索性数据摄入（规划中）
 #
 # ════════════════════════════════════════════════════════════════════

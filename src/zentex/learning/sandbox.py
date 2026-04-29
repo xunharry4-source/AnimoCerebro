@@ -4,7 +4,7 @@ from typing import Any, Dict, List, Optional
 import uuid
 
 from zentex.foundation.specs.cognitive_tool_spec import CognitiveToolSpec
-from zentex.learning.g16_models import SandboxValidationResult
+from zentex.learning.models import SandboxValidationResult
 
 
 class ThoughtSandbox:
@@ -53,7 +53,7 @@ class ThoughtSandbox:
 
         return SandboxValidationResult(
             is_safe=is_safe,
-            behavior_fingerprint=f"g16_sha256_{self.trace_id[:8]}_{len(test_cases)}",
+            behavior_fingerprint=f"tool_self_study_sha256_{self.trace_id[:8]}_{len(test_cases)}",
             security_events=security_events,
             performance_metrics={"cpu_sec": round(cpu_total, 4), "mem_mb": mem_peak},
         )

@@ -100,10 +100,40 @@ def ensure_task_database_schema(db: DatabaseConnection) -> None:
                 task_id TEXT NOT NULL,
                 created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
             );
+
+            CREATE TABLE IF NOT EXISTS task_outcomes (
+                task_id TEXT PRIMARY KEY,
+                trace_id TEXT,
+                objective_profile TEXT,
+                evaluation_profile TEXT,
+                expected_outcome TEXT,
+                success_criteria TEXT,
+                acceptance_conditions TEXT,
+                risk_assessment TEXT,
+                actual_outcome TEXT,
+                deviation_report TEXT,
+                verification_result TEXT,
+                overall_passed INTEGER,
+                confidence_score REAL,
+                user_feedback TEXT,
+                written_back_to_reflection INTEGER NOT NULL DEFAULT 0,
+                reflection_id TEXT,
+                written_back_to_learning INTEGER NOT NULL DEFAULT 0,
+                learning_trace_id TEXT,
+                written_back_to_memory INTEGER NOT NULL DEFAULT 0,
+                memory_id TEXT,
+                created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                completed_at TEXT
+            );
+
+            CREATE INDEX IF NOT EXISTS idx_task_outcomes_trace ON task_outcomes(trace_id);
+            CREATE INDEX IF NOT EXISTS idx_task_outcomes_passed ON task_outcomes(overall_passed, created_at);
+            CREATE INDEX IF NOT EXISTS idx_task_outcomes_completed ON task_outcomes(completed_at);
             """
         )
         _ensure_tasks_columns(conn)
         _ensure_intervention_receipt_columns(conn)
+        _ensure_task_outcome_columns(conn)
 
 
 def _ensure_tasks_columns(conn) -> None:
@@ -141,3 +171,40 @@ def _ensure_intervention_receipt_columns(conn) -> None:
         if column not in existing:
             logger.info("Adding missing intervention_receipts.%s column", column)
             conn.execute(sql)
+
+
+def _ensure_task_outcome_columns(conn) -> None:
+    """Apply lightweight migrations for task outcome records."""
+    rows = conn.execute("PRAGMA table_info(task_outcomes)").fetchall()
+    if not rows:
+        return
+    existing = {str(row[1]) for row in rows}
+    migrations = {
+        "objective_profile": "ALTER TABLE task_outcomes ADD COLUMN objective_profile TEXT",
+        "evaluation_profile": "ALTER TABLE task_outcomes ADD COLUMN evaluation_profile TEXT",
+        "expected_outcome": "ALTER TABLE task_outcomes ADD COLUMN expected_outcome TEXT",
+        "success_criteria": "ALTER TABLE task_outcomes ADD COLUMN success_criteria TEXT",
+        "acceptance_conditions": "ALTER TABLE task_outcomes ADD COLUMN acceptance_conditions TEXT",
+        "risk_assessment": "ALTER TABLE task_outcomes ADD COLUMN risk_assessment TEXT",
+        "actual_outcome": "ALTER TABLE task_outcomes ADD COLUMN actual_outcome TEXT",
+        "deviation_report": "ALTER TABLE task_outcomes ADD COLUMN deviation_report TEXT",
+        "verification_result": "ALTER TABLE task_outcomes ADD COLUMN verification_result TEXT",
+        "overall_passed": "ALTER TABLE task_outcomes ADD COLUMN overall_passed INTEGER",
+        "confidence_score": "ALTER TABLE task_outcomes ADD COLUMN confidence_score REAL",
+        "user_feedback": "ALTER TABLE task_outcomes ADD COLUMN user_feedback TEXT",
+        "written_back_to_reflection": "ALTER TABLE task_outcomes ADD COLUMN written_back_to_reflection INTEGER NOT NULL DEFAULT 0",
+        "reflection_id": "ALTER TABLE task_outcomes ADD COLUMN reflection_id TEXT",
+        "written_back_to_learning": "ALTER TABLE task_outcomes ADD COLUMN written_back_to_learning INTEGER NOT NULL DEFAULT 0",
+        "learning_trace_id": "ALTER TABLE task_outcomes ADD COLUMN learning_trace_id TEXT",
+        "written_back_to_memory": "ALTER TABLE task_outcomes ADD COLUMN written_back_to_memory INTEGER NOT NULL DEFAULT 0",
+        "memory_id": "ALTER TABLE task_outcomes ADD COLUMN memory_id TEXT",
+        "created_at": "ALTER TABLE task_outcomes ADD COLUMN created_at TEXT",
+        "completed_at": "ALTER TABLE task_outcomes ADD COLUMN completed_at TEXT",
+    }
+    for column, sql in migrations.items():
+        if column not in existing:
+            logger.info("Adding missing task_outcomes.%s column", column)
+            conn.execute(sql)
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_task_outcomes_reflection ON task_outcomes(reflection_id)")
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_task_outcomes_learning ON task_outcomes(learning_trace_id)")
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_task_outcomes_memory ON task_outcomes(memory_id)")

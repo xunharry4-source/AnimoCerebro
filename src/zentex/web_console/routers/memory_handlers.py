@@ -134,7 +134,7 @@ async def update_memory_record_management(
         ) from exc
 
 
-async def trigger_consolidation_cycle(request: Request) -> dict[str, str]:
+async def trigger_consolidation_cycle(request: Request) -> dict[str, object]:
     """Trigger a manual memory consolidation cycle.
     
     Consolidation process:
@@ -163,12 +163,20 @@ async def trigger_consolidation_cycle(request: Request) -> dict[str, str]:
                 detail="Consolidation engine not available"
             )
         
-        consolidation_engine.submit_manual_trigger(operator="web_console")
+        handle = consolidation_engine.submit_manual_trigger(operator="web_console")
+        queried = consolidation_engine.list_cycles(cycle_id=handle.cycle_id)
+        if not queried:
+            raise RuntimeError(f"Consolidation read-after-write failed for cycle {handle.cycle_id}")
         
         logger.info("Manual memory consolidation cycle initiated")
         
         return {
             "status": "triggered",
+            "cycle_id": handle.cycle_id,
+            "lease_id": handle.lease_id,
+            "idempotency_key": handle.idempotency_key,
+            "snapshot_version": handle.snapshot_version,
+            "queued_cycle": queried[0].model_dump(mode="json") if hasattr(queried[0], "model_dump") else {},
             "message": "已成功启动手动记忆固化流程。固化过程将在后台异步完成，您可以稍后查看最新的固化报告。",
         }
         
@@ -181,7 +189,12 @@ async def trigger_consolidation_cycle(request: Request) -> dict[str, str]:
             raise
         raise HTTPException(
             status_code=500,
-            detail="Failed to trigger consolidation cycle"
+            detail={
+                "error": "consolidation_trigger_failed",
+                "message": "Failed to trigger consolidation cycle",
+                "exception_type": type(exc).__name__,
+                "exception_message": str(exc),
+            },
         ) from exc
 
 

@@ -29,12 +29,15 @@ class McpServerConfig(BaseModel):
     name: Optional[str] = None  # 友好的显示名称
     description: Optional[str] = None  # 服务器介绍/描述
     version: Optional[str] = None  # 版本号
+    protocol_version: str = "2024-11-05"
     tags: List[str] = Field(default_factory=list)  # 标签列表
     owner: Optional[str] = None  # 所有者/负责人
-    transport_type: Literal["stdio", "sse"]
+    transport_type: Literal["stdio", "sse", "http"]
     command: str = Field(min_length=1)
     args: List[str] = Field(default_factory=list)
     env: Dict[str, str] = Field(default_factory=dict)
+    scope: List[str] = Field(default_factory=lambda: ["read"])
+    auth_mode: Literal["none", "bearer", "api_key"] = "none"
     tool_bindings: List[McpToolBindingConfig] = Field(default_factory=list)
 
 class McpToolDescriptor(BaseModel):
@@ -42,7 +45,7 @@ class McpToolDescriptor(BaseModel):
 
     tool_name: str
     description: str
-    input_schema: Dict[str, Any] = Field(default_factory=list)
+    input_schema: Dict[str, Any] = Field(default_factory=dict)
     mutates_state: bool = False
     read_only_hint: bool = True
 
@@ -70,11 +73,14 @@ class McpServerRuntimeState(BaseModel):
     version: Optional[str] = None  # 版本号
     tags: List[str] = Field(default_factory=list)  # 标签列表
     owner: Optional[str] = None  # 所有者/负责人
-    transport_type: Literal["stdio", "sse"]
+    transport_type: Literal["stdio", "sse", "http"]
     status: Literal["online", "offline", "degraded"]
     tool_count: int = 0
     error_message: Optional[str] = None
     tools: List[McpToolRuntimeState] = Field(default_factory=list)
+    protocol_version: str = "2024-11-05"
+    scope: List[str] = Field(default_factory=lambda: ["read"])
+    auth_mode: str = "none"
 
     @property
     def lifecycle_status(self) -> str:

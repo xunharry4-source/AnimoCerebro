@@ -236,46 +236,51 @@ class ContextSnapshotStore:
         """Append a single snapshot to disk storage."""
         if not self.storage_path:
             return
-        
-        try:
-            # Ensure directory exists
-            self.storage_path.parent.mkdir(parents=True, exist_ok=True)
-            
-            # Append as JSON line
-            with open(self.storage_path, "a", encoding="utf-8") as f:
-                f.write(snapshot.model_dump_json() + "\n")
-        except Exception as e:
-            # Log error but don't fail the operation
-            print(f"Warning: Failed to persist snapshot to disk: {e}")
+
+        storage_file = self._resolved_storage_file()
+        storage_file.parent.mkdir(parents=True, exist_ok=True)
+        with open(storage_file, "a", encoding="utf-8") as f:
+            f.write(snapshot.model_dump_json() + "\n")
     
     def _load_from_disk(self) -> None:
         """Load existing snapshots from disk storage."""
-        if not self.storage_path or not self.storage_path.exists():
+        if not self.storage_path:
             return
-        
-        try:
-            with open(self.storage_path, "r", encoding="utf-8") as f:
-                for line in f:
-                    line = line.strip()
-                    if not line:
-                        continue
-                    
-                    try:
-                        data = json.loads(line)
-                        snapshot = ContextSnapshot(**data)
-                        self._snapshots.append(snapshot)
-                        self._snapshot_index[snapshot.snapshot_id] = len(self._snapshots) - 1
-                    except Exception as e:
-                        print(f"Warning: Failed to load snapshot from disk: {e}")
-                        
-                        # Trim to max size
-                        if len(self._snapshots) > self.max_in_memory_snapshots:
-                            excess = len(self._snapshots) - self.max_in_memory_snapshots
-                            self._snapshots = self._snapshots[excess:]
-                            # Rebuild index
-                            self._snapshot_index = {
-                                s.snapshot_id: i
-                                for i, s in enumerate(self._snapshots)
-                            }
-        except Exception as e:
-            print(f"Warning: Failed to load snapshots from disk: {e}")
+
+        storage_file = self._resolved_storage_file()
+        if not storage_file.exists():
+            return
+
+        with open(storage_file, "r", encoding="utf-8") as f:
+            for line_number, line in enumerate(f, start=1):
+                line = line.strip()
+                if not line:
+                    continue
+
+                try:
+                    data = json.loads(line)
+                    snapshot = ContextSnapshot(**data)
+                except Exception as exc:
+                    raise RuntimeError(
+                        f"Failed to load context snapshot from {storage_file}:{line_number}"
+                    ) from exc
+                self._snapshots.append(snapshot)
+                self._snapshot_index[snapshot.snapshot_id] = len(self._snapshots) - 1
+
+        if len(self._snapshots) > self.max_in_memory_snapshots:
+            excess = len(self._snapshots) - self.max_in_memory_snapshots
+            self._snapshots = self._snapshots[excess:]
+            self._snapshot_index = {
+                snapshot.snapshot_id: index
+                for index, snapshot in enumerate(self._snapshots)
+            }
+
+    def _resolved_storage_file(self) -> Path:
+        """Return the JSONL file used for durable snapshot persistence."""
+        if self.storage_path is None:
+            raise RuntimeError("ContextSnapshotStore storage_path is not configured")
+        if self.storage_path.exists() and self.storage_path.is_dir():
+            return self.storage_path / "snapshots.jsonl"
+        if self.storage_path.suffix:
+            return self.storage_path
+        return self.storage_path / "snapshots.jsonl"

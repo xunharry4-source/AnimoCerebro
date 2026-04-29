@@ -1,11 +1,22 @@
 import { fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
+import { createInstance } from "i18next";
 import { MemoryRouter } from "react-router-dom";
+import { I18nextProvider, initReactI18next } from "react-i18next";
 
+import zhCN from "../../locales/zh-CN.json";
 import MemoryReasoning from "./MemoryReasoning";
 
 const mockFetch = vi.fn();
 global.fetch = mockFetch;
+
+const testI18n = createInstance();
+await testI18n.use(initReactI18next).init({
+  resources: { "zh-CN": { translation: zhCN } },
+  lng: "zh-CN",
+  fallbackLng: "zh-CN",
+  interpolation: { escapeValue: false },
+});
 
 describe("MemoryReasoning", () => {
   beforeEach(() => {
@@ -358,9 +369,11 @@ describe("MemoryReasoning", () => {
     });
 
     render(
-      <MemoryRouter>
-        <MemoryReasoning />
-      </MemoryRouter>,
+      <I18nextProvider i18n={testI18n}>
+        <MemoryRouter>
+          <MemoryReasoning />
+        </MemoryRouter>
+      </I18nextProvider>,
     );
 
     await waitFor(() => {

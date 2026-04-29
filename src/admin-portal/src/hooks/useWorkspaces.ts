@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useState } from "react";
-import { WorkspaceConfig, WorkspaceListResponse, WorkspaceActionResponse } from "../../../api/workspacesApi";
+import { WorkspaceConfig, WorkspaceListResponse, WorkspaceActionResponse } from "../api/workspacesApi";
 
 const API_BASE = "http://127.0.0.1:8000/api/web/workspaces";
 

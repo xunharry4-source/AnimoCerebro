@@ -9,8 +9,38 @@ try:
     from zentex.tasks.verification.models import VerificationConfig
 except ImportError:
     # Fallback for circular import issues
+    class VerificationType(str, Enum):
+        AUTOMATED_TEST = "automated_test"
+        LLM_EVALUATION = "llm_evaluation"
+        RULE_BASED = "rule_based"
+        MANUAL_REVIEW = "manual_review"
+        LOG_AUDIT = "log_audit"
+        COMBINED = "combined"
+
+    class VerificationStrategy(str, Enum):
+        ALL_MUST_PASS = "all_must_pass"
+        MAJORITY_WINS = "majority_wins"
+        ANY_PASSES = "any_passes"
+        WEIGHTED_VOTE = "weighted_vote"
+
+    class VerifierConfig(BaseModel):
+        verifier_id: str
+        verifier_type: VerificationType
+        weight: float = 1.0
+        timeout_seconds: int = 60
+        required: bool = True
+        retry_on_failure: bool = True
+        max_retries: int = 2
+        config: Dict[str, Any] = Field(default_factory=dict)
+
     class VerificationConfig(BaseModel):
         enabled: bool = False
+        strategy: VerificationStrategy = VerificationStrategy.ALL_MUST_PASS
+        verifiers: List[VerifierConfig] = Field(default_factory=list)
+        auto_trigger: bool = True
+        fallback_action: str = "retry"
+        max_total_retries: int = 3
+        escalation_target: Optional[str] = None
 
 class TaskStatus(str, Enum):
     TODO = "todo"
@@ -60,6 +90,13 @@ class TaskContract(BaseModel):
     coordination_mode: CoordinationMode = CoordinationMode.PARALLEL
     failure_strategy: str = "halt" # halt, skip, retry_all, ignore
     recovery_action: Optional[str] = None
+    expected_outcome: Dict[str, Any] = Field(default_factory=dict)
+    success_criteria: List[str] = Field(default_factory=list)
+    acceptance_conditions: List[str] = Field(default_factory=list)
+    verification_method: Optional[str] = None
+    risk_assessment: Dict[str, Any] = Field(default_factory=dict)
+    pause_conditions: List[str] = Field(default_factory=list)
+    escalation_conditions: List[str] = Field(default_factory=list)
     
     # Verification configuration (embedded)
     verification: VerificationConfig = Field(default_factory=VerificationConfig)

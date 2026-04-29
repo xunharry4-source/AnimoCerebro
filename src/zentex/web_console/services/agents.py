@@ -32,18 +32,16 @@ def calculate_agent_credit_score(
 
 def get_agent_statistics(
     agent_id: str,
+    agent_service: AgentCoordinationService,
     task_service: TaskManagementService,
 ) -> Dict[str, Any]:
     """Thin adapter for core statistics aggregation."""
-    # We need the agent_service to call its own stats logic
-    # In web console routers, both services are usually available via dependency injection
-    from zentex.agents.service import get_service as get_agent_service
-    agent_service = get_agent_service()
     return agent_service.get_statistics(agent_id, task_service)
 
 def get_tasks_by_status(
     agent_id: str,
     status_filter: str,
+    agent_service: AgentCoordinationService,
     task_service: TaskManagementService,
     page: int = 1,
     page_size: int = 20,
@@ -59,9 +57,6 @@ def get_tasks_by_status(
     Thin adapter for advanced task querying.
     Zero business logic: only parses date strings and delegating to core.
     """
-    from zentex.agents.service import get_service as get_agent_service
-    agent_service = get_agent_service()
-    
     # Parse dates (Query Condition Preparation)
     dt_from = None
     if date_from:
@@ -78,8 +73,9 @@ def get_tasks_by_status(
             logger.warning("Invalid agent task date_to filter: %s", date_to)
 
     # Call core query logic
-    result = agent_service.query_agent_tasks(
+    result = task_service_agent_query(
         agent_id=agent_id,
+        agent_service=agent_service,
         task_service=task_service,
         status_filter=status_filter,
         page=page,
@@ -115,3 +111,35 @@ def get_tasks_by_status(
         "tasks": tasks_data,
         "pagination": result["pagination"]
     }
+
+
+def task_service_agent_query(
+    *,
+    agent_id: str,
+    agent_service: AgentCoordinationService,
+    task_service: TaskManagementService,
+    status_filter: str,
+    page: int,
+    page_size: int,
+    sort_by: str,
+    order: str,
+    search: str,
+    task_type: str,
+    originator: str,
+    date_from: Optional[datetime],
+    date_to: Optional[datetime],
+) -> Dict[str, Any]:
+    return agent_service.query_agent_tasks(
+        agent_id=agent_id,
+        task_service=task_service,
+        status_filter=status_filter,
+        page=page,
+        page_size=page_size,
+        sort_by=sort_by,
+        order=order,
+        search=search,
+        task_type=task_type,
+        originator=originator,
+        date_from=date_from,
+        date_to=date_to,
+    )

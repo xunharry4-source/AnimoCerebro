@@ -6,6 +6,7 @@ from typing import List, Dict, Any
 from fastapi import APIRouter, Depends, HTTPException
 
 from zentex.cli.service import CliIntegrationService
+from zentex.cli.asset_control import build_cli_adapter_overview
 from zentex.cli.models import CliToolRegistrationConfig
 from zentex.foundation.contracts.service_response import ServiceStatus
 
@@ -24,6 +25,13 @@ from zentex.web_console.dependencies import get_cli_service
 
 
 router = APIRouter()
+
+
+@router.get("/cli-adapters")
+def list_cli_adapters(service: CliIntegrationService = Depends(get_cli_service)) -> Dict[str, Any]:
+    if service is None:
+        raise HTTPException(status_code=503, detail="CLI service is not available")
+    return build_cli_adapter_overview(service).to_dict()
 
 
 @router.get("/cli-tools", response_model=List[CliToolItem])
@@ -71,6 +79,20 @@ def get_cli_tool_health(
         return service.get_tool_health(tool_name)
     except KeyError as exc:
         raise HTTPException(status_code=404, detail=f"CLI tool '{tool_name}' not registered") from exc
+
+
+@router.get("/cli-tools/closure/diagnostics")
+def diagnose_cli_execution_closure(service: CliIntegrationService = Depends(get_cli_service)) -> Dict[str, Any]:
+    if service is None:
+        raise HTTPException(status_code=503, detail="CLI service is not available")
+    return service.diagnose_cli_execution_closure()
+
+
+@router.post("/cli-tools/closure/fault-injection")
+def run_cli_fault_injection_matrix(service: CliIntegrationService = Depends(get_cli_service)) -> Dict[str, Any]:
+    if service is None:
+        raise HTTPException(status_code=503, detail="CLI service is not available")
+    return service.run_cli_fault_injection_matrix()
 
 
 @router.post("/cli-tools/{tool_name}/activate", response_model=CliToolItem)

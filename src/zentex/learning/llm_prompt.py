@@ -10,8 +10,8 @@ RESPONSIBILITY:
   construct raw DSPy InputField values that are sent to an LLM.
 
 CONTRACT:
-  - DSPy inputs are split into typed segment fields (G16DistillationInputs,
-    G16CriticInputs).  Each field represents a distinct intent and is
+  - DSPy inputs are split into typed segment fields (ToolDistillationInputs,
+    ToolCriticInputs).  Each field represents a distinct intent and is
     preprocessed independently before being passed to the DSPy module.
   - Content preprocessing (URL validation, feedback trimming, schema capping)
     happens in dedicated _preprocess_*() helpers.
@@ -20,11 +20,11 @@ CONTRACT:
 
 SEGMENT / FIELD INTENT MAP:
 
-  G16DistillationInputs:
+  ToolDistillationInputs:
     doc_url          → 要蒸馏的工具来源文档（数据来源锚点）
     feedback_history → 上一轮沙箱/评审失败原因（迭代修正输入）
 
-  G16CriticInputs:
+  ToolCriticInputs:
     doc_url               → 原始文档 URL（审查参考基准）
     proposed_tool_name    → 蒸馏步骤产出的工具名（待审对象标识）
     proposed_code_schema  → 蒸馏产出的 schema（待审内容主体）
@@ -63,8 +63,8 @@ _MAX_TOOL_NAME_CHARS = 100
 # ---------------------------------------------------------------------------
 
 @dataclass
-class G16DistillationInputs:
-    """Preprocessed, ready-to-use inputs for the G16 ToolDistillationModule.
+class ToolDistillationInputs:
+    """Preprocessed, ready-to-use inputs for the ToolDistillationModule.
 
     Maps 1-to-1 to DSPy InputFields — unpack with **dataclass.asdict() or
     pass directly as kwargs.
@@ -87,8 +87,8 @@ class G16DistillationInputs:
 
 
 @dataclass
-class G16CriticInputs:
-    """Preprocessed, ready-to-use inputs for the G16 ToolCriticModule.
+class ToolCriticInputs:
+    """Preprocessed, ready-to-use inputs for the ToolCriticModule.
 
     Maps 1-to-1 to DSPy InputFields.
 
@@ -116,14 +116,14 @@ class G16CriticInputs:
 
 
 # ---------------------------------------------------------------------------
-# Public API — G16 Tool Self-Study
+# Public API — Tool Self-Study
 # ---------------------------------------------------------------------------
 
-def build_g16_distillation_inputs(
+def build_tool_distillation_inputs(
     doc_url: str,
     feedback_history: str = "None",
-) -> G16DistillationInputs:
-    """Build and return preprocessed inputs for the G16 ToolDistillationModule.
+) -> ToolDistillationInputs:
+    """Build and return preprocessed inputs for the ToolDistillationModule.
 
     Each field is cleaned independently before being packed into the dataclass.
 
@@ -132,21 +132,21 @@ def build_g16_distillation_inputs(
         feedback_history: Raw accumulated sandbox feedback from prior attempts.
 
     Returns:
-        G16DistillationInputs with clean, truncated field values.
+        ToolDistillationInputs with clean, truncated field values.
     """
-    return G16DistillationInputs(
+    return ToolDistillationInputs(
         doc_url=_preprocess_doc_url(doc_url),
         feedback_history=_preprocess_feedback_history(feedback_history),
     )
 
 
-def build_g16_critic_inputs(
+def build_tool_critic_inputs(
     doc_url: str,
     proposed_tool_name: str,
     proposed_code_schema: str,
     proposed_test_cases: str,
-) -> G16CriticInputs:
-    """Build and return preprocessed inputs for the G16 ToolCriticModule.
+) -> ToolCriticInputs:
+    """Build and return preprocessed inputs for the ToolCriticModule.
 
     Each field is cleaned independently before being packed into the dataclass.
 
@@ -157,9 +157,9 @@ def build_g16_critic_inputs(
         proposed_test_cases:   Test cases JSON string from distillation.
 
     Returns:
-        G16CriticInputs with cleaned/truncated field values.
+        ToolCriticInputs with cleaned/truncated field values.
     """
-    return G16CriticInputs(
+    return ToolCriticInputs(
         doc_url=_preprocess_doc_url(doc_url),
         proposed_tool_name=_preprocess_tool_name(proposed_tool_name),
         proposed_code_schema=_preprocess_schema_block(proposed_code_schema),

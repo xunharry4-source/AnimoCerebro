@@ -331,6 +331,11 @@ class Q8PreprocessedEvidence(BaseModel):
 class Q8ObjectiveProfileView(BaseModel):
     model_config = ConfigDict(extra="ignore", frozen=True)
     current_primary_objective: str
+    primary_objectives: list[str] = Field(default_factory=list)
+    secondary_objectives: list[str] = Field(default_factory=list)
+    completion_conditions: list[str] = Field(default_factory=list)
+    pause_conditions: list[str] = Field(default_factory=list)
+    escalation_conditions: list[str] = Field(default_factory=list)
     current_phase_tasks: list[str] = Field(default_factory=list)
     priority_order: list[str] = Field(default_factory=list)
 

@@ -15,6 +15,7 @@ from zentex.tasks.persistence import (
     SuspendedTaskDAO,
     TaskAuditLogDAO,
     TaskDAO,
+    TaskOutcomeDAO,
 )
 
 __all__ = [
@@ -22,6 +23,7 @@ __all__ = [
     "TaskDAO",
     "SuspendedTaskDAO",
     "TaskAuditLogDAO",
+    "TaskOutcomeDAO",
     "InterventionReceiptDAO",
     "IdempotencyLogDAO",
 ]

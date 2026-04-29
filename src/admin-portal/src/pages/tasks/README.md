@@ -55,7 +55,7 @@ tasks/
 
 ## 当前后端接口
 
-- `GET /api/web/tasks/by-status`
+- `GET /api/web/tasks/by-status?limit_per_group=100&offset=0`
 - `GET /api/web/tasks/{task_id}/detail`
 - `GET /api/web/tasks/{task_id}/subtasks`
 - `GET /api/web/tasks/{task_id}/execution-history`

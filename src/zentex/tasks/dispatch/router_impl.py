@@ -21,6 +21,7 @@ from zentex.tasks.dispatch.models import (
     DispatchResult,
     ExecutorType,
 )
+from zentex.tasks.dispatch.errors import DispatchRoutingError, NoMatchingExecutorError
 from zentex.tasks.dispatch.router import TaskRouter
 from zentex.tasks.dispatch.internal import InternalPluginExecutor
 
@@ -148,32 +149,18 @@ class UnifiedTaskRouter(TaskRouter):
                 f"No matching executors for task {task_id} "
                 f"(required_capabilities={subtask.required_capabilities})"
             )
-            
-            # Return empty decision for escalation
-            decision = DispatchDecision(
+            raise NoMatchingExecutorError(
                 task_id=task_id,
-                selected_executor=None,  # type: ignore
-                candidate_pool=[],
-                decision_logic="no_match_escalate",
-                fallback_chain=[],
-                allowed_executor_types=None,
                 required_capabilities=subtask.required_capabilities or [],
             )
-            self._record_decision_audit(decision)
-            return decision
         
+        except NoMatchingExecutorError:
+            raise
         except Exception as e:
             logger.error(f"Error in routing decision for task {task_id}: {e}", exc_info=True)
-            # Fallback: return escalation decision
-            return DispatchDecision(
-                task_id=task_id,
-                selected_executor=None,  # type: ignore
-                candidate_pool=candidate_pool,
-                decision_logic="routing_error",
-                fallback_chain=[],
-                allowed_executor_types=None,
-                required_capabilities=subtask.required_capabilities or [],
-            )
+            raise DispatchRoutingError(
+                f"Routing decision failed for task {task_id}: {e}"
+            ) from e
     
     async def _get_external_candidates(
         self,
@@ -223,17 +210,22 @@ class UnifiedTaskRouter(TaskRouter):
             credit_delta = -0.05  # Penalty for failure
             logger.debug(f"Task {result.task_id} failed on {result.executor_id}; -0.05 credit")
         
-        # Apply credit update to internal or external executor
-        if result.executor_id.startswith("internal-") or result.executor_id in [
-            c.executor_id for c in await self.internal_executor.get_matching_plugins_for_subtask(
-                SubtaskIntent(
-                    local_id="dummy",
-                    title="dummy",
-                    objective="dummy",
-                    content="dummy",
-                )
-            )
-        ]:
+        # Apply credit update to internal or external executor.  The decision
+        # recorded for the real task is the source of truth; constructing a
+        # synthetic SubtaskIntent here is invalid because routing contracts
+        # require a concrete task_type.
+        selected_type = None
+        for decision in reversed(self._router_decisions):
+            if (
+                decision.task_id == result.task_id
+                and decision.selected_executor.executor_id == result.executor_id
+            ):
+                selected_type = decision.selected_executor.executor_type
+                break
+
+        if selected_type == ExecutorType.INTERNAL_PLUGIN or (
+            selected_type is None and result.executor_id not in self.external_executor_registry
+        ):
             # Internal plugin
             self.internal_executor.update_plugin_credit_score(result.executor_id, credit_delta)
         else:

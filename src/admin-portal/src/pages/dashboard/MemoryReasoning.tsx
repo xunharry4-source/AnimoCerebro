@@ -20,6 +20,7 @@ import {
   TextField,
   Typography,
 } from "@mui/material";
+import { useTranslation } from "react-i18next";
 import { Link as RouterLink } from "react-router-dom";
 import { extractApiErrorMessage, readResponseBody } from "../../api/httpError";
 
@@ -256,6 +257,7 @@ async function postJson<T>(input: RequestInfo, body: object): Promise<T> {
 }
 
 export default function MemoryReasoning() {
+  const { t } = useTranslation();
   const [agenda, setAgenda] = useState<AgendaResponse | null>(null);
   const [overview, setOverview] = useState<EnhancedMemoryOverview | null>(null);
   const [records, setRecords] = useState<EnhancedMemoryRecordItem[]>([]);
@@ -372,11 +374,11 @@ export default function MemoryReasoning() {
       // Check if ALL API calls failed (not just empty data)
       // Empty data is valid - it means the system is working but has no records yet
       if (apiErrors.length >= 3) {
-        setError(`所有 API 调用都失败了。请确认 Zentex 服务已启动并检查网络连接。\n\n错误详情:\n${apiErrors.join('\n')}`);
+        setError(t("memory.errors.allApisFailed", { details: apiErrors.join("\n") }));
       }
     } catch (e) {
       console.error("Unexpected error loading page:", e);
-      setError("页面加载出现异常，请检查浏览器控制台日志");
+      setError(t("memory.errors.pageLoadUnexpected"));
     } finally {
       setLoading(false);
     }
@@ -433,7 +435,7 @@ export default function MemoryReasoning() {
       );
       setSearchHits(payload.items);
     } catch {
-      setError("增强记忆查询失败，请检查后端状态");
+      setError(t("memory.errors.searchFailed"));
     } finally {
       setSearchLoading(false);
     }
@@ -459,7 +461,7 @@ export default function MemoryReasoning() {
       setReason("");
       await loadRecords(selectedRecord.memory_id);
     } catch {
-      setError("记忆管理操作失败，请检查后端状态");
+      setError(t("memory.errors.managementFailed"));
     } finally {
       setActionLoading(false);
     }
@@ -479,7 +481,7 @@ export default function MemoryReasoning() {
       await loadDetail(selectedRecord.memory_id);
       await loadRecords(selectedRecord.memory_id);
     } catch (e) {
-      setError(e instanceof Error ? e.message : "记忆校验失败");
+      setError(e instanceof Error ? e.message : t("memory.errors.verifyFailed"));
     } finally {
       setRepairLoading(false);
     }
@@ -499,7 +501,7 @@ export default function MemoryReasoning() {
       await loadDetail(selectedRecord.memory_id);
       await loadRecords(selectedRecord.memory_id);
     } catch (e) {
-      setError(e instanceof Error ? e.message : "记忆修复失败");
+      setError(e instanceof Error ? e.message : t("memory.errors.repairFailed"));
     } finally {
       setRepairLoading(false);
     }
@@ -514,7 +516,7 @@ export default function MemoryReasoning() {
       setRecentRepairAll(payload);
       await loadRecords(selectedRecord?.memory_id ?? undefined);
     } catch (e) {
-      setError(e instanceof Error ? e.message : "全量修复触发失败");
+      setError(e instanceof Error ? e.message : t("memory.errors.repairAllFailed"));
     } finally {
       setRepairLoading(false);
     }
@@ -548,13 +550,13 @@ export default function MemoryReasoning() {
     <Stack spacing={3} data-testid="memory-reasoning-root">
       <Stack direction="row" justifyContent="space-between" alignItems="center">
         <Box>
-          <Typography variant="h4">记忆治理台</Typography>
+          <Typography variant="h4">{t("memory.title")}</Typography>
           <Typography variant="body1" color="text.secondary">
-            管理增强记忆的状态、可信度、纠正说明、来源链和审计记录。
+            {t("memory.subtitle")}
           </Typography>
         </Box>
         <Button variant="contained" onClick={() => void loadPage()}>
-          刷新
+          {t("common.refresh")}
         </Button>
       </Stack>
 
@@ -562,7 +564,7 @@ export default function MemoryReasoning() {
       {apiErrors.length > 0 && apiErrors.length < 3 && (
         <Alert severity="warning">
           <Typography variant="subtitle2" gutterBottom>
-            部分 API 调用失败（数据可能不完整）：
+            {t("memory.partialApiFailure")}
           </Typography>
           <Stack spacing={0.5}>
             {apiErrors.map((err, idx) => (
@@ -588,21 +590,21 @@ export default function MemoryReasoning() {
             <Card sx={{ flex: 1 }}>
               <CardContent>
                 <Typography variant="h6" gutterBottom>
-                  记忆概览
+                  {t("memory.overview.title")}
                 </Typography>
                 <Stack direction="row" spacing={1} useFlexGap flexWrap="wrap">
-                  <Chip label={`Semantic: ${overview?.semantic_count ?? 0}`} color="info" variant="outlined" />
-                  <Chip label={`Procedural: ${overview?.procedural_count ?? 0}`} color="success" variant="outlined" />
-                  <Chip label={`Episodic: ${overview?.episodic_count ?? 0}`} color="warning" variant="outlined" />
-                  <Chip label={`Active: ${overview?.active_count ?? 0}`} color="primary" variant="outlined" />
-                  <Chip label={`Deprecated: ${overview?.deprecated_count ?? 0}`} variant="outlined" />
-                  <Chip label={`Archived: ${overview?.archived_count ?? 0}`} variant="outlined" />
-                  <Chip label={`Suspect: ${overview?.suspect_count ?? 0}`} color="error" variant="outlined" />
-                  <Chip label={`Health: ${overview?.health_status ?? "unknown"}`} color="secondary" variant="outlined" />
+                  <Chip label={t("memory.overview.semantic", { count: overview?.semantic_count ?? 0 })} color="info" variant="outlined" />
+                  <Chip label={t("memory.overview.procedural", { count: overview?.procedural_count ?? 0 })} color="success" variant="outlined" />
+                  <Chip label={t("memory.overview.episodic", { count: overview?.episodic_count ?? 0 })} color="warning" variant="outlined" />
+                  <Chip label={t("memory.overview.active", { count: overview?.active_count ?? 0 })} color="primary" variant="outlined" />
+                  <Chip label={t("memory.overview.deprecated", { count: overview?.deprecated_count ?? 0 })} variant="outlined" />
+                  <Chip label={t("memory.overview.archived", { count: overview?.archived_count ?? 0 })} variant="outlined" />
+                  <Chip label={t("memory.overview.suspect", { count: overview?.suspect_count ?? 0 })} color="error" variant="outlined" />
+                  <Chip label={t("memory.overview.health", { status: overview?.health_status ?? "unknown" })} color="secondary" variant="outlined" />
                 </Stack>
                 {overview?.projection_failures.length ? (
                   <Alert severity="warning" sx={{ mt: 2 }}>
-                    投影失败：{overview.projection_failures.join(" | ")}
+                    {t("memory.overview.projectionFailures", { failures: overview.projection_failures.join(" | ") })}
                   </Alert>
                 ) : null}
               </CardContent>
@@ -610,61 +612,61 @@ export default function MemoryReasoning() {
             <Card sx={{ flex: 1 }}>
               <CardContent>
                 <Typography variant="h6" gutterBottom>
-                  外部记忆桥状态
+                  {t("memory.bridge.title")}
                 </Typography>
                 <Stack direction="row" spacing={1} useFlexGap flexWrap="wrap" sx={{ mb: 1.5 }}>
                   <Chip
                     size="small"
-                    label={`repair:${repairSchedulerStatus?.enabled ? "on" : "off"}`}
+                    label={t("memory.chips.repair", { value: repairSchedulerStatus?.enabled ? t("memory.values.on") : t("memory.values.off") })}
                     color={repairSchedulerStatus?.enabled ? "success" : "default"}
                     variant="outlined"
                   />
                   <Chip
                     size="small"
-                    label={`interval:${repairSchedulerStatus?.interval_seconds ?? 0}s`}
+                    label={t("memory.chips.intervalSeconds", { value: repairSchedulerStatus?.interval_seconds ?? 0 })}
                     variant="outlined"
                   />
                   <Chip
                     size="small"
-                    label={`last:${formatDateTime(repairSchedulerStatus?.last_cycle_at)}`}
+                    label={t("memory.chips.last", { value: formatDateTime(repairSchedulerStatus?.last_cycle_at) })}
                     variant="outlined"
                   />
                   <Chip
                     size="small"
-                    label={`status:${String(repairSchedulerStatus?.last_summary?.status ?? "unknown")}`}
+                    label={t("memory.chips.status", { value: String(repairSchedulerStatus?.last_summary?.status ?? "unknown") })}
                     variant="outlined"
                   />
                   <Chip
                     size="small"
-                    label={`tickets:${Number(repairSchedulerStatus?.last_summary?.tickets ?? 0)}`}
+                    label={t("memory.chips.tickets", { value: Number(repairSchedulerStatus?.last_summary?.tickets ?? 0) })}
                     variant="outlined"
                   />
                   <Button size="small" variant="outlined" onClick={() => void handleRepairAll()} disabled={repairLoading}>
-                    {repairLoading ? "执行中…" : "全量修复"}
+                    {repairLoading ? t("common.processing") : t("memory.actions.repairAll")}
                   </Button>
                 </Stack>
                 {recentRepairAll ? (
                   <Paper variant="outlined" sx={{ p: 1.5, mb: 1.5 }}>
                     <Stack spacing={1.25}>
-                      <Typography variant="subtitle2">最近一次全量修复</Typography>
+                      <Typography variant="subtitle2">{t("memory.repair.recentRepairAll")}</Typography>
                       <Stack direction="row" spacing={1} useFlexGap flexWrap="wrap">
-                        <Chip size="small" label={`triggered:${recentRepairAll.triggered_by}`} variant="outlined" />
-                        <Chip size="small" label={`tickets:${recentRepairAll.items.length}`} color="info" variant="outlined" />
+                        <Chip size="small" label={t("memory.chips.triggered", { value: recentRepairAll.triggered_by })} variant="outlined" />
+                        <Chip size="small" label={t("memory.chips.tickets", { value: recentRepairAll.items.length })} color="info" variant="outlined" />
                         <Chip
                           size="small"
-                          label={`repaired:${recentRepairAll.items.reduce((sum, item) => sum + item.repaired_blocks.length, 0)}`}
+                          label={t("memory.chips.repaired", { value: recentRepairAll.items.reduce((sum, item) => sum + item.repaired_blocks.length, 0) })}
                           color="success"
                           variant="outlined"
                         />
                         <Chip
                           size="small"
-                          label={`quarantined:${recentRepairAll.items.reduce((sum, item) => sum + item.quarantined_blocks.length, 0)}`}
+                          label={t("memory.chips.quarantined", { value: recentRepairAll.items.reduce((sum, item) => sum + item.quarantined_blocks.length, 0) })}
                           color="warning"
                           variant="outlined"
                         />
                       </Stack>
                       {recentRepairAll.items.length === 0 ? (
-                        <Alert severity="info">这次 repair_all 没有发现需要处理的记录。</Alert>
+                        <Alert severity="info">{t("memory.repair.noRepairAllItems")}</Alert>
                       ) : (
                         <Stack spacing={1}>
                           {recentRepairAll.items.map((item) => (
@@ -678,14 +680,17 @@ export default function MemoryReasoning() {
                                     color={item.record_health_status === "healthy" ? "success" : "warning"}
                                     variant="outlined"
                                   />
-                                  <Chip size="small" label={`repaired:${item.repaired_blocks.length}`} color="success" variant="outlined" />
-                                  <Chip size="small" label={`quarantined:${item.quarantined_blocks.length}`} color="warning" variant="outlined" />
-                                  <Chip size="small" label={`projection:${item.projection_repairs.length}`} color="info" variant="outlined" />
+                                  <Chip size="small" label={t("memory.chips.repaired", { value: item.repaired_blocks.length })} color="success" variant="outlined" />
+                                  <Chip size="small" label={t("memory.chips.quarantined", { value: item.quarantined_blocks.length })} color="warning" variant="outlined" />
+                                  <Chip size="small" label={t("memory.chips.projection", { value: item.projection_repairs.length })} color="info" variant="outlined" />
                                 </Stack>
                                 {(item.repaired_blocks.length || item.quarantined_blocks.length || item.projection_repairs.length) ? (
                                   <Typography variant="caption" color="text.secondary">
-                                    repaired: {item.repaired_blocks.join(" | ") || "--"} | quarantined: {item.quarantined_blocks.join(" | ") || "--"} | projection:{" "}
-                                    {item.projection_repairs.join(" | ") || "--"}
+                                    {t("memory.repair.ticketSummary", {
+                                      repaired: item.repaired_blocks.join(" | ") || "--",
+                                      quarantined: item.quarantined_blocks.join(" | ") || "--",
+                                      projection: item.projection_repairs.join(" | ") || "--",
+                                    })}
                                   </Typography>
                                 ) : null}
                                 {item.notes.length ? (
@@ -709,13 +714,13 @@ export default function MemoryReasoning() {
                         <Chip size="small" label={backend.mode} variant="outlined" />
                         <Chip
                           size="small"
-                          label={`write:${backend.write_enabled ? "on" : "off"}`}
+                          label={t("memory.chips.write", { value: backend.write_enabled ? t("memory.values.on") : t("memory.values.off") })}
                           color={backend.write_enabled ? "success" : "default"}
                           variant="outlined"
                         />
                         <Chip
                           size="small"
-                          label={`recall:${backend.recall_enabled ? "on" : "off"}`}
+                          label={t("memory.chips.recall", { value: backend.recall_enabled ? t("memory.values.on") : t("memory.values.off") })}
                           color={backend.recall_enabled ? "info" : "default"}
                           variant="outlined"
                         />
@@ -733,16 +738,16 @@ export default function MemoryReasoning() {
           <Card>
             <CardContent>
               <Stack spacing={2}>
-                <Typography variant="h6">增强记忆查询</Typography>
+                <Typography variant="h6">{t("memory.search.title")}</Typography>
                 <Stack direction={{ xs: "column", md: "row" }} spacing={2}>
                   <TextField
                     fullWidth
-                    label="搜索经验、失败教训、版本链"
+                    label={t("memory.search.label")}
                     value={query}
                     onChange={(event) => setQuery(event.target.value)}
                   />
                   <Button variant="contained" onClick={() => void handleSearch()} disabled={searchLoading}>
-                    {searchLoading ? "查询中…" : "查询"}
+                    {searchLoading ? t("memory.search.searching") : t("memory.search.action")}
                   </Button>
                 </Stack>
                 {searchHits.length ? (
@@ -758,12 +763,12 @@ export default function MemoryReasoning() {
                           <Stack direction="row" spacing={1} useFlexGap flexWrap="wrap">
                             <Chip size="small" label={hit.memory_layer} color="info" variant="outlined" />
                             <Chip size="small" label={hit.source_kind} variant="outlined" />
-                            <Chip size="small" label={`score ${hit.score.toFixed(2)}`} color="success" variant="outlined" />
+                            <Chip size="small" label={t("memory.chips.score", { value: hit.score.toFixed(2) })} color="success" variant="outlined" />
                           </Stack>
                           <Typography variant="subtitle2">{hit.title}</Typography>
                           <Typography variant="body2">{hit.summary}</Typography>
                           <Typography variant="caption" color="text.secondary">
-                            trace: {hit.trace_id}
+                            {t("memory.detail.trace", { traceId: hit.trace_id })}
                           </Typography>
                           {hit.trace_id ? (
                             <Button
@@ -773,7 +778,7 @@ export default function MemoryReasoning() {
                               to={`/console/audit/transcript-replay/${encodeURIComponent(hit.trace_id)}`}
                               onClick={(event) => event.stopPropagation()}
                             >
-                              查看 trace
+                              {t("memory.actions.viewTrace")}
                             </Button>
                           ) : null}
                         </Stack>
@@ -781,7 +786,7 @@ export default function MemoryReasoning() {
                     ))}
                   </Stack>
                 ) : (
-                  <Alert severity="info">输入关键词后可检索 semantic / procedural / episodic 记忆。</Alert>
+                  <Alert severity="info">{t("memory.search.emptyHint")}</Alert>
                 )}
               </Stack>
             </CardContent>
@@ -792,71 +797,71 @@ export default function MemoryReasoning() {
               <CardContent>
                 <Stack spacing={2}>
                   <Stack direction={{ xs: "column", md: "row" }} spacing={2} justifyContent="space-between">
-                    <Typography variant="h6">记忆记录</Typography>
+                    <Typography variant="h6">{t("memory.records.title")}</Typography>
                     <Stack direction="row" spacing={1} useFlexGap flexWrap="wrap">
                       <Button size="small" variant="outlined" onClick={() => applyQuickFilter("repair_queue")}>
-                        只看待修
+                        {t("memory.filters.repairQueue")}
                       </Button>
                       <Button size="small" variant="outlined" onClick={() => applyQuickFilter("degraded_only")}>
-                        只看降级
+                        {t("memory.filters.degradedOnly")}
                       </Button>
                       <Button size="small" variant="outlined" onClick={() => applyQuickFilter("legacy_only")}>
-                        只看旧结构
+                        {t("memory.filters.legacyOnly")}
                       </Button>
                       <Button size="small" variant="text" onClick={() => applyQuickFilter("all")}>
-                        清除预设
+                        {t("memory.filters.clearPreset")}
                       </Button>
                       <Select size="small" value={layer} onChange={(event) => setLayer(String(event.target.value))}>
-                        <MenuItem value="all">全部层</MenuItem>
+                        <MenuItem value="all">{t("memory.filters.allLayers")}</MenuItem>
                         <MenuItem value="semantic">Semantic</MenuItem>
                         <MenuItem value="procedural">Procedural</MenuItem>
                         <MenuItem value="episodic">Episodic</MenuItem>
                       </Select>
                       <Select size="small" value={statusFilter} onChange={(event) => setStatusFilter(String(event.target.value))}>
-                        <MenuItem value="all">全部状态</MenuItem>
+                        <MenuItem value="all">{t("memory.filters.allStatuses")}</MenuItem>
                         <MenuItem value="active">active</MenuItem>
                         <MenuItem value="deprecated">deprecated</MenuItem>
                         <MenuItem value="archived">archived</MenuItem>
                         <MenuItem value="rejected">rejected</MenuItem>
                       </Select>
                       <Select size="small" value={trustFilter} onChange={(event) => setTrustFilter(String(event.target.value))}>
-                        <MenuItem value="all">全部可信度</MenuItem>
+                        <MenuItem value="all">{t("memory.filters.allTrust")}</MenuItem>
                         <MenuItem value="unverified">unverified</MenuItem>
                         <MenuItem value="trusted">trusted</MenuItem>
                         <MenuItem value="suspect">suspect</MenuItem>
                       </Select>
                       <Select size="small" value={healthFilter} onChange={(event) => setHealthFilter(String(event.target.value))}>
-                        <MenuItem value="all">全部健康</MenuItem>
+                        <MenuItem value="all">{t("memory.filters.allHealth")}</MenuItem>
                         <MenuItem value="healthy">healthy</MenuItem>
                         <MenuItem value="degraded">degraded</MenuItem>
                       </Select>
                       <Select size="small" value={repairStatusFilter} onChange={(event) => setRepairStatusFilter(String(event.target.value))}>
-                        <MenuItem value="all">全部修复状态</MenuItem>
+                        <MenuItem value="all">{t("memory.filters.allRepairStatuses")}</MenuItem>
                         <MenuItem value="none">none</MenuItem>
                         <MenuItem value="pending_repair">pending_repair</MenuItem>
                       </Select>
                       <Select size="small" value={schemaFilter} onChange={(event) => setSchemaFilter(String(event.target.value))}>
-                        <MenuItem value="all">全部结构</MenuItem>
-                        <MenuItem value="modular_only">仅模块化</MenuItem>
-                        <MenuItem value="legacy_only">仅旧结构</MenuItem>
+                        <MenuItem value="all">{t("memory.filters.allSchemas")}</MenuItem>
+                        <MenuItem value="modular_only">{t("memory.filters.modularOnly")}</MenuItem>
+                        <MenuItem value="legacy_only">{t("memory.filters.legacyOnlyOption")}</MenuItem>
                       </Select>
                     </Stack>
                   </Stack>
                   <Stack direction="row" spacing={1} useFlexGap flexWrap="wrap">
-                    <Chip size="small" label={`visible:${filteredRecords.length}`} variant="outlined" />
-                    <Chip size="small" label={`health-filter:${healthFilter}`} variant="outlined" />
-                    <Chip size="small" label={`repair-filter:${repairStatusFilter}`} variant="outlined" />
-                    <Chip size="small" label={`schema-filter:${schemaFilter}`} variant="outlined" />
+                    <Chip size="small" label={t("memory.chips.visible", { value: filteredRecords.length })} variant="outlined" />
+                    <Chip size="small" label={t("memory.chips.healthFilter", { value: healthFilter })} variant="outlined" />
+                    <Chip size="small" label={t("memory.chips.repairFilter", { value: repairStatusFilter })} variant="outlined" />
+                    <Chip size="small" label={t("memory.chips.schemaFilter", { value: schemaFilter })} variant="outlined" />
                   </Stack>
                   <Table size="small">
                     <TableHead>
                       <TableRow>
-                        <TableCell>Title</TableCell>
-                        <TableCell>Layer</TableCell>
-                        <TableCell>Status</TableCell>
-                        <TableCell>Trust</TableCell>
-                        <TableCell>Storage</TableCell>
-                        <TableCell>Trace</TableCell>
+                        <TableCell>{t("memory.records.columns.title")}</TableCell>
+                        <TableCell>{t("memory.records.columns.layer")}</TableCell>
+                        <TableCell>{t("common.status")}</TableCell>
+                        <TableCell>{t("memory.records.columns.trust")}</TableCell>
+                        <TableCell>{t("memory.records.columns.storage")}</TableCell>
+                        <TableCell>{t("memory.records.columns.trace")}</TableCell>
                       </TableRow>
                     </TableHead>
                     <TableBody>
@@ -876,18 +881,18 @@ export default function MemoryReasoning() {
                             <Stack direction="row" spacing={0.75} useFlexGap flexWrap="wrap">
                               <Chip
                                 size="small"
-                                label={`schema:${record.storage_schema_version ?? 1}`}
+                                label={t("memory.chips.schema", { value: record.storage_schema_version ?? 1 })}
                                 variant="outlined"
                               />
                               <Chip
                                 size="small"
-                                label={`health:${record.record_health_status ?? "unknown"}`}
+                                label={t("memory.chips.health", { value: record.record_health_status ?? "unknown" })}
                                 color={(record.record_health_status ?? "unknown") === "healthy" ? "success" : "warning"}
                                 variant="outlined"
                               />
                               <Chip
                                 size="small"
-                                label={`repair:${record.repair_status ?? "unknown"}`}
+                                label={t("memory.chips.repair", { value: record.repair_status ?? "unknown" })}
                                 variant="outlined"
                               />
                             </Stack>
@@ -905,7 +910,7 @@ export default function MemoryReasoning() {
                                   to={`/console/audit/transcript-replay/${encodeURIComponent(record.trace_id)}`}
                                   onClick={(event) => event.stopPropagation()}
                                 >
-                                  查看 trace
+                                  {t("memory.actions.viewTrace")}
                                 </Button>
                               ) : null}
                             </Stack>
@@ -915,7 +920,7 @@ export default function MemoryReasoning() {
                       {filteredRecords.length === 0 ? (
                         <TableRow>
                           <TableCell colSpan={6}>
-                            <Alert severity="info">当前筛选条件下没有匹配记录。</Alert>
+                            <Alert severity="info">{t("memory.records.noMatches")}</Alert>
                           </TableCell>
                         </TableRow>
                       ) : null}
@@ -928,21 +933,21 @@ export default function MemoryReasoning() {
             <Card sx={{ flex: 1 }}>
               <CardContent>
                 {!selectedRecord ? (
-                  <Alert severity="info">选择一条记忆后可查看来源链、审计和治理动作。</Alert>
+                  <Alert severity="info">{t("memory.detail.selectHint")}</Alert>
                 ) : (
                   <Stack spacing={2}>
-                    <Typography variant="h6">记忆详情</Typography>
+                    <Typography variant="h6">{t("memory.detail.title")}</Typography>
                     <Stack direction="row" spacing={1} useFlexGap flexWrap="wrap">
                       <Chip label={selectedRecord.memory_layer} color="info" variant="outlined" />
                       <Chip label={selectedRecord.status} color="primary" variant="outlined" />
                       <Chip label={selectedRecord.trust_level} color="warning" variant="outlined" />
                       <Chip label={selectedRecord.visibility} variant="outlined" />
                       <Chip
-                        label={`schema:${selectedDiagnostics?.storage_schema_version ?? selectedRecord.storage_schema_version ?? 1}`}
+                        label={t("memory.chips.schema", { value: selectedDiagnostics?.storage_schema_version ?? selectedRecord.storage_schema_version ?? 1 })}
                         variant="outlined"
                       />
                       <Chip
-                        label={`health:${selectedDiagnostics?.record_health_status ?? selectedRecord.record_health_status ?? "unknown"}`}
+                        label={t("memory.chips.health", { value: selectedDiagnostics?.record_health_status ?? selectedRecord.record_health_status ?? "unknown" })}
                         color={
                           (selectedDiagnostics?.record_health_status ?? selectedRecord.record_health_status) === "healthy"
                             ? "success"
@@ -951,14 +956,18 @@ export default function MemoryReasoning() {
                         variant="outlined"
                       />
                       <Chip
-                        label={`repair:${selectedDiagnostics?.repair_status ?? selectedRecord.repair_status ?? "unknown"}`}
+                        label={t("memory.chips.repair", { value: selectedDiagnostics?.repair_status ?? selectedRecord.repair_status ?? "unknown" })}
                         variant="outlined"
                       />
                     </Stack>
                     <Typography variant="subtitle1">{selectedRecord.title}</Typography>
                     <Typography variant="body2">{selectedRecord.summary}</Typography>
                     <Typography variant="caption" color="text.secondary">
-                      trace: {selectedRecord.trace_id} | target: {selectedRecord.target_id ?? "--"} | version: {selectedRecord.version_id ?? "--"}
+                      {t("memory.detail.identity", {
+                        traceId: selectedRecord.trace_id,
+                        targetId: selectedRecord.target_id ?? "--",
+                        versionId: selectedRecord.version_id ?? "--",
+                      })}
                     </Typography>
                     <Stack direction="row" spacing={1} useFlexGap flexWrap="wrap">
                       {selectedRecord.trace_id ? (
@@ -968,7 +977,7 @@ export default function MemoryReasoning() {
                           component={RouterLink}
                           to={`/console/audit/transcript-replay/${encodeURIComponent(selectedRecord.trace_id)}`}
                         >
-                          查看 trace 回放
+                          {t("memory.actions.viewTraceReplay")}
                         </Button>
                       ) : null}
                       {selectedRecord.source_event_id ? (
@@ -978,32 +987,38 @@ export default function MemoryReasoning() {
                           component={RouterLink}
                           to={`/console/audit/transcript-replay/${encodeURIComponent(selectedRecord.source_event_id)}`}
                         >
-                          查看源事件
+                          {t("memory.actions.viewSourceEvent")}
                         </Button>
                       ) : null}
                     </Stack>
                     <Typography variant="body2" color="text.secondary">
-                      来源: {selectedRecord.source_refs.join(" | ") || "--"}
+                      {t("memory.detail.sources", { sources: selectedRecord.source_refs.join(" | ") || "--" })}
                     </Typography>
                     <Typography variant="body2" color="text.secondary">
-                      证据: {selectedRecord.evidence_refs.join(" | ") || "--"}
+                      {t("memory.detail.evidence", { evidence: selectedRecord.evidence_refs.join(" | ") || "--" })}
                     </Typography>
                     <Typography variant="body2" color="text.secondary">
-                      最近动作: {selectedRecord.last_action} | {selectedRecord.last_action_reason}
+                      {t("memory.detail.lastAction", {
+                        action: selectedRecord.last_action,
+                        reason: selectedRecord.last_action_reason,
+                      })}
                     </Typography>
                     <Typography variant="body2" color="text.secondary">
-                      更新时间: {formatDateTime(selectedRecord.updated_at)} | 最近验证: {formatDateTime(selectedRecord.last_verified_at)}
+                      {t("memory.detail.timestamps", {
+                        updatedAt: formatDateTime(selectedRecord.updated_at),
+                        verifiedAt: formatDateTime(selectedRecord.last_verified_at),
+                      })}
                     </Typography>
                     {selectedDiagnostics ? (
                       <Paper variant="outlined" sx={{ p: 1.5 }}>
                         <Stack spacing={1.25}>
                           <Stack direction="row" spacing={1} useFlexGap flexWrap="wrap" alignItems="center">
-                            <Typography variant="subtitle2">块级诊断</Typography>
+                            <Typography variant="subtitle2">{t("memory.diagnostics.title")}</Typography>
                             <Button size="small" variant="outlined" onClick={() => void handleVerifyRecord()} disabled={repairLoading}>
-                              校验
+                              {t("memory.actions.verify")}
                             </Button>
                             <Button size="small" variant="contained" onClick={() => void handleRepairRecord()} disabled={repairLoading}>
-                              修复
+                              {t("memory.actions.repair")}
                             </Button>
                           </Stack>
                           {selectedDiagnostics.verification?.notes?.length ? (
@@ -1014,19 +1029,19 @@ export default function MemoryReasoning() {
                           <Stack direction="row" spacing={1} useFlexGap flexWrap="wrap">
                             <Chip
                               size="small"
-                              label={`repaired:${selectedDiagnostics.verification?.repaired_blocks.length ?? 0}`}
+                              label={t("memory.chips.repaired", { value: selectedDiagnostics.verification?.repaired_blocks.length ?? 0 })}
                               color="success"
                               variant="outlined"
                             />
                             <Chip
                               size="small"
-                              label={`quarantined:${selectedDiagnostics.verification?.quarantined_blocks.length ?? 0}`}
+                              label={t("memory.chips.quarantined", { value: selectedDiagnostics.verification?.quarantined_blocks.length ?? 0 })}
                               color="warning"
                               variant="outlined"
                             />
                             <Chip
                               size="small"
-                              label={`projection:${selectedDiagnostics.verification?.projection_repairs.length ?? 0}`}
+                              label={t("memory.chips.projection", { value: selectedDiagnostics.verification?.projection_repairs.length ?? 0 })}
                               color="info"
                               variant="outlined"
                             />
@@ -1044,12 +1059,16 @@ export default function MemoryReasoning() {
                                       variant="outlined"
                                     />
                                     <Chip size="small" label={descriptor.codec_chain.join(" -> ") || "raw"} variant="outlined" />
-                                    <Chip size="small" label={`compress:${descriptor.compression_strategy ?? "none"}`} variant="outlined" />
-                                    <Chip size="small" label={descriptor.encryption_context ? "encrypted" : "plain"} variant="outlined" />
+                                    <Chip size="small" label={t("memory.chips.compress", { value: descriptor.compression_strategy ?? "none" })} variant="outlined" />
+                                    <Chip size="small" label={descriptor.encryption_context ? t("memory.values.encrypted") : t("memory.values.plain")} variant="outlined" />
                                   </Stack>
                                   <Typography variant="caption" color="text.secondary">
-                                    required: {descriptor.required ? "yes" : "no"} | derived: {descriptor.derived ? "yes" : "no"} | repairable:{" "}
-                                    {descriptor.repairable ? "yes" : "no"} | verified: {formatDateTime(descriptor.last_verified_at)}
+                                    {t("memory.diagnostics.descriptorSummary", {
+                                      required: descriptor.required ? t("common.yes") : t("common.no"),
+                                      derived: descriptor.derived ? t("common.yes") : t("common.no"),
+                                      repairable: descriptor.repairable ? t("common.yes") : t("common.no"),
+                                      verified: formatDateTime(descriptor.last_verified_at),
+                                    })}
                                   </Typography>
                                 </Stack>
                               </Paper>
@@ -1060,13 +1079,13 @@ export default function MemoryReasoning() {
                     ) : null}
                     <Divider />
                     <TextField
-                      label="治理原因"
+                      label={t("memory.management.reason")}
                       value={reason}
                       onChange={(event) => setReason(event.target.value)}
                       fullWidth
                     />
                     <TextField
-                      label="治理备注"
+                      label={t("memory.management.note")}
                       value={managementNote}
                       onChange={(event) => setManagementNote(event.target.value)}
                       fullWidth
@@ -1074,7 +1093,7 @@ export default function MemoryReasoning() {
                       minRows={2}
                     />
                     <TextField
-                      label="纠正说明"
+                      label={t("memory.management.correction")}
                       value={correctionNote}
                       onChange={(event) => setCorrectionNote(event.target.value)}
                       fullWidth
@@ -1097,7 +1116,7 @@ export default function MemoryReasoning() {
                           })
                         }
                       >
-                        标记可信
+                        {t("memory.actions.markTrusted")}
                       </Button>
                       <Button
                         variant="outlined"
@@ -1113,7 +1132,7 @@ export default function MemoryReasoning() {
                           })
                         }
                       >
-                        标记可疑
+                        {t("memory.actions.markSuspect")}
                       </Button>
                       <Button
                         variant="outlined"
@@ -1128,7 +1147,7 @@ export default function MemoryReasoning() {
                           })
                         }
                       >
-                        废弃
+                        {t("memory.actions.deprecate")}
                       </Button>
                       <Button
                         variant="outlined"
@@ -1145,13 +1164,13 @@ export default function MemoryReasoning() {
                           })
                         }
                       >
-                        归档隐藏
+                        {t("memory.actions.archiveHidden")}
                       </Button>
                     </Stack>
                     <Divider />
-                    <Typography variant="subtitle2">审计记录</Typography>
+                    <Typography variant="subtitle2">{t("memory.audit.title")}</Typography>
                     {selectedAudit.length === 0 ? (
-                      <Alert severity="info">当前记忆还没有额外治理审计。</Alert>
+                      <Alert severity="info">{t("memory.audit.empty")}</Alert>
                     ) : (
                       <Stack spacing={1}>
                         {selectedAudit.map((event) => (
@@ -1176,15 +1195,15 @@ export default function MemoryReasoning() {
           <Card>
             <CardContent>
               <Stack spacing={2}>
-                <Typography variant="h6">当前认知待办</Typography>
+                <Typography variant="h6">{t("memory.agenda.title")}</Typography>
                 {agenda?.items.length ? (
                   <Table size="small">
                     <TableHead>
                       <TableRow>
-                        <TableCell>标题</TableCell>
-                        <TableCell>状态</TableCell>
-                        <TableCell>优先级</TableCell>
-                        <TableCell>下次复查条件</TableCell>
+                        <TableCell>{t("memory.agenda.columns.title")}</TableCell>
+                        <TableCell>{t("common.status")}</TableCell>
+                        <TableCell>{t("memory.agenda.columns.priority")}</TableCell>
+                        <TableCell>{t("memory.agenda.columns.nextReview")}</TableCell>
                       </TableRow>
                     </TableHead>
                     <TableBody>
@@ -1201,7 +1220,7 @@ export default function MemoryReasoning() {
                     </TableBody>
                   </Table>
                 ) : (
-                  <Alert severity="info">当前没有待办 agenda 项。</Alert>
+                  <Alert severity="info">{t("memory.agenda.empty")}</Alert>
                 )}
               </Stack>
             </CardContent>

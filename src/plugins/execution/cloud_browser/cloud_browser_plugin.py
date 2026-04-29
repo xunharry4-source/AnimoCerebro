@@ -24,6 +24,13 @@ class CloudBrowserExecutor(BaseModel):
     operational_status: str = "enabled"
     execution_domain: str = "browser"
     requires_cloud_audit: bool = True
+    capability_tags: list[str] = Field(
+        default_factory=lambda: [
+            "execution.browser",
+            "browser.action",
+            "cloud_browser.execute_action",
+        ]
+    )
     rollback_conditions: list[str] = Field(default_factory=lambda: ["execution_regression"])
     revocation_reasons: list[str] = Field(default_factory=lambda: ["reserved_for_runtime_audit"])
 

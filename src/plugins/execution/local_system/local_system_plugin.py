@@ -24,6 +24,13 @@ class LocalSystemExecutor(BaseModel):
     operational_status: str = "enabled"
     execution_domain: str = "system"
     requires_cloud_audit: bool = False
+    capability_tags: list[str] = Field(
+        default_factory=lambda: [
+            "execution.system",
+            "system.action",
+            "local_system.execute_action",
+        ]
+    )
     rollback_conditions: list[str] = Field(default_factory=lambda: ["execution_regression"])
     revocation_reasons: list[str] = Field(default_factory=lambda: ["reserved_for_runtime_audit"])
 

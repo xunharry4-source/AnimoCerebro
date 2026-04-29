@@ -3,6 +3,7 @@ from __future__ import annotations
 """Public learning service for cross-module access."""
 
 import asyncio
+import logging
 import os
 import threading
 from datetime import datetime, timezone
@@ -26,6 +27,8 @@ from zentex.learning.engine import (
 )
 from zentex.learning.store import LEARNING_EVENT_TYPE, LEARNING_OVERALL_EVENT_TYPE, LearningStore
 from zentex.llm.providers.config import get_maintenance_llm_config
+
+logger = logging.getLogger(__name__)
 
 
 class LearningRecord(BaseModel):

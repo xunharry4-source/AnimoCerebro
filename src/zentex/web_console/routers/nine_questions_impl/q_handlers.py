@@ -13,6 +13,7 @@ This module orchestrates the flow:
 
 
 import logging
+import time
 from typing import Any
 from uuid import uuid4
 
@@ -21,6 +22,10 @@ from fastapi import HTTPException, Request
 from zentex.web_console.contracts.nine_questions import (
     NineQuestionsRunResponse,
     NineQuestionReportItem,
+)
+from zentex.nine_questions.question_driver_framework import (
+    ensure_mounted_plugins,
+    ensure_question_driver_trace,
 )
 from zentex.web_console.dependencies import get_kernel_service_facade
 
@@ -87,12 +92,12 @@ QUESTION_HANDLERS = {
     "q4": {
         "evidence": _extract_q4_preprocessed_evidence,
         "result": _extract_q4_inference_result,
-        "title": "我能做什么",
+        "title": "我能干什么",
     },
     "q5": {
         "evidence": _extract_q5_preprocessed_evidence,
         "result": _extract_q5_inference_result,
-        "title": "我被允许做什么",
+        "title": "我可以干什么",
     },
     "q6": {
         "evidence": _extract_q6_preprocessed_evidence,
@@ -107,12 +112,12 @@ QUESTION_HANDLERS = {
     "q8": {
         "evidence": _extract_q8_preprocessed_evidence,
         "result": _extract_q8_inference_result,
-        "title": "我现在应该做什么",
+        "title": "我应该干什么",
     },
     "q9": {
         "evidence": _extract_q9_preprocessed_evidence,
         "result": _extract_q9_inference_result,
-        "title": "我应该如何行动",
+        "title": "我应该怎么做",
     },
 }
 
@@ -203,13 +208,17 @@ async def run_question_test(
     if question_id not in QUESTION_HANDLERS:
         raise HTTPException(status_code=400, detail=f"Unknown question: {question_id}")
     
-    facade = get_kernel_service_facade(request)
     handler_info = QUESTION_HANDLERS[question_id]
+    started_at = time.monotonic()
     
     try:
         # Extract test components from payload
-        context_snapshot = test_payload.get("context", {})
-        result_payload = test_payload.get("result", {})
+        context_snapshot = test_payload.get("mock_context") or test_payload.get("context") or {}
+        result_payload = test_payload.get("mock_result") or test_payload.get("result") or {}
+        if not isinstance(context_snapshot, dict):
+            raise HTTPException(status_code=400, detail="Sandbox context must be a JSON object")
+        if not isinstance(result_payload, dict):
+            raise HTTPException(status_code=400, detail="Sandbox result must be a JSON object")
         
         # Process evidence
         evidence = await _process_question_evidence(request, question_id, context_snapshot)
@@ -218,35 +227,46 @@ async def run_question_test(
         inference = await _process_question_result(request, question_id, result_payload)
         
         # Build trace metadata
-        trace_id = str(uuid4())
-        event_bus = facade.get_event_bus()
-        
-        # Publish test event
-        await event_bus.publish(
-            event_type=f"nine_question_test_executed",
-            payload={
-                "question_id": question_id,
-                "session_id": session_id,
-                "trace_id": trace_id,
-                "status": "success",
-            }
+        trace_id = f"sandbox:{question_id}:{uuid4()}"
+        llm_trace_payload = ensure_question_driver_trace(
+            question_id,
+            test_payload.get("llm_trace_payload") if isinstance(test_payload.get("llm_trace_payload"), dict) else {},
+            context_data=context_snapshot,
+            raw_response=result_payload,
+            sandbox=True,
         )
         
         return {
             "question_id": question_id,
             "session_id": session_id,
             "trace_id": trace_id,
+            "tool_id": f"nine_questions.{question_id}",
             "status": "success",
             "title": handler_info["title"],
+            "summary": f"Sandbox projection for {question_id}",
+            "confidence": float(result_payload.get("confidence") or 0.0),
+            "elapsed_ms": int((time.monotonic() - started_at) * 1000),
+            "provider_name": llm_trace_payload.get("provider_name"),
+            "mounted_plugins": [
+                item.model_dump(mode="json") if hasattr(item, "model_dump") else item
+                for item in ensure_mounted_plugins(question_id, [])
+            ],
+            "prompt": llm_trace_payload.get("prompt"),
+            "context": context_snapshot,
+            "result": result_payload,
+            "context_updates": {},
             "evidence": evidence,
             "inference": inference,
+            "preprocessed_evidence": evidence,
+            "inference_result": inference,
+            "llm_trace_payload": llm_trace_payload,
         }
     
     except HTTPException:
         raise
     except Exception as e:
         logger.error(f"Test execution error for {question_id}: {e}", exc_info=True)
-        raise HTTPException(status_code=500, detail=f"Test execution failed for {question_id}")
+        raise HTTPException(status_code=500, detail=f"Test execution failed for {question_id}: {e}")
 
 
 async def execute_all_nine_questions(

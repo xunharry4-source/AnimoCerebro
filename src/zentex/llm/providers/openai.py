@@ -88,11 +88,6 @@ class OpenAICompatibleGatewayTool:
     def __init__(self, config: ProviderToolConfig) -> None:
         self.config = config
 
-    @property
-    def default_model(self) -> str:
-        """Configured model for OpenAI-compatible gateways."""
-        return str(self.config.default_model or "")
-
     def call(self, invocation: ToolInvocationRequest) -> ToolInvocationResponse:
         if OpenAI is None:
             raise ConfigError("openai package is not installed in the local environment")

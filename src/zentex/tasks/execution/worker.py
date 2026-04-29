@@ -65,6 +65,7 @@ class WorkerCycleStats:
     tasks_succeeded: int = 0
     tasks_failed: int = 0
     tasks_skipped: int = 0          # no plugin matched
+    tasks_blocked: int = 0          # router found no eligible executor
     tasks_retried: int = 0
     errors: List[Dict[str, Any]] = field(default_factory=list)
     cycle_duration_ms: int = 0
@@ -152,6 +153,8 @@ class TaskExecutionWorker:
                     stats.tasks_retried += 1
                 elif outcome == "skipped":
                     stats.tasks_skipped += 1
+                elif outcome == "blocked":
+                    stats.tasks_blocked += 1
                 stats.tasks_dispatched += 1
             except Exception as exc:
                 logger.exception(
@@ -167,11 +170,12 @@ class TaskExecutionWorker:
         stats.cycle_duration_ms = elapsed_ms
         logger.info(
             "TaskExecutionWorker cycle done — dispatched=%d succeeded=%d failed=%d "
-            "skipped=%d retried=%d duration_ms=%d",
+            "skipped=%d blocked=%d retried=%d duration_ms=%d",
             stats.tasks_dispatched,
             stats.tasks_succeeded,
             stats.tasks_failed,
             stats.tasks_skipped,
+            stats.tasks_blocked,
             stats.tasks_retried,
             elapsed_ms,
         )
@@ -319,33 +323,51 @@ class TaskExecutionWorker:
                     context={"task": task, "attempt_count": attempt_count},
                 )
         except Exception as exc:
-            logger.warning(
-                "Router failed for task %s: %s — will try internal executor directly",
-                task_id, exc,
-            )
+            from zentex.tasks.dispatch.errors import NoMatchingExecutorError
+
+            if isinstance(exc, NoMatchingExecutorError):
+                logger.warning(
+                    "No matching executor for task %s; blocking task instead of falling back: %s",
+                    task_id,
+                    exc,
+                )
+                self._mark_dispatch_blocked(
+                    task,
+                    reason=str(exc),
+                    required_capabilities=exc.required_capabilities,
+                    lease_owner=lease_owner,
+                    attempt_count=attempt_count,
+                )
+                return "blocked"
+            logger.error("Router failed for task %s; failing task without fallback: %s", task_id, exc, exc_info=True)
+            self._mark_failed(task_id, f"Dispatch routing failed: {exc}")
+            return "failed"
 
         # 4. Execute on the selected plugin
         if decision is not None:
             plugin_id = decision.selected_executor.executor_id
         else:
-            # Fallback: try to match a plugin directly without routing
+            # Only used when no router is configured.
             plugin_id = await self._direct_plugin_match(subtask_intent)
 
         if not plugin_id:
             logger.warning("No plugin found for task %s — skipping", task_id)
-            self._dao.update_task(task_id, {
-                "status": "todo",           # put back to queue
-                "last_error": "No matching plugin found for task capabilities",
-            })
-            return "skipped"
+            self._mark_dispatch_blocked(
+                task,
+                reason="No matching executor found for task capabilities",
+                required_capabilities=list(subtask_intent.required_capabilities or []),
+                lease_owner=lease_owner,
+                attempt_count=attempt_count,
+            )
+            return "blocked"
 
         exec_result = await self._execute_on_plugin(plugin_id, subtask_intent, task_id)
 
         # 5. Write result back to DB
         if exec_result.get("succeeded"):
             self._write_success(task_id, plugin_id, exec_result)
-            self._update_router_credit(decision, plugin_id, succeeded=True,
-                                       duration=exec_result.get("duration_seconds", 0))
+            await self._update_router_credit(decision, plugin_id, succeeded=True,
+                                             duration=exec_result.get("duration_seconds", 0))
             return "succeeded"
         else:
             error_msg = exec_result.get("error", "Unknown error")
@@ -365,8 +387,8 @@ class TaskExecutionWorker:
                         },
                     ),
                 })
-                self._update_router_credit(decision, plugin_id, succeeded=False,
-                                           duration=exec_result.get("duration_seconds", 0))
+                await self._update_router_credit(decision, plugin_id, succeeded=False,
+                                                 duration=exec_result.get("duration_seconds", 0))
                 logger.info(
                     "Task %s attempt %d failed, will retry (max=%d): %s",
                     task_id, attempt_count, self._cfg.max_attempts, error_msg,
@@ -374,8 +396,8 @@ class TaskExecutionWorker:
                 return "retried"
             else:
                 self._mark_failed(task_id, error_msg, plugin_id=plugin_id)
-                self._update_router_credit(decision, plugin_id, succeeded=False,
-                                           duration=exec_result.get("duration_seconds", 0))
+                await self._update_router_credit(decision, plugin_id, succeeded=False,
+                                                 duration=exec_result.get("duration_seconds", 0))
                 return "failed"
 
     async def _execute_on_plugin(
@@ -490,7 +512,38 @@ class TaskExecutionWorker:
             logger.error("Failed to mark task %s as failed: %s", task_id, exc)
         logger.error("Task %s permanently failed: %s", task_id, error_msg)
 
-    def _update_router_credit(
+    def _mark_dispatch_blocked(
+        self,
+        task: Dict[str, Any],
+        *,
+        reason: str,
+        required_capabilities: List[str],
+        lease_owner: str,
+        attempt_count: int,
+    ) -> None:
+        task_id = task["task_id"]
+        now_iso = datetime.now(timezone.utc).isoformat()
+        self._dao.update_task(task_id, {
+            "status": "blocked",
+            "execution_finished_at": now_iso,
+            "last_error": reason[:2000],
+            "metadata": self._merge_metadata(
+                task,
+                dispatch_failure={
+                    "reason": "no_matching_executor",
+                    "required_capabilities": list(required_capabilities),
+                    "message": reason,
+                },
+                lease={
+                    "status": "released",
+                    "owner": lease_owner,
+                    "released_at": now_iso,
+                    "attempt_count": attempt_count,
+                },
+            ),
+        })
+
+    async def _update_router_credit(
         self,
         decision: Any,
         plugin_id: str,
@@ -512,7 +565,9 @@ class TaskExecutionWorker:
                     succeeded=succeeded,
                     failure_action="retry" if not succeeded else "none",
                 )
-                record_fn(result)
+                maybe_result = record_fn(result)
+                if asyncio.iscoroutine(maybe_result) or hasattr(maybe_result, "__await__"):
+                    await maybe_result
         except Exception as exc:
             logger.warning("Could not update router credit score: %s", exc)
 

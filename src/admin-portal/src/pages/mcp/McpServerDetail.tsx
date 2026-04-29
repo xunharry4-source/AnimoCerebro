@@ -213,7 +213,7 @@ const McpServerDetail: React.FC = () => {
       <Chip label={params.value} size="small" variant="outlined" color={params.value === "passed" ? "success" : "warning"} />
     )},
     { field: "start_time", headerName: t("mcp.startTime"), width: 180 },
-    { field: "duration_seconds", headerName: t("mcp.durationSeconds"), width: 100, valueGetter: (params) => params.row.duration_seconds?.toFixed(2) || "-" },
+    { field: "duration_seconds", headerName: t("mcp.durationSeconds"), width: 100, valueGetter: (_value, row) => row.duration_seconds?.toFixed(2) || "-" },
     { field: "error", headerName: t("common.errorMessage"), width: 200, renderCell: (params) => (
       params.value ? (
         <Tooltip title={params.value}>
@@ -271,7 +271,7 @@ const McpServerDetail: React.FC = () => {
 
         <Grid container spacing={3}>
           {/* Credit Score & Summary Card */}
-          <Grid item xs={12} md={4}>
+          <Grid size={{ xs: 12, md: 4 }}>
             <Card sx={{ height: '100%', borderRadius: 4, background: 'linear-gradient(135deg, #1e3c72 0%, #2a5298 100%)', color: 'white' }}>
               <CardContent>
                 <Stack spacing={2} alignItems="center" sx={{ py: 2 }}>
@@ -342,16 +342,16 @@ const McpServerDetail: React.FC = () => {
           </Grid>
 
           {/* Quick Details Card */}
-          <Grid item xs={12} md={8}>
+          <Grid size={{ xs: 12, md: 8 }}>
             <Card sx={{ height: '100%', borderRadius: 4 }}>
               <CardContent>
                 <Typography variant="h6" gutterBottom>{t("mcp.serverMetadata")}</Typography>
                 <Grid container spacing={2} sx={{ mb: 2 }}>
-                  <Grid item xs={6}>
+                  <Grid size={{ xs: 6 }}>
                     <Typography variant="caption" color="text.secondary">Server ID</Typography>
                     <Typography variant="body1" fontWeight="medium">{data.server_id}</Typography>
                   </Grid>
-                  <Grid item xs={6}>
+                  <Grid size={{ xs: 6 }}>
                     <Typography variant="caption" color="text.secondary">{t("mcp.accessProtocol")}</Typography>
                     <Typography variant="body1" fontWeight="medium">{data.transport_type}</Typography>
                   </Grid>
@@ -374,7 +374,7 @@ const McpServerDetail: React.FC = () => {
           </Grid>
 
           {/* Task Monitoring Section */}
-          <Grid item xs={12}>
+          <Grid size={{ xs: 12 }}>
             <Card sx={{ borderRadius: 4 }}>
               <CardContent>
                 <Stack direction="row" justifyContent="space-between" alignItems="center" sx={{ mb: 2 }}>

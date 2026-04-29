@@ -171,14 +171,8 @@ def query_enabled_cognitive_plugin_functionals(
     role: Optional[str] = None,
     limit: int = 200,
 ) -> list[dict[str, Any]]:
-    """Query one cognitive plugin's enabled functional plugins.
-    
-    This is the mandatory path for cognitive plugins to discover their bound functionals.
-    Only ACTIVE and enabled plugins are returned.
-    """
+    """Query one cognitive plugin's enabled functional plugins."""
     bindings: Any = None
-    
-    # 1. Primary path: query via standardized binding API
     if callable(getattr(plugin_service, "query_enabled_functional_plugins_for_cognitive", None)):
         bindings = _extract_binding_rows(
             plugin_service.query_enabled_functional_plugins_for_cognitive(
@@ -187,8 +181,15 @@ def query_enabled_cognitive_plugin_functionals(
                 limit=limit,
             )
         )
-    
-    # 2. Fallback path: query via generic operational status API
+    if not isinstance(bindings, list) and callable(
+        getattr(plugin_service, "query_cognitive_functionals_by_status", None)
+    ):
+        bindings = plugin_service.query_cognitive_functionals_by_status(
+            cognitive_plugin_id,
+            operational_status="enabled",
+            role=role,
+            limit=limit,
+        )
     if not isinstance(bindings, list) and callable(
         getattr(plugin_service, "query_cognitive_functionals_by_operational_status", None)
     ):
@@ -198,51 +199,49 @@ def query_enabled_cognitive_plugin_functionals(
             role=role,
             limit=limit,
         )
-        
     resolved = bindings if isinstance(bindings, list) else []
-    
-    # 3. Defensive activation path: if bindings exist but are not enabled, attempt auto-activation
-    if not resolved:
-        try:
-            lifecycle_bindings = plugin_service.query_cognitive_functionals_by_lifecycle(
-                cognitive_plugin_id,
-                role=role,
-                limit=limit,
-            )
-            if isinstance(lifecycle_bindings, list) and lifecycle_bindings:
-                for binding in lifecycle_bindings:
-                    plugin_id = str(binding.get("plugin_id") or "").strip()
-                    if not plugin_id:
-                        continue
-                    try:
-                        # Ensure functional plugins are ACTIVE before calling
-                        plugin_service.enable_plugin(
-                            plugin_id,
-                            reason=f"Auto-activate functional binding for {cognitive_plugin_id}",
-                        )
-                    except Exception:
-                        logger.debug(
-                            "[Plugins] Auto-activation failed for binding %s (may be already active or missing)",
-                            plugin_id
-                        )
-                
-                # Re-query after activation attempts
-                rebound = _extract_binding_rows(
-                    plugin_service.query_enabled_functional_plugins_for_cognitive(
-                        cognitive_plugin_id,
-                        role=role,
-                        limit=limit,
+    if resolved:
+        return resolved
+
+    # Real runtime bootstrap path: if bindings exist but are still candidate/stopped,
+    # activate them on demand through the canonical management API.
+    try:
+        lifecycle_bindings = plugin_service.query_cognitive_functionals_by_lifecycle(
+            cognitive_plugin_id,
+            role=role,
+            limit=limit,
+        )
+        if isinstance(lifecycle_bindings, list) and lifecycle_bindings:
+            for binding in lifecycle_bindings:
+                plugin_id = str(binding.get("plugin_id") or "").strip()
+                if not plugin_id:
+                    continue
+                try:
+                    plugin_service.enable_plugin(
+                        plugin_id,
+                        reason=f"Auto-activate functional binding for {cognitive_plugin_id}",
                     )
+                except Exception:
+                    logger.exception(
+                        "[Plugins] Failed auto-activating functional binding %s for %s",
+                        plugin_id,
+                        cognitive_plugin_id,
+                    )
+            rebound = _extract_binding_rows(
+                plugin_service.query_enabled_functional_plugins_for_cognitive(
+                    cognitive_plugin_id,
+                    role=role,
+                    limit=limit,
                 )
-                if rebound:
-                    return rebound
-        except Exception:
-            logger.warning(
-                "[Plugins] Failed resolving enabled functional bindings for cognitive plugin %s",
-                cognitive_plugin_id,
             )
-            
-    return resolved
+            if rebound:
+                return rebound
+    except Exception:
+        logger.exception(
+            "[Plugins] Failed resolving enabled functional bindings for cognitive plugin %s",
+            cognitive_plugin_id,
+        )
+    return []
 
 
 def query_cognitive_tools(
@@ -290,66 +289,60 @@ def execute_enabled_cognitive_plugin_functionals(
     role: Optional[str] = None,
     limit: int = 200,
 ) -> list[dict[str, Any]]:
-    """Query enabled functional bindings and execute them sequentially.
-    
-    This implements the 'Sequential Functional Execution' pattern:
-    1. Query all ACTIVE & enabled functional plugins bound to the cognitive caller.
-    2. Sort by priority (if available in bindings).
-    3. Execute each functional plugin one by one.
-    4. Collect results into an audit-ready list.
-    """
-    bindings = query_enabled_cognitive_plugin_functionals(
-        plugin_service,
-        cognitive_plugin_id,
-        role=role,
-        limit=limit,
-    )
-
-    if not bindings:
-        logger.debug("[Plugins] No enabled functional bindings found for cognitive plugin %s", cognitive_plugin_id)
-        return []
-
-    # Sort by priority if present
-    sorted_bindings = sorted(bindings, key=lambda b: b.get("priority", 999))
+    """Query enabled functional bindings and execute them through the public service."""
+    bindings: Any = None
+    if callable(getattr(plugin_service, "query_enabled_functional_plugins_for_cognitive", None)):
+        bindings = query_enabled_cognitive_plugin_functionals(
+            plugin_service,
+            cognitive_plugin_id,
+            role=role,
+            limit=limit,
+        )
+    if not isinstance(bindings, list) and callable(
+        getattr(plugin_service, "query_cognitive_functionals_by_status", None)
+    ):
+        bindings = plugin_service.query_cognitive_functionals_by_status(
+            cognitive_plugin_id,
+            operational_status="enabled",
+            role=role,
+            limit=limit,
+        )
+    if not isinstance(bindings, list) and callable(
+        getattr(plugin_service, "query_cognitive_functionals_by_operational_status", None)
+    ):
+        bindings = plugin_service.query_cognitive_functionals_by_operational_status(
+            cognitive_plugin_id,
+            operational_status="enabled",
+            role=role,
+            limit=limit,
+        )
+    if not isinstance(bindings, list):
+        bindings = []
 
     results: list[dict[str, Any]] = []
-    for binding in sorted_bindings:
+    for binding in bindings:
         functional_plugin_id = str(binding.get("plugin_id") or "").strip()
         if not functional_plugin_id:
             continue
-            
-        # Prepare parameters: default -> specific override
         parameters = dict(default_parameters or {})
         parameters.update((parameters_by_plugin_id or {}).get(functional_plugin_id, {}))
-        
-        try:
-            feedback = plugin_service.execute_plugin_once_sync(
-                plugin_id=functional_plugin_id,
-                task_id=f"{trace_id}:{functional_plugin_id}",
-                parameters=parameters,
-                trace_id=trace_id,
-                originator_id=originator_id,
-                caller_plugin_id=caller_plugin_id or cognitive_plugin_id,
-            )
-            
-            results.append(
-                {
-                    **binding,
-                    "status": getattr(feedback, "status", None),
-                    "error": getattr(feedback, "error", None),
-                    "remarks": getattr(feedback, "remarks", None),
-                    "result": unwrap_plugin_feedback_result(getattr(feedback, "result", None)),
-                }
-            )
-        except Exception as exc:
-            logger.error("[Plugins] Functional execution failed for %s: %s", functional_plugin_id, exc)
-            results.append({
+        feedback = plugin_service.execute_plugin_once_sync(
+            plugin_id=functional_plugin_id,
+            task_id=f"{trace_id}:{functional_plugin_id}",
+            parameters=parameters,
+            trace_id=trace_id,
+            originator_id=originator_id,
+            caller_plugin_id=caller_plugin_id or cognitive_plugin_id,
+        )
+        results.append(
+            {
                 **binding,
-                "status": "failed",
-                "error": str(exc),
-                "result": None
-            })
-            
+                "status": getattr(feedback, "status", None),
+                "error": getattr(feedback, "error", None),
+                "remarks": getattr(feedback, "remarks", None),
+                "result": unwrap_plugin_feedback_result(getattr(feedback, "result", None)),
+            }
+        )
     return results
 
 

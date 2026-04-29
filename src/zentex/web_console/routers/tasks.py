@@ -75,42 +75,91 @@ def _require_task_service(service: Any = Depends(get_task_service)) -> TaskManag
     return service
 
 
+def _parse_metadata_filters(raw_filters: Optional[List[str]]) -> Dict[str, str]:
+    parsed: Dict[str, str] = {}
+    for raw_filter in raw_filters or []:
+        for item in raw_filter.split(","):
+            if not item:
+                continue
+            if "=" not in item:
+                raise HTTPException(
+                    status_code=400,
+                    detail=f"Invalid metadata filter '{item}'. Expected key=value.",
+                )
+            key, value = item.split("=", 1)
+            key = key.strip()
+            if not key:
+                raise HTTPException(status_code=400, detail="Metadata filter key must not be empty")
+            parsed[key] = value
+    return parsed
+
+
 @router.get("/tasks", response_model=List[ZentexTask])
 async def list_tasks(
     service: Annotated[TaskManagementService, Depends(_require_task_service)],
     status_filter: Optional[str] = Query(None, description="Filter by status"),
     source_module: Optional[str] = Query(None, description="Filter by workflow source module"),
+    metadata_filters: Optional[List[str]] = Query(
+        None,
+        description="Metadata filters as key=value pairs; repeat the parameter or separate with commas.",
+    ),
+    limit: int = Query(100, ge=1, le=500, description="Maximum tasks to return"),
+    offset: int = Query(0, ge=0, description="Database offset for pagination"),
 ) -> List[ZentexTask]:
-    """List all tasks with optional status filter."""
+    """List tasks with database-backed filters and pagination."""
+    parsed_metadata_filters = _parse_metadata_filters(metadata_filters)
     if status_filter:
         try:
             status_enum = TaskStatus(status_filter)
-            return service.list_tasks(status=status_enum, source_module=source_module)
+            return service.list_tasks(
+                status=status_enum,
+                source_module=source_module,
+                metadata_filters=parsed_metadata_filters,
+                limit=limit,
+                offset=offset,
+            )
         except ValueError:
             raise HTTPException(status_code=400, detail=f"Invalid status: {status_filter}")
-    return service.list_tasks(source_module=source_module)
+    return service.list_tasks(
+        source_module=source_module,
+        metadata_filters=parsed_metadata_filters,
+        limit=limit,
+        offset=offset,
+    )
 
 
 @router.get("/tasks/by-status")
 async def get_tasks_grouped_by_status(
     service: Annotated[TaskManagementService, Depends(_require_task_service)],
     source_module: Optional[str] = Query(None, description="Filter grouped tasks by workflow source module"),
+    limit_per_group: int = Query(100, ge=1, le=500, description="Maximum tasks per group"),
+    offset: int = Query(0, ge=0, description="Database offset applied to each status query"),
 ) -> Dict[str, List[ZentexTask]]:
-    """Get tasks grouped by status categories for tabbed view.
+    """Get paginated tasks grouped by status categories for tabbed view.
 
     Grouping rules are owned by TaskManagementService.list_tasks_grouped().
     """
-    grouped = service.list_tasks_grouped()
-    if not source_module:
-        return grouped
-    return {
-        key: [
-            task
-            for task in tasks
-            if str((task.metadata or {}).get("source_module", "")) == source_module
-        ]
-        for key, tasks in grouped.items()
-    }
+    return service.list_tasks_grouped(
+        source_module=source_module,
+        limit_per_group=limit_per_group,
+        offset=offset,
+    )
+
+
+@router.get("/tasks/diagnostics/closure")
+async def diagnose_task_management_closure(
+    service: Annotated[TaskManagementService, Depends(_require_task_service)],
+    stale_after_seconds: int = Query(300, ge=0),
+) -> Dict[str, Any]:
+    return service.diagnose_task_management_closure(stale_after_seconds=stale_after_seconds)
+
+
+@router.post("/tasks/diagnostics/fault-injection")
+async def run_task_fault_injection_matrix(
+    service: Annotated[TaskManagementService, Depends(_require_task_service)],
+    stale_after_seconds: int = Query(300, ge=0),
+) -> Dict[str, Any]:
+    return service.run_task_fault_injection_matrix(stale_after_seconds=stale_after_seconds)
 
 
 @router.get("/tasks/{task_id}/detail")

@@ -151,6 +151,31 @@ export function useDebouncedCallback<T extends (...args: any[]) => any>(
   );
 }
 
+export function useThrottledCallback<T extends (...args: any[]) => any>(
+  func: T,
+  delay: number = 300
+): T {
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  return useCallback(
+    throttle(func, delay) as T,
+    [func, delay]
+  );
+}
+
+export function withErrorBoundary<P extends object>(
+  WrappedComponent: React.ComponentType<P>,
+  fallback?: ReactNode,
+  onError?: (error: Error, errorInfo: ErrorInfo) => void
+): React.FC<P> {
+  const ComponentWithBoundary: React.FC<P> = (props) => (
+    <ErrorBoundary fallback={fallback} onError={onError}>
+      <WrappedComponent {...props} />
+    </ErrorBoundary>
+  );
+  ComponentWithBoundary.displayName = `withErrorBoundary(${WrappedComponent.displayName || WrappedComponent.name || "Component"})`;
+  return ComponentWithBoundary;
+}
+
 /**
  * Simple throttle implementation
  */

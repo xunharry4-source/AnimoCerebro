@@ -28,9 +28,9 @@ def handle_list_agents(
     task_service: TaskManagementService,
 ) -> List[AgentConsoleRecord]:
     """Handle the listing of agents with their inbox and receipts."""
-    tasks = task_service.list_tasks()
     records: List[AgentConsoleRecord] = []
     for asset in service.manager.list_assets():
+        tasks = task_service.list_tasks(target_id=asset.agent_id, limit=500, offset=0)
         inbox_tasks = service.build_inbox(asset.agent_id, tasks)
         receipt_tasks = service.build_receipts(asset.agent_id, tasks)
         records.append(
@@ -101,12 +101,12 @@ def handle_get_agent_detail(
     if not asset:
         raise HTTPException(status_code=404, detail=f"Agent {agent_id} not found")
     
-    tasks = task_service.list_tasks()
+    tasks = task_service.list_tasks(target_id=agent_id, limit=500, offset=0)
     inbox_tasks = agent_service.build_inbox(agent_id, tasks)
     receipt_tasks = agent_service.build_receipts(agent_id, tasks)
     
     credit_score = calculate_agent_credit_score(agent_id, agent_service, task_service)
-    statistics = get_agent_statistics(agent_id, task_service)
+    statistics = get_agent_statistics(agent_id, agent_service, task_service)
     
     return {
         "agent_id": asset.agent_id,

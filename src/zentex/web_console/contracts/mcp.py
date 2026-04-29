@@ -15,10 +15,19 @@ class McpServerRegistrationRequest(BaseModel):
     model_config = ConfigDict(extra="forbid", str_strip_whitespace=True)
 
     server_id: str = Field(min_length=1)
-    transport_type: str = Field(pattern="^(stdio|sse)$")
+    name: Optional[str] = None
+    description: Optional[str] = None
+    version: Optional[str] = None
+    protocol_version: str = "2024-11-05"
+    tags: List[str] = Field(default_factory=list)
+    owner: Optional[str] = None
+    transport_type: str = Field(pattern="^(stdio|sse|http)$")
     command: str = Field(min_length=1)
     args: List[str] = Field(default_factory=list)
     env: dict[str, str] = Field(default_factory=dict)
+    scope: List[str] = Field(default_factory=lambda: ["read"])
+    auth_mode: str = Field(default="none", pattern="^(none|bearer|api_key)$")
+    tool_bindings: List[dict[str, object]] = Field(default_factory=list)
 
 class McpToolTestCallRequest(BaseModel):
     model_config = ConfigDict(extra="forbid")

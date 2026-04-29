@@ -75,6 +75,11 @@ class UpgradeRecordItem(BaseModel):
     prompt_upgrade_notes: list[str] = Field(default_factory=list)
     prompt_upgrade_summary: Optional[str] = None
     can_cancel: bool = False
+    can_promote: bool = False
+    can_rollback: bool = False
+    can_activate_phase_d: bool = False
+    activation_receipts: dict[str, object] = Field(default_factory=dict)
+    rollback_receipts: dict[str, object] = Field(default_factory=dict)
     can_cleanup_failed_candidate: bool = False
 
 
@@ -131,6 +136,13 @@ class UpgradeActionRequest(BaseModel):
     model_config = ConfigDict(extra="forbid", frozen=True)
 
     reason: str = Field(min_length=1)
+    operator_id: Optional[str] = None
+    reviewer_id: Optional[str] = None
+    evidence_refs: list[str] = Field(default_factory=list)
+
+
+class UpgradeRecordActionRequest(UpgradeActionRequest):
+    record_id: str = Field(min_length=1)
 
 
 class ExecuteLLMUpgradeRequest(BaseModel):

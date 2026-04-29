@@ -228,6 +228,7 @@ def get_agent_tasks_view(
     return handle_get_tasks_by_status(
         agent_id=agent_id,
         status_filter=status,
+        agent_service=agent_service,
         task_service=task_service,
         page=page,
         page_size=page_size,

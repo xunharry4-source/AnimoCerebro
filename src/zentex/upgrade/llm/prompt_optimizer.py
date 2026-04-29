@@ -3,7 +3,7 @@ from __future__ import annotations
 from collections.abc import Callable
 import ast
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Union
+from typing import Any, Dict, List, Optional
 
 from zentex.foundation.specs.model_provider import ModelProviderCallerContext
 from zentex.llm.gateway import LLMGateway
@@ -51,7 +51,7 @@ class SectionAwarePromptOptimizerRunner:
             if str(item).strip()
         }
         known_sections = set(extract_prompt_section_map(source_text))
-        unknown_sections = (Union[editable_sections, immutable_sections]) - known_sections
+        unknown_sections = (editable_sections | immutable_sections) - known_sections
         if unknown_sections:
             raise RuntimeError(
                 f"Prompt contract references sections not found in source: {sorted(unknown_sections)}"

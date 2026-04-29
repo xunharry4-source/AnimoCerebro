@@ -403,7 +403,7 @@ class TaskServiceInterface:
                 "error_code": "RESUME_FAILED"
             }
     
-    def get_suspended_tasks(self) -> Dict[str, Any]:
+    def get_suspended_tasks(self, *, limit: int = 100, offset: int = 0) -> Dict[str, Any]:
         """
         获取挂起任务列表
         
@@ -411,7 +411,7 @@ class TaskServiceInterface:
             挂起任务列表
         """
         try:
-            suspended_tasks = self._service.list_suspended_tasks()
+            suspended_tasks = self._service.list_suspended_tasks(limit=limit, offset=offset)
             
             return {
                 "success": True,

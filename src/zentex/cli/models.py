@@ -55,6 +55,9 @@ class CliInvocationResult(BaseModel):
     stderr: str = ""
     command_line: List[str] = Field(default_factory=list)
     working_directory: Optional[str] = None
+    duration_ms: int = 0
+    failure_category: Optional[str] = None
+    preflight_blocked: bool = False
 
 class CliCreditScore(BaseModel):
     model_config = ConfigDict(extra="forbid", frozen=True)
@@ -96,3 +99,5 @@ class CliExecutionHistory(BaseModel):
     working_directory: Optional[str] = None
     executed_at: str
     duration_ms: Optional[int] = None
+    failure_category: Optional[str] = None
+    preflight_blocked: bool = False

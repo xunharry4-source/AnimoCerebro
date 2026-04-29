@@ -18,7 +18,7 @@ import threading
 from datetime import datetime, timezone
 from copy import deepcopy
 from pathlib import Path
-from typing import Any, Optional, Union, Optional, Union, Dict, List
+from typing import Any, Callable, Optional, Union, Optional, Union, Dict, List
 from uuid import uuid4
 
 logger = logging.getLogger(__name__)
@@ -64,12 +64,14 @@ from zentex.kernel.state_domain import (
     CognitiveTemporalEngine,
     NullTranscriptStore,
     SelfModelEngine,
+    MetaCognitionController,
     TranscriptEntry,
     TranscriptEntryType,
     TranscriptStore,
     WorkingMemoryController,
 )
 from zentex.kernel.state_domain.brain_transcript_models import BrainTranscriptEntryType
+from zentex.safety.conflict_engine import CognitiveConflictEngine
 from zentex.nine_questions.query import build_question_record
 
 UTC = timezone.utc
@@ -81,11 +83,19 @@ UTC = timezone.utc
 class _SessionState:
     """Holds all state-domain objects for a single session."""
 
-    def __init__(self, session_id: str, db_dir: str) -> None:
+    def __init__(
+        self,
+        session_id: str,
+        db_dir: str,
+        *,
+        entry_listeners: list[Callable[[Any], Optional[None]]] | None = None,
+    ) -> None:
         self.session_id = session_id
         self.working_memory = WorkingMemoryController(max_slots=WORKING_MEMORY_MAX_SLOTS)
         self.self_model = SelfModelEngine(session_id=session_id)
+        self.meta_cognition = MetaCognitionController(session_id=session_id)
         self.temporal = CognitiveTemporalEngine(session_id=session_id)
+        self.conflict_engine = CognitiveConflictEngine(brain_scope=session_id)
         transcript_enabled = str(os.environ.get("ZENTEX_ENABLE_TRANSCRIPTS", "")).strip().lower() in {
             "1",
             "true",
@@ -93,7 +103,11 @@ class _SessionState:
             "on",
         }
         if transcript_enabled:
-            self.transcript = TranscriptStore(session_id=session_id, db_dir=db_dir)
+            self.transcript = TranscriptStore(
+                session_id=session_id,
+                db_dir=db_dir,
+                entry_listeners=entry_listeners or [],
+            )
         else:
             self.transcript = NullTranscriptStore(session_id=session_id)
 
@@ -120,6 +134,7 @@ class KernelService:
 
         # --- per-session state ---
         self._session_states: dict[str, _SessionState] = {}
+        self._transcript_entry_listeners: dict[str, Callable[[Any], Optional[None]]] = {}
 
         # --- flow components ---
         self._phase_registry = PhaseRegistry()
@@ -155,8 +170,32 @@ class KernelService:
         self._nq_plugin_service: Any = None
         self._reflection_service: Any = None
         self._learning_service: Any = None
+        self._task_service: Any = None
+        self._brain_daemon: Any = None
 
         self._initialized = True
+
+    def _create_session_state(self, session_id: str) -> _SessionState:
+        return _SessionState(
+            session_id=session_id,
+            db_dir=self._transcript_db_dir,
+            entry_listeners=list(self._transcript_entry_listeners.values()),
+        )
+
+    def add_transcript_entry_listener(
+        self,
+        key: str,
+        listener: Callable[[Any], Optional[None]],
+    ) -> None:
+        """Attach a transcript projection listener owned by an outer service."""
+        if key in self._transcript_entry_listeners:
+            return
+        self._transcript_entry_listeners[key] = listener
+        for state in self._session_states.values():
+            store = getattr(state, "transcript", None)
+            add_listener = getattr(store, "add_entry_listener", None)
+            if callable(add_listener):
+                add_listener(listener)
 
     # ------------------------------------------------------------------
     # Engine accessors (for web console / default session)
@@ -170,7 +209,7 @@ class KernelService:
         if state is None:
             # Try to force create it if possible, or return None
             try:
-                state = _SessionState(default_session_id, self._transcript_db_dir)
+                state = self._create_session_state(default_session_id)
                 self._session_states[default_session_id] = state
             except Exception as e:
                 logger.exception(f"Failed to initialize engine state for {default_session_id}")
@@ -179,17 +218,17 @@ class KernelService:
 
     @property
     def conflict_engine(self) -> Any:
-        """Return the conflict engine (self-model) for the default session."""
+        """Return the conflict engine for the default session."""
         default_session_id = "zentex-default-session"
         state = self._session_states.get(default_session_id)
         if state is None:
             try:
-                state = _SessionState(default_session_id, self._transcript_db_dir)
+                state = self._create_session_state(default_session_id)
                 self._session_states[default_session_id] = state
             except Exception as e:
                 logger.exception(f"Failed to initialize engine state for {default_session_id}")
                 raise e
-        return state.self_model
+        return state.conflict_engine
 
     @property
     def simulation_engine(self) -> Any:
@@ -198,7 +237,7 @@ class KernelService:
         state = self._session_states.get(default_session_id)
         if state is None:
             try:
-                state = _SessionState(default_session_id, self._transcript_db_dir)
+                state = self._create_session_state(default_session_id)
                 self._session_states[default_session_id] = state
             except Exception as e:
                 logger.exception(f"Failed to initialize engine state for {default_session_id}")
@@ -224,7 +263,7 @@ class KernelService:
         state = self._session_states.get(default_session_id)
         if state is None:
             try:
-                state = _SessionState(default_session_id, self._transcript_db_dir)
+                state = self._create_session_state(default_session_id)
                 self._session_states[default_session_id] = state
             except Exception as e:
                 logger.exception(f"Failed to initialize engine state for {default_session_id}")
@@ -255,6 +294,7 @@ class KernelService:
         mcp_service: Any = None,
         reflection_service: Any = None,
         learning_service: Any = None,
+        task_service: Any = None,
     ) -> None:
         """Inject all external service references.
 
@@ -287,6 +327,8 @@ class KernelService:
             self._reflection_service = reflection_service
         if learning_service is not None:
             self._learning_service = learning_service
+        if task_service is not None:
+            self._task_service = task_service
 
         # Initialize Nine-Question implementation service
         if plugins_service is not None:
@@ -316,10 +358,7 @@ class KernelService:
     def create_session(self, user_id: str = "") -> str:
         """Create a new session and return its session_id."""
         session = self._lifecycle.create_session(user_id=user_id)
-        state = _SessionState(
-            session_id=session.session_id,
-            db_dir=self._transcript_db_dir,
-        )
+        state = self._create_session_state(session.session_id)
         with self._lock:
             self._session_states[session.session_id] = state
         return session.session_id
@@ -377,6 +416,9 @@ class KernelService:
 
         Returns a TurnResult. Raises ValueError if session not found.
         """
+        session = self._registry.get(session_id)
+        if session is None:
+            raise ValueError(f"Session missing for: {session_id}")
         state = self._get_state(session_id)
         if state is None:
             raise ValueError(f"Session state missing for: {session_id}")
@@ -392,7 +434,7 @@ class KernelService:
         )
 
         request = TurnRequest(
-            turn_id=turn_id,
+            turn_id=str(uuid4()),
             session_id=session_id,
             user_input=user_input,
             context=enriched_context,
@@ -410,6 +452,1059 @@ class KernelService:
         )
         return result
 
+    def update_working_memory_frame(
+        self,
+        *,
+        session_id: str,
+        tick_id: str,
+        new_candidates: list[dict[str, Any]],
+        attention_budget: Optional[dict[str, Any]] = None,
+        trace_id: Optional[str] = None,
+    ) -> dict[str, Any]:
+        """Feature 52 entry point; business rules live in working_memory_runtime."""
+        from zentex.kernel.working_memory_runtime import update_working_memory_frame
+
+        return update_working_memory_frame(
+            self,
+            session_id=session_id,
+            tick_id=tick_id,
+            new_candidates=new_candidates,
+            attention_budget=attention_budget,
+            trace_id=trace_id,
+        )
+
+    def interrupt_working_memory_focus(
+        self,
+        *,
+        session_id: str,
+        tick_id: str,
+        high_risk_item: dict[str, Any],
+        trace_id: Optional[str] = None,
+    ) -> dict[str, Any]:
+        """Feature 52 interrupt entry point; implementation is outside service.py."""
+        from zentex.kernel.working_memory_runtime import interrupt_working_memory_focus
+
+        return interrupt_working_memory_focus(
+            self,
+            session_id=session_id,
+            tick_id=tick_id,
+            high_risk_item=high_risk_item,
+            trace_id=trace_id,
+        )
+
+    def resume_working_memory_focus(
+        self,
+        *,
+        session_id: str,
+        tick_id: str,
+        focus_id: str,
+        trace_id: Optional[str] = None,
+    ) -> dict[str, Any]:
+        """Feature 52 resume entry point; implementation is outside service.py."""
+        from zentex.kernel.working_memory_runtime import resume_working_memory_focus
+
+        return resume_working_memory_focus(
+            self,
+            session_id=session_id,
+            tick_id=tick_id,
+            focus_id=focus_id,
+            trace_id=trace_id,
+        )
+
+    def mark_working_memory_considered(
+        self,
+        *,
+        session_id: str,
+        ref_id: str,
+        tick_id: Optional[str] = None,
+        trace_id: Optional[str] = None,
+    ) -> dict[str, Any]:
+        """Feature 52 recently-considered entry point; implementation is outside service.py."""
+        from zentex.kernel.working_memory_runtime import mark_working_memory_considered
+
+        return mark_working_memory_considered(
+            self,
+            session_id=session_id,
+            ref_id=ref_id,
+            tick_id=tick_id,
+            trace_id=trace_id,
+        )
+
+    def query_working_memory_frame(self, *, session_id: str) -> dict[str, Any]:
+        """Feature 52 query entry point; implementation is outside service.py."""
+        from zentex.kernel.working_memory_runtime import query_working_memory_frame
+
+        return query_working_memory_frame(self, session_id=session_id)
+
+    def update_living_self_model(
+        self,
+        *,
+        session_id: str,
+        turn_result: dict[str, Any],
+        recent_events: Optional[list[dict[str, Any]]] = None,
+        working_memory_frame: Optional[dict[str, Any]] = None,
+        trace_id: Optional[str] = None,
+    ) -> dict[str, Any]:
+        """Feature 53 entry point; implementation is outside service.py."""
+        from zentex.kernel.living_self_model_runtime import update_living_self_model
+
+        return update_living_self_model(
+            self,
+            session_id=session_id,
+            turn_result=turn_result,
+            recent_events=recent_events,
+            working_memory_frame=working_memory_frame,
+            trace_id=trace_id,
+        )
+
+    def query_living_self_model(self, *, session_id: str) -> dict[str, Any]:
+        """Feature 53 query entry point; implementation is outside service.py."""
+        from zentex.kernel.living_self_model_runtime import query_living_self_model
+
+        return query_living_self_model(self, session_id=session_id)
+
+    def detect_living_self_weakness_patterns(
+        self,
+        *,
+        session_id: str,
+        recent_events: list[dict[str, Any]],
+        trace_id: Optional[str] = None,
+    ) -> dict[str, Any]:
+        """Feature 53 weakness detection entry point; implementation is outside service.py."""
+        from zentex.kernel.living_self_model_runtime import detect_living_self_weakness_patterns
+
+        return detect_living_self_weakness_patterns(
+            self,
+            session_id=session_id,
+            recent_events=recent_events,
+            trace_id=trace_id,
+        )
+
+    def check_living_self_confidence_drift(
+        self,
+        *,
+        session_id: str,
+        statements: list[dict[str, Any]],
+        evidence: Optional[Any] = None,
+        threshold: float = 0.25,
+        trace_id: Optional[str] = None,
+    ) -> dict[str, Any]:
+        """Feature 53 confidence drift entry point; implementation is outside service.py."""
+        from zentex.kernel.living_self_model_runtime import check_living_self_confidence_drift
+
+        return check_living_self_confidence_drift(
+            self,
+            session_id=session_id,
+            statements=statements,
+            evidence=evidence,
+            threshold=threshold,
+            trace_id=trace_id,
+        )
+
+    def apply_living_self_load_adjustment(
+        self,
+        *,
+        session_id: str,
+        working_memory_frame: dict[str, Any],
+        trace_id: Optional[str] = None,
+    ) -> dict[str, Any]:
+        """Feature 53 load adjustment entry point; implementation is outside service.py."""
+        from zentex.kernel.living_self_model_runtime import apply_living_self_load_adjustment
+
+        return apply_living_self_load_adjustment(
+            self,
+            session_id=session_id,
+            working_memory_frame=working_memory_frame,
+            trace_id=trace_id,
+        )
+
+    def decide_meta_cognition(
+        self,
+        *,
+        session_id: str,
+        wm_frame: dict[str, Any],
+        self_model: dict[str, Any],
+        budget: dict[str, Any],
+        nine_q_state: dict[str, Any],
+        agenda: list[dict[str, Any]] | dict[str, Any],
+        tool_registry: list[dict[str, Any]] | dict[str, Any],
+        trace_id: Optional[str] = None,
+    ) -> dict[str, Any]:
+        """Feature 54 entry point; implementation is outside service.py."""
+        from zentex.kernel.meta_cognition_runtime import decide_meta_cognition
+
+        return decide_meta_cognition(
+            self,
+            session_id=session_id,
+            wm_frame=wm_frame,
+            self_model=self_model,
+            budget=budget,
+            nine_q_state=nine_q_state,
+            agenda=agenda,
+            tool_registry=tool_registry,
+            trace_id=trace_id,
+        )
+
+    def query_meta_cognition_decision(self, *, session_id: str) -> dict[str, Any]:
+        """Feature 54 query entry point; implementation is outside service.py."""
+        from zentex.kernel.meta_cognition_runtime import query_meta_cognition_decision
+
+        return query_meta_cognition_decision(self, session_id=session_id)
+
+    def tick_temporal_agenda(
+        self,
+        *,
+        session_id: str,
+        current_time: str,
+        agenda_items: list[dict[str, Any]],
+        brain_scope: Optional[str] = None,
+        trace_id: Optional[str] = None,
+    ) -> dict[str, Any]:
+        """Feature 55 entry point; implementation is outside service.py."""
+        from zentex.kernel.temporal_agenda_runtime import tick_temporal_agenda
+
+        return tick_temporal_agenda(
+            self,
+            session_id=session_id,
+            current_time=current_time,
+            agenda_items=agenda_items,
+            brain_scope=brain_scope,
+            trace_id=trace_id,
+        )
+
+    def query_temporal_agenda_state(self, *, session_id: str) -> dict[str, Any]:
+        """Feature 55 query entry point; implementation is outside service.py."""
+        from zentex.kernel.temporal_agenda_runtime import query_temporal_agenda_state
+
+        return query_temporal_agenda_state(self, session_id=session_id)
+
+    def detect_cognitive_conflicts(
+        self,
+        *,
+        session_id: str,
+        working_memory: dict[str, Any],
+        goals: Optional[list[dict[str, Any]]] = None,
+        nine_q_state: Optional[dict[str, Any]] = None,
+        memory_recalls: Optional[list[dict[str, Any]]] = None,
+        budget: Optional[dict[str, Any]] = None,
+        self_model: Optional[dict[str, Any]] = None,
+        agenda: Optional[list[dict[str, Any]]] = None,
+        trace_id: Optional[str] = None,
+    ) -> dict[str, Any]:
+        """Feature 56 entry point; implementation is outside service.py."""
+        from zentex.kernel.cognitive_conflict_runtime import detect_cognitive_conflicts
+
+        return detect_cognitive_conflicts(
+            self,
+            session_id=session_id,
+            working_memory=working_memory,
+            goals=goals,
+            nine_q_state=nine_q_state,
+            memory_recalls=memory_recalls,
+            budget=budget,
+            self_model=self_model,
+            agenda=agenda,
+            trace_id=trace_id,
+        )
+
+    def query_cognitive_conflicts(self, *, session_id: str) -> dict[str, Any]:
+        """Feature 56 query entry point; implementation is outside service.py."""
+        from zentex.kernel.cognitive_conflict_runtime import query_cognitive_conflicts
+
+        return query_cognitive_conflicts(self, session_id=session_id)
+
+    def consult_external_brain(
+        self,
+        *,
+        session_id: str,
+        user_input: str,
+        context: Optional[dict] = None,
+        turn_id: Optional[str] = None,
+        trace_id: Optional[str] = None,
+    ) -> dict[str, Any]:
+        """G1 external-brain consultation entry point.
+
+        The business rules live in kernel.external_brain; this public service
+        method only resolves kernel-owned dependencies and delegates.
+        """
+        from zentex.kernel.external_brain import consult_external_brain
+
+        state = self._get_state(session_id)
+        if state is None:
+            raise ValueError(f"Session state missing for: {session_id}")
+        return consult_external_brain(
+            session_id=session_id,
+            user_input=user_input,
+            context=context,
+            llm_service=self._llm_service,
+            transcript_store=state.transcript,
+            nine_question_state=self._nq_shared_state.to_dict(),
+            system_identity=self.get_system_identity(),
+            turn_id=turn_id,
+            trace_id=trace_id,
+        )
+
+    def get_core_architecture_snapshot(self) -> dict[str, Any]:
+        """Return the G2 core architecture snapshot; logic lives in kernel.architecture."""
+        from zentex.kernel.architecture import build_core_architecture_snapshot
+
+        return build_core_architecture_snapshot(self)
+
+    def control_brain_daemon(
+        self,
+        *,
+        action: str,
+        session_id: Optional[str] = None,
+        interval_seconds: Optional[float] = None,
+        max_consecutive_failures: Optional[int] = None,
+        run_background: bool = False,
+    ) -> dict[str, Any]:
+        """Control the G3 BrainDaemon; state-machine logic lives in kernel.brain_daemon."""
+        return self._get_brain_daemon().control(
+            action=action,
+            session_id=session_id,
+            interval_seconds=interval_seconds,
+            max_consecutive_failures=max_consecutive_failures,
+            run_background=run_background,
+        )
+
+    def get_brain_daemon_status(self) -> dict[str, Any]:
+        """Return the G3 BrainDaemon status; logic lives in kernel.brain_daemon."""
+        return self._get_brain_daemon().status()
+
+    def observe_environment_awareness(
+        self,
+        *,
+        session_id: str,
+        turn_id: Optional[str] = None,
+        raw_signals: Optional[list[str]] = None,
+        source_conflict_field: str = "memory_used_ratio",
+        source_conflict_samples: Optional[dict[str, Any]] = None,
+    ) -> dict[str, Any]:
+        """Run G4 environment awareness; logic lives in kernel.environment_awareness."""
+        from zentex.kernel.environment_awareness import observe_environment_awareness
+
+        return observe_environment_awareness(
+            self,
+            session_id=session_id,
+            turn_id=turn_id,
+            raw_signals=raw_signals,
+            source_conflict_field=source_conflict_field,
+            source_conflict_samples=source_conflict_samples,
+        )
+
+    def query_environment_awareness_snapshots(
+        self,
+        *,
+        session_id: str,
+        limit: int = 10,
+    ) -> dict[str, Any]:
+        """Query G4 environment snapshots; logic lives in kernel.environment_awareness."""
+        from zentex.kernel.environment_awareness import query_environment_awareness_snapshots
+
+        return query_environment_awareness_snapshots(
+            self,
+            session_id=session_id,
+            limit=limit,
+        )
+
+    async def create_resource_negotiation_request(
+        self,
+        *,
+        session_id: str,
+        task_id: str,
+        gap_type: str,
+        required_asset: str,
+        observed_error: str,
+        recovery_conditions: list[str],
+        task_context: Optional[dict[str, Any]] = None,
+        proposed_tradeoff: Optional[str] = None,
+        priority: int = 3,
+    ) -> dict[str, Any]:
+        """Create a G5 negotiation request; logic lives in kernel.resource_negotiation."""
+        from zentex.kernel.resource_negotiation import create_resource_negotiation_request
+
+        return await create_resource_negotiation_request(
+            self,
+            session_id=session_id,
+            task_id=task_id,
+            gap_type=gap_type,
+            required_asset=required_asset,
+            observed_error=observed_error,
+            recovery_conditions=recovery_conditions,
+            task_context=task_context,
+            proposed_tradeoff=proposed_tradeoff,
+            priority=priority,
+        )
+
+    def query_resource_negotiation_requests(
+        self,
+        *,
+        session_id: str,
+        task_id: Optional[str] = None,
+        status: Optional[str] = None,
+    ) -> dict[str, Any]:
+        """Query G5 negotiation requests; logic lives in kernel.resource_negotiation."""
+        from zentex.kernel.resource_negotiation import query_resource_negotiation_requests
+
+        return query_resource_negotiation_requests(
+            self,
+            session_id=session_id,
+            task_id=task_id,
+            status=status,
+        )
+
+    async def resolve_resource_negotiation_request(
+        self,
+        *,
+        session_id: str,
+        negotiation_id: str,
+        approved: bool,
+        resolution_note: str,
+        granted_asset: Optional[str] = None,
+    ) -> dict[str, Any]:
+        """Resolve a G5 negotiation request; logic lives in kernel.resource_negotiation."""
+        from zentex.kernel.resource_negotiation import resolve_resource_negotiation_request
+
+        return await resolve_resource_negotiation_request(
+            self,
+            session_id=session_id,
+            negotiation_id=negotiation_id,
+            approved=approved,
+            resolution_note=resolution_note,
+            granted_asset=granted_asset,
+        )
+
+    def mount_identity_kernel(
+        self,
+        *,
+        session_id: str,
+        topics: Optional[list[str]] = None,
+        risk_level: str = "low",
+        identity_package: Optional[dict[str, Any]] = None,
+    ) -> dict[str, Any]:
+        """Mount the G6 identity kernel; logic lives in kernel.identity_kernel."""
+        from zentex.kernel.identity_kernel import mount_identity_kernel
+
+        return mount_identity_kernel(
+            self,
+            session_id=session_id,
+            topics=topics,
+            risk_level=risk_level,
+            identity_package=identity_package,
+        )
+
+    def query_identity_anchors(
+        self,
+        *,
+        session_id: str,
+        role: Optional[str] = None,
+        risk_level: Optional[str] = None,
+        topics: Optional[list[str]] = None,
+        limit: int = 20,
+    ) -> dict[str, Any]:
+        """Query G6 identity anchors; logic lives in kernel.identity_kernel."""
+        from zentex.kernel.identity_kernel import query_identity_anchors
+
+        return query_identity_anchors(
+            self,
+            session_id=session_id,
+            role=role,
+            risk_level=risk_level,
+            topics=topics,
+            limit=limit,
+        )
+
+    def evaluate_identity_change(
+        self,
+        *,
+        session_id: str,
+        proposed_changes: dict[str, Any],
+        human_confirmed: bool = False,
+        reviewer: Optional[str] = None,
+        drift_threshold: float = 0.34,
+    ) -> dict[str, Any]:
+        """Evaluate a G6 identity change; logic lives in kernel.identity_kernel."""
+        from zentex.kernel.identity_kernel import evaluate_identity_change
+
+        return evaluate_identity_change(
+            self,
+            session_id=session_id,
+            proposed_changes=proposed_changes,
+            human_confirmed=human_confirmed,
+            reviewer=reviewer,
+            drift_threshold=drift_threshold,
+        )
+
+    async def create_inter_agent_conflict(
+        self,
+        *,
+        session_id: str,
+        task_id: str,
+        task_payload: dict[str, Any],
+        required_capabilities: list[str],
+        timeout_seconds: float = 5.0,
+    ) -> dict[str, Any]:
+        """Create a G7 inter-agent conflict; logic lives in kernel.inter_agent."""
+        from zentex.kernel.inter_agent import create_inter_agent_conflict
+
+        return await create_inter_agent_conflict(
+            self,
+            session_id=session_id,
+            task_id=task_id,
+            task_payload=task_payload,
+            required_capabilities=required_capabilities,
+            timeout_seconds=timeout_seconds,
+        )
+
+    def query_inter_agent_conflict(
+        self,
+        *,
+        session_id: str,
+        conflict_id: str,
+        task_id: str,
+    ) -> dict[str, Any]:
+        """Query a G7 inter-agent conflict; logic lives in kernel.inter_agent."""
+        from zentex.kernel.inter_agent import query_inter_agent_conflict
+
+        return query_inter_agent_conflict(
+            self,
+            session_id=session_id,
+            conflict_id=conflict_id,
+            task_id=task_id,
+        )
+
+    async def reassign_inter_agent_conflict(
+        self,
+        *,
+        session_id: str,
+        conflict_id: str,
+        task_id: str,
+        failed_agent_id: str,
+        failure_reason: str,
+    ) -> dict[str, Any]:
+        """Reassign a G7 failed agent task; logic lives in kernel.inter_agent."""
+        from zentex.kernel.inter_agent import reassign_inter_agent_conflict
+
+        return await reassign_inter_agent_conflict(
+            self,
+            session_id=session_id,
+            conflict_id=conflict_id,
+            task_id=task_id,
+            failed_agent_id=failed_agent_id,
+            failure_reason=failure_reason,
+        )
+
+    def validate_safety_gate_action(
+        self,
+        *,
+        session_id: str,
+        action_type: str,
+        action_payload: dict[str, Any],
+        risk_level: Optional[str] = None,
+        context: Optional[dict[str, Any]] = None,
+        execution_mode: str = "real",
+        cloud_audit_config: Optional[dict[str, Any]] = None,
+    ) -> dict[str, Any]:
+        """Validate a G8 action; logic lives in kernel.safety_gate."""
+        from zentex.kernel.safety_gate import validate_safety_gate_action
+
+        return validate_safety_gate_action(
+            self,
+            session_id=session_id,
+            action_type=action_type,
+            action_payload=action_payload,
+            risk_level=risk_level,
+            context=context,
+            execution_mode=execution_mode,
+            cloud_audit_config=cloud_audit_config,
+        )
+
+    def query_safety_gate_decision(
+        self,
+        *,
+        session_id: str,
+        decision_id: str,
+    ) -> dict[str, Any]:
+        """Query a G8 decision; logic lives in kernel.safety_gate."""
+        from zentex.kernel.safety_gate import query_safety_gate_decision
+
+        return query_safety_gate_decision(
+            self,
+            session_id=session_id,
+            decision_id=decision_id,
+        )
+
+    def confirm_safety_gate_decision(
+        self,
+        *,
+        session_id: str,
+        decision_id: str,
+        confirmed_by: str,
+        confirmation_context: Optional[dict[str, Any]] = None,
+    ) -> dict[str, Any]:
+        """Confirm a G8 decision; logic lives in kernel.safety_gate."""
+        from zentex.kernel.safety_gate import confirm_safety_gate_decision
+
+        return confirm_safety_gate_decision(
+            self,
+            session_id=session_id,
+            decision_id=decision_id,
+            confirmed_by=confirmed_by,
+            confirmation_context=confirmation_context,
+        )
+
+    def run_thought_sandbox_simulation(
+        self,
+        *,
+        session_id: str,
+        action_type: str,
+        action_payload: dict[str, Any],
+        risk_level: str = "medium",
+        task_type: str = "general",
+        domain: str = "general",
+        branches: Optional[list[dict[str, Any]]] = None,
+        catastrophe_threshold: float = 0.7,
+        context: Optional[dict[str, Any]] = None,
+    ) -> dict[str, Any]:
+        """Run a G9 thought-sandbox simulation; logic lives in kernel.thought_sandbox."""
+        from zentex.kernel.thought_sandbox import run_thought_sandbox_simulation
+
+        return run_thought_sandbox_simulation(
+            self,
+            session_id=session_id,
+            action_type=action_type,
+            action_payload=action_payload,
+            risk_level=risk_level,
+            task_type=task_type,
+            domain=domain,
+            branches=branches,
+            catastrophe_threshold=catastrophe_threshold,
+            context=context,
+        )
+
+    def query_thought_sandbox_outcome(
+        self,
+        *,
+        session_id: str,
+        outcome_id: str,
+    ) -> dict[str, Any]:
+        """Query a G9 thought-sandbox outcome; logic lives in kernel.thought_sandbox."""
+        from zentex.kernel.thought_sandbox import query_thought_sandbox_outcome
+
+        return query_thought_sandbox_outcome(self, session_id=session_id, outcome_id=outcome_id)
+
+    def ingest_sensory_signal(
+        self,
+        *,
+        session_id: str,
+        source: str,
+        payload: str,
+        domain: str = "environment",
+        source_observations: Optional[list[dict[str, Any]]] = None,
+    ) -> dict[str, Any]:
+        """Run the G10 sensory chain; logic lives in kernel.sensory_adapter."""
+        from zentex.kernel.sensory_adapter import ingest_sensory_signal
+
+        return ingest_sensory_signal(
+            self,
+            session_id=session_id,
+            source=source,
+            payload=payload,
+            domain=domain,
+            source_observations=source_observations,
+        )
+
+    def query_sensory_event(
+        self,
+        *,
+        session_id: str,
+        event_id: str,
+    ) -> dict[str, Any]:
+        """Query a G10 sensory event; logic lives in kernel.sensory_adapter."""
+        from zentex.kernel.sensory_adapter import query_sensory_event
+
+        return query_sensory_event(self, session_id=session_id, event_id=event_id)
+
+    def register_experience_expectation(
+        self,
+        *,
+        session_id: str,
+        task_id: str,
+        expected_outcome: dict[str, Any],
+        success_criteria: list[str],
+        risk_assessment: Optional[dict[str, Any]] = None,
+        source: str = "runtime",
+    ) -> dict[str, Any]:
+        """Register a G11 pre-action expectation; logic lives in kernel.experience_engine."""
+        from zentex.kernel.experience_engine import register_experience_expectation
+
+        return register_experience_expectation(
+            self,
+            session_id=session_id,
+            task_id=task_id,
+            expected_outcome=expected_outcome,
+            success_criteria=success_criteria,
+            risk_assessment=risk_assessment,
+            source=source,
+        )
+
+    def bind_experience_outcome(
+        self,
+        *,
+        session_id: str,
+        expectation_id: str,
+        actual_outcome: dict[str, Any],
+        benefits: Optional[list[str]] = None,
+        losses: Optional[list[str]] = None,
+        source_reliability: float = 0.8,
+        strategy_patch: Optional[dict[str, Any]] = None,
+    ) -> dict[str, Any]:
+        """Bind a G11 actual outcome; logic lives in kernel.experience_engine."""
+        from zentex.kernel.experience_engine import bind_experience_outcome
+
+        return bind_experience_outcome(
+            self,
+            session_id=session_id,
+            expectation_id=expectation_id,
+            actual_outcome=actual_outcome,
+            benefits=benefits,
+            losses=losses,
+            source_reliability=source_reliability,
+            strategy_patch=strategy_patch,
+        )
+
+    def query_experience_binding(
+        self,
+        *,
+        session_id: str,
+        binding_id: str,
+    ) -> dict[str, Any]:
+        """Query a G11 outcome binding; logic lives in kernel.experience_engine."""
+        from zentex.kernel.experience_engine import query_experience_binding
+
+        return query_experience_binding(self, session_id=session_id, binding_id=binding_id)
+
+    def rank_goals_with_experience(
+        self,
+        *,
+        session_id: str,
+        candidate_goals: list[dict[str, Any]],
+        context: Optional[dict[str, Any]] = None,
+    ) -> dict[str, Any]:
+        """Rank goals with G11 strategy patches; logic lives in kernel.experience_engine."""
+        from zentex.kernel.experience_engine import rank_goals_with_experience
+
+        return rank_goals_with_experience(
+            self,
+            session_id=session_id,
+            candidate_goals=candidate_goals,
+            context=context,
+        )
+
+    def learn_dynamic_tool_capability(
+        self,
+        *,
+        session_id: str,
+        documentation_url: str,
+        source_kind: str,
+        capability_name: Optional[str] = None,
+        verification_endpoint: Optional[str] = None,
+        verification_cases: Optional[list[dict[str, Any]]] = None,
+        timeout_seconds: float = 3.0,
+    ) -> dict[str, Any]:
+        """Run G12 dynamic tool discovery; logic lives in kernel.dynamic_tool_learning."""
+        from zentex.kernel.dynamic_tool_learning import learn_dynamic_tool_capability
+
+        return learn_dynamic_tool_capability(
+            self,
+            session_id=session_id,
+            documentation_url=documentation_url,
+            source_kind=source_kind,
+            capability_name=capability_name,
+            verification_endpoint=verification_endpoint,
+            verification_cases=verification_cases,
+            timeout_seconds=timeout_seconds,
+        )
+
+    def query_tool_knowledge_record(
+        self,
+        *,
+        session_id: str,
+        knowledge_id: str,
+    ) -> dict[str, Any]:
+        """Query a G12 tool knowledge record; logic lives in kernel.dynamic_tool_learning."""
+        from zentex.kernel.dynamic_tool_learning import query_tool_knowledge_record
+
+        return query_tool_knowledge_record(self, session_id=session_id, knowledge_id=knowledge_id)
+
+    def query_capability_registration(
+        self,
+        *,
+        session_id: str,
+        capability_id: str,
+    ) -> dict[str, Any]:
+        """Query a G12 capability registration; logic lives in kernel.dynamic_tool_learning."""
+        from zentex.kernel.dynamic_tool_learning import query_capability_registration
+
+        return query_capability_registration(self, session_id=session_id, capability_id=capability_id)
+
+    def evaluate_value_engine(
+        self,
+        *,
+        session_id: str,
+        candidate_goals: list[dict[str, Any]],
+        candidate_plans: Optional[list[dict[str, Any]]] = None,
+        resource_state: Optional[dict[str, Any]] = None,
+        risk_state: Optional[dict[str, Any]] = None,
+        role_state: Optional[dict[str, Any]] = None,
+        self_state: Optional[dict[str, Any]] = None,
+        context: Optional[dict[str, Any]] = None,
+        requested_capabilities: Optional[list[str]] = None,
+        weight_profile: Optional[dict[str, Any]] = None,
+    ) -> dict[str, Any]:
+        """Run G13 budget/value evaluation; logic lives in kernel.value_engine."""
+        from zentex.kernel.value_engine import evaluate_value_engine
+
+        return evaluate_value_engine(
+            self,
+            session_id=session_id,
+            candidate_goals=candidate_goals,
+            candidate_plans=candidate_plans,
+            resource_state=resource_state,
+            risk_state=risk_state,
+            role_state=role_state,
+            self_state=self_state,
+            context=context,
+            requested_capabilities=requested_capabilities,
+            weight_profile=weight_profile,
+        )
+
+    def query_value_engine_decision(
+        self,
+        *,
+        session_id: str,
+        decision_id: str,
+    ) -> dict[str, Any]:
+        """Query a G13 value decision; logic lives in kernel.value_engine."""
+        from zentex.kernel.value_engine import query_value_engine_decision
+
+        return query_value_engine_decision(self, session_id=session_id, decision_id=decision_id)
+
+    def submit_self_refactor_proposal(
+        self,
+        *,
+        session_id: str,
+        workspace_root: str,
+        target_path: str,
+        bottleneck_evidence: dict[str, Any],
+        change_summary: str,
+        replacement: dict[str, str],
+        sandbox_commands: list[list[str]],
+        capability_id: str,
+        resource_state: Optional[dict[str, Any]] = None,
+        risk_state: Optional[dict[str, Any]] = None,
+        context: Optional[dict[str, Any]] = None,
+        self_mod_gate_inputs: Optional[dict[str, Any]] = None,
+    ) -> dict[str, Any]:
+        """Submit a G14 self-refactor proposal; logic lives in kernel.self_refactor."""
+        from zentex.kernel.self_refactor import submit_self_refactor_proposal
+
+        return submit_self_refactor_proposal(
+            self,
+            session_id=session_id,
+            workspace_root=workspace_root,
+            target_path=target_path,
+            bottleneck_evidence=bottleneck_evidence,
+            change_summary=change_summary,
+            replacement=replacement,
+            sandbox_commands=sandbox_commands,
+            capability_id=capability_id,
+            resource_state=resource_state,
+            risk_state=risk_state,
+            context=context,
+            self_mod_gate_inputs=self_mod_gate_inputs,
+        )
+
+    def query_self_refactor_proposal(
+        self,
+        *,
+        session_id: str,
+        proposal_id: str,
+    ) -> dict[str, Any]:
+        """Query a G14 self-refactor proposal; logic lives in kernel.self_refactor."""
+        from zentex.kernel.self_refactor import query_self_refactor_proposal
+
+        return query_self_refactor_proposal(self, session_id=session_id, proposal_id=proposal_id)
+
+    def run_self_coding_cycle(
+        self,
+        *,
+        session_id: str,
+        workspace_root: str,
+        candidate_root: str,
+        capability_gap: dict[str, Any],
+        patch_plan: dict[str, Any],
+        verification_commands: list[list[str]],
+    ) -> dict[str, Any]:
+        """Run a G15 self-coding candidate cycle; logic lives in kernel.self_coding."""
+        from zentex.kernel.self_coding import run_self_coding_cycle
+
+        return run_self_coding_cycle(
+            self,
+            session_id=session_id,
+            workspace_root=workspace_root,
+            candidate_root=candidate_root,
+            capability_gap=capability_gap,
+            patch_plan=patch_plan,
+            verification_commands=verification_commands,
+        )
+
+    def query_self_coding_patch(
+        self,
+        *,
+        session_id: str,
+        patch_id: str,
+    ) -> dict[str, Any]:
+        """Query a G15 self-coding patch; logic lives in kernel.self_coding."""
+        from zentex.kernel.self_coding import query_self_coding_patch
+
+        return query_self_coding_patch(self, session_id=session_id, patch_id=patch_id)
+
+    async def run_preference_judgment(
+        self,
+        *,
+        session_id: str,
+        detected_state: dict[str, Any],
+        detection_source: str,
+        context: Optional[dict[str, Any]] = None,
+    ) -> dict[str, Any]:
+        """Run G16 preference judgment; logic lives in kernel.preference_alignment."""
+        from zentex.kernel.preference_alignment import run_preference_judgment
+
+        return await run_preference_judgment(
+            self,
+            session_id=session_id,
+            detected_state=detected_state,
+            detection_source=detection_source,
+            context=context,
+        )
+
+    async def confirm_preference_case(
+        self,
+        *,
+        session_id: str,
+        ambiguity_case_id: str,
+        user_decision: str,
+        user_id: str,
+        confirmation_context: Optional[dict[str, Any]] = None,
+    ) -> dict[str, Any]:
+        """Confirm a G16 ambiguity case; logic lives in kernel.preference_alignment."""
+        from zentex.kernel.preference_alignment import confirm_preference_case
+
+        return await confirm_preference_case(
+            self,
+            session_id=session_id,
+            ambiguity_case_id=ambiguity_case_id,
+            user_decision=user_decision,
+            user_id=user_id,
+            confirmation_context=confirmation_context,
+        )
+
+    async def query_preference_record(
+        self,
+        *,
+        session_id: str,
+        preference_id: str,
+    ) -> dict[str, Any]:
+        """Query a G16 preference record; logic lives in kernel.preference_alignment."""
+        from zentex.kernel.preference_alignment import query_preference_record
+
+        return await query_preference_record(self, session_id=session_id, preference_id=preference_id)
+
+    async def revoke_preference_record(
+        self,
+        *,
+        session_id: str,
+        preference_id: str,
+        reason: str,
+        user_id: str,
+    ) -> dict[str, Any]:
+        """Revoke a G16 preference record; logic lives in kernel.preference_alignment."""
+        from zentex.kernel.preference_alignment import revoke_preference_record
+
+        return await revoke_preference_record(
+            self,
+            session_id=session_id,
+            preference_id=preference_id,
+            reason=reason,
+            user_id=user_id,
+        )
+
+    async def intercept_extreme_signal(
+        self,
+        *,
+        session_id: str,
+        signal_content: str,
+        signal_source: str,
+        context: Optional[dict[str, Any]] = None,
+    ) -> dict[str, Any]:
+        """Intercept a G16 extreme signal; logic lives in kernel.preference_alignment."""
+        from zentex.kernel.preference_alignment import intercept_extreme_signal
+
+        return await intercept_extreme_signal(
+            self,
+            session_id=session_id,
+            signal_content=signal_content,
+            signal_source=signal_source,
+            context=context,
+        )
+
+    async def mark_attack_sample(
+        self,
+        *,
+        session_id: str,
+        signal_record_id: str,
+        attack_type: str,
+        confidence: float,
+        analyst_id: Optional[str] = None,
+    ) -> dict[str, Any]:
+        """Mark a G16 attack sample; logic lives in kernel.preference_alignment."""
+        from zentex.kernel.preference_alignment import mark_attack_sample
+
+        return await mark_attack_sample(
+            self,
+            session_id=session_id,
+            signal_record_id=signal_record_id,
+            attack_type=attack_type,
+            confidence=confidence,
+            analyst_id=analyst_id,
+        )
+
+    async def detect_similar_attack(
+        self,
+        *,
+        session_id: str,
+        signal_content: str,
+        similarity_threshold: float = 0.85,
+    ) -> dict[str, Any]:
+        """Detect a G16 similar attack sample; logic lives in kernel.preference_alignment."""
+        from zentex.kernel.preference_alignment import detect_similar_attack
+
+        return await detect_similar_attack(
+            self,
+            session_id=session_id,
+            signal_content=signal_content,
+            similarity_threshold=similarity_threshold,
+        )
+
+    def _get_brain_daemon(self) -> Any:
+        if self._brain_daemon is None:
+            from zentex.kernel.brain_daemon import BrainDaemon, build_kernel_daemon_tick_handler
+
+            self._brain_daemon = BrainDaemon(tick_handler=build_kernel_daemon_tick_handler(self))
+        return self._brain_daemon
+
     # ------------------------------------------------------------------
     # Nine-question bootstrap (public API)
     # ------------------------------------------------------------------
@@ -424,7 +1519,7 @@ class KernelService:
         """Return the default session state, creating it if necessary."""
         state = self._session_states.get(self._DEFAULT_SESSION_ID)
         if state is None:
-            state = _SessionState(self._DEFAULT_SESSION_ID, self._transcript_db_dir)
+            state = self._create_session_state(self._DEFAULT_SESSION_ID)
             self._session_states[self._DEFAULT_SESSION_ID] = state
         return state
 
@@ -614,6 +1709,7 @@ class KernelService:
             "session_meta": self.get_session_meta(session_id),
             "working_memory": state.working_memory.snapshot(),
             "self_model": state.self_model.snapshot(),
+            "metacognition": state.meta_cognition.last_decision_snapshot() or {},
             "temporal": state.temporal.snapshot(),
             "nine_question_state": self._nq_shared_state.to_dict(),
         }
@@ -849,10 +1945,9 @@ class KernelService:
         
         Policy: Hard failure on conflict detection failure.
         """
-        result = self._svc_call(self._safety_service, "detect_conflicts", session_id=session_id, context=context)
-        if result is None:
-            raise RuntimeError("Conflict detection failed: Safety service unavailable or returned None.")
-        return result
+        from zentex.kernel.cognitive_conflict_runtime import detect_cognitive_conflicts_phase4
+
+        return detect_cognitive_conflicts_phase4(self, session_id=session_id, context=context)
 
     def run_simulation(self, session_id: str, context: dict) -> dict:
         """Phase 5: Simulate — counterfactual scenario simulation.
@@ -866,16 +1961,15 @@ class KernelService:
 
     def run_metacognition(self, session_id: str, context: dict) -> dict:
         """Phase 6: Metacognition — internal reasoning decisions."""
-        state = self._get_state(session_id)
-        return {
-            "self_model": state.self_model.snapshot() if state else {},
-            "metacognitive_notes": [],
-        }
+        from zentex.kernel.meta_cognition_runtime import run_phase6_metacognition
+
+        return run_phase6_metacognition(self, session_id=session_id, context=context)
 
     def invoke_cognitive_tools(self, session_id: str, context: dict) -> dict:
         """Phase 7: CognitiveTools — run registered cognitive tools."""
-        result = self._svc_call(self._plugins_service, "invoke_cognitive_tools", session_id=session_id, context=context)
-        return result or {"tool_results": []}
+        from zentex.kernel.meta_cognition_runtime import invoke_planned_cognitive_tools
+
+        return invoke_planned_cognitive_tools(self, session_id=session_id, context=context)
 
     def synthesize_decision(self, session_id: str, context: dict) -> dict:
         """Phase 8: DecisionSynthesis — produce the final response.

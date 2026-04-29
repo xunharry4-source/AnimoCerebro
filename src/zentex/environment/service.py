@@ -148,9 +148,9 @@ class EnvironmentAwarenessService:
         # Failure to persist snapshots results in "Environmental Amnesia"
         if not self._snapshot_store.storage_path:
             from pathlib import Path
-            default_snap_path = str(Path("./data/environment/snapshots").absolute())
+            default_snap_path = str(Path("./data/environment/snapshots/snapshots.jsonl").absolute())
             self._snapshot_store.storage_path = Path(default_snap_path)
-            self._snapshot_store.storage_path.mkdir(parents=True, exist_ok=True)
+            self._snapshot_store.storage_path.parent.mkdir(parents=True, exist_ok=True)
             logger.info(f"Initialized mandatory snapshot storage at: {default_snap_path}")
     
     # =========================================================================

@@ -100,6 +100,28 @@ from zentex.memory.security.quarantine import (
     StagedMemoryRecord,
     build_default_gates,
 )
+from zentex.memory.memory_governance import (
+    MemoryContaminationRecord,
+    MemoryExperiencePackage,
+    MemoryGovernance,
+    MemoryRejectedError,
+    MemoryGateDecision,
+    PackageImportGrant,
+    PackageImportResult,
+    QuarantinedMemory,
+    MemoryRollbackResult,
+    MemoryTrustLevel,
+    build_default_memory_governance,
+)
+from zentex.memory.memory_lifecycle_governance import (
+    GovernedRecallHit,
+    MemoryCompactionReport,
+    MemoryLifecycleCycleReport,
+    MemoryLifecycleGovernance,
+    MemoryLifecyclePolicy,
+    MemoryLifecycleState,
+    build_memory_lifecycle_governance,
+)
 from zentex.memory.security.consistency import (
     ConsistencyAuditReport,
     ConsistencyViolation,
@@ -149,10 +171,13 @@ __all__ = [
 
     # Consolidation
     "ConsolidationEngine", "ConsolidationCycle", "MemoryLifecycleManager",
-    "ConsolidationToEnhancedBridge",
+    "ConsolidationToEnhancedBridge", "MemoryLifecycleGovernance",
+    "MemoryLifecyclePolicy", "MemoryLifecycleState", "MemoryCompactionReport",
+    "MemoryLifecycleCycleReport", "GovernedRecallHit",
 
     # Security
-    "EnterpriseEncryptionService", "QuarantinedMemoryStore", "ProvenanceTracker",
+    "EnterpriseEncryptionService", "QuarantinedMemoryStore", "MemoryGovernance",
+    "MemoryExperiencePackage", "QuarantinedMemory", "MemoryTrustLevel", "ProvenanceTracker",
     "CrossLayerConsistencyChecker",
 
     # Storage

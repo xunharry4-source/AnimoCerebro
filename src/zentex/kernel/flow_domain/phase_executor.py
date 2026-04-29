@@ -1,12 +1,15 @@
 """PhaseExecutor — runs a single phase function with timeout and error handling."""
 
 import concurrent.futures
+import logging
 import time
 from collections.abc import Callable
 from typing import Any
 
 from zentex.foundation.contracts import PhaseResult
 from zentex.kernel.flow_domain.phase_registry import PhaseConfig
+
+logger = logging.getLogger(__name__)
 
 
 class PhaseExecutor:

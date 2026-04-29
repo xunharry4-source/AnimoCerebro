@@ -106,8 +106,10 @@ _KERNEL_DEP_KWARG: dict[str, str] = {
     "audit": "audit_service",
     "llm": "llm_service",
     "foundation": "foundation_service",
+    "agents": "agent_service",
     "reflection": "reflection_service",
     "learning": "learning_service",
+    "tasks": "task_service",
 }
 
 
@@ -251,7 +253,7 @@ class SystemAssembler:
             )
             return
 
-        dep_names = ["environment", "cognition", "safety", "plugins", "memory", "audit", "llm", "foundation", "reflection", "learning"]
+        dep_names = ["environment", "cognition", "safety", "plugins", "memory", "audit", "llm", "foundation", "agents", "reflection", "learning", "tasks"]
         kwargs: dict[str, Any] = {}
         for short_name in dep_names:
             kwarg_name = _KERNEL_DEP_KWARG.get(short_name, f"{short_name}_service")
@@ -263,6 +265,8 @@ class SystemAssembler:
         except Exception as exc:
             logger.error("Failed to inject dependencies into kernel: %s", exc)
 
+        self._attach_audit_transcript_projection(kernel, registry.get("audit"))
+
         # 3. Attach tasks dependencies (late binding for circular plugin references)
         tasks = registry.get("tasks")
         if getattr(tasks, "_is_stub", False):
@@ -273,3 +277,21 @@ class SystemAssembler:
                 transcript_store=getattr(kernel, "transcript_store", None)
             )
             logger.info("SystemAssembler: Attached dependencies to 'tasks' service.")
+
+    def _attach_audit_transcript_projection(self, kernel: Any, audit_service: Any) -> None:
+        """Wire transcript writes into the audit store without coupling modules."""
+        if getattr(audit_service, "_is_stub", False):
+            logger.warning("SystemAssembler: skipping audit transcript projection for stub audit service.")
+            return
+        audit_store = getattr(audit_service, "store", None)
+        sync_entries = getattr(audit_store, "sync_from_transcript_entries", None)
+        attach_listener = getattr(kernel, "add_transcript_entry_listener", None)
+        if not callable(sync_entries) or not callable(attach_listener):
+            logger.warning("SystemAssembler: audit transcript projection unavailable.")
+            return
+
+        def _project_transcript_entry(entry: Any) -> None:
+            sync_entries([entry])
+
+        attach_listener("audit_trace_store_projection", _project_transcript_entry)
+        logger.info("SystemAssembler: Attached transcript-to-audit projection listener.")

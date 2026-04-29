@@ -533,12 +533,12 @@ class ApiTester:
         self.test("Learning", "获取学习计划安排", "GET", "/learning/plan")
         self.test("Learning", "获取学习历史流水", "GET", "/learning/history")
         self.test("Learning", "运行学习周期", "POST", "/learning/run-cycle", expected_status=(200, 400, 422, 503), json_data={
-            "direction": "G16_TOOL_SELF_STUDY",
+            "direction": "tool_self_study",
             "dry_run": True,
             "load_factor": 0.5
         })
         self.test("LearningAsync", "启动异步学习任务", "POST", "/api/learning/start", expected_status=(410,), scenario="异常情况 (Architecture Removed / Fail-Closed)", json_data={
-            "direction": "g16_tool_self_study",
+            "direction": "tool_self_study",
             "dry_run": True,
             "doc_url": "https://example.com/spec",
         }, degrade_expectation="该异步学习入口已从 web-console 架构中移除，必须返回 410 明确拒绝。")

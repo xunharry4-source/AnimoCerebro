@@ -11,7 +11,7 @@ logger = logging.getLogger(__name__)
 from zentex.cli.adapter import CliAdapterPlugin, create_cli_adapter_plugin
 from zentex.cli.adapter import SubprocessCliTransport
 from zentex.cli.models import CliInvocationResult, CliToolRegistrationConfig, CliToolRuntimeState
-from zentex.foundation.contracts.service_response import ServiceResponse, ServiceErrorCode
+from zentex.foundation.contracts.service_response import ServiceResponse, ServiceErrorCode, ServiceStatus
 
 
 class CliIntegrationService:
@@ -71,7 +71,13 @@ class CliIntegrationService:
             return ServiceResponse.ok(data=result)
         
         if result.status == "timeout":
-            return ServiceResponse.timeout(message=result.stderr)
+            return ServiceResponse(
+                status=ServiceStatus.timeout,
+                code=ServiceErrorCode.SERVICE_TIMEOUT.value,
+                message=result.stderr,
+                data=result,
+                trace_id=result.trace_id,
+            )
         
         if result.status == "transport_error":
             return ServiceResponse.error(
@@ -106,6 +112,12 @@ class CliIntegrationService:
 
     def get_tool_health(self, tool_name: str) -> Dict[str, Any]:
         return self._adapter.get_tool_health(tool_name)
+
+    def diagnose_cli_execution_closure(self) -> Dict[str, Any]:
+        return self._adapter.diagnose_cli_execution_closure()
+
+    def run_cli_fault_injection_matrix(self) -> Dict[str, Any]:
+        return self._adapter.run_cli_fault_injection_matrix()
 
     def get_tool_tasks_by_status(self, tool_name: str, status_filter: str) -> List[Dict[str, Any]]:
         """根据状态获取工具相关任务"""
@@ -158,7 +170,7 @@ class CliIntegrationService:
             payload = entry.get("payload", {}) if isinstance(entry, dict) else getattr(entry, 'payload', {})
             if payload.get("tool_name") == tool_name:
                 history.append({
-                    "trace_id": entry.get("trace_id", ""),
+                    "trace_id": entry.get("trace_id", "") if isinstance(entry, dict) else getattr(entry, "trace_id", ""),
                     "tool_name": tool_name,
                     "status": payload.get("status", "unknown"),
                     "exit_code": payload.get("exit_code", -1),
@@ -166,8 +178,12 @@ class CliIntegrationService:
                     "stderr": payload.get("stderr", ""),
                     "command_line": payload.get("command_line", []),
                     "working_directory": payload.get("working_directory"),
-                    "executed_at": entry.get("timestamp", datetime.now(timezone.utc).isoformat()),
-                    "duration_ms": None  # 如果有 duration 信息可以添加
+                    "executed_at": entry.get("timestamp", datetime.now(timezone.utc).isoformat())
+                    if isinstance(entry, dict)
+                    else getattr(entry, "timestamp", datetime.now(timezone.utc).isoformat()),
+                    "duration_ms": payload.get("duration_ms"),
+                    "failure_category": payload.get("failure_category"),
+                    "preflight_blocked": bool(payload.get("preflight_blocked", False)),
                 })
         
         return history[:limit]

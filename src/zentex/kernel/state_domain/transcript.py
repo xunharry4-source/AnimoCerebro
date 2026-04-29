@@ -2,7 +2,7 @@ from __future__ import annotations
 """TranscriptStore — SQLite-backed, thread-safe transcript persistence."""
 
 
-from typing import Any, Dict, List, Optional, Union
+from typing import Any, Callable, Dict, Iterable, List, Optional, Union
 
 import json
 import logging
@@ -129,6 +129,8 @@ class TranscriptStore:
         self,
         session_id: str,
         db_dir: Optional[str] = None,
+        *,
+        entry_listeners: Iterable[Callable[[TranscriptEntry], Optional[None]]] = (),
     ) -> None:
         if db_dir is None:
             from zentex.common.storage_paths import get_storage_paths
@@ -136,6 +138,8 @@ class TranscriptStore:
             db_dir = str(get_storage_paths().transcript_dir)
         self._session_id = session_id
         self._lock = threading.Lock()
+        self._entry_listeners = list(entry_listeners or [])
+        self._listener_failures: list[str] = []
         os.makedirs(db_dir, exist_ok=True)
         db_path = os.path.join(db_dir, f"{session_id}.db")
         self._conn = self._open_or_recover(db_path)
@@ -223,6 +227,22 @@ class TranscriptStore:
                 ),
             )
             self._conn.commit()
+        self._notify_entry_listeners(entry)
+
+    def add_entry_listener(self, listener: Callable[[TranscriptEntry], Optional[None]]) -> None:
+        """Subscribe a projection listener without changing transcript ownership."""
+        if listener in self._entry_listeners:
+            return
+        self._entry_listeners.append(listener)
+
+    def _notify_entry_listeners(self, entry: TranscriptEntry) -> None:
+        for listener in list(self._entry_listeners):
+            try:
+                listener(entry)
+            except Exception as exc:  # pragma: no cover - listener failures must not break transcript writes
+                failure = str(exc).strip() or exc.__class__.__name__
+                self._listener_failures.append(failure)
+                logger.warning("TranscriptStore entry listener failed: %s", failure, exc_info=True)
 
     # ------------------------------------------------------------------
     # Read
@@ -469,6 +489,9 @@ class NullTranscriptStore:
 
     def __init__(self, session_id: str) -> None:
         self._session_id = session_id
+
+    def add_entry_listener(self, listener: Callable[[TranscriptEntry], Optional[None]]) -> None:
+        return None
 
     def append(self, entry: TranscriptEntry) -> None:
         return None

@@ -1,10 +1,10 @@
 from __future__ import annotations
 
 """
-Pandas statistics pipeline for memory consolidation scoring.
+Standard-library statistics pipeline for memory consolidation scoring.
 
 RESPONSIBILITY:
-  - Convert input memory refs into a normalized dataframe.
+  - Convert input memory refs into normalized row dictionaries.
   - Compute real pattern stability scores based on time span, reuse, and failures.
 
 DOES NOT:
@@ -16,19 +16,11 @@ DOES NOT:
 from datetime import datetime, timezone
 from typing import Any, Dict, List
 
-try:
-    import pandas as pd
-except ImportError as exc:  # pragma: no cover
-    raise ImportError(
-        "pandas is required for zentex.memory.consolidation.stats_pipeline. "
-        "Add pandas>=2.0,<3.0 to requirements.txt and reinstall."
-    ) from exc
-
 from zentex.common.data_pipeline import exponential_decay
 from zentex.memory.consolidation.consolidation import PatternStabilityScore
 
 
-def refs_to_dataframe(input_refs: list[dict], *, now_ts: float) -> pd.DataFrame:
+def refs_to_dataframe(input_refs: list[dict], *, now_ts: float) -> list[dict[str, Any]]:
     rows: list[dict[str, Any]] = []
     for ref in input_refs:
         created_at_ts = ref.get("created_at_ts")
@@ -58,30 +50,36 @@ def refs_to_dataframe(input_refs: list[dict], *, now_ts: float) -> pd.DataFrame:
                 "is_failure": str(ref.get("outcome_type") or "").strip().lower() == "failure",
             }
         )
-    return pd.DataFrame(rows)
+    return rows
 
 
-def compute_pattern_scores(df: pd.DataFrame) -> List[PatternStabilityScore]:
+def compute_pattern_scores(df: list[dict[str, Any]]) -> List[PatternStabilityScore]:
     scores: list[PatternStabilityScore] = []
-    if df.empty or "tags" not in df.columns:
+    if not df:
         return scores
 
-    exploded = df.explode("tags")
-    exploded = exploded[exploded["tags"].notna() & (exploded["tags"].astype(str).str.strip() != "")]
-    if exploded.empty:
-        return scores
+    grouped: dict[str, list[dict[str, Any]]] = {}
+    for row in df:
+        for tag in list(row.get("tags") or []):
+            tag_text = str(tag).strip()
+            if tag_text:
+                grouped.setdefault(tag_text, []).append(row)
 
-    for tag, group in exploded.groupby("tags", dropna=True):
-        frequency = int(len(group))
+    for tag, group in grouped.items():
+        frequency = len(group)
         if frequency < 2:
             continue
-        created_series = group["created_at_ts"].dropna()
-        if created_series.empty:
+        created_values = [
+            float(row["created_at_ts"])
+            for row in group
+            if row.get("created_at_ts") is not None
+        ]
+        if not created_values:
             time_span_seconds = 0
         else:
-            time_span_seconds = int(max(0.0, float(created_series.max()) - float(created_series.min())))
-        cross_context_reuse = float(group["decayed_reuse"].fillna(0.0).mean())
-        failure_count = int(group["is_failure"].fillna(False).sum())
+            time_span_seconds = int(max(0.0, max(created_values) - min(created_values)))
+        cross_context_reuse = sum(float(row.get("decayed_reuse") or 0.0) for row in group) / float(frequency)
+        failure_count = sum(1 for row in group if bool(row.get("is_failure")))
         stability_score = max(0.0, min(1.0, cross_context_reuse - failure_count * 0.15))
         scores.append(
             PatternStabilityScore(
@@ -97,19 +95,18 @@ def compute_pattern_scores(df: pd.DataFrame) -> List[PatternStabilityScore]:
     return sorted(scores, key=lambda item: (-item.stability_score, -item.frequency, item.pattern_id))
 
 
-def compute_tier_pressure(df: pd.DataFrame) -> Dict[str, float]:
-    if df.empty:
+def compute_tier_pressure(df: list[dict[str, Any]]) -> Dict[str, float]:
+    if not df:
         return {
             "record_count": 0.0,
             "failure_ratio": 0.0,
             "low_reuse_ratio": 0.0,
         }
     record_count = float(len(df))
-    failure_ratio = float(df["is_failure"].fillna(False).sum()) / record_count
-    low_reuse_ratio = float((df["decayed_reuse"].fillna(0.0) < 0.3).sum()) / record_count
+    failure_ratio = float(sum(1 for row in df if bool(row.get("is_failure")))) / record_count
+    low_reuse_ratio = float(sum(1 for row in df if float(row.get("decayed_reuse") or 0.0) < 0.3)) / record_count
     return {
         "record_count": record_count,
         "failure_ratio": failure_ratio,
         "low_reuse_ratio": low_reuse_ratio,
     }
-

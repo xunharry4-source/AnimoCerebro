@@ -2,6 +2,8 @@ import { useState, useEffect, useRef, useCallback } from 'react';
 import { ZentexTask, TasksByStatus } from './types';
 import { generateTestTasks, groupTasksByStatus } from './testData';
 
+const TASKS_LIMIT_PER_GROUP = 100;
+
 interface UseTaskManagementReturn {
   tasksByStatus: TasksByStatus;
   loading: boolean;
@@ -39,7 +41,9 @@ const useTaskManagement = (): UseTaskManagementReturn => {
       if (sourceModuleFilter !== "all") {
         params.set("source_module", sourceModuleFilter);
       }
-      const url = params.size > 0 ? `/api/web/tasks/by-status?${params.toString()}` : "/api/web/tasks/by-status";
+      params.set("limit_per_group", String(TASKS_LIMIT_PER_GROUP));
+      params.set("offset", "0");
+      const url = `/api/web/tasks/by-status?${params.toString()}`;
       const res = await fetch(url);
       if (!res.ok) {
         throw new Error(`获取任务列表失败（HTTP ${res.status}）`);
