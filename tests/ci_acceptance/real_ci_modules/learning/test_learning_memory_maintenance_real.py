@@ -30,3 +30,5 @@ def test_learning_memory_maintenance_real(real_ci_runtime) -> None:
     assert rows, "learning maintenance 未写入 overall record"
     assert rows[0].direction == "memory_maintenance"
     assert rows[0].status == "completed"
+    assert rows[0].detail.get("cross_module_pressure") is not None
+    assert rows[0].detail.get("layer_distribution") is not None

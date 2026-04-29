@@ -4,6 +4,7 @@ from types import SimpleNamespace
 
 import pytest
 
+from zentex.agents.service import get_service as get_agent_service
 from zentex.audit.service import get_service as get_audit_service
 from zentex.environment.service import get_service as get_environment_service
 from zentex.foundation.service import get_service as get_foundation_service
@@ -13,6 +14,7 @@ from zentex.memory.service import get_memory_service
 from zentex.nine_questions.service import NineQuestionService
 from zentex.plugins.service import get_service as get_plugin_service
 from zentex.reflection.service import get_service as get_reflection_service
+from zentex.safety.service import get_service as get_safety_service
 from zentex.tasks.service import get_service as get_task_service
 from zentex.tasks.service import LLMTaskDecomposerPlugin
 from zentex.web_console.di_container import WebConsoleContainer
@@ -30,10 +32,13 @@ def real_ci_runtime() -> SimpleNamespace:
     foundation_service = get_foundation_service()
     environment_service = get_environment_service()
     audit_service = get_audit_service()
+    safety_service = get_safety_service()
     learning_service = get_learning_service()
     memory_service = get_memory_service()
     reflection_service = get_reflection_service()
     task_service = get_task_service()
+    agent_service = get_agent_service()
+    agent_service.transcript_store = kernel_service.transcript_store
     task_service.attach_dependencies(
         plugin_service=plugin_service,
         transcript_store=kernel_service.transcript_store,
@@ -50,10 +55,13 @@ def real_ci_runtime() -> SimpleNamespace:
         llm_service=llm_service,
         foundation_service=foundation_service,
         environment_service=environment_service,
+        safety_service=safety_service,
         audit_service=audit_service,
         learning_service=learning_service,
         memory_service=memory_service,
         reflection_service=reflection_service,
+        agent_service=agent_service,
+        task_service=task_service,
     )
 
     plugin_service.register_discovered_plugins()
@@ -80,5 +88,7 @@ def real_ci_runtime() -> SimpleNamespace:
         memory_service=memory_service,
         learning_service=learning_service,
         audit_service=audit_service,
+        safety_service=safety_service,
+        agent_service=agent_service,
         task_service=task_service,
     )

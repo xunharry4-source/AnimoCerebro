@@ -22,6 +22,8 @@ from zentex.plugins.service import CognitiveToolRegistry, ExecutionDomainRegistr
 from zentex.plugins.service import SystemPluginService
 from zentex.reflection.service import get_service as get_reflection_service
 from zentex.tasks.service import get_service as get_task_service
+from zentex.upgrade.execution import UpgradeExecutionService
+from zentex.upgrade.service import build_default_upgrade_runtime_components
 from zentex.web_console.di_container import WebConsoleContainer
 from zentex.web_console.router import api_router
 
@@ -233,6 +235,17 @@ def acceptance_app() -> FastAPI:
     app.state.agent_coordination_service.bridge = _AcceptanceAgentBridge()
     app.state.cli_service = get_cli_service(transcript_store=transcript_store)
     app.state.mcp_service = _build_mcp_service(transcript_store)
+    upgrade_components = build_default_upgrade_runtime_components(memory_service=app.state.memory_service)
+    app.state.upgrade_management_store = upgrade_components.management_store
+    app.state.plugin_evolution_runtime = upgrade_components.plugin_runtime
+    app.state.upgrade_audit_store = upgrade_components.audit_store
+    app.state.upgrade_memory_store = upgrade_components.memory_store
+    app.state.upgrade_evidence_service = upgrade_components.evidence_service
+    app.state.upgrade_execution_service = UpgradeExecutionService(
+        management_store=upgrade_components.management_store,
+        plugin_runtime=upgrade_components.plugin_runtime,
+        evidence_service=upgrade_components.evidence_service,
+    )
 
     plugin_service = SystemPluginService(db_path="app_data/plugins_acceptance.sqlite3")
     plugin_service.bootstrap()

@@ -11,6 +11,7 @@ async def test_task_create_real(real_ci_runtime) -> None:
     """功能：验证任务服务真实创建任务。"""
     runtime = real_ci_runtime
     suffix = uuid4().hex[:10]
+    source_module = f"ci_task_create_{suffix}"
 
     task = await runtime.task_service.create_task(
         {
@@ -18,10 +19,14 @@ async def test_task_create_real(real_ci_runtime) -> None:
             "task_type": "system_action",
             "originator_id": "ci_real_modules",
             "idempotency_key": f"task-create-{suffix}",
-            "metadata": {"source_module": "ci_real_tasks"},
+            "metadata": {"source_module": source_module},
         }
     )
-    assert str(task.task_id).strip(), "任务创建失败"
+    try:
+        assert str(task.task_id).strip(), "任务创建失败"
 
-    listed = runtime.task_service.list_tasks(source_module="ci_real_tasks")
-    assert any(item.task_id == task.task_id for item in listed), "创建后任务不可见"
+        listed = runtime.task_service.list_tasks(source_module=source_module, limit=1, offset=0)
+        assert [item.task_id for item in listed] == [task.task_id], "创建后分页过滤查询未精确命中目标任务"
+        assert listed[0].metadata["source_module"] == source_module
+    finally:
+        runtime.task_service.bulk_delete([task.task_id], force=True)
