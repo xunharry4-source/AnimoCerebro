@@ -108,6 +108,11 @@ class LearningService:
     def store(self) -> LearningStore:
         return self._store
 
+    def close(self) -> None:
+        close = getattr(self._store, "close", None)
+        if callable(close):
+            close()
+
     async def start_cycle(
         self,
         *,

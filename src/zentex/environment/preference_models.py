@@ -81,12 +81,6 @@ class UserPreference(BaseModel):
     expires_at: Optional[datetime] = Field(None, description="过期时间，None 表示永久有效")
     metadata: Dict[str, Any] = Field(default_factory=dict, description="额外元数据")
 
-    class Config:
-        json_encoders = {
-            datetime: lambda v: v.isoformat()
-        }
-
-
 class IntentAmbiguityCase(BaseModel):
     """
     意图歧义案例
@@ -118,12 +112,6 @@ class IntentAmbiguityCase(BaseModel):
     user_feedback: Optional[str] = Field(None, description="用户反馈内容")
     metadata: Dict[str, Any] = Field(default_factory=dict, description="额外元数据")
 
-    class Config:
-        json_encoders = {
-            datetime: lambda v: v.isoformat()
-        }
-
-
 class AnomalyCandidate(BaseModel):
     """
     异常候选
@@ -149,12 +137,6 @@ class AnomalyCandidate(BaseModel):
         None,
         description="建议动作，如 wait_for_confirmation / auto_fix / ignore"
     )
-
-    class Config:
-        json_encoders = {
-            datetime: lambda v: v.isoformat()
-        }
-
 
 class PreferenceCandidate(BaseModel):
     """
@@ -185,12 +167,6 @@ class PreferenceCandidate(BaseModel):
         None,
         description="过期时间，超时未确认则自动失效"
     )
-
-    class Config:
-        json_encoders = {
-            datetime: lambda v: v.isoformat()
-        }
-
 
 class ExtremeSignalRecord(BaseModel):
     """
@@ -223,12 +199,6 @@ class ExtremeSignalRecord(BaseModel):
     is_malicious: Optional[bool] = Field(None, description="是否被标记为恶意")
     metadata: Dict[str, Any] = Field(default_factory=dict, description="额外元数据")
 
-    class Config:
-        json_encoders = {
-            datetime: lambda v: v.isoformat()
-        }
-
-
 class AttackSample(BaseModel):
     """
     攻击样本
@@ -244,12 +214,6 @@ class AttackSample(BaseModel):
     marked_by: str = Field(..., description="标记者，analyst_id 或 'auto'")
     pattern_signature: str = Field(..., description="用于模式匹配的特征签名")
     metadata: Dict[str, Any] = Field(default_factory=dict, description="额外元数据")
-
-    class Config:
-        json_encoders = {
-            datetime: lambda v: v.isoformat()
-        }
-
 
 # ===== 引擎返回类型 =====
 

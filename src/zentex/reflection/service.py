@@ -99,6 +99,14 @@ class ReflectionService:
         
         logger.info(f"ReflectionService initialized (max_cache={max_cache_size})")
 
+    def close(self) -> None:
+        """Release database resources owned by this service instance."""
+        dao = getattr(self, "_dao", None)
+        db = getattr(dao, "db", None)
+        close = getattr(db, "close", None)
+        if callable(close):
+            close()
+
     def _build_reflection_dao(
         self,
         persistence: Optional[Any],

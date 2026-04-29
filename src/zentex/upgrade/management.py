@@ -12,6 +12,7 @@ runtime callbacks, but the records themselves are durable.
 from dataclasses import asdict, dataclass, field
 from datetime import datetime, timezone
 UTC = timezone.utc
+from contextlib import contextmanager
 from enum import Enum
 import json
 import logging
@@ -496,7 +497,8 @@ class UpgradeManagementStore:
             normalized[key] = datetime.fromisoformat(value) if isinstance(value, str) else None
         return UpgradeManagementRecord(**normalized)
 
-    def _get_connection(self) -> sqlite3.Connection:
+    @contextmanager
+    def _get_connection(self):
         if self._file_path is None:
             raise RuntimeError("UpgradeManagementStore file_path is not configured for SQLite persistence.")
         conn = sqlite3.connect(
@@ -507,7 +509,10 @@ class UpgradeManagementStore:
         )
         conn.execute("PRAGMA journal_mode=WAL")
         conn.execute("PRAGMA synchronous=NORMAL")
-        return conn
+        try:
+            yield conn
+        finally:
+            conn.close()
 
     def _init_db_unlocked(self) -> None:
         if self._file_path is None:

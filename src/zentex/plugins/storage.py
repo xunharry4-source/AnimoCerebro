@@ -5,7 +5,7 @@ import json
 import threading
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Literal
+from typing import Any, Dict, List, Optional, Literal, Union
 
 from zentex.plugins.plugin_ids import canonicalize_plugin_id
 
@@ -21,6 +21,17 @@ class PluginStorage:
         self._conn = sqlite3.connect(str(db_path), check_same_thread=False)
         self._conn.row_factory = sqlite3.Row
         self._init_db()
+
+    def close(self) -> None:
+        """Close the owned SQLite connection once."""
+        with self._lock:
+            conn = getattr(self, "_conn", None)
+            if conn is None:
+                return
+            try:
+                conn.close()
+            finally:
+                self._conn = None
 
     def _init_db(self):
         with self._lock, self._conn:

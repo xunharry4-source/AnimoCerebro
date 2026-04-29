@@ -8,7 +8,7 @@ Pydantic models for workspace configuration and management.
 from datetime import datetime, timezone
 from typing import Optional
 
-from pydantic import BaseModel, Field, field_validator
+from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 
 def _now() -> datetime:
@@ -43,8 +43,8 @@ class WorkspaceConfig(BaseModel):
         from pathlib import Path
         return str(Path(v).resolve())
 
-    class Config:
-        json_schema_extra = {
+    model_config = ConfigDict(
+        json_schema_extra={
             "example": {
                 "id": 1,
                 "name": "Main Project",
@@ -54,6 +54,7 @@ class WorkspaceConfig(BaseModel):
                 "created_at": "2026-04-11T10:00:00+00:00",
             }
         }
+    )
 
 
 class WorkspaceListResponse(BaseModel):

@@ -8,7 +8,7 @@ import uuid
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Iterable, Sequence
+from typing import Any, Iterable, Sequence, Union
 
 from zentex.web_console.contracts.audit import (
     AuditPagePayload,
@@ -70,6 +70,17 @@ class AuditTraceStore:
         self._conn = sqlite3.connect(str(self.db_path), check_same_thread=False)
         self._conn.row_factory = sqlite3.Row
         self._init_db()
+
+    def close(self) -> None:
+        """Close the owned SQLite connection once."""
+        with self._lock:
+            conn = getattr(self, "_conn", None)
+            if conn is None:
+                return
+            try:
+                conn.close()
+            finally:
+                self._conn = None
 
     def _init_db(self) -> None:
         with self._lock:

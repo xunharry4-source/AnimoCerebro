@@ -64,6 +64,16 @@ class SQLiteManagedMemoryStore:
         self._conn.row_factory = sqlite3.Row
         self._ensure_schema()
 
+    def close(self) -> None:
+        """Close the owned SQLite connection once."""
+        conn = getattr(self, "_conn", None)
+        if conn is None:
+            return
+        try:
+            conn.close()
+        finally:
+            self._conn = None
+
     def remember(self, record: ManagedMemoryRecord) -> ManagedMemoryRecord:
         """Persist a memory and write an audit event."""
 

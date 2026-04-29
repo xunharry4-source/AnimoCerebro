@@ -203,6 +203,12 @@ class BasePluginService:
         # Execution records: plugin_id -> execution stats
         self._execution_stats: Dict[str, Dict[str, Any]] = {}
 
+    def close(self) -> None:
+        """Release storage resources owned by this service instance."""
+        close = getattr(self._storage, "close", None)
+        if callable(close):
+            close()
+
     @classmethod
     def _get_factories(cls) -> Dict[str, Callable]:
         """Get plugin factories from the current plugin-unit directories."""

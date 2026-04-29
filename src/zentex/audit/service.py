@@ -23,6 +23,11 @@ class AuditService:
     def store(self) -> AuditTraceStore:
         return self._store
 
+    def close(self) -> None:
+        close = getattr(self._store, "close", None)
+        if callable(close):
+            close()
+
     def query_audit_entries(
         self,
         *,

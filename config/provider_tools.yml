@@ -1,9 +1,13 @@
-default_provider: gemini
+default_provider: ollama
+maintenance:
+  provider_key: ollama
+  model: gemma4:e2b
+  timeout_seconds: 120
 providers:
   openai_compat:
     provider_name: openai_compat
     api_base: http://localhost:8317/v1
-    api_key_env: OPENAI_COMPAT_API_KEY
+    api_key_env: your-api-key-1
     default_model: gemini-3-flash
     timeout_seconds: 30
 
@@ -38,6 +42,5 @@ providers:
   ollama:
     provider_name: ollama
     api_base: http://localhost:11434
-    api_key_env:
-    default_model: llama3.1:8b
-    timeout_seconds: 30
+    default_model: gemma4:e2b
+    timeout_seconds: 240

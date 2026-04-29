@@ -9,7 +9,7 @@ kernel.service and providing a stable interface for web_console modules.
 from abc import ABC, abstractmethod
 from typing import TYPE_CHECKING, Any, Dict, List, Optional
 from datetime import datetime
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, ConfigDict, Field
 
 if TYPE_CHECKING:
     from .session_manager import SessionManager
@@ -35,8 +35,8 @@ class SessionSnapshot(BaseModel):
     last_turn_id: Optional[str] = None
     metadata: Dict[str, Any] = Field(default_factory=dict)
 
-    class Config:
-        json_schema_extra = {
+    model_config = ConfigDict(
+        json_schema_extra={
             "example": {
                 "session_id": "sess-123",
                 "state_id": "state-456",
@@ -45,6 +45,7 @@ class SessionSnapshot(BaseModel):
                 "question_drivers": ["q1", "q2"],
             }
         }
+    )
 
 
 class NineQuestionStateSnapshot(BaseModel):
@@ -65,8 +66,8 @@ class NineQuestionStateSnapshot(BaseModel):
     snapshot_version: int = 9  # Legacy field for compatibility
     updated_at: datetime = Field(default_factory=datetime.utcnow)
 
-    class Config:
-        json_schema_extra = {
+    model_config = ConfigDict(
+        json_schema_extra={
             "example": {
                 "version": 1,
                 "revision": 5,
@@ -75,6 +76,7 @@ class NineQuestionStateSnapshot(BaseModel):
                 "snapshot_version": 9,
             }
         }
+    )
 
 
 class AppConfig(BaseModel):
@@ -88,14 +90,15 @@ class AppConfig(BaseModel):
     log_level: str = "INFO"
     enable_persistence: bool = True
 
-    class Config:
-        json_schema_extra = {
+    model_config = ConfigDict(
+        json_schema_extra={
             "example": {
                 "default_workspace": "/work",
                 "cache_ttl_seconds": 3600,
                 "log_level": "INFO",
             }
         }
+    )
 
 
 # ========== Abstract Facade ==========

@@ -131,12 +131,6 @@ class ReflectionRecord(BaseModel):
     verified_at: Optional[datetime] = Field(default=None, description="验证时间")
     verified_by: Optional[str] = Field(default=None, description="验证者")
     
-    class Config:
-        json_encoders = {
-            datetime: lambda v: v.isoformat()
-        }
-
-
 class ReflectionOverallRecord(BaseModel):
     """Lightweight overall summary record derived from a persisted reflection."""
 

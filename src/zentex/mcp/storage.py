@@ -4,7 +4,7 @@ import json
 import threading
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Union
 
 class McpStorage:
     """Independent storage DAO for MCP server assets."""
@@ -14,6 +14,17 @@ class McpStorage:
         self._conn = sqlite3.connect(str(self.db_path), check_same_thread=False)
         self._conn.row_factory = sqlite3.Row
         self._init_db()
+
+    def close(self) -> None:
+        """Close the owned SQLite connection once."""
+        with self._lock:
+            conn = getattr(self, "_conn", None)
+            if conn is None:
+                return
+            try:
+                conn.close()
+            finally:
+                self._conn = None
 
     def _init_db(self):
         with self._lock, self._conn:

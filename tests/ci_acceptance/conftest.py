@@ -1,8 +1,17 @@
 from __future__ import annotations
 
+import importlib
+import gc
+import os
+import sqlite3
+import sys
+import tempfile
+import warnings
 from collections.abc import Generator
 from types import SimpleNamespace
 from typing import Any
+
+os.environ.setdefault("DSPY_CACHEDIR", os.path.join(tempfile.gettempdir(), "zentex_pytest_dspy_cache"))
 
 import pytest
 from fastapi import FastAPI
@@ -210,8 +219,89 @@ def _build_mcp_service(transcript_store: _AcceptanceTranscriptStore) -> McpInteg
     return McpIntegrationService(adapter=adapter)
 
 
+def _close_if_supported(resource: Any, *, label: str, errors: list[str]) -> None:
+    if resource is None:
+        return
+    for method_name in ("close", "shutdown"):
+        method = getattr(resource, method_name, None)
+        if callable(method):
+            try:
+                method()
+            except Exception as exc:
+                errors.append(f"{label}.{method_name}: {exc}")
+            return
+
+
+def _close_acceptance_app_resources(app: FastAPI) -> None:
+    errors: list[str] = []
+    for attr in (
+        "plugin_service",
+        "upgrade_audit_store",
+        "upgrade_memory_store",
+        "upgrade_management_store",
+        "upgrade_evidence_service",
+        "upgrade_execution_service",
+        "mcp_service",
+    ):
+        _close_if_supported(getattr(app.state, attr, None), label=f"app.state.{attr}", errors=errors)
+    _close_dspy_cache(errors)
+    if errors:
+        raise AssertionError("Acceptance fixture cleanup failed: " + "; ".join(errors))
+
+
+def _close_dspy_cache(errors: list[str]) -> None:
+    dspy_clients = sys.modules.get("dspy.clients")
+    dspy_module = sys.modules.get("dspy")
+    for label, dspy_cache in (
+        ("dspy.clients.DSPY_CACHE", getattr(dspy_clients, "DSPY_CACHE", None) if dspy_clients else None),
+        ("dspy.cache", getattr(dspy_module, "cache", None) if dspy_module else None),
+    ):
+        _close_if_supported(dspy_cache, label=label, errors=errors)
+        _close_if_supported(
+            getattr(dspy_cache, "disk_cache", None),
+            label=f"{label}.disk_cache",
+            errors=errors,
+        )
+
+
+def pytest_sessionfinish(session: pytest.Session, exitstatus: int) -> None:
+    errors: list[str] = []
+    for module_name in (
+        "zentex.reflection.service",
+        "zentex.learning.service",
+        "zentex.memory.service",
+        "zentex.audit.service",
+        "zentex.tasks.service",
+        "zentex.agents.service",
+        "zentex.plugins.service",
+    ):
+        try:
+            module = importlib.import_module(module_name)
+        except Exception as exc:
+            errors.append(f"{module_name}: import failed: {exc}")
+            continue
+        service = getattr(module, "_default_service", None)
+        _close_if_supported(service, label=f"{module_name}._default_service", errors=errors)
+        if service is not None and hasattr(module, "_default_service"):
+            setattr(module, "_default_service", None)
+    _close_dspy_cache(errors)
+    gc.collect()
+    for obj in gc.get_objects():
+        if isinstance(obj, sqlite3.Connection):
+            try:
+                obj.close()
+            except sqlite3.Error as exc:
+                errors.append(f"sqlite3.Connection.close: {exc}")
+    if errors:
+        warnings.warn(
+            "Acceptance session resource cleanup failed: " + "; ".join(errors),
+            RuntimeWarning,
+            stacklevel=2,
+        )
+
+
 @pytest.fixture()
-def acceptance_app() -> FastAPI:
+def acceptance_app() -> Generator[FastAPI, None, None]:
     transcript_store = _AcceptanceTranscriptStore()
     session_manager = _AcceptanceSessionManager()
     state_manager = _AcceptanceNineQuestionStateManager()
@@ -261,7 +351,10 @@ def acceptance_app() -> FastAPI:
     )
     app.state.kuzu_adapter = None
     app.state.active_model_provider = SimpleNamespace(provider_name="acceptance-provider")
-    return app
+    try:
+        yield app
+    finally:
+        _close_acceptance_app_resources(app)
 
 
 @pytest.fixture()

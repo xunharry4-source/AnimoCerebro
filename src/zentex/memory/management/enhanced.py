@@ -730,6 +730,19 @@ class _EnhancedMemorySQLiteStore:
     def file_path(self) -> Optional[Path]:
         return self._file_path
 
+    def close(self) -> None:
+        """Close the shared in-memory SQLite connection, if this store owns one."""
+        if self._file_path is not None:
+            return
+        with self._lock:
+            conn = getattr(self, "_memory_db", None)
+            if conn is None:
+                return
+            try:
+                conn.close()
+            finally:
+                self._memory_db = None
+
     _REQUIRED_BLOCK_KINDS = {"title_block", "summary_block"}
 
     def _canonical_bytes(self, value: Any) -> bytes:
@@ -1872,6 +1885,16 @@ class _MemoryManagementStateStore:
     def file_path(self) -> Optional[Path]:
         return self._file_path
 
+    def close(self) -> None:
+        with self._lock:
+            conn = getattr(self, "_sqlite_conn", None)
+            if conn is None:
+                return
+            try:
+                conn.close()
+            finally:
+                self._sqlite_conn = None
+
     def get(self, memory_id: str) -> Optional[MemoryManagementState]:
         with self._lock:
             return self._states.get(memory_id)
@@ -2264,6 +2287,23 @@ class EnhancedMemoryService:
         self._init_progress = 0.0 # 0 to 1.0
         self._initialization_degraded = False
         self._init_lock = Lock()
+
+    def close(self) -> None:
+        """Release SQLite resources owned by the enhanced memory service."""
+        for store in (
+            self._semantic_store,
+            self._procedural_store,
+            self._episodic_store,
+            self._management_store,
+            self._cold_store,
+            self._tombstone_store,
+            self._quarantine_store,
+            self._index,
+            self._vector_index,
+        ):
+            close = getattr(store, "close", None)
+            if callable(close):
+                close()
 
     @property
     def is_ready(self) -> bool:

@@ -43,6 +43,12 @@ class UpgradeEvidenceService:
     def memory_service(self) -> Optional[Any]:
         return self._memory_service
 
+    def close(self) -> None:
+        for store in (self._audit_store, self._memory_store):
+            close = getattr(store, "close", None)
+            if callable(close):
+                close()
+
     def record_event(
         self,
         record: UpgradeManagementRecord,

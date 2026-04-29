@@ -100,6 +100,7 @@ class UpgradeExecutionService:
             from zentex.upgrade.service import UpgradeFacade
             self._facade = UpgradeFacade(
                 memory_service=self._evidence_service.memory_service,
+                execution_service=self,
             )
         else:
             self._facade = facade
@@ -121,6 +122,11 @@ class UpgradeExecutionService:
                 workflow_bridge = None
         self._workflow_bridge = workflow_bridge
         self._tool_registry: Any = None
+
+    def close(self) -> None:
+        close = getattr(self._evidence_service, "close", None)
+        if callable(close):
+            close()
 
     def _create_physical_backup(self, source_path: str, record_id: str) -> Optional[str]:
         """Create a physical backup of the target before modification."""

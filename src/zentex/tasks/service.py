@@ -147,6 +147,11 @@ class TaskManagementService:
         # not a TaskRegistry. The actual PluginService will be attached later via attach_dependencies.
         self._dispatch_manager = TaskDispatchManager(plugin_layer=None, transcript_store=self.transcript_store)
 
+    def close(self) -> None:
+        close = getattr(self._db, "close", None)
+        if callable(close):
+            close()
+
     def attach_dependencies(
         self,
         *,

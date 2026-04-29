@@ -9,7 +9,7 @@ direct manipulation of runtime.nine_question_router.
 from abc import ABC, abstractmethod
 from typing import Any, Awaitable, Callable, Dict, List
 from datetime import datetime
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, ConfigDict, Field
 
 
 class EventPublishResult(BaseModel):
@@ -21,8 +21,8 @@ class EventPublishResult(BaseModel):
     errors: List[str] = []
     timestamp: datetime = Field(default_factory=datetime.utcnow)
 
-    class Config:
-        json_schema_extra = {
+    model_config = ConfigDict(
+        json_schema_extra={
             "example": {
                 "event_id": "evt-abc123",
                 "event_type": "nine_question.state_changed",
@@ -30,6 +30,7 @@ class EventPublishResult(BaseModel):
                 "errors": [],
             }
         }
+    )
 
 
 class Subscription:

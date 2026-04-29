@@ -10,6 +10,7 @@ for why an upgrade started, what changed, how it progressed, and why it ended.
 
 from datetime import datetime, timezone
 UTC = timezone.utc
+from contextlib import contextmanager
 import json
 import logging
 import sqlite3
@@ -134,9 +135,11 @@ class _SQLiteStore:
             self._memory_db = sqlite3.connect(":memory:", check_same_thread=False)
             self._init_schema(self._memory_db)
 
-    def _get_connection(self) -> sqlite3.Connection:
+    @contextmanager
+    def _get_connection(self):
         if self._file_path is None:
-            return self._memory_db
+            yield self._memory_db
+            return
         conn = sqlite3.connect(
             str(self._file_path),
             timeout=30.0,
@@ -145,7 +148,10 @@ class _SQLiteStore:
         )
         conn.execute("PRAGMA journal_mode=WAL")
         conn.execute("PRAGMA synchronous=NORMAL")
-        return conn
+        try:
+            yield conn
+        finally:
+            conn.close()
 
     def _init_db(self) -> None:
         with self._lock:
@@ -168,6 +174,19 @@ class _SQLiteStore:
     @property
     def file_path(self) -> Optional[Path]:
         return self._file_path
+
+    def close(self) -> None:
+        """Close the in-memory SQLite connection held by memory-backed stores."""
+        if self._file_path is not None:
+            return
+        with self._lock:
+            conn = getattr(self, "_memory_db", None)
+            if conn is None:
+                return
+            try:
+                conn.close()
+            finally:
+                self._memory_db = None
 
     def _insert_payload(self, pk: str, record_id: str, trace_id: str, created_at: datetime, payload: dict[str, Any]) -> None:
         with self._lock:

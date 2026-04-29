@@ -26,6 +26,7 @@ Usage:
 import json
 import logging
 import sqlite3
+import threading
 from collections import OrderedDict
 from contextlib import contextmanager
 from datetime import datetime, timezone
@@ -66,6 +67,7 @@ class DatabaseConnection:
         self.db_path.parent.mkdir(parents=True, exist_ok=True)
         self._local = threading.local()
         self._lock = Lock()
+        self._connections: set[sqlite3.Connection] = set()
         
         if enable_wal:
             self._enable_wal_mode()
@@ -105,6 +107,8 @@ class DatabaseConnection:
             self._local.connection.row_factory = sqlite3.Row
             # Enable foreign keys
             self._local.connection.execute("PRAGMA foreign_keys=ON")
+            with self._lock:
+                self._connections.add(self._local.connection)
         
         conn = self._local.connection
         try:
@@ -176,9 +180,27 @@ class DatabaseConnection:
             row = cursor.fetchone()
             return row[0] if row else None
 
+    def shutdown(self) -> None:
+        """Close all SQLite connections created by this manager."""
+        with self._lock:
+            connections = list(self._connections)
+            self._connections.clear()
 
-# Import threading here to avoid circular dependency issues
-import threading
+        local_conn = getattr(self._local, "connection", None)
+        for conn in connections:
+            try:
+                conn.close()
+            except sqlite3.Error:
+                logger.debug("SQLite connection was already closed", exc_info=True)
+        if local_conn is not None:
+            try:
+                delattr(self._local, "connection")
+            except AttributeError:
+                pass
+
+    def close(self) -> None:
+        """Idempotent alias used by fixture and service cleanup hooks."""
+        self.shutdown()
 
 
 class LRUCache(Generic[T]):

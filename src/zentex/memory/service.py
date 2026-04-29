@@ -85,6 +85,16 @@ class MemoryService:
         )
         logger.info(f"MemoryService initialized at {self.storage_root}")
 
+    def close(self) -> None:
+        internal_close = getattr(self._internal_service, "close", None)
+        if callable(internal_close):
+            internal_close()
+        for store in list(self._asset_stores.values()):
+            close = getattr(store, "close", None)
+            if callable(close):
+                close()
+        self._asset_stores.clear()
+
     def get_sharing_bridge(self, aes_key: Optional[bytes] = None) -> Any:
         """Provides a bridge for exporting/importing memory via ZMSP."""
         from zentex.memory.sharing.bridge import ZMSPBridge
