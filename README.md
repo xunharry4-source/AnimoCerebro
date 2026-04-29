@@ -47,9 +47,29 @@ AnimoCerebro is responsible for reasoning, role inference, goal generation, risk
 
 AnimoCerebro 负责推理、角色推断、目标生成、风险评估、记忆积累、委托建议和长期经验交换。它是 AI 实现高级认知和独立行动的核心引擎。
 
-**🎉 Major Version Update**: This project has undergone a significant architectural evolution (v2.0) with enhanced modularity, plugin architecture, and autonomous decision-making capabilities. See [Major Version Update](docs/MAJOR_VERSION_UPDATE.md) for details.
+**🎉 Major Version Update (v2.0)**: This project has undergone a significant architectural evolution with enhanced modularity, plugin architecture, and autonomous decision-making capabilities. 
 
-**🎉 主要版本更新**: 本项目经历了重大的架构演进（v2.0），具有增强的模块化、插件架构和自主决策能力。详见[主要版本更新](docs/MAJOR_VERSION_UPDATE_ZH.md)。
+**New in v2.0**:
+- 🆕 Autonomous Control System (G31A) - Stimulus-driven task management
+- 🆕 Multi-Zentex Collaboration Protocol (G36) - Cross-instance coordination
+- 🆕 Soul Migration & Continuity (G34) - Encrypted identity transfer
+- 🆕 Governance & Observability - Unified error system and trace replay
+- 🆕 Kernel Runtime Refactoring - Domain-driven architecture
+- 🆕 Foundation Framework - Contract-first design
+
+See [RELEASE_NOTES_v2.0.md](docs/RELEASE_NOTES_v2.0.md) for comprehensive details or [INDEX.md](docs/INDEX.md) for documentation navigation.
+
+**🎉 主要版本更新 (v2.0)**: 本项目经历了重大的架构演进，具有增强的模块化、插件架构和自主决策能力。
+
+**v2.0 新特性**:
+- 🆕 自主控制系统 (G31A) - 刺激驱动的任务管理
+- 🆕 多实例协作协议 (G36) - 跨实例协调
+- 🆕 灵魂迁移与连续性 (G34) - 加密身份传输
+- 🆕 治理与可观测性 - 统一错误系统和追踪回放
+- 🆕 内核运行时重构 - 领域驱动架构
+- 🆕 基础框架 - 契约优先设计
+
+详见[RELEASE_NOTES_v2.0.md](docs/RELEASE_NOTES_v2.0.md)获取完整详情，或查看[INDEX.md](docs/INDEX.md)了解文档导航。
 
 ## What It Is
 
@@ -95,14 +115,25 @@ Primary protocol docs:
 
 ## Documentation Map
 
-- [Project Progress Report](docs/项目进度报告.md) (Architecture & Progress)
-- [Quick Start & Startup](docs/operability/STARTUP_AND_TEST.md) (One-Click methods)
-- [Runtime & Implementation](docs/operability/RUNTIME_AND_TESTS.md) (Detailed architecture)
-- [Functional Modules](docs/operability/FUNCTION_MODULES.md) (Feature breakdown)
-- [Latest Directory Map](docs/operability/LATEST_DIRECTORY_MAP.md) (Current project structure)
-- [Plugin Guides](docs/operability/PLUGIN_GUIDES.md) (Plugin development)
-- [Agent Integration](Agent/README.md) (Standard protocol for external agents)
-- [Agent Integration Guide](Agent/INTEGRATION_GUIDE.md) (How to connect your system)
+### 📚 Quick Navigation
+- **[🗺️ Documentation Index](docs/INDEX.md)** - Complete documentation navigation guide
+- **[📝 Release Notes v2.0](docs/RELEASE_NOTES_v2.0.md)** - What's new in the latest version
+
+### Core Documentation
+- [Quick Start & Startup](docs/operability/STARTUP_AND_TEST.md) - One-click startup methods
+- [Functional Modules](docs/operability/FUNCTION_MODULES.md) - Module architecture overview
+- [Runtime & Implementation](docs/operability/RUNTIME_AND_TESTS.md) - Detailed runtime architecture
+- [Latest Directory Map](docs/operability/LATEST_DIRECTORY_MAP.md) - Current project structure
+- [Plugin Guides](docs/operability/PLUGIN_GUIDES.md) - Plugin development guides
+
+### Integration & Protocols
+- [Protocol Design](docs/zmsp_protocol_design.md) - ZMSP protocol specification
+- [Agent Integration](Agent/README.md) - Standard protocol for external agents
+- [Agent Integration Guide](Agent/INTEGRATION_GUIDE.md) - How to connect your system
+
+### Progress & Reports
+- [Project Progress Report](docs/项目进度报告.md) - Architecture & progress tracking
+- [Translation Status](docs/TRANSLATION_STATUS_REPORT.md) - Documentation translation progress
 
 ## Integration Model
 
