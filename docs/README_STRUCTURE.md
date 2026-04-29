@@ -186,7 +186,7 @@ Documents available in both English and Chinese:
 
 ### For Integrators
 - [Agent Integration](operability/AGENT_AND_MCP.md)
-- [Protocol Design](zmsp_protocol_design.md)
+- [Plugin Development](operability/PLUGIN_GUIDES.md)
 
 ---
 
