@@ -275,24 +275,30 @@ async def test_q8_clinical_comprehensive():
 
     # 8. 记忆写入检查（必须存在 q8 相关记录）
     with _q8_timed_step("query q8 memory records"):
-        memory_records = memory_svc.query_managed_records(limit=100)
+        memory_records = memory_svc.query_managed_records(trace_id=trace_id, limit=100)
     assert isinstance(memory_records, list), "memory_service.query_managed_records must return list"
     assert any(
-        "q8" in str(getattr(item, "title", "")).lower()
-        or "q8" in str(getattr(item, "summary", "")).lower()
-        or "q8" in " ".join(getattr(item, "tags", []) or []).lower()
+        str(getattr(item, "trace_id", "") or "") == trace_id
+        and (
+            "q8" in str(getattr(item, "title", "")).lower()
+            or "q8" in str(getattr(item, "summary", "")).lower()
+            or "q8" in " ".join(getattr(item, "tags", []) or []).lower()
+        )
         for item in memory_records
-    ), "No Q8-related memory record found"
+    ), "No Q8-related memory record found for trace_id"
 
     # 9. 反思写入检查（必须存在 q8 相关反思）
     with _q8_timed_step("query q8 reflection records"):
-        reflection_records = reflection_svc.list_reflections({})
+        reflection_records = reflection_svc.list_reflections({"trace_id": trace_id})
     assert isinstance(reflection_records, list), "reflection_service.list_reflections must return list"
     assert any(
-        "q8" in str(getattr(item, "subject", "")).lower()
-        or "q8" in str((getattr(item, "context", {}) or {}).get("question_id", "")).lower()
+        str(getattr(item, "trace_id", "") or "") == trace_id
+        and (
+            "q8" in str(getattr(item, "subject", "")).lower()
+            or "q8" in str((getattr(item, "context", {}) or {}).get("question_id", "")).lower()
+        )
         for item in reflection_records
-    ), "No Q8-related reflection record found"
+    ), "No Q8-related reflection record found for trace_id"
 
     # 10. 审计写入检查（必须存在 q8 相关审计流）
     with _q8_timed_step("query q8 audit flows"):

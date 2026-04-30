@@ -157,8 +157,10 @@ def build_q3_runtime_inventory_context(
             "connected_agent_rows": runtime_inventory.get("connected_agent_catalog", []),
             "mcp_servers": runtime_inventory.get("runtime_mcp_payloads", []),
             "cli_tools": runtime_inventory.get("runtime_cli_payloads", []),
+            "external_connectors": runtime_inventory.get("runtime_external_connector_payloads", []),
             "cli_tool_rows": runtime_inventory.get("runtime_cli_rows", []),
             "mcp_server_rows": runtime_inventory.get("runtime_mcp_rows", []),
+            "external_connector_rows": runtime_inventory.get("runtime_external_connector_rows", []),
         },
         "workspaces_and_permissions": {
             "available_workspaces": runtime_inventory.get("accessible_workspace_zones", []),
@@ -178,6 +180,7 @@ def build_q3_runtime_inventory_context(
             module_runs,
             str(module_id),
             source="plugins.nine_questions.q3",
+            question_id="q3",
         )
         status, error_code, error_message = _status_for_payload(
             payload,
@@ -203,6 +206,7 @@ def build_q3_runtime_inventory_context(
             module_runs,
             "resource_sufficiency_inference",
             source="plugins.nine_questions.q3",
+            question_id="q3",
         )
         finish_module_run(
             run,
@@ -337,7 +341,7 @@ def _derive_runtime_plugin_inventory(
 def _derive_runtime_agent_inventory(
     context: dict[str, Any],
 ) -> tuple[list[dict[str, Any]], list[dict[str, str]]]:
-    agent_service = context.get("agent_service")
+    agent_service = context.get("agent_service") or context.get("agent_coordination_service")
     if agent_service is None:
         try:
             from zentex.agents.service import get_service
@@ -350,14 +354,14 @@ def _derive_runtime_agent_inventory(
     raw_agents: list[Any] = []
     if agent_service is not None:
         try:
-            if callable(getattr(agent_service, "list_active_agents", None)):
-                raw_agents = list(agent_service.list_active_agents() or [])
-            elif getattr(agent_service, "manager", None) is not None and callable(
+            if getattr(agent_service, "manager", None) is not None and callable(
                 getattr(agent_service.manager, "list_assets", None)
             ):
                 raw_agents = list(agent_service.manager.list_assets() or [])
+            elif callable(getattr(agent_service, "list_active_agents", None)):
+                raw_agents = list(agent_service.list_active_agents() or [])
         except Exception as exc:
-            _log_runtime_inventory_warning("agent_service.list_active_agents", exc)
+            _log_runtime_inventory_warning("agent_service.list_registered_agents", exc)
             raw_agents = []
 
     agent_payloads: list[dict[str, Any]] = []
@@ -382,6 +386,77 @@ def _derive_runtime_agent_inventory(
         humanized_rows.append(_describe_agent(agent_payload))
 
     return agent_payloads, humanized_rows
+
+
+def _derive_runtime_external_connector_inventory(
+    context: dict[str, Any],
+) -> tuple[list[str], list[dict[str, str]], list[dict[str, Any]]]:
+    connector_service = context.get("external_connector_service")
+    if connector_service is None:
+        try:
+            from zentex.external_connectors.service import ExternalConnectorService
+
+            connector_service = ExternalConnectorService()
+        except Exception as exc:
+            _log_runtime_inventory_warning("external_connectors.ExternalConnectorService", exc)
+            connector_service = None
+
+    raw_connectors: list[Any] = []
+    if connector_service is not None and callable(getattr(connector_service, "list_connectors", None)):
+        try:
+            raw_connectors = list(connector_service.list_connectors() or [])
+        except Exception as exc:
+            _log_runtime_inventory_warning("external_connector_service.list_connectors", exc)
+            raw_connectors = []
+
+    connector_ids: list[str] = []
+    connector_rows: list[dict[str, str]] = []
+    connector_payloads: list[dict[str, Any]] = []
+    seen: set[str] = set()
+    for connector in raw_connectors:
+        payload = connector.model_dump(mode="json") if hasattr(connector, "model_dump") else dict(connector or {})
+        connector_id = _normalize_text(payload.get("connector_id") or payload.get("id") or payload.get("name"))
+        if not connector_id or connector_id in seen:
+            continue
+        seen.add(connector_id)
+        connector_ids.append(connector_id)
+        name = _normalize_text(payload.get("display_name") or payload.get("name")) or _humanize_identifier(connector_id)
+        connector_type = _normalize_text(payload.get("connector_type")) or "external_connector"
+        target_app = _normalize_text(payload.get("target_app")) or connector_type
+        description = _normalize_text(payload.get("description")) or f"{name} 是当前已注册的外接插件。"
+        capabilities = payload.get("capabilities") if isinstance(payload.get("capabilities"), list) else []
+        connector_rows.append(
+            {
+                "id": connector_id,
+                "name": name,
+                "introduction": description,
+                "function_description": f"{name} 面向 {target_app} 提供 {connector_type} 外部连接能力。",
+                "status": _normalize_text(payload.get("status")) or "unknown",
+            }
+        )
+        connector_payloads.append(
+            {
+                "connector_id": connector_id,
+                "connector_type": connector_type,
+                "target_app": target_app,
+                "display_name": name,
+                "description": description,
+                "status": _normalize_text(payload.get("status")) or "unknown",
+                "profile_level": _normalize_text(payload.get("profile_level")),
+                "runtime": _normalize_text(payload.get("runtime")),
+                "version": _normalize_text(payload.get("version")),
+                "capabilities": [
+                    {
+                        "name": _normalize_text(item.get("name")) if isinstance(item, dict) else _normalize_text(item),
+                        "description": _normalize_text(item.get("description")) if isinstance(item, dict) else "",
+                        "read_only": bool(item.get("read_only", True)) if isinstance(item, dict) else True,
+                    }
+                    for item in capabilities
+                ],
+            }
+        )
+
+    return connector_ids, connector_rows, connector_payloads
 
 
 def _derive_runtime_cli_inventory(
@@ -475,8 +550,6 @@ def _derive_runtime_mcp_inventory(
     for server in raw_servers:
         payload = server.model_dump(mode="json") if hasattr(server, "model_dump") else dict(server or {})
         status = _normalize_text(payload.get("status"))
-        if status == "offline":
-            continue
         server_id = _normalize_text(payload.get("server_id") or payload.get("name"))
         if not server_id or server_id in seen:
             continue
@@ -500,7 +573,7 @@ def _derive_runtime_mcp_inventory(
     for server in raw_servers:
         payload = server.model_dump(mode="json") if hasattr(server, "model_dump") else dict(server or {})
         server_id = _normalize_text(payload.get("server_id"))
-        if not server_id or _normalize_text(payload.get("status")) == "offline":
+        if not server_id:
             continue
         server_payloads.append(
             {
@@ -601,6 +674,9 @@ def build_q3_runtime_inventory(context: dict[str, Any]) -> dict[str, Any]:
     runtime_agent_payloads, runtime_agent_rows = _derive_runtime_agent_inventory(context)
     runtime_cli_tools, runtime_cli_rows, runtime_cli_payloads = _derive_runtime_cli_inventory(context)
     runtime_mcp_servers, runtime_mcp_rows, runtime_mcp_payloads = _derive_runtime_mcp_inventory(context)
+    runtime_external_connectors, runtime_external_connector_rows, runtime_external_connector_payloads = (
+        _derive_runtime_external_connector_inventory(context)
+    )
     (
         accessible_workspace_zones,
         tenant_permissions,
@@ -625,6 +701,7 @@ def build_q3_runtime_inventory(context: dict[str, Any]) -> dict[str, Any]:
                 + runtime_exec_domains
                 + runtime_cli_tools
                 + runtime_mcp_servers
+                + runtime_external_connectors
             )
             if item
         }.keys()
@@ -642,6 +719,7 @@ def build_q3_runtime_inventory(context: dict[str, Any]) -> dict[str, Any]:
     execution_domain_registry = [_describe_tool(item, registry_rows=runtime_execution_rows) for item in runtime_exec_domains]
     execution_domain_registry.extend(runtime_cli_rows)
     execution_domain_registry.extend(runtime_mcp_rows)
+    execution_domain_registry.extend(runtime_external_connector_rows)
     connected_agent_catalog = [_describe_agent(agent) for agent in connected_agents]
     if not connected_agent_catalog:
         connected_agent_catalog = runtime_agent_rows
@@ -686,6 +764,11 @@ def build_q3_runtime_inventory(context: dict[str, Any]) -> dict[str, Any]:
             "mcp_server_rows": runtime_mcp_rows,
             "mcp_servers": runtime_mcp_payloads,
         },
+        "external_connectors_inventory": {
+            "available_external_connectors": runtime_external_connectors,
+            "external_connector_rows": runtime_external_connector_rows,
+            "external_connectors": runtime_external_connector_payloads,
+        },
         "memory_strategy_inventory": {
             "experience_logs": experience_logs,
             "activated_strategy_patches": activated_strategy_patches,
@@ -708,7 +791,9 @@ def build_q3_runtime_inventory(context: dict[str, Any]) -> dict[str, Any]:
         "activated_strategy_patches": activated_strategy_patches,
         "runtime_cli_rows": runtime_cli_rows,
         "runtime_mcp_rows": runtime_mcp_rows,
+        "runtime_external_connector_rows": runtime_external_connector_rows,
         "runtime_cli_payloads": runtime_cli_payloads,
         "runtime_mcp_payloads": runtime_mcp_payloads,
+        "runtime_external_connector_payloads": runtime_external_connector_payloads,
         "module_results": module_results,
     }

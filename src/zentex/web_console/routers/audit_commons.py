@@ -5,7 +5,7 @@ import logging
 
 from fastapi import HTTPException, Request
 
-from zentex.web_console.contracts.audit import AuditPagePayload, TurnAuditPagePayload
+from zentex.web_console.contracts.audit import AuditPagePayload, AuditTraceStartsPagePayload, TurnAuditPagePayload
 from zentex.web_console.contracts.audit import AuditGraphPayload
 from zentex.web_console.contracts.model_provider import ModelProviderTraceItem
 from zentex.web_console.services.audit import build_audit_graph
@@ -56,6 +56,36 @@ async def query_flow_health(
             detail={
                 "error": "audit_flow_query_failed",
                 "message": "Failed to query audit flows",
+                "exception_type": type(exc).__name__,
+                "exception_message": str(exc),
+            },
+        ) from exc
+
+
+async def query_trace_starts(
+    request: Request,
+    *,
+    page: int = 1,
+    page_size: int = 40,
+) -> AuditTraceStartsPagePayload:
+    audit_service = _get_audit_service(request)
+    if audit_service is None:
+        raise HTTPException(
+            status_code=503,
+            detail={
+                "error": "audit_service_unavailable",
+                "message": "Audit service is unavailable",
+            },
+        )
+    try:
+        return audit_service.query_trace_starts_page(page=page, page_size=page_size)
+    except Exception as exc:
+        logger.exception("Failed to query audit trace starts")
+        raise HTTPException(
+            status_code=500,
+            detail={
+                "error": "audit_trace_start_query_failed",
+                "message": "Failed to query audit trace starts",
                 "exception_type": type(exc).__name__,
                 "exception_message": str(exc),
             },

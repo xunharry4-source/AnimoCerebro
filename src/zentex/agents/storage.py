@@ -42,6 +42,11 @@ class AgentStorage:
                     status TEXT,
                     scope_json TEXT,
                     capabilities_json TEXT,
+                    adapter_type TEXT,
+                    adapter_config_json TEXT,
+                    auth_config_json TEXT,
+                    service_hooks_json TEXT,
+                    protocol_capabilities_json TEXT,
                     latency_ms REAL,
                     success_rate REAL,
                     last_ping_at TEXT,
@@ -51,6 +56,19 @@ class AgentStorage:
                     updated_at TEXT
                 )
             """)
+            existing_columns = {
+                row[1]
+                for row in self._conn.execute("PRAGMA table_info(agents)").fetchall()
+            }
+            for column, ddl in {
+                "adapter_type": "ALTER TABLE agents ADD COLUMN adapter_type TEXT",
+                "adapter_config_json": "ALTER TABLE agents ADD COLUMN adapter_config_json TEXT",
+                "auth_config_json": "ALTER TABLE agents ADD COLUMN auth_config_json TEXT",
+                "service_hooks_json": "ALTER TABLE agents ADD COLUMN service_hooks_json TEXT",
+                "protocol_capabilities_json": "ALTER TABLE agents ADD COLUMN protocol_capabilities_json TEXT",
+            }.items():
+                if column not in existing_columns:
+                    self._conn.execute(ddl)
 
     def upsert_agent(self, asset_dict: Dict[str, Any]):
         with self._lock, self._conn:
@@ -58,13 +76,19 @@ class AgentStorage:
             keys = [
                 "agent_id", "name", "agent_name", "version", "function_description",
                 "endpoint", "auth_token", "role_tag", "trust_level", "status",
-                "scope_json", "capabilities_json", "latency_ms", "success_rate",
+                "scope_json", "capabilities_json", "adapter_type", "adapter_config_json",
+                "auth_config_json", "service_hooks_json", "protocol_capabilities_json",
+                "latency_ms", "success_rate",
                 "last_ping_at", "last_seen_at", "registered_at", "created_at", "updated_at"
             ]
             
             data = {k: asset_dict.get(k) for k in keys}
             data["scope_json"] = json.dumps(asset_dict.get("scope", []))
             data["capabilities_json"] = json.dumps(asset_dict.get("capabilities", []))
+            data["adapter_config_json"] = json.dumps(asset_dict.get("adapter_config", {}))
+            data["auth_config_json"] = json.dumps(asset_dict.get("auth_config", {}))
+            data["service_hooks_json"] = json.dumps(asset_dict.get("service_hooks", []))
+            data["protocol_capabilities_json"] = json.dumps(asset_dict.get("protocol_capabilities", []))
             data["updated_at"] = now
             
             placeholders = ", ".join(["?"] * len(keys))
@@ -80,6 +104,10 @@ class AgentStorage:
                 d = dict(row)
                 d["scope"] = json.loads(d.pop("scope_json") or "[]")
                 d["capabilities"] = json.loads(d.pop("capabilities_json") or "[]")
+                d["adapter_config"] = json.loads(d.pop("adapter_config_json", None) or "{}")
+                d["auth_config"] = json.loads(d.pop("auth_config_json", None) or "{}")
+                d["service_hooks"] = json.loads(d.pop("service_hooks_json", None) or "[]")
+                d["protocol_capabilities"] = json.loads(d.pop("protocol_capabilities_json", None) or "[]")
                 records.append(d)
             return records
 

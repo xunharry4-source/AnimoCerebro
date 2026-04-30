@@ -201,29 +201,26 @@ async def test_q7_clinical_authenticity():
 
     # 8. 记忆写入检查（必须可查询到 trace_id 对应记录）
     memory_records = memory_service.query_managed_records(trace_id=trace_id, limit=100)
-    if not isinstance(memory_records, list):
-        memory_records = []
-    if not memory_records:
-        memory_records = memory_service.query_managed_records(limit=200)
     assert isinstance(memory_records, list), "memory_service.query_managed_records must return list"
     assert any(
-        "q7" in str(getattr(item, "title", "")).lower()
-        or "q7" in str(getattr(item, "summary", "")).lower()
-        or "q7" in " ".join(getattr(item, "tags", []) or []).lower()
+        str(getattr(item, "trace_id", "") or "") == trace_id
+        and (
+            "q7" in str(getattr(item, "title", "")).lower()
+            or "q7" in str(getattr(item, "summary", "")).lower()
+            or "q7" in " ".join(getattr(item, "tags", []) or []).lower()
+        )
         for item in memory_records
     ), "No Q7-related memory record found for trace_id"
 
     # 9. 反思写入检查（必须可查询到 trace_id 对应反思）
     reflection_records = reflection_service.list_reflections({"trace_id": trace_id})
-    if not isinstance(reflection_records, list):
-        reflection_records = []
-    if not reflection_records:
-        reflection_records = reflection_service.list_reflections({})
     assert isinstance(reflection_records, list), "reflection_service.list_reflections must return list"
     assert any(
         str(getattr(item, "trace_id", "") or "") == trace_id
-        or "q7" in str(getattr(item, "subject", "")).lower()
-        or "q7" in str((getattr(item, "context", {}) or {}).get("question_id", "")).lower()
+        and (
+            "q7" in str(getattr(item, "subject", "")).lower()
+            or "q7" in str((getattr(item, "context", {}) or {}).get("question_id", "")).lower()
+        )
         for item in reflection_records
     ), "No Q7-related reflection record found for trace_id"
 

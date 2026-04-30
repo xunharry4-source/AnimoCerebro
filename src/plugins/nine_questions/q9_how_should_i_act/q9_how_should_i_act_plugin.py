@@ -865,13 +865,6 @@ class HowShouldIActPlugin(BaseModel):
             )
 
         except Exception as exc:
-            committed_result = _existing_q9_committed_result(context)
-            if committed_result is not None:
-                logger.warning(
-                    "Q9 LLM synthesis failed; preserving committed completed Q9 snapshot: %s",
-                    exc,
-                )
-                return committed_result
             fail_module_run(
                 posture_projection_run,
                 error_code="q9_execution_failed",

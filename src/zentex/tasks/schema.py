@@ -29,6 +29,7 @@ def ensure_task_database_schema(db: DatabaseConnection) -> None:
                 idempotency_key TEXT NOT NULL,
                 title TEXT NOT NULL,
                 task_type TEXT NOT NULL,
+                task_scope TEXT NOT NULL DEFAULT 'internal',
                 status TEXT NOT NULL DEFAULT 'todo',
                 priority TEXT NOT NULL DEFAULT 'medium',
                 progress REAL NOT NULL DEFAULT 0.0,
@@ -132,6 +133,7 @@ def ensure_task_database_schema(db: DatabaseConnection) -> None:
             """
         )
         _ensure_tasks_columns(conn)
+        conn.execute("CREATE INDEX IF NOT EXISTS idx_tasks_scope ON tasks(task_scope)")
         _ensure_intervention_receipt_columns(conn)
         _ensure_task_outcome_columns(conn)
 
@@ -147,6 +149,7 @@ def _ensure_tasks_columns(conn) -> None:
         "execution_finished_at": "ALTER TABLE tasks ADD COLUMN execution_finished_at TEXT",
         "dispatch_plugin_id": "ALTER TABLE tasks ADD COLUMN dispatch_plugin_id TEXT",
         "execution_output": "ALTER TABLE tasks ADD COLUMN execution_output TEXT",
+        "task_scope": "ALTER TABLE tasks ADD COLUMN task_scope TEXT NOT NULL DEFAULT 'internal'",
     }
     for column, sql in migrations.items():
         if column not in existing:

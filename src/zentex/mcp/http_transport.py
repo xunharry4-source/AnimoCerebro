@@ -19,11 +19,11 @@ class HttpJsonMcpTransportClient:
         self.timeout_seconds = timeout_seconds
 
     def health_probe(self, config: McpServerConfig) -> bool:
-        response = requests.get(f"{config.command.rstrip('/')}/health", timeout=self.timeout_seconds)
+        response = requests.get(f"{config.command.rstrip('/')}/health", headers=dict(config.env), timeout=self.timeout_seconds)
         return response.status_code == 200 and bool(response.json().get("ok"))
 
     def list_tools(self, config: McpServerConfig) -> list[McpToolDescriptor]:
-        response = requests.get(f"{config.command.rstrip('/')}/tools", timeout=self.timeout_seconds)
+        response = requests.get(f"{config.command.rstrip('/')}/tools", headers=dict(config.env), timeout=self.timeout_seconds)
         response.raise_for_status()
         payload = response.json()
         tools = payload.get("tools")
@@ -41,6 +41,7 @@ class HttpJsonMcpTransportClient:
     ) -> dict[str, Any]:
         response = requests.post(
             f"{config.command.rstrip('/')}/tools/{tool_name}/call",
+            headers=dict(config.env),
             json={"arguments": arguments, "trace_id": trace_id},
             timeout=self.timeout_seconds,
         )

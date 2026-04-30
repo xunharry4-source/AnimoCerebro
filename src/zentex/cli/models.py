@@ -1,5 +1,5 @@
 from __future__ import annotations
-from typing import Dict, List, Literal, Optional
+from typing import Any, Dict, List, Literal, Optional
 from enum import Enum
 from pydantic import BaseModel, ConfigDict, Field
 
@@ -24,6 +24,12 @@ class CliToolRegistrationConfig(BaseModel):
     project_description: Optional[str] = None
     execution_domain: str = "cli"
     env: Dict[str, str] = Field(default_factory=dict)
+    auth_config: Dict[str, Any] = Field(default_factory=dict)
+    auth_required_for_health: bool = False
+    health_probe_args: List[str] = Field(default_factory=list)
+    help_probe_args: List[str] = Field(default_factory=lambda: ["--help"])
+    version_probe_args: List[str] = Field(default_factory=lambda: ["--version"])
+    documentation_learning_required: bool = True
 
 class CliToolRuntimeState(BaseModel):
     model_config = ConfigDict(extra="forbid", frozen=True)
@@ -43,6 +49,23 @@ class CliToolRuntimeState(BaseModel):
     project_path: Optional[str] = None
     project_name: Optional[str] = None
     project_description: Optional[str] = None
+
+class ToolUsageProfile(BaseModel):
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    usage_summary: str
+    supported_commands: List[str] = Field(default_factory=list)
+    supported_tools: List[str] = Field(default_factory=list)
+    argument_schema: Dict[str, Any] = Field(default_factory=dict)
+    examples: List[Dict[str, Any]] = Field(default_factory=list)
+    side_effects: List[str] = Field(default_factory=list)
+    auth_requirements: List[str] = Field(default_factory=list)
+    risk_notes: List[str] = Field(default_factory=list)
+    task_routing_hints: List[str] = Field(default_factory=list)
+    source_type: Literal["cli", "mcp"]
+    source_refs: List[str] = Field(default_factory=list)
+    degraded: bool = False
+    learning_status: Literal["learned", "degraded"] = "learned"
 
 class CliInvocationResult(BaseModel):
     model_config = ConfigDict(extra="forbid", frozen=True)

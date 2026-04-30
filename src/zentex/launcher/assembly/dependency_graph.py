@@ -37,8 +37,8 @@ class ServiceDependencyGraph:
         ServiceNode("learning", ["foundation", "llm", "memory"]),
         ServiceNode("agents", ["foundation", "kernel"]),
         ServiceNode("kernel", ["foundation"]),
-        ServiceNode("mcp", ["foundation"]),
-        ServiceNode("cli", ["foundation", "memory"]),
+        ServiceNode("mcp", ["foundation", "llm"]),
+        ServiceNode("cli", ["foundation", "memory", "llm"]),
         ServiceNode("web_console", ["kernel", "foundation"]),
     ]
 

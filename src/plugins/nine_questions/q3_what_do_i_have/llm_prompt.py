@@ -118,6 +118,8 @@ def build_q3_llm_request(
         "functional_assets": functional_assets[:12],
         "cli_tool_registry": cli_tool_registry[:16],
         "mcp_server_registry": mcp_server_registry[:16],
+        "llm_temperature": 0.0,
+        "llm_max_output_tokens": 2048,
     }
     return {
         "system_prompt": system_prompt,

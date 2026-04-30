@@ -59,6 +59,10 @@ class TaskType(str, Enum):
     INTERVENTION = "intervention"
     MISSION = "mission" # High-level parent task
 
+class TaskScope(str, Enum):
+    INTERNAL = "internal"
+    EXTERNAL = "external"
+
 class TaskPriority(str, Enum):
     CRITICAL = "critical"
     HIGH = "high"
@@ -111,6 +115,7 @@ class ZentexTask(BaseModel):
     idempotency_key: str
     title: str
     task_type: TaskType
+    task_scope: TaskScope = TaskScope.INTERNAL
     status: TaskStatus = TaskStatus.TODO
     priority: TaskPriority = TaskPriority.MEDIUM
     progress: float = 0.0 # 0.0 to 1.0
@@ -126,6 +131,13 @@ class ZentexTask(BaseModel):
     metadata: Dict[str, Any] = Field(default_factory=dict)
     last_updated_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
     created_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
+    attempt_count: int = 0
+    last_error: Optional[str] = None
+    execution_started_at: Optional[str] = None
+    execution_finished_at: Optional[str] = None
+    dispatch_plugin_id: Optional[str] = None
+    execution_output: Optional[str] = None
+    execution_assignment: Dict[str, Any] = Field(default_factory=dict)
 
     @property
     def description(self) -> str:

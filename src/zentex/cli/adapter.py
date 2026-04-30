@@ -22,6 +22,7 @@ from __future__ import annotations
 
 
 import json
+import os
 from pathlib import Path
 import shutil
 import subprocess
@@ -38,6 +39,7 @@ from zentex.cli.models import (
     CliToolRegistrationConfig,
     CliToolRuntimeState,
 )
+from zentex.agents.auth import AgentAuthError, AgentAuthService, AgentResolvedAuth
 from zentex.plugins.cognitive_spec import CognitiveToolSpec
 from zentex.plugins.contracts import (
     FunctionalPluginSpec,
@@ -128,6 +130,14 @@ def create_cli_adapter_plugin(
     return adapter
 
 
+def _redact_known_values(text: str, auth_data: Dict[str, Any]) -> str:
+    redacted = text
+    for value in auth_data.values():
+        if isinstance(value, str) and value and len(value) >= 4:
+            redacted = redacted.replace(value, "[REDACTED]")
+    return redacted
+
+
 class CliTransportClient(Protocol):
     def health_probe(self, config: CliToolRegistrationConfig) -> bool: ...
 
@@ -149,8 +159,40 @@ class SubprocessCliTransport:
     def health_probe(self, config: CliToolRegistrationConfig) -> bool:
         executable = config.command_executable
         if "/" in executable:
-            return Path(executable).exists()
-        return shutil.which(executable) is not None
+            executable_exists = Path(executable).exists()
+        else:
+            executable_exists = shutil.which(executable) is not None
+        if not executable_exists:
+            return False
+
+        probe_commands = self._build_health_probe_commands(config)
+        for command in probe_commands:
+            try:
+                completed = subprocess.run(  # noqa: S603
+                    command,
+                    text=True,
+                    capture_output=True,
+                    env={**os.environ, **dict(config.env)} if config.env else None,
+                    timeout=5,
+                    check=False,
+                )
+            except (subprocess.TimeoutExpired, TimeoutError, FileNotFoundError, PermissionError):
+                continue
+            except Exception:
+                continue
+            if completed.returncode == 0:
+                return True
+        return False
+
+    @staticmethod
+    def _build_health_probe_commands(config: CliToolRegistrationConfig) -> List[List[str]]:
+        executable = config.command_executable
+        if config.health_probe_args:
+            return [[executable, *config.command_args, *config.health_probe_args]]
+        return [
+            [executable, *config.command_args, "--version"],
+            [executable, *config.command_args, "--help"],
+        ]
 
     def invoke_tool(
         self,
@@ -163,7 +205,7 @@ class SubprocessCliTransport:
         timeout_seconds: float = 15.0,
     ) -> CliInvocationResult:
         command_line = [config.command_executable, *config.command_args, *arguments]
-        env = {**config.env}
+        env = {**os.environ, **dict(config.env)} if config.env else None
         cwd = working_directory or config.project_path
         started_at = perf_counter()
 
@@ -173,7 +215,7 @@ class SubprocessCliTransport:
                     command_line[0],
                     command_line[1:],
                     cwd=cwd,
-                    env=env or None,
+                    env=env,
                     encoding="utf-8",
                     timeout=timeout_seconds,
                 )
@@ -192,7 +234,7 @@ class SubprocessCliTransport:
                     text=True,
                     capture_output=True,
                     cwd=cwd,
-                    env=env or None,
+                    env=env,
                     timeout=timeout_seconds,
                     check=False,
                 )
@@ -358,6 +400,7 @@ class CliAdapterPlugin(FunctionalPluginSpec):
     _registered_tools: Dict[str, CliToolRegistrationConfig] = PrivateAttr(default_factory=dict)
     _tool_states: Dict[str, CliToolRuntimeState] = PrivateAttr(default_factory=dict)
     _registered_plugin_ids: Set[str] = PrivateAttr(default_factory=set)
+    _auth_service: Optional[AgentAuthService] = PrivateAttr(default=None)
 
     @classmethod
     def plugin_kind(cls) -> str:
@@ -370,9 +413,14 @@ class CliAdapterPlugin(FunctionalPluginSpec):
         transcript_store: AuditEventStore,
         cognitive_registry: Optional[Any] = None,
         execution_registry: Optional[Any] = None,
+        auth_service: Optional[AgentAuthService] = None,
     ) -> None:
         self._transport = transport
         self._transcript_store = transcript_store
+        self._auth_service = auth_service
+
+    def attach_auth_service(self, auth_service: AgentAuthService) -> None:
+        self._auth_service = auth_service
 
     def register_tool(self, config: CliToolRegistrationConfig) -> CliToolRuntimeState:
         normalized = CliToolRegistrationConfig.model_validate(config.model_dump(mode="json"))
@@ -402,7 +450,18 @@ class CliAdapterPlugin(FunctionalPluginSpec):
             raise ValueError(
                 "ValidationError: read-only CLI tools cannot register mutating executables."
             )
-        if not self._transport.health_probe(normalized):
+        if self._contains_direct_secret(normalized.env) or self._contains_direct_secret(normalized.auth_config):
+            self._write_registration_rejection_audit(
+                config=normalized,
+                reason="CLI auth secrets must be stored in the encrypted credential vault, not env/auth_config",
+                failure_category="direct_secret_rejected",
+            )
+            raise ValueError("ValidationError: CLI auth secrets must use encrypted credential vault references.")
+        probe_config = normalized
+        if normalized.auth_required_for_health:
+            probe_auth = self._resolve_cli_auth(normalized)
+            probe_config = self._effective_config(normalized, probe_auth)
+        if not self._transport.health_probe(probe_config):
             self._write_registration_rejection_audit(
                 config=normalized,
                 reason=f"health probe failed for CLI tool: {normalized.command_executable}",
@@ -527,7 +586,7 @@ class CliAdapterPlugin(FunctionalPluginSpec):
         config = self.get_tool_config(tool_name)
         state = self._tool_states.get(tool_name)
         trace = trace_id or f"cli-test:{uuid4().hex}"
-        if state is None or state.status != "active":
+        if state is None or state.status in {"revoked", "stopped"}:
             result = CliInvocationResult(
                 tool_name=config.tool_name,
                 status="failed",
@@ -563,20 +622,56 @@ class CliAdapterPlugin(FunctionalPluginSpec):
             )
             return result
 
+        resolved_auth = self._resolve_cli_auth(config)
         result = self._transport.invoke_tool(
-            config,
-            arguments=list(arguments or []),
-            stdin_input=stdin_input,
+            self._effective_config(config, resolved_auth),
+            arguments=[*list(arguments or []), *resolved_auth.arguments],
+            stdin_input=resolved_auth.stdin_input if resolved_auth.stdin_input is not None else stdin_input,
             trace_id=trace,
             working_directory=working_directory,
             timeout_seconds=timeout_seconds,
         )
+        result = self._redact_cli_result(result, resolved_auth)
         self._write_invocation_audit(
             config=config,
             result=result,
             mapped_domain="cognitive" if config.read_only_flag else "execution",
         )
         return result
+
+    def _resolve_cli_auth(self, config: CliToolRegistrationConfig) -> AgentResolvedAuth:
+        if not config.auth_config:
+            return AgentResolvedAuth()
+        if self._auth_service is None:
+            raise AgentAuthError("CLI auth_config requires AgentAuthService")
+        return self._auth_service.resolve_cli(config)
+
+    @staticmethod
+    def _effective_config(config: CliToolRegistrationConfig, auth: AgentResolvedAuth) -> CliToolRegistrationConfig:
+        if not auth.env:
+            return config
+        return config.model_copy(update={"env": {**dict(config.env), **auth.env}})
+
+    @staticmethod
+    def _redact_cli_result(result: CliInvocationResult, auth: AgentResolvedAuth) -> CliInvocationResult:
+        redacted_stdout = _redact_known_values(result.stdout, auth.auth_data)
+        redacted_stderr = _redact_known_values(result.stderr, auth.auth_data)
+        if redacted_stdout == result.stdout and redacted_stderr == result.stderr:
+            return result
+        return result.model_copy(update={"stdout": redacted_stdout, "stderr": redacted_stderr})
+
+    @staticmethod
+    def _contains_direct_secret(value: Any) -> bool:
+        if not isinstance(value, dict):
+            return False
+        for key, item in value.items():
+            lowered = str(key).lower().replace("-", "_")
+            if any(token in lowered for token in ("api_key", "token", "password", "secret", "authorization")):
+                if isinstance(item, str) and "$auth." not in item and "$credential." not in item:
+                    return True
+            if isinstance(item, dict) and CliAdapterPlugin._contains_direct_secret(item):
+                return True
+        return False
 
     def diagnose_cli_execution_closure(self) -> Dict[str, Any]:
         from zentex.cli.lifecycle_diagnostics import build_cli_execution_diagnostic_report
@@ -660,7 +755,7 @@ class CliAdapterPlugin(FunctionalPluginSpec):
             session_id="cli-management",
             turn_id=trace_id,
             entry_type=AuditEventType.PLUGIN_AUDIT_EVENT,
-            timestamp=datetime.now(timezone.utc).isoformat(),
+            timestamp=datetime.now(timezone.utc),
             payload={
                 "tool_name": config.tool_name,
                 "status": "rejected",
@@ -683,7 +778,7 @@ class CliAdapterPlugin(FunctionalPluginSpec):
             session_id="cli-management",
             turn_id=trace_id,
             entry_type=AuditEventType.PLUGIN_AUDIT_EVENT,
-            timestamp=datetime.now(timezone.utc).isoformat(),
+            timestamp=datetime.now(timezone.utc),
             payload={"event": event_name, **payload},
             source="cli.adapter.closure",
             trace_id=trace_id,
@@ -711,11 +806,13 @@ class CliAdapterPlugin(FunctionalPluginSpec):
         result: CliInvocationResult,
         mapped_domain: str,
     ) -> None:
+        if self._transcript_store is None:
+            return
         self._transcript_store.write_entry(
             session_id="cli-management",
             turn_id=result.trace_id,
             entry_type=AuditEventType.PLUGIN_AUDIT_EVENT,
-            timestamp=datetime.now(timezone.utc).isoformat(),
+            timestamp=datetime.now(timezone.utc),
             payload={
                 "tool_name": config.tool_name,
                 "mapped_domain": mapped_domain,

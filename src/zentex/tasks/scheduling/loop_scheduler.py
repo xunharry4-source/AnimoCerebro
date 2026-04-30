@@ -35,6 +35,7 @@ class TaskAutoLoopScheduler:
         self._stop_event = Event()
         self._thread: Optional[Thread] = None
         self._last_cycle_at: Optional[datetime] = None
+        self._last_cycle_stats: Optional[Dict[str, Any]] = None
 
     def start(self) -> None:
         if not self._enabled:
@@ -60,6 +61,17 @@ class TaskAutoLoopScheduler:
         thread = self._thread
         if thread is not None and thread.is_alive():
             thread.join(timeout=2.0)
+
+    def status(self) -> Dict[str, Any]:
+        thread = self._thread
+        return {
+            "enabled": self._enabled,
+            "running": bool(thread is not None and thread.is_alive()),
+            "interval_seconds": self._interval_seconds,
+            "batch_size": self._batch_size,
+            "last_cycle_at": self._last_cycle_at.isoformat() if self._last_cycle_at else None,
+            "last_cycle_stats": dict(self._last_cycle_stats or {}),
+        }
 
     def _run_loop(self) -> None:
         while not self._stop_event.is_set():
@@ -89,7 +101,11 @@ class TaskAutoLoopScheduler:
                 # this scheduler works correctly regardless of which is injected.
                 result = dispatch_fn()
                 dispatch_stats = await result if inspect.isawaitable(result) else result
-                stats["tasks_dispatched"] = (dispatch_stats or {}).get("tasks_processed", 0)
+                stats["tasks_dispatched"] = (dispatch_stats or {}).get(
+                    "tasks_dispatched",
+                    (dispatch_stats or {}).get("tasks_processed", 0),
+                )
+                stats["dispatch_stats"] = dispatch_stats or {}
             except Exception as exc:
                 logger.exception("Task dispatch pass failed: %s", exc)
                 stats["errors"].append({"stage": "dispatch", "error": str(exc)})
@@ -118,6 +134,7 @@ class TaskAutoLoopScheduler:
         elapsed_ms = int((datetime.now(timezone.utc) - started_at).total_seconds() * 1000)
         stats["cycle_duration_ms"] = elapsed_ms
         self._last_cycle_at = started_at
+        self._last_cycle_stats = stats
 
         did_work = any(
             (

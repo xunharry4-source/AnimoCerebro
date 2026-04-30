@@ -38,7 +38,7 @@ import {
   Search as SearchIcon,
 } from '@mui/icons-material';
 
-type AgentStatus = 'idle' | 'active' | 'busy' | 'offline' | 'handshake_failed' | 'audit_failed';
+type AgentStatus = 'idle' | 'active' | 'busy' | 'offline' | 'handshake_failed' | 'audit_failed' | 'invocation_blocked';
 type TrustLevel = 'unknown' | 'pending' | 'trusted' | 'restricted' | 'revoked';
 
 interface CreditScoreDimension {
@@ -134,6 +134,7 @@ const StatusChip = ({ status }: { status: AgentStatus }) => {
     offline: t("agents.status.offline"),
     handshake_failed: t("agents.status.handshakeFailed"),
     audit_failed: t("agents.status.auditFailed"),
+    invocation_blocked: t("agents.status.invocationBlocked"),
   };
 
   return (

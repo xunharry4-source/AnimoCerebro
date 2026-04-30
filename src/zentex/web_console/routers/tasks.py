@@ -43,7 +43,7 @@ from fastapi import APIRouter, HTTPException, Request, WebSocket, WebSocketDisco
 from typing_extensions import Annotated
 from fastapi import Depends, Query, Body
 
-from zentex.tasks.service import TaskManagementService, ZentexTask, TaskStatus, TaskStateError, TaskType
+from zentex.tasks.service import TaskManagementService, ZentexTask, TaskStatus, TaskStateError, TaskType, TaskScope
 from zentex.web_console.dependencies import get_task_service
 from .tasks_handlers import (
     handle_get_task_detail,
@@ -98,6 +98,7 @@ def _parse_metadata_filters(raw_filters: Optional[List[str]]) -> Dict[str, str]:
 async def list_tasks(
     service: Annotated[TaskManagementService, Depends(_require_task_service)],
     status_filter: Optional[str] = Query(None, description="Filter by status"),
+    task_scope: Optional[str] = Query(None, description="Filter by task scope: internal or external"),
     source_module: Optional[str] = Query(None, description="Filter by workflow source module"),
     metadata_filters: Optional[List[str]] = Query(
         None,
@@ -108,11 +109,18 @@ async def list_tasks(
 ) -> List[ZentexTask]:
     """List tasks with database-backed filters and pagination."""
     parsed_metadata_filters = _parse_metadata_filters(metadata_filters)
+    scope_enum = None
+    if task_scope:
+        try:
+            scope_enum = TaskScope(task_scope)
+        except ValueError:
+            raise HTTPException(status_code=400, detail=f"Invalid task_scope: {task_scope}")
     if status_filter:
         try:
             status_enum = TaskStatus(status_filter)
             return service.list_tasks(
                 status=status_enum,
+                task_scope=scope_enum,
                 source_module=source_module,
                 metadata_filters=parsed_metadata_filters,
                 limit=limit,
@@ -121,11 +129,26 @@ async def list_tasks(
         except ValueError:
             raise HTTPException(status_code=400, detail=f"Invalid status: {status_filter}")
     return service.list_tasks(
+        task_scope=scope_enum,
         source_module=source_module,
         metadata_filters=parsed_metadata_filters,
         limit=limit,
         offset=offset,
     )
+
+
+@router.post("/tasks", response_model=ZentexTask)
+async def create_task(
+    service: Annotated[TaskManagementService, Depends(_require_task_service)],
+    payload: Dict[str, Any] = Body(...),
+) -> ZentexTask:
+    """Create a task through the web API and persist it through TaskManagementService."""
+    try:
+        return await service.create_task(payload)
+    except TaskStateError as exc:
+        raise HTTPException(status_code=500, detail=str(exc)) from exc
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
 
 
 @router.get("/tasks/by-status")
@@ -146,12 +169,66 @@ async def get_tasks_grouped_by_status(
     )
 
 
+@router.get("/tasks/page")
+async def get_tasks_page(
+    service: Annotated[TaskManagementService, Depends(_require_task_service)],
+    group: str = Query("completed", description="Presentation group to page"),
+    source_module: Optional[str] = Query(None, description="Filter tasks by workflow source module"),
+    task_scope: Optional[str] = Query(None, description="Filter by task scope: internal or external"),
+    metadata_filters: Optional[List[str]] = Query(
+        None,
+        description="Metadata filters as key=value pairs; repeat the parameter or separate with commas.",
+    ),
+    limit: int = Query(25, ge=1, le=500, description="Maximum tasks to return"),
+    offset: int = Query(0, ge=0, description="Database offset for pagination"),
+) -> Dict[str, Any]:
+    """Return an exact database-backed page plus total counts for task-center tabs."""
+    parsed_metadata_filters = _parse_metadata_filters(metadata_filters)
+    scope_enum = None
+    if task_scope:
+        try:
+            scope_enum = TaskScope(task_scope)
+        except ValueError:
+            raise HTTPException(status_code=400, detail=f"Invalid task_scope: {task_scope}") from None
+    try:
+        return service.list_tasks_page(
+            presentation_group=group,
+            source_module=source_module,
+            task_scope=scope_enum,
+            metadata_filters=parsed_metadata_filters,
+            limit=limit,
+            offset=offset,
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
 @router.get("/tasks/diagnostics/closure")
 async def diagnose_task_management_closure(
     service: Annotated[TaskManagementService, Depends(_require_task_service)],
     stale_after_seconds: int = Query(300, ge=0),
 ) -> Dict[str, Any]:
     return service.diagnose_task_management_closure(stale_after_seconds=stale_after_seconds)
+
+
+@router.get("/tasks/worker/status")
+async def get_task_worker_status(
+    request: Request,
+    service: Annotated[TaskManagementService, Depends(_require_task_service)],
+) -> Dict[str, Any]:
+    scheduler = getattr(request.app.state, "task_auto_loop_scheduler", None)
+    scheduler_status = scheduler.status() if callable(getattr(scheduler, "status", None)) else {
+        "enabled": False,
+        "running": False,
+        "last_cycle_at": None,
+        "last_cycle_stats": {},
+    }
+    stats = service.get_task_statistics()
+    return {
+        "scheduler": scheduler_status,
+        "task_statistics": stats,
+        "database": service.get_database_status(),
+    }
 
 
 @router.post("/tasks/diagnostics/fault-injection")

@@ -30,6 +30,16 @@ class AuditPagePayload(BaseModel):
     total_pages: int
 
 
+class AuditTraceStartsPagePayload(BaseModel):
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    items: List[Dict[str, Any]] = Field(default_factory=list)
+    page: int
+    page_size: int
+    total_items: int
+    total_pages: int
+
+
 class TurnToolSummaryItem(BaseModel):
     model_config = ConfigDict(extra="forbid", frozen=True)
 

@@ -37,8 +37,7 @@ def _agent_app(
     def handshake(payload: dict, authorization: str = Header(default="")) -> dict:
         if authorization != f"Bearer {token}":
             raise HTTPException(status_code=401, detail="bad token")
-        if payload["agent_id"] != agent_id:
-            raise HTTPException(status_code=409, detail="agent id mismatch")
+        assert "agent_id" not in payload
         return {"agent_id": agent_id, "version": "1.0.0", "capabilities": [capability_row]}
 
     @app.get("/status")

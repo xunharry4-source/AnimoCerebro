@@ -365,6 +365,70 @@ class AuditTraceStore:
             for row in rows
         ]
 
+    def list_trace_starts(self, *, limit: int = 100) -> list[dict[str, Any]]:
+        with self._lock:
+            rows = self._conn.execute(
+                """
+                SELECT * FROM audit_flows
+                WHERE parent_audit_id IS NULL OR parent_audit_id = ''
+                ORDER BY started_at DESC
+                LIMIT ?
+                """,
+                (limit,),
+            ).fetchall()
+        return [
+            {
+                "audit_id": row["audit_id"],
+                "flow_type": row["flow_type"],
+                "source_module": row["source_module"],
+                "parent_audit_id": row["parent_audit_id"],
+                "status": row["status"],
+                "started_at": row["started_at"],
+                "ended_at": row["ended_at"],
+                "question_driver_refs": json.loads(row["question_driver_refs"] or "[]"),
+            }
+            for row in rows
+        ]
+
+    def list_trace_starts_page(self, *, page: int = 1, page_size: int = 40) -> dict[str, Any]:
+        page = max(1, int(page))
+        page_size = max(1, min(int(page_size), 500))
+        where = "WHERE parent_audit_id IS NULL OR parent_audit_id = ''"
+        with self._lock:
+            count_row = self._conn.execute(f"SELECT COUNT(*) AS count FROM audit_flows {where}").fetchone()
+            total_items = int(count_row["count"] if count_row is not None else 0)
+            total_pages = max((total_items + page_size - 1) // page_size, 1)
+            page = min(page, total_pages)
+            offset = (page - 1) * page_size
+            rows = self._conn.execute(
+                f"""
+                SELECT * FROM audit_flows
+                {where}
+                ORDER BY started_at DESC
+                LIMIT ? OFFSET ?
+                """,
+                (page_size, offset),
+            ).fetchall()
+        return {
+            "items": [
+                {
+                    "audit_id": row["audit_id"],
+                    "flow_type": row["flow_type"],
+                    "source_module": row["source_module"],
+                    "parent_audit_id": row["parent_audit_id"],
+                    "status": row["status"],
+                    "started_at": row["started_at"],
+                    "ended_at": row["ended_at"],
+                    "question_driver_refs": json.loads(row["question_driver_refs"] or "[]"),
+                }
+                for row in rows
+            ],
+            "page": page,
+            "page_size": page_size,
+            "total_items": total_items,
+            "total_pages": total_pages,
+        }
+
     # ------------------------------------------------------------------
     # Internal helpers (legacy / LLM-trace sync)
     # ------------------------------------------------------------------

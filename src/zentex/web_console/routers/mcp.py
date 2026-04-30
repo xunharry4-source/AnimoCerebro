@@ -20,6 +20,7 @@ from fastapi import APIRouter, Depends, HTTPException
 
 from zentex.mcp.models import McpServerConfig
 from zentex.mcp.service import McpIntegrationService
+from zentex.tools.documentation_learning import ToolDocumentationLearningError
 from zentex.web_console.contracts.mcp import (
     McpServerDetailItem,
     McpServerRegistrationRequest,
@@ -27,6 +28,7 @@ from zentex.web_console.contracts.mcp import (
     McpTaskSummary,
     McpToolTestCallRequest,
     McpToolTestCallResult,
+    ToolUsageProfile,
 )
 from zentex.web_console.dependencies import get_mcp_service
 from .mcp_handlers import (
@@ -41,12 +43,15 @@ router = APIRouter(tags=["mcp"])
 
 def _require_mcp_service(service: Any = Depends(get_mcp_service)) -> McpIntegrationService:
     """Fail-closed Depends wrapper: raise 503 when MCP service is not available."""
-    if service is None:
+    if service is None or getattr(service, "_is_stub", False):
+        health = service.health_check() if service is not None and callable(getattr(service, "health_check", None)) else {}
+        unavailable_reason = health.get("error") or "McpIntegrationService 未初始化，MCP 功能不可用。"
         raise HTTPException(
             status_code=503,
             detail={
                 "error": "mcp_service_unavailable",
                 "message": "McpIntegrationService 未初始化，MCP 功能不可用。",
+                "developer_message": unavailable_reason,
             },
         )
     return service
@@ -83,6 +88,8 @@ def register_mcp_server(
     except KeyError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
     except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    except ToolDocumentationLearningError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
 
 
@@ -133,7 +140,7 @@ def delete_mcp_server(
 
 
 @router.post("/mcp-servers/{server_id}/test-call", response_model=McpToolTestCallResult)
-async def test_mcp_tool(
+def test_mcp_tool(
     server_id: str,
     payload: McpToolTestCallRequest,
     service: McpIntegrationService = Depends(_require_mcp_service),
@@ -147,6 +154,23 @@ async def test_mcp_tool(
         )
     except KeyError as exc:
         raise HTTPException(status_code=404, detail=str(exc)) from exc
+
+
+@router.get("/mcp-servers/{server_id}/tools/{tool_name}/usage-profile", response_model=ToolUsageProfile)
+def get_mcp_tool_usage_profile(
+    server_id: str,
+    tool_name: str,
+    service: McpIntegrationService = Depends(_require_mcp_service),
+) -> ToolUsageProfile:
+    try:
+        return ToolUsageProfile.model_validate(
+            service.get_tool_usage_profile(server_id, tool_name).model_dump(mode="json")
+        )
+    except KeyError as exc:
+        raise HTTPException(
+            status_code=404,
+            detail=f"Usage profile for MCP tool '{server_id}/{tool_name}' not found",
+        ) from exc
 
 
 @router.get("/mcp-servers/{server_id}", response_model=McpServerDetailItem)

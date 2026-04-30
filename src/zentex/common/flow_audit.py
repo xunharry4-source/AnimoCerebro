@@ -87,13 +87,9 @@ class FlowAudit:
         )
 
     def spawn(self, flow_type: str, *, source_module: str = "") -> "FlowAudit":
-        """Create a child flow that shares this ``audit_id``.
-
-        All events from child flows remain queryable under the parent's
-        ``audit_id``, enabling end-to-end flow reconstruction.
-        """
+        """Create a child flow linked to this flow by ``parent_audit_id``."""
         return FlowAudit(
-            audit_id=self.audit_id,
+            audit_id=uuid4().hex,
             flow_type=flow_type,
             source_module=source_module,
             question_driver_refs=list(self.question_driver_refs),

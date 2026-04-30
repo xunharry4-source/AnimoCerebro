@@ -162,6 +162,15 @@ async def test_q3_clinical_authenticity():
     if isinstance(module_runs, dict):
         module_runs = list(module_runs.values())
     assert isinstance(module_runs, list) and len(module_runs) > 0, "No module_runs found in q3 execution diagnosis"
+    invalid_question_ids = [
+        {
+            "module_id": item.get("module_id"),
+            "question_id": item.get("question_id"),
+        }
+        for item in module_runs
+        if isinstance(item, dict) and str(item.get("question_id") or "").strip().lower() != "q3"
+    ]
+    assert not invalid_question_ids, f"Q3 module_runs contain invalid question_id values: {invalid_question_ids}"
 
     required_run_modules = {
         "workspace_permission_inventory",

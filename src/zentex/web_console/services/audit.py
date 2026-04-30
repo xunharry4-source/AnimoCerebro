@@ -166,12 +166,33 @@ def build_model_provider_traces(runtime: Any) -> List[ModelProviderTraceItem]:
 
 
 _AUDIT_CONTEXT_KEYS = frozenset(
-    {"audit_id", "flow_type", "source_module", "parent_audit_id", "event", "status"}
+    {
+        "audit_id",
+        "flow_type",
+        "source_module",
+        "parent_audit_id",
+        "event",
+        "status",
+        "connector_id",
+        "capability",
+        "target_app",
+        "profile_level",
+        "risk_level",
+        "verification_mode",
+        "evidence_validation_status",
+        "error_code",
+    }
 )
 
 
 def summarize_audit_entry(entry: _AuditEntryLike) -> Tuple[str, List[str]]:
     payload = entry.payload if isinstance(entry.payload, dict) else {}
+    if _entry_type_value(entry) == "connector_audit_event":
+        capability = str(payload.get("capability") or "unknown_capability")
+        connector_id = str(payload.get("connector_id") or "unknown_connector")
+        status = str(payload.get("status") or "unknown")
+        evidence_status = str(payload.get("evidence_validation_status") or "unknown")
+        return f"{capability} via {connector_id} status={status} evidence={evidence_status}", []
     summary = str(
         payload.get("summary") or payload.get("message") or payload.get("event_type") or _entry_type_value(entry)
     )
@@ -344,6 +365,7 @@ _MODULE_FAMILY_META: dict[str, dict[str, str]] = {
     "reflection": {"title": "反思", "href": "/console/nine-questions/reflections"},
     "learning": {"title": "学习", "href": "/console/learning"},
     "memory": {"title": "Memory", "href": "/console/memory"},
+    "external_connectors": {"title": "External Connectors", "href": "/console/external-connectors"},
     "mcp": {"title": "MCP", "href": "/console/mcp"},
     "tasks": {"title": "Tasks", "href": "/console/tasks"},
     "plugins": {"title": "Plugins", "href": "/console/plugins"},
@@ -375,6 +397,8 @@ def _detect_module_family(
         return "learning"
     if "memory" in source_lower or "memory" in summary_lower:
         return "memory"
+    if "external_connector" in source_lower or "external-connectors" in source_lower or "connector_audit_event" in summary_lower:
+        return "external_connectors"
     if "mcp" in source_lower:
         return "mcp"
     if "task" in source_lower:
@@ -397,6 +421,13 @@ def _is_item_relevant_for_mode(mode: str, item: AuditRecordItem) -> bool:
         return "reflection" in source_lower or "reflection" in summary_lower
     if mode == "learning":
         return "learning" in source_lower or "learning" in summary_lower
+    if mode == "external_connectors":
+        return (
+            item.entry_type == "connector_audit_event"
+            or "external_connector" in source_lower
+            or "external-connectors" in source_lower
+            or "connector" in summary_lower
+        )
     return True
 
 
@@ -422,6 +453,10 @@ def _format_question_title(question_id: Any) -> str:
 
 def _format_execution_node_title(item: AuditRecordItem) -> str:
     context_info = item.context_info if isinstance(item.context_info, dict) else {}
+    capability = str(context_info.get("capability") or "").strip()
+    connector_id = str(context_info.get("connector_id") or "").strip()
+    if capability and connector_id:
+        return f"{connector_id} / {capability}"
     question_title = _format_question_title(context_info.get("question_id"))
     module_id = str(context_info.get("module_id") or "").strip()
     module_kind = str(context_info.get("module_kind") or "").strip().lower()
@@ -463,6 +498,12 @@ def build_audit_graph(
             "学习起点",
             "/console/learning",
         ),
+        "external_connectors": (
+            "基于外部连接器开始的审计与溯源",
+            "从外部连接器真实调用出发，追任务、插件路径、能力、风险、证据和执行结果。 ",
+            "外部连接器起点",
+            "/console/external-connectors",
+        ),
     }
     title, subtitle, start_title, start_href = mode_meta.get(
         mode,
@@ -489,6 +530,22 @@ def build_audit_graph(
             for ref in trace.question_driver_refs
         }
     )
+
+    if not relevant_items and not relevant_traces:
+        return AuditGraphPayload(
+            mode=mode,
+            title=title,
+            subtitle=subtitle,
+            database_backed=True,
+            generated_at=datetime.now(timezone.utc).isoformat(),
+            summary={
+                "audit_event_count": 0,
+                "model_trace_count": 0,
+                "module_families": {},
+            },
+            lanes=[],
+            edges=[],
+        )
 
     family_counts: dict[str, dict[str, Any]] = {
         family: {"events": 0, "traces": 0, "refs": set()}
@@ -592,6 +649,21 @@ def build_audit_graph(
                 "trace_id": item.trace_id,
                 "question_refs": item.question_driver_refs,
                 "timestamp": item.timestamp,
+                **{
+                    key: context_info[key]
+                    for key in (
+                        "connector_id",
+                        "capability",
+                        "target_app",
+                        "profile_level",
+                        "risk_level",
+                        "verification_mode",
+                        "evidence_validation_status",
+                        "status",
+                        "error_code",
+                    )
+                    if key in context_info
+                },
             },
         )
         execution_nodes.append(execution_node)

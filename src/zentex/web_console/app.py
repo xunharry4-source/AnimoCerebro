@@ -519,6 +519,13 @@ def create_app(
     )
 
     if task_service is not None:
+        attach_task_dependencies = getattr(task_service, "attach_dependencies", None)
+        if callable(attach_task_dependencies):
+            attach_task_dependencies(
+                plugin_service=plugin_service,
+                cli_service=cli_service,
+                mcp_service=mcp_service,
+            )
         task_auto_loop_enabled = str(os.getenv("ZENTEX_TASK_AUTO_LOOP_ENABLED", "1")).strip().lower() in {
             "1",
             "true",

@@ -17,8 +17,9 @@ import { fetchAuditTraceGraph, type AuditGraphNodeView, type AuditGraphPayloadVi
 import LearningDashboard from "../learning/LearningDashboard";
 import NineQuestionReflectionsPage from "../nine-questions/NineQuestionReflectionsPage";
 import NineQuestionsWorkflowPage from "../nine-questions/NineQuestionsWorkflowPage";
+import ExternalConnectorCenter from "../external-connectors/ExternalConnectorCenter";
 
-type AuditTraceMode = "nine_questions" | "reflection" | "learning";
+type AuditTraceMode = "nine_questions" | "reflection" | "learning" | "external_connectors";
 type AuditTraceView = "workflow" | "table";
 
 type AuditFlowNodeData = {
@@ -52,6 +53,11 @@ const MODE_META: Record<
     title: "基于学习开始的审计与溯源",
     subtitle: "从学习循环追到相关问题、trace 和系统影响。",
     tableLabel: "学习历史表格视图",
+  },
+  external_connectors: {
+    title: "基于外部连接器开始的审计与溯源",
+    subtitle: "从外部连接器真实调用追到任务、插件路径、能力、风险、证据和执行结果。",
+    tableLabel: "外部连接器管理视图",
   },
 };
 
@@ -244,22 +250,33 @@ function WorkflowCanvas({ payload }: { payload: AuditGraphPayloadView }) {
   );
 }
 
+function isKnownMode(mode: string): mode is AuditTraceMode {
+  return Object.prototype.hasOwnProperty.call(MODE_META, mode);
+}
+
 function TableView({ mode }: { mode: AuditTraceMode }) {
   if (mode === "nine_questions") return <NineQuestionsWorkflowPage />;
   if (mode === "reflection") return <NineQuestionReflectionsPage />;
+  if (mode === "external_connectors") return <ExternalConnectorCenter />;
   return <LearningDashboard />;
 }
 
 export default function AuditTraceModePage() {
   const { mode: rawMode, view: rawView } = useParams();
-  const mode = rawMode as AuditTraceMode;
+  const mode = rawMode || "";
   const view = rawView as AuditTraceView;
 
-  if (!mode || !view || !MODE_META[mode] || !["workflow", "table"].includes(view)) {
+  if (!mode || !view || !["workflow", "table"].includes(view) || (view === "table" && !isKnownMode(mode))) {
     return <Navigate to="/console/audit" replace />;
   }
 
-  const meta = MODE_META[mode];
+  const meta = isKnownMode(mode)
+    ? MODE_META[mode]
+    : {
+        title: "审计与溯源",
+        subtitle: "从真实 audit_flow 入口查看对应审计链。",
+        tableLabel: "表格视图",
+      };
   const workflowPath = `/console/audit/${mode}/workflow`;
   const tablePath = `/console/audit/${mode}/table`;
   const [loading, setLoading] = useState(view === "workflow");
@@ -317,9 +334,11 @@ export default function AuditTraceModePage() {
           <Button component={RouterLink} to={workflowPath} variant={view === "workflow" ? "contained" : "outlined"}>
             工作流视图
           </Button>
-          <Button component={RouterLink} to={tablePath} variant={view === "table" ? "contained" : "outlined"}>
-            表格视图
-          </Button>
+          {isKnownMode(mode) ? (
+            <Button component={RouterLink} to={tablePath} variant={view === "table" ? "contained" : "outlined"}>
+              表格视图
+            </Button>
+          ) : null}
         </Stack>
       </Stack>
 
@@ -339,7 +358,7 @@ export default function AuditTraceModePage() {
           <Alert severity="info">当前没有可用的审计链路数据。</Alert>
         )
       ) : (
-        <TableView mode={mode} />
+        isKnownMode(mode) ? <TableView mode={mode} /> : <Alert severity="info">该审计链类型没有表格视图。</Alert>
       )}
     </Box>
   );

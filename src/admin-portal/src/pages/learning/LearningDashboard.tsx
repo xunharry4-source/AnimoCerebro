@@ -41,6 +41,14 @@ type HistoryRow = {
   question_driver_refs: string[];
 };
 
+type LearningHistoryResponse = {
+  rows: Omit<HistoryRow, "id">[];
+  page: number;
+  page_size: number;
+  total_items: number;
+  total_pages: number;
+};
+
 export default function LearningDashboard() {
   const { t } = useTranslation();
   const [plan, setPlan] = useState<{ directions: PlanDirection[]; redlines: { zh: string; en: string } } | null>(
@@ -50,7 +58,10 @@ export default function LearningDashboard() {
   const [direction, setDirection] = useState<string>("g24_curiosity");
   const [error, setError] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);
+  const [historyLoading, setHistoryLoading] = useState(false);
   const [lastRun, setLastRun] = useState<string | null>(null);
+  const [paginationModel, setPaginationModel] = useState({ page: 0, pageSize: 25 });
+  const [rowCount, setRowCount] = useState(0);
 
   const loadPlan = useCallback(async () => {
     const res = await fetch("/api/web/learning/plan");
@@ -58,12 +69,18 @@ export default function LearningDashboard() {
     return res.json() as Promise<{ directions: PlanDirection[]; redlines: { zh: string; en: string } }>;
   }, []);
 
-  const loadHistory = useCallback(async () => {
-    const res = await fetch("/api/web/learning/history?limit=200");
-    if (!res.ok) throw new Error(await res.text());
-    const data = await res.json();
-    const list = (data.rows as Omit<HistoryRow, "id">[]).map((r) => ({ ...r, id: r.entry_id }));
-    setRows(list);
+  const loadHistory = useCallback(async (page: number, pageSize: number) => {
+    setHistoryLoading(true);
+    try {
+      const res = await fetch(`/api/web/learning/history?page=${page + 1}&page_size=${pageSize}`);
+      if (!res.ok) throw new Error(await res.text());
+      const data = (await res.json()) as LearningHistoryResponse;
+      const list = data.rows.map((r) => ({ ...r, id: r.entry_id }));
+      setRows(list);
+      setRowCount(data.total_items);
+    } finally {
+      setHistoryLoading(false);
+    }
   }, []);
 
   useEffect(() => {
@@ -72,12 +89,22 @@ export default function LearningDashboard() {
         setError(null);
         const p = await loadPlan();
         setPlan(p);
-        await loadHistory();
       } catch (e) {
         setError(e instanceof Error ? e.message : t("common.loadFailed"));
       }
     })();
-  }, [loadPlan, loadHistory, t]);
+  }, [loadPlan, t]);
+
+  useEffect(() => {
+    void (async () => {
+      try {
+        setError(null);
+        await loadHistory(paginationModel.page, paginationModel.pageSize);
+      } catch (e) {
+        setError(e instanceof Error ? e.message : t("common.loadFailed"));
+      }
+    })();
+  }, [loadHistory, paginationModel.page, paginationModel.pageSize, t]);
 
   const runCycle = async (dryRun: boolean) => {
     setLoading(true);
@@ -95,7 +122,11 @@ export default function LearningDashboard() {
       }
       const body = await res.json();
       setLastRun(`status=${body.status} trace=${body.trace_id}`);
-      await loadHistory();
+      if (paginationModel.page === 0) {
+        await loadHistory(0, paginationModel.pageSize);
+      } else {
+        setPaginationModel((current) => ({ ...current, page: 0 }));
+      }
     } catch (e) {
       setError(e instanceof Error ? e.message : t("common.runFailed"));
     } finally {
@@ -234,7 +265,17 @@ export default function LearningDashboard() {
       </Paper>
 
       <Box sx={{ height: 520, width: "100%" }}>
-        <DataGrid rows={rows} columns={columns} pageSizeOptions={[25, 50, 100]} disableRowSelectionOnClick />
+        <DataGrid
+          rows={rows}
+          columns={columns}
+          pageSizeOptions={[25, 50, 100]}
+          paginationMode="server"
+          paginationModel={paginationModel}
+          onPaginationModelChange={setPaginationModel}
+          rowCount={rowCount}
+          loading={historyLoading}
+          disableRowSelectionOnClick
+        />
       </Box>
     </Stack>
   );

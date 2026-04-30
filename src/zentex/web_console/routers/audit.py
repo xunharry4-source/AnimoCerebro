@@ -6,10 +6,10 @@ Facade-First route layer extracted from audit.py
 
 from typing import List, Optional
 
-from fastapi import APIRouter, Depends, Request
+from fastapi import APIRouter, Depends, Query, Request
 from typing_extensions import Annotated
 
-from zentex.web_console.contracts.audit import AuditGraphPayload, AuditPagePayload, TurnAuditPagePayload
+from zentex.web_console.contracts.audit import AuditGraphPayload, AuditPagePayload, AuditTraceStartsPagePayload, TurnAuditPagePayload
 from zentex.web_console.contracts.model_provider import ModelProviderTraceItem
 from zentex.web_console.dependencies import get_kernel_service_facade
 from .audit_commons import (
@@ -18,6 +18,7 @@ from .audit_commons import (
     query_model_provider_traces,
     query_turn_audit_milestones,
     query_audit_entries,
+    query_trace_starts,
 )
 
 router = APIRouter()
@@ -36,6 +37,15 @@ async def list_audit_flow_health(
         flow_type=flow_type,
         status=status,
     )
+
+
+@router.get("/audit/trace-starts", response_model=AuditTraceStartsPagePayload)
+async def list_audit_trace_starts(
+    request: Request,
+    page: int = Query(default=1, ge=1),
+    page_size: int = Query(default=40, ge=1, le=500),
+) -> AuditTraceStartsPagePayload:
+    return await query_trace_starts(request, page=page, page_size=page_size)
 
 
 @router.get("/audit/trace-center/{mode}", response_model=AuditGraphPayload)

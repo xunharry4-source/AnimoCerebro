@@ -19,6 +19,7 @@ UNAVAILABLE_AGENT_STATUSES = {
     AgentStatus.OFFLINE.value,
     AgentStatus.HANDSHAKE_FAILED.value,
     AgentStatus.AUDIT_FAILED.value,
+    AgentStatus.INVOCATION_BLOCKED.value,
 }
 
 

@@ -4,7 +4,7 @@ import logging
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
-from zentex.tasks.models import ZentexTask, TaskStatus, TaskType, TaskPriority, SuspendedTask
+from zentex.tasks.models import ZentexTask, TaskStatus, TaskType, TaskScope, TaskPriority, SuspendedTask
 from zentex.tasks.service import TaskManagementService
 from zentex.tasks.registry import TaskRegistry
 from zentex.tasks.core.decomposer import TaskDecomposerPlugin

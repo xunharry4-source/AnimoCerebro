@@ -84,39 +84,96 @@ class TaskPersistenceService:
             raise RuntimeError(f"Audit log failure: Unwriteable task persistence path {file_path}")
 
     def _write_db_records(self, session_id: str, turn_id: str, task_queue: dict, timestamp: str):
-        # Extract individual tasks from the queue
-        next_tasks = task_queue.get("next_self_tasks", [])
+        queue_specs = [
+            ("next_self_tasks", "todo"),
+            ("blocked_self_tasks", "blocked"),
+            ("proactive_actions", "todo"),
+        ]
         
         try:
-            for task_data in next_tasks:
-                task_id = task_data.get("id") or f"task_{uuid4().hex[:8]}"
-                # Map to standardzentex tasks table schema
-                standard_task = {
-                    "task_id": task_id,
-                    "idempotency_key": f"q8-plan-{session_id}-{turn_id}-{task_id}",
-                    "title": task_data.get("title", "Planned Task"),
-                    "task_type": "cognitive_step",
-                    "status": "todo",
-                    "priority": task_data.get("priority", "medium"),
-                    "originator_id": f"q8_planning_session_{session_id}",
-                    "remarks": task_data.get("description", ""),
-                    "metadata": {
-                        "session_id": session_id,
-                        "turn_id": turn_id,
-                        "source_module": "q8_what_should_i_do_now",
-                        "tool_id": task_data.get("tool_id"),
-                        "raw_payload": task_data
-                    },
-                    "created_at": timestamp,
-                    "last_updated_at": timestamp
-                }
-                
-                # Use TaskDAO for physical insertion
-                self._task_dao.create_task(standard_task)
-                
+            for queue_name, status in queue_specs:
+                rows = task_queue.get(queue_name, [])
+                if not isinstance(rows, list):
+                    continue
+                for task_data in rows:
+                    if not isinstance(task_data, dict):
+                        task_data = {"title": str(task_data)}
+                    self._write_db_task_record(
+                        session_id=session_id,
+                        turn_id=turn_id,
+                        queue_name=queue_name,
+                        status=status,
+                        task_data=task_data,
+                        timestamp=timestamp,
+                    )
         except Exception as e:
             logger.error(f"INTEGRITY FAILURE: Task DB insertion via DAO failed: {e}")
             raise RuntimeError(f"Database failure: Could not persist tasks for execution via system DAO.")
+
+    def _write_db_task_record(
+        self,
+        *,
+        session_id: str,
+        turn_id: str,
+        queue_name: str,
+        status: str,
+        task_data: dict[str, Any],
+        timestamp: str,
+    ) -> None:
+        task_id = task_data.get("id") or f"task_{uuid4().hex[:8]}"
+        metadata = task_data.get("metadata") if isinstance(task_data.get("metadata"), dict) else {}
+        task_scope = self._derive_task_scope(task_data)
+        executor_type = str(task_data.get("executor_type") or metadata.get("executor_type") or "").strip()
+        if task_scope == "internal":
+            executor_type = "internal"
+        target_id = str(task_data.get("target_id") or metadata.get("target_id") or "").strip()
+        standard_task = {
+            "task_id": task_id,
+            "idempotency_key": f"q8-plan-{session_id}-{turn_id}-{task_id}",
+            "title": task_data.get("title", "Planned Task"),
+            "task_type": "cognitive_step",
+            "task_scope": task_scope,
+            "status": status,
+            "priority": task_data.get("priority", "medium"),
+            "originator_id": f"q8_planning_session_{session_id}",
+            "target_id": target_id or None,
+            "remarks": task_data.get("description", ""),
+            "metadata": {
+                "session_id": session_id,
+                "turn_id": turn_id,
+                "queue_name": queue_name,
+                "source_module": "q8_what_should_i_do_now",
+                "source_chain": metadata.get("source_chain") or ("external_q8" if task_scope == "external" else "internal_q8"),
+                "task_scope": task_scope,
+                "executor_type": executor_type,
+                "target_id": target_id,
+                "tool_id": task_data.get("tool_id"),
+                "raw_payload": task_data
+            },
+            "created_at": timestamp,
+            "last_updated_at": timestamp
+        }
+        self._task_dao.create_task(standard_task)
+
+    @staticmethod
+    def _derive_task_scope(task_data: Dict[str, Any]) -> str:
+        metadata = task_data.get("metadata") if isinstance(task_data.get("metadata"), dict) else {}
+        explicit_scope = str(
+            task_data.get("task_scope")
+            or task_data.get("execution_scope")
+            or task_data.get("scope")
+            or metadata.get("task_scope")
+            or ""
+        ).strip().lower()
+        if explicit_scope in {"internal", "external"}:
+            return explicit_scope
+        executor_type = str(task_data.get("executor_type") or metadata.get("executor_type") or "").strip().lower()
+        target_id = str(task_data.get("target_id") or metadata.get("target_id") or "").strip().lower()
+        if executor_type in {"agent", "cli", "mcp", "external_connector", "connector"}:
+            return "external"
+        if target_id.startswith(("agent:", "cli:", "mcp:", "external_connector:", "connector:")):
+            return "external"
+        return "internal"
 
 # Global instance
 task_persistence = TaskPersistenceService()

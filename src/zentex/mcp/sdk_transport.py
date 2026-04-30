@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 from contextlib import asynccontextmanager
 from datetime import timedelta
+from threading import Thread
 from typing import Any, AsyncIterator, Dict, List, Protocol
 
 from zentex.mcp.models import McpServerConfig, McpToolDescriptor
@@ -13,11 +14,13 @@ try:
     from mcp import ClientSession, StdioServerParameters
     from mcp.client.sse import sse_client
     from mcp.client.stdio import stdio_client
+    from mcp.client.streamable_http import streamablehttp_client
 except Exception:  # pragma: no cover - optional dependency
     ClientSession = None  # type: ignore[assignment]
     StdioServerParameters = None  # type: ignore[assignment]
     sse_client = None  # type: ignore[assignment]
     stdio_client = None  # type: ignore[assignment]
+    streamablehttp_client = None  # type: ignore[assignment]
 
 
 class McpTransportClient(Protocol):
@@ -35,6 +38,28 @@ class McpTransportClient(Protocol):
     def health_probe(self, config: McpServerConfig) -> bool: ...
 
 
+def _run_async_from_sync(coro: Any) -> Any:
+    try:
+        asyncio.get_running_loop()
+    except RuntimeError:
+        return asyncio.run(coro)
+
+    result: dict[str, Any] = {}
+
+    def _runner() -> None:
+        try:
+            result["value"] = asyncio.run(coro)
+        except BaseException as exc:
+            result["error"] = exc
+
+    thread = Thread(target=_runner, daemon=True)
+    thread.start()
+    thread.join()
+    if "error" in result:
+        raise result["error"]
+    return result.get("value")
+
+
 class OfficialMcpSdkTransportClient(McpTransportClient):
     """Transport backed by the official MCP Python SDK."""
 
@@ -43,7 +68,7 @@ class OfficialMcpSdkTransportClient(McpTransportClient):
             raise ModuleNotFoundError("mcp")
 
     def list_tools(self, config: McpServerConfig) -> List[McpToolDescriptor]:
-        return asyncio.run(self._list_tools(config))
+        return _run_async_from_sync(self._list_tools(config))
 
     def invoke_tool(
         self,
@@ -53,14 +78,11 @@ class OfficialMcpSdkTransportClient(McpTransportClient):
         arguments: Dict[str, Any],
         trace_id: str,
     ) -> Dict[str, Any]:
-        return asyncio.run(self._invoke_tool(config, tool_name=tool_name, arguments=arguments, trace_id=trace_id))
+        return _run_async_from_sync(self._invoke_tool(config, tool_name=tool_name, arguments=arguments, trace_id=trace_id))
 
     def health_probe(self, config: McpServerConfig) -> bool:
-        try:
-            asyncio.run(self._list_tools(config))
-            return True
-        except Exception:
-            return False
+        _run_async_from_sync(self._list_tools(config))
+        return True
 
     async def _list_tools(self, config: McpServerConfig) -> List[McpToolDescriptor]:
         async with self._session(config) as session:
@@ -97,11 +119,12 @@ class OfficialMcpSdkTransportClient(McpTransportClient):
 
     @asynccontextmanager
     async def _session(self, config: McpServerConfig) -> AsyncIterator[ClientSession]:
+        headers = dict(config.env) or None
         if config.transport_type == "stdio":
             server = StdioServerParameters(
                 command=config.command,
                 args=list(config.args),
-                env=dict(config.env) or None,
+                env=headers,
                 cwd=None,
             )
             async with stdio_client(server) as (read_stream, write_stream):
@@ -113,7 +136,20 @@ class OfficialMcpSdkTransportClient(McpTransportClient):
         if config.transport_type == "sse":
             if sse_client is None:
                 raise ModuleNotFoundError("mcp")
-            async with sse_client(config.command, headers=dict(config.env) or None) as (read_stream, write_stream):
+            async with sse_client(config.command, headers=headers) as (read_stream, write_stream):
+                session = ClientSession(read_stream, write_stream)
+                async with session:
+                    await session.initialize()
+                    yield session
+            return
+        if config.transport_type in {"http", "streamable_http"}:
+            if streamablehttp_client is None:
+                raise ModuleNotFoundError("mcp")
+            async with streamablehttp_client(config.command, headers=headers) as (
+                read_stream,
+                write_stream,
+                _get_session_id,
+            ):
                 session = ClientSession(read_stream, write_stream)
                 async with session:
                     await session.initialize()

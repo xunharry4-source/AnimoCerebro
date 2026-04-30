@@ -17,6 +17,7 @@ from zentex.web_console.routers.deployment_mode import router as deployment_mode
 from zentex.web_console.routers.evolution import router as evolution_router
 from zentex.web_console.routers.events import router as events_router
 from zentex.web_console.routers.execution import router as execution_router
+from zentex.web_console.routers.external_connectors import router as external_connectors_router
 from zentex.web_console.routers.external_brain import router as external_brain_router
 from zentex.web_console.routers.subject_evolution import router as subject_evolution_router
 from zentex.web_console.routers.interventions import router as interventions_router
@@ -114,6 +115,7 @@ api_router.include_router(autonomous_loop_router)
 api_router.include_router(notifications_router)
 api_router.include_router(observability_acceptance_router)
 api_router.include_router(workspaces_router)
+api_router.include_router(external_connectors_router)
 api_router.include_router(evolution_router)
 api_router.include_router(observability_router)
 api_router.include_router(openclaw_router)

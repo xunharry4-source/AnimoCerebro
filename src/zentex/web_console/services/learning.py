@@ -17,6 +17,7 @@ from zentex.learning.service import (
 from zentex.web_console.contracts.learning import (
     LearningDirectionPlanItem,
     LearningHistoryRow,
+    LearningHistoryResponse,
     LearningPlanResponse,
     LearningRedlinesSummary,
     LearningRunCycleResponse,
@@ -86,10 +87,22 @@ def _payload_summary(payload: Dict[str, Any]) -> str:
 
 
 def build_learning_history(service: Any, *, limit: int = 200) -> List[LearningHistoryRow]:
+    return build_learning_history_page(service, page=1, page_size=limit).rows
+
+
+def build_learning_history_page(service: Any, *, page: int = 1, page_size: int = 200) -> LearningHistoryResponse:
     rows: List[LearningHistoryRow] = []
     if not callable(getattr(service, "query_history_entries", None)):
         raise RuntimeError("learning service does not expose query_history_entries()")
-    entries = list(service.query_history_entries(limit=limit))
+    if not callable(getattr(service, "count_history_entries", None)):
+        raise RuntimeError("learning service does not expose count_history_entries()")
+    page = max(1, int(page))
+    page_size = max(1, min(int(page_size), 500))
+    total_items = int(service.count_history_entries())
+    total_pages = max((total_items + page_size - 1) // page_size, 1)
+    page = min(page, total_pages)
+    offset = (page - 1) * page_size
+    entries = list(service.query_history_entries(limit=page_size, offset=offset))
     for entry in entries:
         if entry.session_id != LEARNING_SESSION_ID:
             continue
@@ -130,7 +143,13 @@ def build_learning_history(service: Any, *, limit: int = 200) -> List[LearningHi
                 question_driver_refs=question_driver_refs,
             )
         )
-    return rows
+    return LearningHistoryResponse(
+        rows=rows,
+        page=page,
+        page_size=page_size,
+        total_items=total_items,
+        total_pages=total_pages,
+    )
 
 
 async def execute_learning_cycle(

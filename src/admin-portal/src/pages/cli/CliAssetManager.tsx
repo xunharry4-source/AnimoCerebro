@@ -3,6 +3,9 @@ import { useNavigate } from "react-router-dom";
 import { useTranslation } from "react-i18next";
 import {
   Alert,
+  Accordion,
+  AccordionDetails,
+  AccordionSummary,
   Box,
   Button,
   Chip,
@@ -11,21 +14,25 @@ import {
   DialogActions,
   DialogContent,
   DialogTitle,
+  FormControl,
   FormControlLabel,
   Checkbox,
   Divider,
+  MenuItem,
+  Select,
   Stack,
   TextField,
   Typography,
 } from "@mui/material";
 import { DataGrid, GridColDef } from "@mui/x-data-grid";
 import AddIcon from "@mui/icons-material/Add";
+import ExpandMoreIcon from "@mui/icons-material/ExpandMore";
 
 type CliToolItem = {
   command_name: string;
   description: string;
   mapped_domain: "cognitive" | "execution";
-  plugin_id: string;
+  cli_id: string;
   feature_code: string;
   execution_domain?: string | null;
   read_only: boolean;
@@ -42,6 +49,7 @@ export default function CliAssetManager() {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [openRegister, setOpenRegister] = useState(false);
+  const [registering, setRegistering] = useState(false);
   const [selectedTool, setSelectedTool] = useState<CliToolItem | null>(null);
   const [testResult, setTestResult] = useState<string | null>(null);
 
@@ -54,6 +62,15 @@ export default function CliAssetManager() {
     project_name: "",
     project_description: "",
     help_doc_url: "",
+    auth_type: "none",
+    credential_id: "",
+    api_key: "",
+    auth_env_name: "",
+    credential_payload_json: "{}",
+    login_command_executable: "",
+    login_command_args: "",
+    login_stdin_template: "",
+    access_token_path: "access_token",
   });
   const [testData, setTestData] = useState({
     arguments: "",
@@ -83,15 +100,75 @@ export default function CliAssetManager() {
   };
 
   const handleRegister = async () => {
+    if (registering) return;
+    setRegistering(true);
     try {
+      const toolName = formData.tool_name.trim();
+      const authType = formData.auth_type.trim();
+      const credentialId = formData.credential_id.trim() || `cli-${toolName}-credential`;
+      let authConfig: Record<string, unknown> | undefined;
+      if (authType !== "none") {
+        let secretPayload: Record<string, unknown>;
+        if (authType === "api_key") {
+          secretPayload = { api_key: formData.api_key };
+        } else {
+          secretPayload = JSON.parse(formData.credential_payload_json || "{}") as Record<string, unknown>;
+        }
+        const credentialResponse = await fetch(`/api/web/integrations/cli/${encodeURIComponent(toolName)}/credentials`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            credential_id: credentialId,
+            credential_type: authType,
+            secret_payload: secretPayload,
+            metadata: { source: "cli_registration_form" },
+          }),
+        });
+        const credentialPayload = await credentialResponse.json();
+        if (!credentialResponse.ok) {
+          throw new Error(credentialPayload?.detail || t("cli.credentialSaveFailed"));
+        }
+        authConfig = {
+          type: authType,
+          credential_ref: credentialId,
+          ...(formData.auth_env_name.trim() ? { env_name: formData.auth_env_name.trim() } : {}),
+        };
+        if (authType === "login_flow") {
+          authConfig = {
+            ...authConfig,
+            access_token_path: formData.access_token_path.trim() || "access_token",
+            login_command: {
+              command_executable: formData.login_command_executable.trim(),
+              args: formData.login_command_args.split(" ").map((item) => item.trim()).filter(Boolean),
+              ...(formData.login_stdin_template ? { stdin_template: formData.login_stdin_template } : {}),
+            },
+          };
+        }
+      }
+      const payload = {
+        tool_name: toolName,
+        command_executable: formData.command_executable.trim(),
+        description: formData.description.trim(),
+        read_only_flag: formData.read_only_flag,
+        ...(authConfig ? { auth_config: authConfig } : {}),
+        ...(formData.project_path.trim() ? { project_path: formData.project_path.trim() } : {}),
+        ...(formData.project_name.trim() ? { project_name: formData.project_name.trim() } : {}),
+        ...(formData.project_description.trim() ? { project_description: formData.project_description.trim() } : {}),
+        ...(formData.help_doc_url.trim() ? { help_doc_url: formData.help_doc_url.trim() } : {}),
+      };
       const response = await fetch("/api/web/cli-tools/register", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify(formData),
+        body: JSON.stringify(payload),
       });
       if (!response.ok) {
         const detail = await response.json();
-        throw new Error(detail?.detail || t("cli.registerFailed"));
+        const errorDetail = detail?.detail;
+        const message =
+          typeof errorDetail === "string"
+            ? errorDetail
+            : errorDetail?.operator_message || errorDetail?.message || t("cli.registerFailed");
+        throw new Error(message);
       }
       setOpenRegister(false);
       setFormData({
@@ -103,10 +180,21 @@ export default function CliAssetManager() {
         project_name: "",
         project_description: "",
         help_doc_url: "",
+        auth_type: "none",
+        credential_id: "",
+        api_key: "",
+        auth_env_name: "",
+        credential_payload_json: "{}",
+        login_command_executable: "",
+        login_command_args: "",
+        login_stdin_template: "",
+        access_token_path: "access_token",
       });
       void loadTools();
     } catch (err: any) {
       alert(err.message);
+    } finally {
+      setRegistering(false);
     }
   };
 
@@ -156,6 +244,7 @@ export default function CliAssetManager() {
         </Box>
       ),
     },
+    { field: "description", headerName: t("cli.formDescription"), flex: 1.5, minWidth: 220 },
     {
       field: "mapped_domain",
       headerName: t("cli.domainPermission"),
@@ -216,12 +305,17 @@ export default function CliAssetManager() {
         </Button>
       </Stack>
 
+      <Alert severity="info" variant="outlined">
+        {t("cli.pageFunctionHelp")}
+      </Alert>
+
       {error && <Alert severity="error" sx={{ mb: 2 }}>{error}</Alert>}
 
       <DataGrid
         autoHeight
-        rows={rows.map((r, i) => ({ id: r.plugin_id || i, ...r }))}
+        rows={rows}
         columns={columns}
+        getRowId={(row) => row.cli_id || row.command_name}
         sx={{ bgcolor: "background.paper" }}
       />
 
@@ -229,54 +323,35 @@ export default function CliAssetManager() {
         <DialogTitle>{t("cli.registerDialogTitle")}</DialogTitle>
         <DialogContent dividers>
           <Stack spacing={3} sx={{ mt: 1 }}>
+            <Alert severity="info" variant="outlined">
+              {t("cli.registerBasicsHelp")}
+            </Alert>
             <TextField
               label={t("cli.formToolName")}
               fullWidth
+              required
+              helperText={t("cli.formToolNameHelp")}
               value={formData.tool_name}
               onChange={(e: React.ChangeEvent<HTMLInputElement>) => setFormData({ ...formData, tool_name: e.target.value })}
             />
             <TextField
               label={t("cli.formCommandExecutable")}
               fullWidth
+              required
               placeholder={t("cli.formCommandPlaceholder")}
+              helperText={t("cli.formCommandExecutableHelp")}
               value={formData.command_executable}
               onChange={(e: React.ChangeEvent<HTMLInputElement>) => setFormData({ ...formData, command_executable: e.target.value })}
             />
             <TextField
               label={t("cli.formDescription")}
               fullWidth
+              required
               multiline
               rows={2}
+              helperText={t("cli.formDescriptionHelp")}
               value={formData.description}
               onChange={(e: React.ChangeEvent<HTMLInputElement>) => setFormData({ ...formData, description: e.target.value })}
-            />
-            <TextField
-              label={t("cli.formProjectPath")}
-              fullWidth
-              value={formData.project_path}
-              onChange={(e: React.ChangeEvent<HTMLInputElement>) => setFormData({ ...formData, project_path: e.target.value })}
-            />
-            <TextField
-              label={t("cli.formProjectName")}
-              fullWidth
-              value={formData.project_name}
-              onChange={(e: React.ChangeEvent<HTMLInputElement>) => setFormData({ ...formData, project_name: e.target.value })}
-            />
-            <TextField
-              label={t("cli.formProjectDescription")}
-              fullWidth
-              multiline
-              rows={2}
-              value={formData.project_description}
-              onChange={(e: React.ChangeEvent<HTMLInputElement>) =>
-                setFormData({ ...formData, project_description: e.target.value })
-              }
-            />
-            <TextField
-              label={t("cli.formHelpDocUrl")}
-              fullWidth
-              value={formData.help_doc_url}
-              onChange={(e: React.ChangeEvent<HTMLInputElement>) => setFormData({ ...formData, help_doc_url: e.target.value })}
             />
             <FormControlLabel
               control={
@@ -292,12 +367,181 @@ export default function CliAssetManager() {
                 ? t("cli.alertReadOnly") 
                 : t("cli.alertReadWrite")}
             </Alert>
+            <Accordion disableGutters>
+              <AccordionSummary expandIcon={<ExpandMoreIcon />}>
+                <Box>
+                  <Typography variant="subtitle2">{t("cli.advancedSettings")}</Typography>
+                  <Typography variant="caption" color="text.secondary">
+                    {t("cli.advancedSettingsHelp")}
+                  </Typography>
+                </Box>
+              </AccordionSummary>
+              <AccordionDetails>
+                <Stack spacing={2}>
+                  <TextField
+                    label={t("cli.formProjectPath")}
+                    fullWidth
+                    placeholder={t("cli.formProjectPathPlaceholder")}
+                    helperText={t("cli.formProjectPathHelp")}
+                    value={formData.project_path}
+                    onChange={(e: React.ChangeEvent<HTMLInputElement>) => setFormData({ ...formData, project_path: e.target.value })}
+                  />
+                  <TextField
+                    label={t("cli.formProjectName")}
+                    fullWidth
+                    helperText={t("cli.formProjectNameHelp")}
+                    value={formData.project_name}
+                    onChange={(e: React.ChangeEvent<HTMLInputElement>) => setFormData({ ...formData, project_name: e.target.value })}
+                  />
+                  <TextField
+                    label={t("cli.formProjectDescription")}
+                    fullWidth
+                    multiline
+                    rows={2}
+                    helperText={t("cli.formProjectDescriptionHelp")}
+                    value={formData.project_description}
+                    onChange={(e: React.ChangeEvent<HTMLInputElement>) =>
+                      setFormData({ ...formData, project_description: e.target.value })
+                    }
+                  />
+                  <TextField
+                    label={t("cli.formHelpDocUrl")}
+                    fullWidth
+                    helperText={t("cli.formHelpDocUrlHelp")}
+                    value={formData.help_doc_url}
+                    onChange={(e: React.ChangeEvent<HTMLInputElement>) => setFormData({ ...formData, help_doc_url: e.target.value })}
+                  />
+                </Stack>
+              </AccordionDetails>
+            </Accordion>
+            <Accordion disableGutters>
+              <AccordionSummary expandIcon={<ExpandMoreIcon />}>
+                <Box>
+                  <Typography variant="subtitle2">{t("cli.authSettings")}</Typography>
+                  <Typography variant="caption" color="text.secondary">
+                    {t("cli.authSettingsHelp")}
+                  </Typography>
+                </Box>
+              </AccordionSummary>
+              <AccordionDetails>
+                <Stack spacing={2}>
+                  <FormControl fullWidth>
+                    <Typography variant="caption" color="text.secondary" sx={{ mb: 0.5 }}>
+                      {t("cli.authType")}
+                    </Typography>
+                    <Select
+                      value={formData.auth_type}
+                      onChange={(e) => setFormData({ ...formData, auth_type: e.target.value })}
+                    >
+                      <MenuItem value="none">{t("cli.authNone")}</MenuItem>
+                      <MenuItem value="api_key">{t("cli.authApiKey")}</MenuItem>
+                      <MenuItem value="login_flow">{t("cli.authLoginFlow")}</MenuItem>
+                    </Select>
+                  </FormControl>
+                  {formData.auth_type !== "none" ? (
+                    <>
+                      <Alert severity="warning" variant="outlined">{t("cli.authNoInteractiveLogin")}</Alert>
+                      <TextField
+                        label={t("cli.credentialId")}
+                        fullWidth
+                        helperText={t("cli.credentialIdHelp")}
+                        value={formData.credential_id}
+                        onChange={(e: React.ChangeEvent<HTMLInputElement>) =>
+                          setFormData({ ...formData, credential_id: e.target.value })
+                        }
+                      />
+                      <TextField
+                        label={t("cli.authEnvName")}
+                        fullWidth
+                        placeholder={formData.auth_type === "api_key" ? "ZENTEX_CLI_API_KEY / GEMINI_API_KEY" : "ZENTEX_CLI_ACCESS_TOKEN"}
+                        helperText={t("cli.authEnvNameHelp")}
+                        value={formData.auth_env_name}
+                        onChange={(e: React.ChangeEvent<HTMLInputElement>) =>
+                          setFormData({ ...formData, auth_env_name: e.target.value })
+                        }
+                      />
+                    </>
+                  ) : null}
+                  {formData.auth_type === "api_key" ? (
+                    <TextField
+                      label={t("cli.apiKeySecret")}
+                      fullWidth
+                      required
+                      type="password"
+                      helperText={t("cli.apiKeySecretHelp")}
+                      value={formData.api_key}
+                      onChange={(e: React.ChangeEvent<HTMLInputElement>) => setFormData({ ...formData, api_key: e.target.value })}
+                    />
+                  ) : null}
+                  {formData.auth_type === "login_flow" ? (
+                    <>
+                      <TextField
+                        label={t("cli.credentialPayloadJson")}
+                        fullWidth
+                        multiline
+                        rows={3}
+                        value={formData.credential_payload_json}
+                        onChange={(e: React.ChangeEvent<HTMLInputElement>) =>
+                          setFormData({ ...formData, credential_payload_json: e.target.value })
+                        }
+                      />
+                      <TextField
+                        label={t("cli.loginCommandExecutable")}
+                        fullWidth
+                        required
+                        value={formData.login_command_executable}
+                        onChange={(e: React.ChangeEvent<HTMLInputElement>) =>
+                          setFormData({ ...formData, login_command_executable: e.target.value })
+                        }
+                      />
+                      <TextField
+                        label={t("cli.loginCommandArgs")}
+                        fullWidth
+                        value={formData.login_command_args}
+                        onChange={(e: React.ChangeEvent<HTMLInputElement>) =>
+                          setFormData({ ...formData, login_command_args: e.target.value })
+                        }
+                      />
+                      <TextField
+                        label={t("cli.loginStdinTemplate")}
+                        fullWidth
+                        multiline
+                        rows={2}
+                        value={formData.login_stdin_template}
+                        onChange={(e: React.ChangeEvent<HTMLInputElement>) =>
+                          setFormData({ ...formData, login_stdin_template: e.target.value })
+                        }
+                      />
+                      <TextField
+                        label={t("cli.accessTokenPath")}
+                        fullWidth
+                        value={formData.access_token_path}
+                        onChange={(e: React.ChangeEvent<HTMLInputElement>) =>
+                          setFormData({ ...formData, access_token_path: e.target.value })
+                        }
+                      />
+                    </>
+                  ) : null}
+                </Stack>
+              </AccordionDetails>
+            </Accordion>
           </Stack>
         </DialogContent>
         <DialogActions>
           <Button onClick={() => setOpenRegister(false)}>{t("common.cancel")}</Button>
-          <Button variant="contained" onClick={handleRegister} disabled={!formData.tool_name || !formData.command_executable}>
-            {t("cli.confirmRegister")}
+          <Button
+            variant="contained"
+            onClick={handleRegister}
+            disabled={
+              registering ||
+              !formData.tool_name.trim() ||
+              !formData.command_executable.trim() ||
+              !formData.description.trim() ||
+              (formData.auth_type === "api_key" && !formData.api_key.trim()) ||
+              (formData.auth_type === "login_flow" && !formData.login_command_executable.trim())
+            }
+          >
+            {registering ? t("cli.registering") : t("cli.confirmRegister")}
           </Button>
         </DialogActions>
       </Dialog>
@@ -315,6 +559,7 @@ export default function CliAssetManager() {
               <TextField
                 label={t("cli.testArguments")}
                 fullWidth
+                helperText={t("cli.testArgumentsHelp")}
                 value={testData.arguments}
                 onChange={(e: React.ChangeEvent<HTMLInputElement>) => setTestData({ ...testData, arguments: e.target.value })}
               />
@@ -323,12 +568,14 @@ export default function CliAssetManager() {
                 fullWidth
                 multiline
                 rows={3}
+                helperText={t("cli.testStdinInputHelp")}
                 value={testData.stdin_input}
                 onChange={(e: React.ChangeEvent<HTMLInputElement>) => setTestData({ ...testData, stdin_input: e.target.value })}
               />
               <TextField
                 label={t("cli.testWorkingDirectory")}
                 fullWidth
+                helperText={t("cli.testWorkingDirectoryHelp")}
                 value={testData.working_directory}
                 onChange={(e: React.ChangeEvent<HTMLInputElement>) =>
                   setTestData({ ...testData, working_directory: e.target.value })

@@ -25,6 +25,7 @@ def test_tasks_api_filters_and_paginates_in_query_results(acceptance_app: FastAP
                         "task_type": "system_action",
                         "originator_id": "ci_acceptance",
                         "idempotency_key": f"api-page-{suffix}-{idx}",
+                        "target_id": f"cli:executor-{suffix}",
                         "metadata": {"source_module": source_module, "page_marker": suffix},
                     }
                 )
@@ -59,6 +60,8 @@ def test_tasks_api_filters_and_paginates_in_query_results(acceptance_app: FastAP
             assert len(first_items) == 2
             assert all(item["metadata"]["source_module"] == source_module for item in first_items)
             assert all(item["status"] == "todo" for item in first_items)
+            assert all(item["execution_assignment"]["status"] == "assigned" for item in first_items)
+            assert all(item["execution_assignment"]["label"] == f"cli:executor-{suffix}" for item in first_items)
 
             second_page = requests.get(
                 f"{base_url}/api/web/tasks",
@@ -76,6 +79,41 @@ def test_tasks_api_filters_and_paginates_in_query_results(acceptance_app: FastAP
             assert second_items[0]["metadata"]["source_module"] == source_module
             assert {item["task_id"] for item in first_items + second_items} == set(created_ids[:3])
 
+            first_tab_page = requests.get(
+                f"{base_url}/api/web/tasks/page",
+                params={"source_module": source_module, "group": "todo", "limit": 2, "offset": 0},
+                timeout=10,
+            )
+            assert first_tab_page.status_code == 200
+            first_tab_payload = first_tab_page.json()
+            assert first_tab_payload["group"] == "todo"
+            assert first_tab_payload["total"] == 3
+            assert first_tab_payload["limit"] == 2
+            assert first_tab_payload["offset"] == 0
+            assert first_tab_payload["counts"]["todo"] == 3
+            assert first_tab_payload["counts"]["pending"] == 3
+            assert len(first_tab_payload["items"]) == 2
+            assert all(item["metadata"]["source_module"] == source_module for item in first_tab_payload["items"])
+            assert all(item["status"] == "todo" for item in first_tab_payload["items"])
+
+            second_tab_page = requests.get(
+                f"{base_url}/api/web/tasks/page",
+                params={"source_module": source_module, "group": "todo", "limit": 2, "offset": 2},
+                timeout=10,
+            )
+            assert second_tab_page.status_code == 200
+            second_tab_payload = second_tab_page.json()
+            assert second_tab_payload["total"] == 3
+            assert second_tab_payload["offset"] == 2
+            assert len(second_tab_payload["items"]) == 1
+            assert {item["task_id"] for item in first_tab_payload["items"] + second_tab_payload["items"]} == set(created_ids[:3])
+            invalid_group = requests.get(
+                f"{base_url}/api/web/tasks/page",
+                params={"group": "not_a_real_group", "limit": 2, "offset": 0},
+                timeout=10,
+            )
+            assert invalid_group.status_code == 400
+
             grouped = requests.get(
                 f"{base_url}/api/web/tasks/by-status",
                 params={"source_module": source_module, "limit_per_group": 1, "offset": 0},
@@ -85,6 +123,8 @@ def test_tasks_api_filters_and_paginates_in_query_results(acceptance_app: FastAP
             grouped_payload = grouped.json()
             assert set(grouped_payload) == {
                 "in_progress",
+                "todo",
+                "blocked",
                 "pending",
                 "waiting_confirmation",
                 "completed",
@@ -93,6 +133,24 @@ def test_tasks_api_filters_and_paginates_in_query_results(acceptance_app: FastAP
             assert len(grouped_payload["pending"]) == 1
             assert grouped_payload["pending"][0]["metadata"]["source_module"] == source_module
             assert grouped_payload["pending"][0]["status"] == "todo"
+            assert len(grouped_payload["todo"]) == 1
+            assert grouped_payload["todo"][0]["task_id"] == grouped_payload["pending"][0]["task_id"]
+            assert grouped_payload["todo"][0]["execution_assignment"]["label"] == f"cli:executor-{suffix}"
+
+            detail = requests.get(
+                f"{base_url}/api/web/tasks/{grouped_payload['todo'][0]['task_id']}/detail",
+                timeout=10,
+            )
+            assert detail.status_code == 200
+            detail_task = detail.json()["task"]
+            assert detail_task["target_id"] == f"cli:executor-{suffix}"
+            assert detail_task["execution_assignment"] == {
+                "status": "assigned",
+                "source": "target_id",
+                "executor_id": f"cli:executor-{suffix}",
+                "executor_type": "cli",
+                "label": f"cli:executor-{suffix}",
+            }
 
             invalid_limit = requests.get(f"{base_url}/api/web/tasks", params={"limit": 0}, timeout=10)
             assert invalid_limit.status_code == 422
@@ -104,6 +162,13 @@ def test_tasks_api_filters_and_paginates_in_query_results(acceptance_app: FastAP
             )
             assert unfiltered_marker_page.status_code == 200
             assert {item["task_id"] for item in unfiltered_marker_page.json()} == set(created_ids)
+
+            worker_status = requests.get(f"{base_url}/api/web/tasks/worker/status", timeout=10)
+            assert worker_status.status_code == 200
+            worker_payload = worker_status.json()
+            assert set(worker_payload) == {"scheduler", "task_statistics", "database"}
+            assert "running" in worker_payload["scheduler"]
+            assert worker_payload["database"]["available"] is True
     finally:
         if created_ids:
             app.state.task_service.bulk_delete(created_ids, force=True)
@@ -262,8 +327,23 @@ def test_tasks_agents_cli_and_mcp_acceptance(acceptance_app: FastAPI) -> None:
         cli_rows = requests.get(f"{base_url}/api/web/cli-tools", timeout=10)
         assert cli_rows.status_code == 200
         assert any(item["command_name"] == cli_tool for item in cli_rows.json())
+        cli_usage_profile = requests.get(f"{base_url}/api/web/cli-tools/{cli_tool}/usage-profile", timeout=10)
+        assert cli_usage_profile.status_code == 200
+        cli_usage_payload = cli_usage_profile.json()
+        assert cli_usage_payload["source_type"] == "cli"
+        assert cli_usage_payload["learning_status"] == "learned"
+        assert cli_usage_payload["argument_schema"] == {"type": "array", "items": {"type": "string"}}
+        assert "Acceptance read-only CLI" in cli_usage_payload["task_routing_hints"]
         duplicate_cli_register = requests.post(f"{base_url}/api/web/cli-tools/register", json=cli_payload, timeout=10)
-        assert duplicate_cli_register.status_code == 400
+        assert duplicate_cli_register.status_code == 200
+        duplicate_cli_payload = duplicate_cli_register.json()
+        assert duplicate_cli_payload["command_name"] == cli_tool
+        assert duplicate_cli_payload["description"] == "Acceptance read-only CLI"
+        assert duplicate_cli_payload["read_only"] is True
+        assert duplicate_cli_payload["status"] in {"active", "stopped"}
+        cli_rows_after_duplicate = requests.get(f"{base_url}/api/web/cli-tools", timeout=10)
+        assert cli_rows_after_duplicate.status_code == 200
+        assert [item["command_name"] for item in cli_rows_after_duplicate.json()].count(cli_tool) == 1
         activate_response = requests.post(f"{base_url}/api/web/cli-tools/{cli_tool}/activate", timeout=10)
         assert activate_response.status_code == 200
         assert activate_response.json()["status"] == "active"
@@ -296,6 +376,7 @@ def test_tasks_agents_cli_and_mcp_acceptance(acceptance_app: FastAPI) -> None:
         assert all(item["command_name"] != cli_tool for item in cli_rows_after_delete.json())
         assert requests.get(f"{base_url}/api/web/cli-tools/{cli_tool}/detail", timeout=10).status_code == 404
         assert requests.get(f"{base_url}/api/web/cli-tools/{cli_tool}/health", timeout=10).status_code == 404
+        assert requests.get(f"{base_url}/api/web/cli-tools/{cli_tool}/usage-profile", timeout=10).status_code == 404
         assert requests.delete(f"{base_url}/api/web/cli-tools/{cli_tool}", timeout=10).status_code == 404
 
         mcp_id = f"acceptance-mcp-{suffix}"
@@ -312,11 +393,35 @@ def test_tasks_agents_cli_and_mcp_acceptance(acceptance_app: FastAPI) -> None:
             timeout=10,
         )
         assert mcp_register.status_code == 200
-        assert mcp_register.json()["server_id"] == mcp_id
-        assert mcp_register.json()["status"] == "online"
+        mcp_register_payload = mcp_register.json()
+        assert mcp_register_payload["server_id"] == mcp_id
+        assert mcp_register_payload["status"] == "online"
+        assert mcp_register_payload["transport_type"] == "stdio"
+        assert mcp_register_payload["tool_count"] == 1
+        assert mcp_register_payload["tools"][0]["tool_name"] == "inspect"
+        assert mcp_register_payload["tools"][0]["mcp_id"] == f"mcp:{mcp_id}:inspect"
+        assert "plugin_id" not in mcp_register_payload["tools"][0]
         mcp_rows = requests.get(f"{base_url}/api/web/mcp-servers", timeout=10)
         assert mcp_rows.status_code == 200
-        assert any(item["server_id"] == mcp_id for item in mcp_rows.json())
+        mcp_rows_by_id = {item["server_id"]: item for item in mcp_rows.json()}
+        assert mcp_id in mcp_rows_by_id
+        assert mcp_rows_by_id[mcp_id]["server_id"] == mcp_id
+        assert mcp_rows_by_id[mcp_id]["status"] == "online"
+        assert mcp_rows_by_id[mcp_id]["transport_type"] == "stdio"
+        assert mcp_rows_by_id[mcp_id]["tool_count"] == 1
+        assert mcp_rows_by_id[mcp_id]["tools"][0]["tool_name"] == "inspect"
+        assert mcp_rows_by_id[mcp_id]["tools"][0]["mcp_id"] == f"mcp:{mcp_id}:inspect"
+        assert "plugin_id" not in mcp_rows_by_id[mcp_id]["tools"][0]
+        mcp_usage_profile = requests.get(
+            f"{base_url}/api/web/mcp-servers/{mcp_id}/tools/inspect/usage-profile",
+            timeout=10,
+        )
+        assert mcp_usage_profile.status_code == 200
+        mcp_usage_payload = mcp_usage_profile.json()
+        assert mcp_usage_payload["source_type"] == "mcp"
+        assert mcp_usage_payload["learning_status"] == "learned"
+        assert mcp_usage_payload["supported_tools"] == ["inspect"]
+        assert mcp_usage_payload["argument_schema"]["properties"]["x"]["type"] == "integer"
         duplicate_mcp_register = requests.post(f"{base_url}/api/web/mcp-servers/register", json=mcp_payload, timeout=10)
         assert duplicate_mcp_register.status_code == 400
         mcp_health = requests.get(f"{base_url}/api/web/mcp-servers/{mcp_id}/health", timeout=10)
@@ -349,4 +454,8 @@ def test_tasks_agents_cli_and_mcp_acceptance(acceptance_app: FastAPI) -> None:
         assert all(item["server_id"] != mcp_id for item in mcp_rows_after_delete.json())
         assert requests.get(f"{base_url}/api/web/mcp-servers/{mcp_id}", timeout=10).status_code == 404
         assert requests.get(f"{base_url}/api/web/mcp-servers/{mcp_id}/health", timeout=10).status_code == 404
+        assert requests.get(
+            f"{base_url}/api/web/mcp-servers/{mcp_id}/tools/inspect/usage-profile",
+            timeout=10,
+        ).status_code == 404
         assert requests.delete(f"{base_url}/api/web/mcp-servers/{mcp_id}", timeout=10).status_code == 404

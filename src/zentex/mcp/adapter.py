@@ -47,8 +47,16 @@ from zentex.plugins.contracts import FunctionalPluginSpec, PluginHealthStatus, P
 from zentex.common.cognitive_result import CognitiveToolResult
 from zentex.plugins.service import CognitiveToolRegistry
 from zentex.kernel import AuditEventStore, AuditEventType
+from zentex.agents.auth import AgentAuthError, AgentAuthService, AgentResolvedAuth, redact_sensitive
 from zentex.supervision.service import get_ai_supervisor
 from zentex.mcp.lifecycle_diagnostics import SUPPORTED_PROTOCOL_VERSIONS
+
+
+def _format_exception_message(exc: BaseException) -> str:
+    if isinstance(exc, ExceptionGroup):
+        parts = [f"{item.__class__.__name__}: {item}" for item in exc.exceptions]
+        return f"{exc.__class__.__name__}: {exc}; sub_errors=[{'; '.join(parts)}]"
+    return str(exc)
 
 
 class McpTransportClient(Protocol):
@@ -307,6 +315,7 @@ class McpAdapterPlugin(FunctionalPluginSpec):
     _registered_tool_ids: Set[str] = PrivateAttr(default_factory=set)
     _tool_schema_cache: Dict[str, Dict[str, Any]] = PrivateAttr(default_factory=dict)
     _schema_drift_events: List[Dict[str, Any]] = PrivateAttr(default_factory=list)
+    _auth_service: Optional[AgentAuthService] = PrivateAttr(default=None)
 
     @classmethod
     def plugin_kind(cls) -> str:
@@ -319,11 +328,16 @@ class McpAdapterPlugin(FunctionalPluginSpec):
         transcript_store: AuditEventStore,
         cognitive_registry: CognitiveToolRegistry,
         execution_registry: ExecutionDomainRegistry,
+        auth_service: Optional[AgentAuthService] = None,
     ) -> None:
         self._client_factory = client_factory
         self._transcript_store = transcript_store
         self._cognitive_registry = cognitive_registry
         self._execution_registry = execution_registry
+        self._auth_service = auth_service
+
+    def attach_auth_service(self, auth_service: AgentAuthService) -> None:
+        self._auth_service = auth_service
 
     def sync_servers(self) -> List[McpServerRuntimeState]:
         states: List[McpServerRuntimeState] = []
@@ -405,7 +419,7 @@ class McpAdapterPlugin(FunctionalPluginSpec):
                 "server_id": server_id,
                 "tool_name": tool_name,
                 "trace_id": trace_id,
-                "request": request_payload,
+                "request": redact_sensitive(request_payload),
                 "response": None,
                 "_execution_contract": True,
             }
@@ -425,12 +439,14 @@ class McpAdapterPlugin(FunctionalPluginSpec):
             }
             self._write_invocation_audit(result)
             return result
-        client = self._client_factory(config)
         try:
+            resolved_auth = self._resolve_mcp_auth(config)
+            effective_config = self._effective_config(config, resolved_auth)
+            client = self._client_factory(effective_config)
             raw = client.invoke_tool(
-                config,
+                effective_config,
                 tool_name=tool_name,
-                arguments=arguments,
+                arguments={**dict(arguments or {}), **resolved_auth.body_fields},
                 trace_id=trace_id,
             )
         except Exception as exc:
@@ -455,8 +471,8 @@ class McpAdapterPlugin(FunctionalPluginSpec):
                 "server_id": server_id,
                 "tool_name": tool_name,
                 "trace_id": trace_id,
-                "request": request_payload,
-                "response": raw,
+                "request": redact_sensitive(request_payload),
+                "response": redact_sensitive(raw),
                 "_execution_contract": True,
             }
             self._write_invocation_audit(result)
@@ -465,16 +481,49 @@ class McpAdapterPlugin(FunctionalPluginSpec):
             "status": "completed",
             "error_code": None,
             "error_message": None,
-            "data": raw,
+            "data": redact_sensitive(raw),
             "server_id": server_id,
             "tool_name": tool_name,
             "trace_id": trace_id,
-            "request": request_payload,
-            "response": raw,
+            "request": redact_sensitive(request_payload),
+            "response": redact_sensitive(raw),
             "_execution_contract": True,
         }
         self._write_invocation_audit(result)
         return result
+
+    def _resolve_mcp_auth(self, config: McpServerConfig) -> AgentResolvedAuth:
+        if not config.auth_config and getattr(config, "auth_mode", "none") == "none":
+            return AgentResolvedAuth()
+        if self._auth_service is None:
+            raise AgentAuthError("MCP auth_config requires AgentAuthService")
+        auth_config = dict(config.auth_config or {})
+        if auth_config.get("type") == "login_flow" and isinstance(auth_config.get("login_tool"), dict):
+            login_client = self._client_factory(config)
+
+            def _call_login_tool(tool_name: str, arguments: Dict[str, Any]) -> Dict[str, Any]:
+                return login_client.invoke_tool(
+                    config,
+                    tool_name=tool_name,
+                    arguments=arguments,
+                    trace_id=f"mcp-login:{uuid4().hex}",
+                )
+
+            return self._auth_service.resolve_mcp_login_tool(config, login_callable=_call_login_tool)
+        return self._auth_service.resolve_mcp(config)
+
+    @staticmethod
+    def _effective_config(config: McpServerConfig, auth: AgentResolvedAuth) -> McpServerConfig:
+        if not auth.env and not auth.headers and not auth.query:
+            return config
+        env = {**dict(config.env), **auth.env, **auth.headers}
+        command = config.command
+        if auth.query and config.transport_type in {"http", "sse"}:
+            from urllib.parse import urlencode
+
+            separator = "&" if "?" in command else "?"
+            command = command + separator + urlencode(auth.query)
+        return config.model_copy(update={"env": env, "command": command})
 
     def diagnose_mcp_management_closure(self) -> Dict[str, Any]:
         from zentex.mcp.lifecycle_diagnostics import build_mcp_management_diagnostic_report
@@ -517,7 +566,7 @@ class McpAdapterPlugin(FunctionalPluginSpec):
         return PluginHealthStatus.UNHEALTHY
 
     def _validate_server_profile(self, config: McpServerConfig) -> None:
-        if config.transport_type in {"http", "sse"} and not config.command.startswith(("http://", "https://")):
+        if config.transport_type in {"http", "streamable_http", "sse"} and not config.command.startswith(("http://", "https://")):
             self._write_registration_rejection_audit(
                 config=config,
                 reason="http/sse MCP transport requires command to be an HTTP endpoint",
@@ -538,6 +587,33 @@ class McpAdapterPlugin(FunctionalPluginSpec):
                 error_code="mcp_scope_missing",
             )
             raise ValueError("MCP server scope must not be empty")
+        direct_secret_keys = [
+            key
+            for key in config.env
+            if any(token in key.lower().replace("-", "_") for token in ("authorization", "cookie", "api_key", "token", "secret", "password"))
+        ]
+        if direct_secret_keys:
+            self._write_registration_rejection_audit(
+                config=config,
+                reason=(
+                    "MCP registration env contains sensitive auth material; "
+                    "store credentials via /api/web/integrations/mcp/{server_id}/credentials "
+                    "and reference them with auth_config.credential_ref"
+                ),
+                error_code="mcp_direct_secret_rejected",
+            )
+            raise ValueError(
+                "MCP registration env contains sensitive auth material; use auth_config.credential_ref"
+            )
+        auth_mode = str(config.auth_mode or "none")
+        auth_config = dict(config.auth_config or {})
+        if auth_mode in {"bearer", "api_key", "oauth_pkce"} and not auth_config.get("credential_ref"):
+            self._write_registration_rejection_audit(
+                config=config,
+                reason=f"MCP auth_mode '{auth_mode}' requires auth_config.credential_ref",
+                error_code="mcp_auth_config_missing",
+            )
+            raise ValueError(f"MCP auth_mode '{auth_mode}' requires auth_config.credential_ref")
 
     def _sync_single_server(self, config: McpServerConfig) -> McpServerRuntimeState:
         if config.protocol_version not in SUPPORTED_PROTOCOL_VERSIONS:
@@ -559,18 +635,20 @@ class McpAdapterPlugin(FunctionalPluginSpec):
                 error_code="mcp_protocol_incompatible",
             )
             return state
-        client = self._client_factory(config)
+        resolved_auth = self._resolve_mcp_auth(config)
+        effective_config = self._effective_config(config, resolved_auth)
+        client = self._client_factory(effective_config)
         try:
-            if not client.health_probe(config):
+            if not client.health_probe(effective_config):
                 raise TimeoutError(f"MCP server health probe failed: {config.server_id}")
-            tools = client.list_tools(config)
+            tools = client.list_tools(effective_config)
         except Exception as exc:
             state = McpServerRuntimeState(
                 server_id=config.server_id,
                 transport_type=config.transport_type,
                 status="degraded",
                 tool_count=0,
-                error_message=str(exc),
+                error_message=_format_exception_message(exc),
                 tools=[],
                 protocol_version=config.protocol_version,
                 scope=list(config.scope),
@@ -585,7 +663,7 @@ class McpAdapterPlugin(FunctionalPluginSpec):
             if self._record_schema_snapshot(config, tool):
                 drifted_tools.append(tool.tool_name)
             binding = self._resolve_binding(config, tool)
-            reg = self._register_tool(config, tool, binding, client)
+            reg = self._register_tool(effective_config, tool, binding, client)
             if reg is not None:
                 runtime_tools.append(reg)
 
@@ -878,6 +956,8 @@ class McpAdapterPlugin(FunctionalPluginSpec):
     def _classify_invocation_error(exc: Exception) -> str:
         name = exc.__class__.__name__.lower()
         message = str(exc).lower()
+        if isinstance(exc, AgentAuthError):
+            return "mcp_permission_denied"
         if isinstance(exc, PermissionError) or "permission" in message or "forbidden" in message or "403" in message:
             return "mcp_permission_denied"
         if "timeout" in name or "timed out" in message or "timeout" in message:
@@ -914,33 +994,9 @@ def create_mcp_adapter_plugin(
     
     logger = logging.getLogger(__name__)
     
-    # MCP 环境配置 - 所有 MCP 相关逻辑在这里
+    # Runtime server configuration is user-owned data. Do not seed demo MCP
+    # servers here; registered servers are restored by McpIntegrationService.
     execution_registry = ExecutionDomainRegistry()
-    server_configs = [
-        McpServerConfig(
-            server_id="knowledge-hub",
-            transport_type="stdio",
-            command="uvx",
-            args=["knowledge-hub-mcp"],
-            env={"KNOWLEDGE_ENV": "dev"},
-            tool_bindings=[
-                McpToolBindingConfig(
-                    tool_name="search_documents",
-                    domain="cognitive",
-                    read_only=True,
-                    side_effect_free=True,
-                    mutates_state=False,
-                )
-            ],
-        ),
-        McpServerConfig(
-            server_id="ops-bridge",
-            transport_type="sse",
-            command="https://ops.example.invalid/mcp",
-            args=[],
-            env={},
-        ),
-    ]
 
     # 创建适配器
     adapter = McpAdapterPlugin(
@@ -953,7 +1009,7 @@ def create_mcp_adapter_plugin(
         rollback_conditions=["mcp_adapter_regression"],
         revocation_reasons=["mcp_adapter_disabled"],
         health_probe_endpoint="mcp://health",
-        server_configs=server_configs,
+        server_configs=[],
     )
     
     # 运行时附件

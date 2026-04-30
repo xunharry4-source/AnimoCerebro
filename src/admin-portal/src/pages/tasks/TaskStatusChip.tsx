@@ -24,7 +24,7 @@ const StatusChip: React.FC<StatusChipProps> = ({ status }) => {
   return (
     <Chip
       size="small"
-      label={t(`tasks.status.${status}`)}
+      label={t(`tasks.statuses.${status}`, { defaultValue: status })}
       color={colorMap[status]}
       variant="outlined"
       sx={{ fontWeight: 'bold' }}

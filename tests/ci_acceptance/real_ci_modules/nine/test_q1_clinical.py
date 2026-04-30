@@ -199,24 +199,30 @@ async def test_q1_clinical_comprehensive():
     print("[Clinical] ✓ Learning: Record found")
 
     # 记忆 (Memory)
-    memory_records = memory_svc.query_managed_records(limit=100)
+    memory_records = memory_svc.query_managed_records(trace_id="ci-acceptance-trace-q1", limit=100)
     assert isinstance(memory_records, list), "Memory: query_managed_records must return list"
     assert any(
-        "q1" in str(getattr(item, "title", "")).lower()
-        or "q1" in str(getattr(item, "summary", "")).lower()
-        or "q1" in " ".join(getattr(item, "tags", []) or []).lower()
+        str(getattr(item, "trace_id", "") or "") == "ci-acceptance-trace-q1"
+        and (
+            "q1" in str(getattr(item, "title", "")).lower()
+            or "q1" in str(getattr(item, "summary", "")).lower()
+            or "q1" in " ".join(getattr(item, "tags", []) or []).lower()
+        )
         for item in memory_records
-    ), "Memory: No Q1-related record found"
+    ), "Memory: No Q1-related record found for trace_id"
     print("[Clinical] ✓ Memory: Record found")
 
     # 反思 (Reflection)
-    reflection_records = reflection_svc.list_reflections({})
+    reflection_records = reflection_svc.list_reflections({"trace_id": "ci-acceptance-trace-q1"})
     assert isinstance(reflection_records, list), "Reflection: list_reflections must return list"
     assert any(
-        "q1" in str(getattr(item, "subject", "")).lower()
-        or "q1" in str((getattr(item, "context", {}) or {}).get("question_id", "")).lower()
+        str(getattr(item, "trace_id", "") or "") == "ci-acceptance-trace-q1"
+        and (
+            "q1" in str(getattr(item, "subject", "")).lower()
+            or "q1" in str((getattr(item, "context", {}) or {}).get("question_id", "")).lower()
+        )
         for item in reflection_records
-    ), "Reflection: No Q1-related record found"
+    ), "Reflection: No Q1-related record found for trace_id"
     print("[Clinical] ✓ Reflection: Record found")
 
     print(f"\n[Clinical] {q_id.upper()} CLINICAL ACCEPTANCE PASSED.")

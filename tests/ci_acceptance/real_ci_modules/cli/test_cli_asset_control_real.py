@@ -9,6 +9,56 @@ from fastapi import FastAPI
 from tests.ci_acceptance.real_ci_modules.kernel.http_server import live_http_server
 
 
+def _assert_read_only_cli_business_payload(payload: dict, tool_name: str) -> None:
+    assert payload["command_name"] == tool_name
+    assert payload["description"] == "Read-only Python inspection CLI"
+    assert payload["cli_id"] == f"cli:{tool_name}"
+    assert payload["feature_code"] == f"cli.{tool_name}"
+    assert payload["mapped_domain"] == "cognitive"
+    assert payload["status"] == "active"
+    assert payload["read_only"] is True
+    assert payload["side_effect_free"] is True
+    assert payload["mutates_state"] is False
+    assert payload["requires_cloud_audit"] is False
+    assert payload["project_name"] == "feature45-real-test"
+    assert "plugin_id" not in payload
+
+
+def _assert_execution_cli_business_payload(payload: dict, tool_name: str) -> None:
+    assert payload["command_name"] == tool_name
+    assert payload["description"] == "Execution-domain Python CLI"
+    assert payload["cli_id"] == f"cli:{tool_name}"
+    assert payload["feature_code"] == f"cli.{tool_name}"
+    assert payload["mapped_domain"] == "execution"
+    assert payload["status"] == "active"
+    assert payload["read_only"] is False
+    assert payload["side_effect_free"] is False
+    assert payload["mutates_state"] is True
+    assert payload["requires_cloud_audit"] is True
+    assert payload["execution_domain"] == "local_cli_write_guarded"
+    assert "plugin_id" not in payload
+
+
+def _assert_initial_cli_detail_metrics(payload: dict) -> None:
+    credit_score = payload["credit_score"]
+    assert 0.0 <= credit_score["total_score"] <= 100.0
+    assert 0.0 <= credit_score["success_rate"] <= 1.0
+    assert credit_score["total_executions"] == 0
+    assert credit_score["successful_executions"] == 0
+    assert credit_score["failed_executions"] == 0
+    assert 0.0 <= credit_score["error_rate"] <= 1.0
+    assert credit_score["usage_frequency"] in {"low", "medium", "high"}
+    assert credit_score["credit_level"] in {"unrated", "excellent", "good", "fair", "poor"}
+    assert isinstance(credit_score["last_updated"], str)
+    assert payload["task_statistics"] == {
+        "in_progress": 0,
+        "pending": 0,
+        "failed": 0,
+        "completed": 0,
+        "total": 0,
+    }
+
+
 def test_cli_asset_control_registers_queries_executes_and_audits_real_requests(acceptance_app: FastAPI) -> None:
     suffix = uuid4().hex[:8]
     read_only_tool = f"cli-readonly-{suffix}"
@@ -19,7 +69,10 @@ def test_cli_asset_control_registers_queries_executes_and_audits_real_requests(a
         empty_adapters = requests.get(f"{base_url}/api/web/cli-adapters", timeout=10)
         assert empty_adapters.status_code == 200
         assert empty_adapters.json()["healthy"] is True
-        assert empty_adapters.json()["total_tools"] == 0
+        baseline_adapter_payload = empty_adapters.json()
+        baseline_total_tools = baseline_adapter_payload["total_tools"]
+        baseline_cognitive_tools = baseline_adapter_payload["cognitive_tools"]
+        baseline_execution_tools = baseline_adapter_payload["execution_tools"]
 
         read_only_register = requests.post(
             f"{base_url}/api/web/cli-tools/register",
@@ -35,12 +88,7 @@ def test_cli_asset_control_registers_queries_executes_and_audits_real_requests(a
         )
         assert read_only_register.status_code == 200, read_only_register.text
         read_only_payload = read_only_register.json()
-        assert read_only_payload["command_name"] == read_only_tool
-        assert read_only_payload["mapped_domain"] == "cognitive"
-        assert read_only_payload["read_only"] is True
-        assert read_only_payload["side_effect_free"] is True
-        assert read_only_payload["mutates_state"] is False
-        assert read_only_payload["requires_cloud_audit"] is False
+        _assert_read_only_cli_business_payload(read_only_payload, read_only_tool)
 
         execution_register = requests.post(
             f"{base_url}/api/web/cli-tools/register",
@@ -56,27 +104,68 @@ def test_cli_asset_control_registers_queries_executes_and_audits_real_requests(a
         )
         assert execution_register.status_code == 200, execution_register.text
         execution_payload = execution_register.json()
-        assert execution_payload["mapped_domain"] == "execution"
-        assert execution_payload["read_only"] is False
-        assert execution_payload["side_effect_free"] is False
-        assert execution_payload["mutates_state"] is True
-        assert execution_payload["requires_cloud_audit"] is True
-        assert execution_payload["execution_domain"] == "local_cli_write_guarded"
+        _assert_execution_cli_business_payload(execution_payload, execution_tool)
 
         tools = requests.get(f"{base_url}/api/web/cli-tools", timeout=10)
         assert tools.status_code == 200
-        by_name = {item["command_name"]: item for item in tools.json()}
-        assert by_name[read_only_tool]["mapped_domain"] == "cognitive"
-        assert by_name[execution_tool]["mapped_domain"] == "execution"
+        list_payload = tools.json()
+        assert isinstance(list_payload, list)
+        by_name = {item["command_name"]: item for item in list_payload}
+        assert read_only_tool in by_name
+        assert execution_tool in by_name
+        _assert_read_only_cli_business_payload(by_name[read_only_tool], read_only_tool)
+        _assert_execution_cli_business_payload(by_name[execution_tool], execution_tool)
+
+        read_only_detail = requests.get(f"{base_url}/api/web/cli-tools/{read_only_tool}/detail", timeout=10)
+        assert read_only_detail.status_code == 200
+        read_only_detail_payload = read_only_detail.json()
+        _assert_read_only_cli_business_payload(read_only_detail_payload, read_only_tool)
+        _assert_initial_cli_detail_metrics(read_only_detail_payload)
+
+        execution_detail = requests.get(f"{base_url}/api/web/cli-tools/{execution_tool}/detail", timeout=10)
+        assert execution_detail.status_code == 200
+        execution_detail_payload = execution_detail.json()
+        _assert_execution_cli_business_payload(execution_detail_payload, execution_tool)
+        _assert_initial_cli_detail_metrics(execution_detail_payload)
+
+        duplicate_register = requests.post(
+            f"{base_url}/api/web/cli-tools/register",
+            json={
+                "tool_name": read_only_tool,
+                "command_executable": sys.executable,
+                "command_args": ["-c", "print('duplicate must not register')"],
+                "description": "Duplicate read-only Python inspection CLI",
+                "read_only_flag": True,
+            },
+            timeout=10,
+        )
+        assert duplicate_register.status_code == 409, duplicate_register.text
+        duplicate_detail = duplicate_register.json()["detail"]
+        assert duplicate_detail == {
+            "error_code": "STATE_CONFLICT",
+            "error_stage": "cli_registration",
+            "operator_message": (
+                f"Failed to register CLI tool '{read_only_tool}': CLI tool '{read_only_tool}' is already registered"
+            ),
+            "message": (
+                f"Failed to register CLI tool '{read_only_tool}': CLI tool '{read_only_tool}' is already registered"
+            ),
+        }
+        tools_after_duplicate = requests.get(f"{base_url}/api/web/cli-tools", timeout=10)
+        assert tools_after_duplicate.status_code == 200
+        duplicate_names = [item["command_name"] for item in tools_after_duplicate.json()]
+        assert duplicate_names.count(read_only_tool) == 1
+        assert duplicate_names.count(execution_tool) == 1
 
         adapters = requests.get(f"{base_url}/api/web/cli-adapters", timeout=10)
         assert adapters.status_code == 200
         adapter_payload = adapters.json()
-        assert adapter_payload["total_tools"] == 2
-        assert adapter_payload["cognitive_tools"] == 1
-        assert adapter_payload["execution_tools"] == 1
+        assert adapter_payload["total_tools"] == baseline_total_tools + 2
+        assert adapter_payload["cognitive_tools"] == baseline_cognitive_tools + 1
+        assert adapter_payload["execution_tools"] == baseline_execution_tools + 1
         assert adapter_payload["healthy"] is True
-        assert {item["command_name"] for item in adapter_payload["tools"]} == {read_only_tool, execution_tool}
+        adapter_tool_names = {item["command_name"] for item in adapter_payload["tools"]}
+        assert {read_only_tool, execution_tool} <= adapter_tool_names
 
         health = requests.get(f"{base_url}/api/web/cli-tools/{read_only_tool}/health", timeout=10)
         assert health.status_code == 200
@@ -133,6 +222,12 @@ def test_cli_asset_control_registers_queries_executes_and_audits_real_requests(a
         assert stopped_adapters.json()["healthy"] is False
         assert stopped_adapters.json()["stopped_tools"] == 1
 
+        tools_after_disable = requests.get(f"{base_url}/api/web/cli-tools", timeout=10)
+        assert tools_after_disable.status_code == 200
+        disabled_by_name = {item["command_name"]: item for item in tools_after_disable.json()}
+        assert disabled_by_name[read_only_tool]["status"] == "stopped"
+        assert disabled_by_name[execution_tool]["status"] == "active"
+
     assert len(acceptance_app.state.transcript_store.entries) >= transcript_before + 3
     audit_entries = [
         item
@@ -177,6 +272,37 @@ def test_cli_feature63_execution_defense_closure_real_requests(acceptance_app: F
     execution_tool = f"feature63-execution-{suffix}"
     missing_tool = f"feature63-missing-{suffix}"
     output_file = tmp_path / f"feature63-{suffix}.txt"
+    nonzero_script = tmp_path / f"feature63-nonzero-{suffix}.py"
+    timeout_script = tmp_path / f"feature63-timeout-{suffix}.py"
+    execution_script = tmp_path / f"feature63-execution-{suffix}.py"
+    nonzero_script.write_text(
+        "import sys\n"
+        "if '--version' in sys.argv:\n"
+        "    print('feature63-nonzero-health')\n"
+        "    raise SystemExit(0)\n"
+        "print('FEATURE63_NONZERO', file=sys.stderr)\n"
+        "raise SystemExit(7)\n",
+        encoding="utf-8",
+    )
+    timeout_script.write_text(
+        "import sys, time\n"
+        "if '--version' in sys.argv:\n"
+        "    print('feature63-timeout-health')\n"
+        "    raise SystemExit(0)\n"
+        "time.sleep(2)\n",
+        encoding="utf-8",
+    )
+    execution_script.write_text(
+        "import sys\n"
+        "from pathlib import Path\n"
+        "if len(sys.argv) < 2 or sys.argv[1].startswith('-'):\n"
+        "    print('feature63-execution-health')\n"
+        "    raise SystemExit(0)\n"
+        "target = Path(sys.argv[1])\n"
+        "target.write_text('feature63-written', encoding='utf-8')\n"
+        "print(target.read_text(encoding='utf-8'))\n",
+        encoding="utf-8",
+    )
 
     with live_http_server(acceptance_app) as base_url:
         missing = requests.post(
@@ -208,33 +334,28 @@ def test_cli_feature63_execution_defense_closure_real_requests(acceptance_app: F
             {
                 "tool_name": nonzero_tool,
                 "command_executable": sys.executable,
-                "command_args": ["-c", "import sys; print('FEATURE63_NONZERO', file=sys.stderr); sys.exit(7)"],
+                "command_args": [str(nonzero_script)],
                 "description": "Feature 63 non-zero exit tool",
                 "read_only_flag": True,
+                "health_probe_args": ["--version"],
             },
             {
                 "tool_name": timeout_tool,
                 "command_executable": sys.executable,
-                "command_args": ["-c", "import time; time.sleep(2)"],
+                "command_args": [str(timeout_script)],
                 "description": "Feature 63 timeout tool",
                 "read_only_flag": True,
+                "health_probe_args": ["--version"],
             },
             {
                 "tool_name": execution_tool,
                 "command_executable": sys.executable,
-                "command_args": [
-                    "-c",
-                    (
-                        "import sys; "
-                        "from pathlib import Path; "
-                        "target=Path(sys.argv[1]); "
-                        "target.write_text('feature63-written', encoding='utf-8'); "
-                        "print(target.read_text(encoding='utf-8'))"
-                    ),
-                ],
+                "command_args": [str(execution_script)],
                 "description": "Feature 63 real execution side-effect tool",
                 "read_only_flag": False,
                 "execution_domain": "feature63_local_cli_write_guarded",
+                "health_probe_args": ["--version"],
+                "help_probe_args": ["--version"],
             },
         ]
         for payload in registrations:

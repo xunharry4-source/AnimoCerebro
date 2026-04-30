@@ -149,13 +149,20 @@ class LearningService:
     def list_history_entries(self, *, limit: int = 200) -> list[Any]:
         return list(self._store.query_by_session(LEARNING_SESSION_ID, limit=limit))
 
-    def query_history_entries(self, *, limit: int = 200) -> list[Any]:
+    def query_history_entries(self, *, limit: int = 200, offset: int = 0) -> list[Any]:
         return list(
             self._store.query_history_entries(
                 session_id=LEARNING_SESSION_ID,
                 entry_type=LEARNING_EVENT_TYPE,
                 limit=limit,
+                offset=offset,
             )
+        )
+
+    def count_history_entries(self) -> int:
+        return self._store.count_history_entries(
+            session_id=LEARNING_SESSION_ID,
+            entry_type=LEARNING_EVENT_TYPE,
         )
 
     def query_overall_records(

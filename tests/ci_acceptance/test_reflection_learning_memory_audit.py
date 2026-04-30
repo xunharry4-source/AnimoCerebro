@@ -41,9 +41,13 @@ def test_reflection_learning_memory_and_audit_acceptance(client: TestClient) -> 
         detail={"summary": f"learning-summary-{suffix}", "question_driver_refs": ["q3"]},
         trace_id=f"learning-trace-{suffix}",
     )
-    learning_response = client.get("/api/web/learning/history?limit=100")
+    learning_response = client.get("/api/web/learning/history?page=1&page_size=100")
     assert learning_response.status_code == 200
-    learning_rows = learning_response.json()["rows"]
+    learning_payload = learning_response.json()
+    assert learning_payload["page"] == 1
+    assert learning_payload["page_size"] == 100
+    assert learning_payload["total_items"] >= 1
+    learning_rows = learning_payload["rows"]
     assert any(
         item["summary"] == f"learning-summary-{suffix}"
         and "q3" in item["question_driver_refs"]

@@ -231,7 +231,7 @@ def _registration_issues(configs: list[McpServerConfig]) -> list[dict[str, Any]]
         seen.add(config.server_id)
         if config.transport_type in {"http", "sse"} and not config.command.startswith(("http://", "https://")):
             issues.append(_issue("endpoint_invalid", config.server_id, "critical", "http/sse transport requires an HTTP endpoint"))
-        if config.auth_mode not in {"none", "bearer", "api_key"}:
+        if config.auth_mode not in {"none", "bearer", "api_key", "oauth_pkce"}:
             issues.append(_issue("auth_mode_invalid", config.server_id, "critical", "auth_mode is not supported"))
     return issues
 

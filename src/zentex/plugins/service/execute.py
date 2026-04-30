@@ -627,6 +627,8 @@ class ExecutionService:
         # Phase G: Authentic Cognitive Service Injection
         if isinstance(call_kwargs.get('context'), dict):
             ctx = call_kwargs['context']
+            if trace_id and 'trace_id' not in ctx:
+                ctx['trace_id'] = trace_id
             if self._audit_service and 'audit_service' not in ctx:
                 ctx['audit_service'] = self._audit_service
             if self._memory_service and 'memory_service' not in ctx:

@@ -1,16 +1,41 @@
 import { useState, useEffect, useRef, useCallback } from 'react';
-import { ZentexTask, TasksByStatus } from './types';
-import { generateTestTasks, groupTasksByStatus } from './testData';
+import { TaskGroupCounts, TaskPageResponse, TaskPresentationGroup, TasksByStatus, ZentexTask } from './types';
 
-const TASKS_LIMIT_PER_GROUP = 100;
+const DEFAULT_PAGE_SIZE = 25;
+const EMPTY_COUNTS: TaskGroupCounts = {
+  in_progress: 0,
+  todo: 0,
+  blocked: 0,
+  pending: 0,
+  waiting_confirmation: 0,
+  completed: 0,
+  cancelled: 0,
+};
+
+const TAB_GROUPS: TaskPresentationGroup[] = [
+  'in_progress',
+  'todo',
+  'blocked',
+  'waiting_confirmation',
+  'completed',
+  'cancelled',
+];
+
+interface PaginationModel {
+  page: number;
+  pageSize: number;
+}
 
 interface UseTaskManagementReturn {
   tasksByStatus: TasksByStatus;
+  currentRows: ZentexTask[];
+  rowCount: number;
+  groupCounts: TaskGroupCounts;
+  paginationModel: PaginationModel;
+  setPaginationModel: (value: PaginationModel) => void;
   loading: boolean;
   error: string | null;
   fetchTasks: () => Promise<void>;
-  loadTestTasks: () => void; // Add test data loader
-  currentTasks: ZentexTask[];
   tabValue: number;
   setTabValue: (value: number) => void;
   sourceModuleFilter: string;
@@ -22,10 +47,17 @@ const useTaskManagement = (): UseTaskManagementReturn => {
   const [sourceModuleFilter, setSourceModuleFilter] = useState("all");
   const [tasksByStatus, setTasksByStatus] = useState<TasksByStatus>({
     in_progress: [],
+    todo: [],
+    blocked: [],
     pending: [],
     waiting_confirmation: [],
     completed: [],
     cancelled: []
+  });
+  const [groupCounts, setGroupCounts] = useState<TaskGroupCounts>(EMPTY_COUNTS);
+  const [paginationModel, setPaginationModel] = useState<PaginationModel>({
+    page: 0,
+    pageSize: DEFAULT_PAGE_SIZE,
   });
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
@@ -41,30 +73,36 @@ const useTaskManagement = (): UseTaskManagementReturn => {
       if (sourceModuleFilter !== "all") {
         params.set("source_module", sourceModuleFilter);
       }
-      params.set("limit_per_group", String(TASKS_LIMIT_PER_GROUP));
-      params.set("offset", "0");
-      const url = `/api/web/tasks/by-status?${params.toString()}`;
+      const group = TAB_GROUPS[tabValue] ?? 'completed';
+      params.set("group", group);
+      params.set("limit", String(paginationModel.pageSize));
+      params.set("offset", String(paginationModel.page * paginationModel.pageSize));
+      const url = `/api/web/tasks/page?${params.toString()}`;
       const res = await fetch(url);
       if (!res.ok) {
         throw new Error(`获取任务列表失败（HTTP ${res.status}）`);
       }
-      const data: TasksByStatus = await res.json();
-      // Add id field for DataGrid
+      const data: TaskPageResponse = await res.json();
+      const rows = data.items.map(t => ({ ...t, id: t.task_id }));
       const processedData: TasksByStatus = {
-        in_progress: data.in_progress.map(t => ({ ...t, id: t.task_id })),
-        pending: data.pending.map(t => ({ ...t, id: t.task_id })),
-        waiting_confirmation: data.waiting_confirmation.map(t => ({ ...t, id: t.task_id })),
-        completed: data.completed.map(t => ({ ...t, id: t.task_id })),
-        cancelled: data.cancelled.map(t => ({ ...t, id: t.task_id }))
+        in_progress: [],
+        todo: [],
+        blocked: [],
+        pending: [],
+        waiting_confirmation: [],
+        completed: [],
+        cancelled: [],
+        [group]: rows,
       };
       setTasksByStatus(processedData);
+      setGroupCounts(data.counts);
     } catch (err) {
       console.error('Failed to fetch tasks', err);
       setError(err instanceof Error ? err.message : "获取任务列表失败");
     } finally {
       setLoading(false);
     }
-  }, [sourceModuleFilter]);
+  }, [paginationModel.page, paginationModel.pageSize, sourceModuleFilter, tabValue]);
 
   const connectWebSocket = useCallback(() => {
     if (wsRef.current) {
@@ -116,17 +154,6 @@ const useTaskManagement = (): UseTaskManagementReturn => {
     };
   }, [fetchTasks]);
 
-  // Load test tasks
-  const loadTestTasks = useCallback(() => {
-    console.log('Loading test tasks...');
-    const testTasks = generateTestTasks();
-    const grouped = groupTasksByStatus(testTasks);
-    setTasksByStatus(grouped);
-    setError(null);
-    setLoading(false);
-    console.log(`Loaded ${testTasks.length} test tasks`);
-  }, []);
-
   useEffect(() => {
     fetchTasks();
     connectWebSocket();
@@ -141,17 +168,29 @@ const useTaskManagement = (): UseTaskManagementReturn => {
     };
   }, [fetchTasks, connectWebSocket]);
 
+  const handleSetTabValue = useCallback((value: number) => {
+    setTabValue(value);
+    setPaginationModel(previous => ({ ...previous, page: 0 }));
+  }, []);
+
+  const handleSetSourceModuleFilter = useCallback((value: string) => {
+    setSourceModuleFilter(value);
+    setPaginationModel(previous => ({ ...previous, page: 0 }));
+  }, []);
+
   const getCurrentTasks = useCallback((): ZentexTask[] => {
     switch (tabValue) {
       case 0:
         return tasksByStatus.in_progress;
       case 1:
-        return tasksByStatus.pending;
+        return tasksByStatus.todo ?? [];
       case 2:
-        return tasksByStatus.waiting_confirmation;
+        return tasksByStatus.blocked ?? [];
       case 3:
-        return tasksByStatus.completed;
+        return tasksByStatus.waiting_confirmation;
       case 4:
+        return tasksByStatus.completed;
+      case 5:
         return tasksByStatus.cancelled;
       default:
         return [];
@@ -159,18 +198,22 @@ const useTaskManagement = (): UseTaskManagementReturn => {
   }, [tabValue, tasksByStatus]);
 
   const currentTasks = getCurrentTasks();
+  const currentGroup = TAB_GROUPS[tabValue] ?? 'completed';
 
   return {
     tasksByStatus,
+    currentRows: currentTasks,
+    rowCount: groupCounts[currentGroup] ?? 0,
+    groupCounts,
+    paginationModel,
+    setPaginationModel,
     loading,
     error,
     fetchTasks,
-    loadTestTasks, // Export test data loader
-    currentTasks,
     tabValue,
-    setTabValue,
+    setTabValue: handleSetTabValue,
     sourceModuleFilter,
-    setSourceModuleFilter,
+    setSourceModuleFilter: handleSetSourceModuleFilter,
   };
 };
 

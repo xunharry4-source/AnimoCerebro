@@ -32,13 +32,16 @@ class McpServerConfig(BaseModel):
     protocol_version: str = "2024-11-05"
     tags: List[str] = Field(default_factory=list)  # 标签列表
     owner: Optional[str] = None  # 所有者/负责人
-    transport_type: Literal["stdio", "sse", "http"]
+    transport_type: Literal["stdio", "sse", "http", "streamable_http"]
     command: str = Field(min_length=1)
     args: List[str] = Field(default_factory=list)
     env: Dict[str, str] = Field(default_factory=dict)
+    auth_config: Dict[str, Any] = Field(default_factory=dict)
     scope: List[str] = Field(default_factory=lambda: ["read"])
-    auth_mode: Literal["none", "bearer", "api_key"] = "none"
+    auth_mode: Literal["none", "bearer", "api_key", "oauth_pkce"] = "none"
     tool_bindings: List[McpToolBindingConfig] = Field(default_factory=list)
+    help_doc_url: Optional[str] = None
+    documentation_learning_required: bool = True
 
 class McpToolDescriptor(BaseModel):
     model_config = ConfigDict(extra="forbid", frozen=True)
@@ -73,7 +76,7 @@ class McpServerRuntimeState(BaseModel):
     version: Optional[str] = None  # 版本号
     tags: List[str] = Field(default_factory=list)  # 标签列表
     owner: Optional[str] = None  # 所有者/负责人
-    transport_type: Literal["stdio", "sse", "http"]
+    transport_type: Literal["stdio", "sse", "http", "streamable_http"]
     status: Literal["online", "offline", "degraded"]
     tool_count: int = 0
     error_message: Optional[str] = None

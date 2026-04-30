@@ -54,6 +54,46 @@ from .route_handlers_shared import (
 router = APIRouter()
 _build_q9_question_snapshot = build_q9_question_snapshot
 
+_DEFAULT_SINGLE_QUESTION_TIMEOUT_SECONDS = 90.0
+_SINGLE_QUESTION_TIMEOUT_SECONDS_BY_ID = {
+    # Q3 performs real runtime inventory plus LLM-backed resource sufficiency
+    # inference. The clinical acceptance path regularly exceeds 300s on local
+    # providers, so the web route must not keep the old generic 90s budget.
+    "q3": 480.0,
+}
+
+
+def single_question_timeout_seconds(question_id: str) -> float:
+    return _SINGLE_QUESTION_TIMEOUT_SECONDS_BY_ID.get(
+        question_id,
+        _DEFAULT_SINGLE_QUESTION_TIMEOUT_SECONDS,
+    )
+
+
+def _sync_app_runtime_services_to_kernel(request: Request, service: Any) -> None:
+    """Keep web/API registered external capabilities visible to kernel Q runs."""
+    app_state = getattr(request.app, "state", None)
+    facade = getattr(service, "_facade", None)
+    get_kernel = getattr(facade, "_get_kernel_service", None)
+    kernel = get_kernel() if callable(get_kernel) else None
+    attach = getattr(kernel, "attach_dependencies", None)
+    if app_state is None or not callable(attach):
+        return
+    attach(
+        plugins_service=getattr(app_state, "plugin_service", None),
+        foundation_service=getattr(app_state, "foundation_service", None),
+        agent_service=getattr(app_state, "agent_service", None)
+        or getattr(app_state, "agent_coordination_service", None),
+        cli_service=getattr(app_state, "cli_service", None),
+        mcp_service=getattr(app_state, "mcp_service", None),
+        external_connector_service=getattr(app_state, "external_connector_service", None),
+        memory_service=getattr(app_state, "memory_service", None),
+        audit_service=getattr(app_state, "audit_service", None),
+        reflection_service=getattr(app_state, "reflection_service", None),
+        learning_service=getattr(app_state, "learning_service", None),
+        task_service=getattr(app_state, "task_service", None),
+    )
+
 
 async def _retry_q2_identity_input_module(request: Request, module_id: str) -> str:
     service = _get_nine_question_service(request)
@@ -170,7 +210,7 @@ async def _retry_single_nine_question_module(
 
     if question_id == "q2" and module_id in {"q2_q1_dependency_validation", "q2_identity_kernel_validation", "q2_functional_identity_chain"}:
         return await _retry_q2_identity_input_module(request, module_id)
-    if question_id == "q3" and module_id in {"q3_runtime_inventory", "workspace_permission_inventory", "cognitive_tools_inventory", "execution_tools_inventory", "connected_agents_inventory", "mcp_inventory", "cli_inventory", "memory_strategy_inventory"}:
+    if question_id == "q3" and module_id in {"q3_runtime_inventory", "workspace_permission_inventory", "cognitive_tools_inventory", "execution_tools_inventory", "connected_agents_inventory", "mcp_inventory", "cli_inventory", "external_connectors_inventory", "memory_strategy_inventory"}:
         return await _retry_q3_runtime_inventory_module(request, module_id)
     if question_id == "q4" and module_id in {"q4_inventory_validation", "q4_permission_validation", "q4_execution_capability_verification"}:
         return await _retry_q4_capability_input_module(request, module_id)
@@ -209,16 +249,26 @@ async def run_single_nine_question(
     try:
         session = await get_or_create_session(request)
         service = _get_nine_question_service(request)
+        _sync_app_runtime_services_to_kernel(request, service)
         audit_service = getattr(request.app.state, "audit_service", None)
         rerun_audit = FlowAudit.new("nine_questions", source_module=__name__)
         if audit_service:
             audit_service.record_flow_start(rerun_audit)
         try:
-            await service.run_single(question_id, timeout_seconds=90.0, audit=rerun_audit)
+            timeout_seconds = single_question_timeout_seconds(question_id)
+            await service.run_single(question_id, timeout_seconds=timeout_seconds, audit=rerun_audit)
         except asyncio.TimeoutError:
             if audit_service:
                 audit_service.record_flow_end(rerun_audit, status="failed")
-            raise HTTPException(status_code=503, detail={"error": "single_nine_question_timeout", "message": f"{question_id.upper()} 重跑超时（90s），请稍后重试。"})
+            raise HTTPException(
+                status_code=503,
+                detail={
+                    "error": "single_nine_question_timeout",
+                    "question_id": question_id,
+                    "timeout_seconds": timeout_seconds,
+                    "message": f"{question_id.upper()} 重跑超时（{int(timeout_seconds)}s），请稍后重试。",
+                },
+            )
         except ValueError as exc:
             if audit_service:
                 audit_service.record_flow_end(rerun_audit, status="failed")

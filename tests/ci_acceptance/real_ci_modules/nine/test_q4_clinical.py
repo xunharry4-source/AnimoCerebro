@@ -213,41 +213,24 @@ async def test_q4_clinical_authenticity():
     memory_module = module_map.get("q4_memory_integration", {}) if isinstance(module_map, dict) else {}
     memory_data = memory_module.get("data", {}) if isinstance(memory_module, dict) else {}
     memory_id = str(memory_data.get("memory_id") or "").strip() if isinstance(memory_data, dict) else ""
-    if memory_id and callable(getattr(memory_service, "get_record", None)):
-        memory_record = memory_service.get_record(memory_id)
-        assert memory_record is not None, f"Q4 memory_id not queryable: {memory_id}"
-    else:
-        memory_records = memory_service.query_managed_records(trace_id=trace_id, limit=100)
-        if not isinstance(memory_records, list):
-            memory_records = []
-        if not memory_records:
-            memory_records = memory_service.query_managed_records(limit=200)
-        assert isinstance(memory_records, list), "memory_service.query_managed_records must return list"
-        assert any(
-            str(getattr(item, "trace_id", "") or "") == trace_id
-            or "q4" in str(getattr(item, "title", "")).lower()
-            for item in memory_records
-        ), "No Q4-related memory record found"
+    assert memory_id, "Q4 memory integration did not return memory_id"
+    memory_record = memory_service.get_record(memory_id)
+    assert memory_record is not None, f"Q4 memory_id not queryable: {memory_id}"
+    assert str(getattr(memory_record, "trace_id", "") or "") == trace_id, "Q4 memory trace_id mismatch"
+    memory_records = memory_service.query_managed_records(trace_id=trace_id, limit=100)
+    assert isinstance(memory_records, list), "memory_service.query_managed_records must return list"
+    assert any(str(getattr(item, "memory_id", "") or "") == memory_id for item in memory_records), (
+        "Q4 memory_id not queryable by trace_id"
+    )
 
     # 9. 反思写入检查（优先使用模块产物 reflection_id 回查）
     reflection_module = module_map.get("q4_reflection_integration", {}) if isinstance(module_map, dict) else {}
     reflection_data = reflection_module.get("data", {}) if isinstance(reflection_module, dict) else {}
     reflection_id = str(reflection_data.get("reflection_id") or "").strip() if isinstance(reflection_data, dict) else ""
-    if reflection_id:
-        reflection_record = reflection_service.get_reflection(reflection_id)
-        assert reflection_record is not None, f"Q4 reflection_id not queryable: {reflection_id}"
-    else:
-        reflection_records = reflection_service.list_reflections({"trace_id": trace_id})
-        if not isinstance(reflection_records, list):
-            reflection_records = []
-        if not reflection_records:
-            reflection_records = reflection_service.list_reflections({})
-        assert isinstance(reflection_records, list), "reflection_service.list_reflections must return list"
-        assert any(
-            str(getattr(item, "trace_id", "") or "") == trace_id
-            or "q4" in str(getattr(item, "subject", "")).lower()
-            for item in reflection_records
-        ), "No Q4-related reflection record found"
+    assert reflection_id, "Q4 reflection integration did not return reflection_id"
+    reflection_record = reflection_service.get_reflection(reflection_id)
+    assert reflection_record is not None, f"Q4 reflection_id not queryable: {reflection_id}"
+    assert str(getattr(reflection_record, "trace_id", "") or "") == trace_id, "Q4 reflection trace_id mismatch"
 
     # 10. 审计写入检查（必须可查询到 q4/trace_id 相关审计流）
     audit_flows = audit_service.query_flows(flow_type="nine_questions", limit=200)

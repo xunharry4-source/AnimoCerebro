@@ -24,6 +24,7 @@ from plugins.nine_questions.q8_what_should_i_do_now.modules import (
     normalize_task_state,
 )
 from zentex.tasks.execution.task_persistence import task_persistence
+from zentex.nine_questions.q8_tasks import build_q8_separated_task_plan
 
 logger = logging.getLogger(__name__)
 
@@ -503,11 +504,6 @@ class WhatShouldIDoNowPlugin(BaseModel):
         context = dict(context)
         if trace_id and not context.get("trace_id"):
             context["trace_id"] = trace_id
-        requested_provider = str(context.get("model_provider") or "").strip()
-        if requested_provider != "__bad_llm_provider__":
-            context["model_provider"] = "openai_compat"
-            context["llm_model"] = "gemini-3-flash"
-            context["model"] = "gemini-3-flash"
         total_started = perf_counter()
         _q8_realtime_log("START execute")
         provider = require_model_provider(context)
@@ -882,6 +878,25 @@ class WhatShouldIDoNowPlugin(BaseModel):
                     ),
                 }
             )
+            separated_task_plan = build_q8_separated_task_plan(
+                snapshot_map={
+                    "q8": {
+                        "trace_id": trace_id,
+                        "context_updates": {
+                            "q8_q1_q7_snapshot": question_snapshot,
+                            "q8_persistent_task_state": normalized_task_state,
+                            "q8_priority_baseline": priority_baseline,
+                            "q8_functional_objectives": normalized_functional_objectives,
+                        },
+                    }
+                },
+                objective_profile=objective.model_dump(mode="json"),
+                task_queue=queue.model_dump(mode="json"),
+                normalized_task_state=normalized_task_state,
+                priority_baseline=priority_baseline,
+                functional_objectives=normalized_functional_objectives,
+            )
+            queue = queue.model_copy(update=separated_task_plan["combined_queue"])
             _q8_realtime_log(
                 "END normalize and validate Q8 LLM result "
                 f"{perf_counter() - phase_started:.3f}s "
@@ -899,6 +914,16 @@ class WhatShouldIDoNowPlugin(BaseModel):
                 payload={
                     "objective_profile": objective.model_dump(mode="json"),
                     "task_queue": queue.model_dump(mode="json"),
+                    "q8_separated_task_plan": {
+                        "internal": {
+                            "generated": separated_task_plan["internal"]["generated"],
+                            "planner": separated_task_plan["internal"]["planner"],
+                        },
+                        "external": {
+                            "generated": separated_task_plan["external"]["generated"],
+                            "planner": separated_task_plan["external"]["planner"],
+                        },
+                    },
                 },
                 status="completed",
                 output_kind="inference",
@@ -937,6 +962,16 @@ class WhatShouldIDoNowPlugin(BaseModel):
                 payload={
                     "objective_profile": objective.model_dump(mode="json"),
                     "task_queue": queue.model_dump(mode="json"),
+                    "q8_separated_task_plan": {
+                        "internal": {
+                            "generated": separated_task_plan["internal"]["generated"],
+                            "planner": separated_task_plan["internal"]["planner"],
+                        },
+                        "external": {
+                            "generated": separated_task_plan["external"]["generated"],
+                            "planner": separated_task_plan["external"]["planner"],
+                        },
+                    },
                 },
                 status=str(persistence_run.get("status") or "completed"),
                 output_kind="integration",
@@ -1028,6 +1063,16 @@ class WhatShouldIDoNowPlugin(BaseModel):
                 "q8_priority_baseline": priority_baseline,
                 "q8_functional_objectives": normalized_functional_objectives,
                 "q8_staged_reasoning": staged_reasoning,
+                "q8_separated_task_plan": {
+                    "internal": {
+                        "generated": separated_task_plan["internal"]["generated"],
+                        "planner": separated_task_plan["internal"]["planner"],
+                    },
+                    "external": {
+                        "generated": separated_task_plan["external"]["generated"],
+                        "planner": separated_task_plan["external"]["planner"],
+                    },
+                },
                 "q8_execution_diagnosis": diagnosis,
             }
             q8_module_runs = diagnosis.get("module_runs")
@@ -1101,19 +1146,13 @@ class WhatShouldIDoNowPlugin(BaseModel):
                     "q8_priority_baseline": result_payload.get("q8_priority_baseline") or {},
                     "q8_functional_objectives": result_payload.get("q8_functional_objectives") or [],
                     "q8_staged_reasoning": result_payload.get("q8_staged_reasoning") or {},
+                    "q8_separated_task_plan": result_payload.get("q8_separated_task_plan") or {},
                     "q8_execution_diagnosis": diagnosis,
                 },
                 confidence=0.8,
             )
 
         except Exception as exc:
-            committed_result = _existing_q8_committed_result(context)
-            if committed_result is not None:
-                logger.warning(
-                    "Q8 LLM synthesis failed; preserving committed completed Q8 snapshot: %s",
-                    exc,
-                )
-                return committed_result
             fail_module_run(
                 decision_projection_run,
                 error_code="q8_execution_failed",
@@ -1145,13 +1184,6 @@ class WhatShouldIDoNowPlugin(BaseModel):
             _q8_realtime_log("START run_tool")
             result = self.execute(dict(context))
         except Exception as exc:
-            committed_result = _existing_q8_committed_result(context)
-            if committed_result is not None:
-                logger.warning(
-                    "Q8 LLM synthesis failed; preserving committed completed Q8 snapshot: %s",
-                    exc,
-                )
-                return committed_result
             # 严禁在 run_tool 兜底层吞掉异常并只返回 partial_failed 而不打日志。
             # 否则 execute 被替换、短路或提前失败时，后台故障会完全丢失审计痕迹。
             logger.exception("Q8 run_tool failed")

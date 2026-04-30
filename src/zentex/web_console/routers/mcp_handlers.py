@@ -58,7 +58,25 @@ def handle_register_mcp_server(
     Registration is fail-closed: a degraded state means the health probe or
     tool-list failed, so the server should not be considered registered.
     """
-    service.register_server(McpServerConfig.model_validate(payload.model_dump(mode="json")))
+    request_data = payload.model_dump(mode="json")
+    inline_credential = request_data.pop("auth_credential", None)
+    if inline_credential:
+        credential_id = inline_credential.get("credential_id") or f"mcp-{payload.server_id}-{uuid4().hex[:12]}"
+        service.store_server_credential(
+            payload.server_id,
+            credential_type=str(inline_credential["credential_type"]),
+            secret_payload=dict(inline_credential["secret_payload"]),
+            credential_id=credential_id,
+            metadata=dict(inline_credential.get("metadata") or {}),
+        )
+        auth_config = dict(request_data.get("auth_config") or {})
+        auth_config.setdefault("type", inline_credential["credential_type"])
+        auth_config["credential_ref"] = credential_id
+        request_data["auth_config"] = auth_config
+        if request_data.get("auth_mode") == "none":
+            request_data["auth_mode"] = "api_key" if inline_credential["credential_type"] == "api_key" else "bearer"
+
+    service.register_server(McpServerConfig.model_validate(request_data))
     # Refresh and find the registered server
     states = handle_list_mcp_servers(service)
     registered = next((item for item in states if item.server_id == payload.server_id), None)

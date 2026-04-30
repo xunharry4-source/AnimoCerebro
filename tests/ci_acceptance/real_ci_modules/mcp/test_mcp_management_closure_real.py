@@ -158,6 +158,7 @@ def test_feature64_mcp_management_closure_real_requests(acceptance_app: FastAPI)
                 "command": f"{mcp_base_url}/primary",
                 "scope": ["read", "write"],
                 "auth_mode": "none",
+                "documentation_learning_required": False,
             },
             timeout=10,
         )
@@ -180,6 +181,7 @@ def test_feature64_mcp_management_closure_real_requests(acceptance_app: FastAPI)
                 "command": f"{mcp_base_url}/duplicate",
                 "scope": ["read"],
                 "auth_mode": "none",
+                "documentation_learning_required": False,
             },
             timeout=10,
         )
@@ -196,6 +198,7 @@ def test_feature64_mcp_management_closure_real_requests(acceptance_app: FastAPI)
                 "command": f"{mcp_base_url}/primary",
                 "scope": ["read"],
                 "auth_mode": "none",
+                "documentation_learning_required": False,
             },
             timeout=10,
         )
@@ -211,6 +214,7 @@ def test_feature64_mcp_management_closure_real_requests(acceptance_app: FastAPI)
                 "command": f"{mcp_base_url}/primary",
                 "scope": ["read", "write"],
                 "auth_mode": "none",
+                "documentation_learning_required": False,
             },
             timeout=10,
         )
@@ -222,7 +226,19 @@ def test_feature64_mcp_management_closure_real_requests(acceptance_app: FastAPI)
         server_map = {item["server_id"]: item for item in servers.json() if item["server_id"] in {primary_id, duplicate_id, incompatible_id}}
         assert set(server_map) == {primary_id, duplicate_id}
         assert server_map[primary_id]["status"] == "online"
+        assert server_map[primary_id]["transport_type"] == "http"
+        assert server_map[primary_id]["tool_count"] == 2
+        listed_primary_tools = {tool["tool_name"]: tool for tool in server_map[primary_id]["tools"]}
+        assert set(listed_primary_tools) == {"inspect", "write_note"}
+        assert listed_primary_tools["inspect"]["mcp_id"] == f"mcp:{primary_id}:inspect"
+        assert listed_primary_tools["write_note"]["mcp_id"] == f"mcp:{primary_id}:write_note"
+        assert "plugin_id" not in listed_primary_tools["inspect"]
+        assert "plugin_id" not in listed_primary_tools["write_note"]
         assert server_map[duplicate_id]["status"] == "online"
+        assert server_map[duplicate_id]["transport_type"] == "http"
+        assert server_map[duplicate_id]["tool_count"] == 1
+        assert server_map[duplicate_id]["tools"][0]["mcp_id"] == f"mcp:{duplicate_id}:inspect"
+        assert "plugin_id" not in server_map[duplicate_id]["tools"][0]
 
         write_call = requests.post(
             f"{base_url}/api/web/mcp-servers/{primary_id}/test-call",

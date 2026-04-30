@@ -7,7 +7,7 @@ from pathlib import Path
 from typing import Any, Callable, Dict, List, Optional, Union
 from uuid import uuid4
 
-from zentex.tasks.models import ZentexTask, TaskStatus, TaskType, TaskContract, CoordinationMode, TaskPriority, SuspendedTask
+from zentex.tasks.models import ZentexTask, TaskStatus, TaskType, TaskScope, TaskContract, CoordinationMode, TaskPriority, SuspendedTask
 from zentex.tasks.core.decomposer import TaskDecomposerPlugin
 from zentex.tasks.models.errors import TaskStateError
 from zentex.tasks.registry import TaskRegistry
@@ -145,7 +145,11 @@ class TaskManagementService:
         # Initialize the Action Heartbeat controller
         # We don't pass the registry here because TaskDispatchManager expects a PluginLayer,
         # not a TaskRegistry. The actual PluginService will be attached later via attach_dependencies.
-        self._dispatch_manager = TaskDispatchManager(plugin_layer=None, transcript_store=self.transcript_store)
+        self._dispatch_manager = TaskDispatchManager(
+            plugin_layer=None,
+            transcript_store=self.transcript_store,
+            task_service=self,
+        )
 
     def close(self) -> None:
         close = getattr(self._db, "close", None)
@@ -157,6 +161,9 @@ class TaskManagementService:
         *,
         plugin_service: Any = None,
         transcript_store: Any = None,
+        cli_service: Any = None,
+        mcp_service: Any = None,
+        external_connector_service: Any = None,
     ) -> None:
         """
         Inject external service references into the task management stack.
@@ -165,6 +172,18 @@ class TaskManagementService:
         if plugin_service is not None:
             self._dispatch_manager.set_plugin_layer(plugin_service)
             logger.info("TaskManagementService: PluginService attached to dispatcher.")
+        self._dispatch_manager.attach_external_services(
+            task_service=self,
+            cli_service=cli_service,
+            mcp_service=mcp_service,
+            external_connector_service=external_connector_service,
+        )
+        for external_service in (cli_service, mcp_service, external_connector_service):
+            if external_service is None or getattr(external_service, "_is_stub", False):
+                continue
+            attach_task_service = getattr(external_service, "attach_task_service", None)
+            if callable(attach_task_service):
+                attach_task_service(self)
         
         if transcript_store is not None:
             # Update transcript store if it was missing during init
@@ -185,6 +204,92 @@ class TaskManagementService:
             return TranscriptStore(session_id="task-management-runtime")
         return transcript_store
 
+    @staticmethod
+    def _derive_execution_assignment(data: Dict[str, Any]) -> Dict[str, Any]:
+        metadata = data.get("metadata") if isinstance(data.get("metadata"), dict) else {}
+        target_id = str(data.get("target_id") or "").strip()
+        dispatch_plugin_id = str(data.get("dispatch_plugin_id") or "").strip()
+        executor_type = str(metadata.get("executor_type") or "").strip()
+
+        if target_id:
+            assignment_type = executor_type or target_id.split(":", 1)[0]
+            return {
+                "status": "assigned",
+                "source": "target_id",
+                "executor_id": target_id,
+                "executor_type": assignment_type,
+                "label": target_id,
+            }
+        if dispatch_plugin_id:
+            return {
+                "status": "routed",
+                "source": "dispatch_plugin_id",
+                "executor_id": dispatch_plugin_id,
+                "executor_type": "internal_plugin",
+                "label": dispatch_plugin_id,
+            }
+        if executor_type:
+            if executor_type == "mcp":
+                server_id = str(metadata.get("mcp_server_id") or "").strip()
+                tool_name = str(metadata.get("mcp_tool_name") or "").strip()
+                executor_id = ":".join(part for part in ("mcp", server_id, tool_name) if part)
+            elif executor_type == "cli":
+                tool_name = str(metadata.get("cli_tool_name") or metadata.get("tool_name") or "").strip()
+                executor_id = ":".join(part for part in ("cli", tool_name) if part)
+            elif executor_type == "agent":
+                executor_id = str(metadata.get("agent_id") or "").strip()
+            else:
+                executor_id = str(metadata.get("executor_id") or "").strip()
+            return {
+                "status": "declared",
+                "source": "metadata",
+                "executor_id": executor_id or executor_type,
+                "executor_type": executor_type,
+                "label": executor_id or executor_type,
+            }
+        status = data.get("status")
+        status_value = getattr(status, "value", status)
+        if status_value == "todo":
+            assignment_status = "pending_dispatch"
+        elif status_value == "blocked":
+            assignment_status = "dispatch_blocked"
+        else:
+            assignment_status = "unassigned"
+        return {
+            "status": assignment_status,
+            "source": "none",
+            "executor_id": "internal",
+            "executor_type": "internal",
+            "label": "internal",
+        }
+
+    @staticmethod
+    def _derive_task_scope(data: Dict[str, Any]) -> str:
+        explicit_scope = str(
+            data.get("task_scope")
+            or data.get("execution_scope")
+            or data.get("scope")
+            or ""
+        ).strip().lower()
+        if explicit_scope in {TaskScope.INTERNAL.value, TaskScope.EXTERNAL.value}:
+            return explicit_scope
+
+        metadata = data.get("metadata") if isinstance(data.get("metadata"), dict) else {}
+        executor_type = str(metadata.get("executor_type") or data.get("executor_type") or "").strip().lower()
+        target_id = str(data.get("target_id") or "").strip().lower()
+        task_type = data.get("task_type")
+        task_type_value = str(getattr(task_type, "value", task_type) or "").strip().lower()
+
+        external_executor_types = {"agent", "cli", "mcp", "external_connector", "connector"}
+        external_target_prefixes = ("agent:", "cli:", "mcp:", "external_connector:", "connector:")
+        if (
+            task_type_value == TaskType.AGENT_DELEGATION.value
+            or executor_type in external_executor_types
+            or target_id.startswith(external_target_prefixes)
+        ):
+            return TaskScope.EXTERNAL.value
+        return TaskScope.INTERNAL.value
+
     def _task_to_dict(self, task: ZentexTask) -> Dict[str, Any]:
         """Convert ZentexTask to dictionary for database storage."""
         return {
@@ -197,6 +302,7 @@ class TaskManagementService:
             'idempotency_key': task.idempotency_key,
             'title': task.title,
             'task_type': task.task_type.value,
+            'task_scope': task.task_scope.value,
             'status': task.status.value,
             'priority': task.priority.value,
             'progress': task.progress,
@@ -212,6 +318,12 @@ class TaskManagementService:
             'metadata': task.metadata,
             'last_updated_at': task.last_updated_at.isoformat(),
             'created_at': task.created_at.isoformat(),
+            'attempt_count': task.attempt_count,
+            'last_error': task.last_error,
+            'execution_started_at': task.execution_started_at,
+            'execution_finished_at': task.execution_finished_at,
+            'dispatch_plugin_id': task.dispatch_plugin_id,
+            'execution_output': task.execution_output,
         }
 
     def _dict_to_task(self, data: Dict[str, Any]) -> ZentexTask:
@@ -219,6 +331,7 @@ class TaskManagementService:
         # Convert string enums back to enum types
         if 'task_type' in data and isinstance(data['task_type'], str):
             data['task_type'] = TaskType(data['task_type'])
+        data['task_scope'] = TaskScope(self._derive_task_scope(data))
         if 'status' in data and isinstance(data['status'], str):
             data['status'] = TaskStatus(data['status'])
         if 'priority' in data and isinstance(data['priority'], str):
@@ -246,6 +359,8 @@ class TaskManagementService:
 
         if 'contract' in data and isinstance(data['contract'], dict):
             data['contract'] = TaskContract(**data['contract'])
+
+        data["execution_assignment"] = self._derive_execution_assignment(data)
         
         return ZentexTask(**data)
 
@@ -280,6 +395,7 @@ class TaskManagementService:
                  tags: Optional[List[str]] = None,
                  parent_task_id: Optional[str] = None,
                  task_type: Optional[TaskType] = None,
+                 task_scope: Optional[TaskScope] = None,
                  originator_id: Optional[str] = None,
                  target_id: Optional[str] = None,
                  overdue_only: bool = False,
@@ -296,6 +412,7 @@ class TaskManagementService:
             status=status.value if status else None,
             priority=priority.value if priority else None,
             task_type=task_type.value if task_type else None,
+            task_scope=task_scope.value if task_scope else None,
             parent_task_id=parent_task_id,
             originator_id=originator_id,
             target_id=target_id,
@@ -314,6 +431,7 @@ class TaskManagementService:
                     tags: Optional[List[str]] = None,
                     parent_task_id: Optional[str] = None,
                     task_type: Optional[TaskType] = None,
+                    task_scope: Optional[TaskScope] = None,
                     originator_id: Optional[str] = None,
                     target_id: Optional[str] = None,
                     overdue_only: bool = False,
@@ -326,6 +444,7 @@ class TaskManagementService:
             status=status.value if status else None,
             priority=priority.value if priority else None,
             task_type=task_type.value if task_type else None,
+            task_scope=task_scope.value if task_scope else None,
             parent_task_id=parent_task_id,
             originator_id=originator_id,
             target_id=target_id,
@@ -334,6 +453,92 @@ class TaskManagementService:
             tags=tags,
             overdue_only=overdue_only,
         )
+
+    def list_tasks_page(
+        self,
+        *,
+        presentation_group: str,
+        source_module: Optional[str] = None,
+        task_scope: Optional[TaskScope] = None,
+        metadata_filters: Optional[Dict[str, Any]] = None,
+        limit: int = 25,
+        offset: int = 0,
+    ) -> Dict[str, Any]:
+        """Return one database-backed page for a task-center presentation group."""
+        if not self._task_dao:
+            raise RuntimeError("Task DAO is unavailable")
+        statuses = self._statuses_for_presentation_group(presentation_group)
+        capped_limit = max(1, min(int(limit), 500))
+        normalized_offset = max(0, int(offset))
+        rows = self._task_dao.list_tasks(
+            statuses=[status.value for status in statuses],
+            source_module=source_module,
+            task_scope=task_scope.value if task_scope else None,
+            metadata_filters=metadata_filters,
+            limit=capped_limit,
+            offset=normalized_offset,
+        )
+        total = self._task_dao.count_tasks(
+            statuses=[status.value for status in statuses],
+            source_module=source_module,
+            task_scope=task_scope.value if task_scope else None,
+            metadata_filters=metadata_filters,
+        )
+        return {
+            "group": presentation_group,
+            "items": [self._dict_to_task(item) for item in rows],
+            "total": total,
+            "limit": capped_limit,
+            "offset": normalized_offset,
+            "counts": self.count_tasks_by_presentation_group(
+                source_module=source_module,
+                task_scope=task_scope,
+                metadata_filters=metadata_filters,
+            ),
+        }
+
+    def count_tasks_by_presentation_group(
+        self,
+        *,
+        source_module: Optional[str] = None,
+        task_scope: Optional[TaskScope] = None,
+        metadata_filters: Optional[Dict[str, Any]] = None,
+    ) -> Dict[str, int]:
+        """Return exact database counts for task-center presentation groups."""
+        if not self._task_dao:
+            raise RuntimeError("Task DAO is unavailable")
+        return {
+            group: self._task_dao.count_tasks(
+                statuses=[status.value for status in self._statuses_for_presentation_group(group)],
+                source_module=source_module,
+                task_scope=task_scope.value if task_scope else None,
+                metadata_filters=metadata_filters,
+            )
+            for group in (
+                "in_progress",
+                "todo",
+                "blocked",
+                "pending",
+                "waiting_confirmation",
+                "completed",
+                "cancelled",
+            )
+        }
+
+    @staticmethod
+    def _statuses_for_presentation_group(group: str) -> List[TaskStatus]:
+        mapping = {
+            "in_progress": [TaskStatus.IN_PROGRESS],
+            "todo": [TaskStatus.TODO],
+            "blocked": [TaskStatus.BLOCKED],
+            "pending": [TaskStatus.TODO, TaskStatus.BLOCKED],
+            "waiting_confirmation": [TaskStatus.WAITING_CONFIRMATION],
+            "completed": [TaskStatus.DONE],
+            "cancelled": [TaskStatus.FAILED, TaskStatus.SUSPENDED, TaskStatus.ARCHIVED],
+        }
+        if group not in mapping:
+            raise ValueError(f"Invalid task presentation group: {group}")
+        return mapping[group]
 
     def list_tasks_grouped(
         self,
@@ -352,6 +557,18 @@ class TaskManagementService:
         return {
             "in_progress": self.list_tasks(
                 status=TaskStatus.IN_PROGRESS,
+                source_module=source_module,
+                limit=capped_limit,
+                offset=normalized_offset,
+            ),
+            "todo": self.list_tasks(
+                status=TaskStatus.TODO,
+                source_module=source_module,
+                limit=capped_limit,
+                offset=normalized_offset,
+            ),
+            "blocked": self.list_tasks(
+                status=TaskStatus.BLOCKED,
                 source_module=source_module,
                 limit=capped_limit,
                 offset=normalized_offset,
@@ -448,6 +665,8 @@ class TaskManagementService:
             task_type = payload["task_type"]
             if isinstance(task_type, str):
                 task_type = TaskType(task_type)
+            task_scope = TaskScope(self._derive_task_scope(payload))
+            execution_assignment = self._derive_execution_assignment(payload)
 
             started_at = None
             completed_at = None
@@ -462,6 +681,7 @@ class TaskManagementService:
                 idempotency_key=key,
                 title=str(payload["title"]),
                 task_type=task_type,
+                task_scope=task_scope,
                 status=status,
                 progress=float(payload.get("progress", 0.0)),
                 originator_id=str(payload["originator_id"]),
@@ -471,6 +691,7 @@ class TaskManagementService:
                 completed_at=completed_at,
                 created_at=now,
                 last_updated_at=now,
+                execution_assignment=execution_assignment,
             )
 
             self._shared_tasks.set(task.task_id, task)
@@ -483,6 +704,9 @@ class TaskManagementService:
 
     async def create_task(self, payload: Dict[str, Any]) -> ZentexTask:
         """Create a new task with database persistence."""
+        payload = dict(payload)
+        payload["task_scope"] = self._derive_task_scope(payload)
+        payload["execution_assignment"] = self._derive_execution_assignment(payload)
         # Check idempotency (Shared)
         key = payload.get("idempotency_key")
         if key:

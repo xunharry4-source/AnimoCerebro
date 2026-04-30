@@ -57,7 +57,11 @@ class _AcceptanceMcpClient:
             McpToolDescriptor(
                 tool_name="inspect",
                 description=f"Inspect {config.server_id}",
-                input_schema={"type": "object"},
+                input_schema={
+                    "type": "object",
+                    "properties": {"x": {"type": "integer"}},
+                    "required": ["x"],
+                },
                 mutates_state=False,
                 read_only_hint=True,
             )
@@ -77,6 +81,42 @@ class _AcceptanceMcpClient:
             "arguments": arguments,
             "trace_id": trace_id,
         }
+
+
+class _AcceptanceToolLearningLLM:
+    def generate_json(self, **kwargs: Any) -> dict[str, Any]:
+        context = kwargs.get("context")
+        if not isinstance(context, dict):
+            raise AssertionError("documentation learning LLM context must be a JSON object")
+        tool_type = context.get("tool_type")
+        if tool_type == "cli":
+            assert context.get("help_output"), "CLI learning must include real help/probe output"
+            return {
+                "usage_summary": f"CLI tool {context.get('tool_name')} can be dispatched by Zentex with argv arguments.",
+                "supported_commands": ["probe", "test-call"],
+                "supported_tools": [],
+                "argument_schema": {"type": "array", "items": {"type": "string"}},
+                "examples": [{"command": [context.get("command_executable"), "--help"]}],
+                "side_effects": [] if context.get("read_only") else ["May mutate local or external state."],
+                "auth_requirements": [],
+                "risk_notes": [] if context.get("read_only") else ["Execution-domain CLI requires explicit task-center dispatch."],
+                "task_routing_hints": [str(context.get("description") or context.get("tool_name"))],
+            }
+        if tool_type == "mcp":
+            schema = context.get("input_schema")
+            assert isinstance(schema, dict) and schema.get("type") == "object", "MCP learning must include tool input_schema"
+            return {
+                "usage_summary": f"MCP tool {context.get('tool_name')} accepts structured JSON arguments.",
+                "supported_commands": [],
+                "supported_tools": [str(context.get("tool_name"))],
+                "argument_schema": schema,
+                "examples": [{"tool": context.get("tool_name"), "arguments": {"x": 1}}],
+                "side_effects": [] if context.get("read_only_hint") else ["May mutate external state."],
+                "auth_requirements": [f"auth_mode={context.get('auth_mode')}"],
+                "risk_notes": [] if context.get("read_only_hint") else ["Execution-domain MCP tool requires explicit dispatch."],
+                "task_routing_hints": [str(context.get("tool_description") or context.get("tool_name"))],
+            }
+        raise AssertionError(f"unknown documentation learning tool_type: {tool_type}")
 
 
 class _AcceptanceAgentBridge:
@@ -216,7 +256,7 @@ def _build_mcp_service(transcript_store: _AcceptanceTranscriptStore) -> McpInteg
         cognitive_registry=cognitive_registry,
         execution_registry=execution_registry,
     )
-    return McpIntegrationService(adapter=adapter)
+    return McpIntegrationService(adapter=adapter, llm_service=_AcceptanceToolLearningLLM())
 
 
 def _close_if_supported(resource: Any, *, label: str, errors: list[str]) -> None:
@@ -323,7 +363,10 @@ def acceptance_app() -> Generator[FastAPI, None, None]:
     app.state.task_service = get_task_service()
     app.state.agent_coordination_service = get_agent_service()
     app.state.agent_coordination_service.bridge = _AcceptanceAgentBridge()
-    app.state.cli_service = get_cli_service(transcript_store=transcript_store)
+    app.state.cli_service = get_cli_service(
+        transcript_store=transcript_store,
+        llm_service=_AcceptanceToolLearningLLM(),
+    )
     app.state.mcp_service = _build_mcp_service(transcript_store)
     upgrade_components = build_default_upgrade_runtime_components(memory_service=app.state.memory_service)
     app.state.upgrade_management_store = upgrade_components.management_store

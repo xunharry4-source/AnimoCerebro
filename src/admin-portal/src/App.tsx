@@ -53,6 +53,7 @@ import UpgradeManagement from "./pages/upgrades/UpgradeManagement";
 import UpgradeDetailPage from "./pages/upgrades/UpgradeDetailPage";
 import CliAssetManager from "./pages/cli/CliAssetManager";
 import CliToolDetailPage from "./pages/cli/CliToolDetailPage";
+import ExternalConnectorCenter from "./pages/external-connectors/ExternalConnectorCenter";
 import McpServerDashboard from "./pages/mcp/McpServerDashboard";
 import McpServerDetail from "./pages/mcp/McpServerDetail";
 import AuditReplay from "./pages/audit/AuditReplay";
@@ -128,6 +129,12 @@ const NAV_ITEMS = (t: any) => [
     matchPrefix: "/console/mcp-servers",
     title: t("app.nav.mcp.title"),
     subtitle: t("app.nav.mcp.subtitle"),
+  },
+  {
+    path: "/console/external-connectors",
+    matchPrefix: "/console/external-connectors",
+    title: "外部应用连接器",
+    subtitle: "Office / SaaS / 文件应用",
   },
   {
     path: "/console/audit",
@@ -281,6 +288,7 @@ export default function App() {
           <Route path="/console/cli-tools/:toolName" element={<CliToolDetailPage />} />
           <Route path="/console/mcp-servers" element={<McpServerDashboard />} />
           <Route path="/console/mcp-servers/:server_id" element={<McpServerDetail />} />
+          <Route path="/console/external-connectors" element={<ExternalConnectorCenter />} />
           <Route path="/console/audit" element={<AuditTraceCenterPage />} />
           <Route path="/console/audit/model-provider" element={<AuditReplay />} />
           <Route path="/console/audit/review-ledger" element={<AuditReviewLedgerPage />} />

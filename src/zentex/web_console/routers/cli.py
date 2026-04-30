@@ -8,7 +8,7 @@ from fastapi import APIRouter, Depends, HTTPException
 from zentex.cli.service import CliIntegrationService
 from zentex.cli.asset_control import build_cli_adapter_overview
 from zentex.cli.models import CliToolRegistrationConfig
-from zentex.foundation.contracts.service_response import ServiceStatus
+from zentex.foundation.contracts.service_response import ServiceErrorCode, ServiceStatus
 
 logger = logging.getLogger(__name__)
 from zentex.web_console.contracts.cli import (
@@ -20,11 +20,23 @@ from zentex.web_console.contracts.cli import (
     CliTaskSummary,
     CliExecutionHistory,
     CliCreditScore,
+    ToolUsageProfile,
 )
 from zentex.web_console.dependencies import get_cli_service
 
 
 router = APIRouter()
+
+
+def _raise_registration_service_error(response: Any) -> None:
+    status_code = 409 if response.code == ServiceErrorCode.STATE_CONFLICT.value else 400
+    detail = {
+        "error_code": response.code or ServiceErrorCode.INVALID_ARGUMENT.value,
+        "error_stage": "cli_registration",
+        "operator_message": response.message,
+        "message": response.message,
+    }
+    raise HTTPException(status_code=status_code, detail=detail)
 
 
 @router.get("/cli-adapters")
@@ -51,7 +63,7 @@ def register_cli_tool(
     try:
         response = service.register_tool(CliToolRegistrationConfig.model_validate(payload.model_dump(mode="json")))
         if response.status != ServiceStatus.ok:
-            raise HTTPException(status_code=400, detail=response.message)
+            _raise_registration_service_error(response)
         
         # ServiceResponse.data contains the CliToolRuntimeState
         return CliToolItem.model_validate(response.data.model_dump(mode="json"))
@@ -79,6 +91,19 @@ def get_cli_tool_health(
         return service.get_tool_health(tool_name)
     except KeyError as exc:
         raise HTTPException(status_code=404, detail=f"CLI tool '{tool_name}' not registered") from exc
+
+
+@router.get("/cli-tools/{tool_name}/usage-profile", response_model=ToolUsageProfile)
+def get_cli_tool_usage_profile(
+    tool_name: str,
+    service: CliIntegrationService = Depends(get_cli_service),
+) -> ToolUsageProfile:
+    if service is None:
+        raise HTTPException(status_code=503, detail="CLI service is not available")
+    try:
+        return ToolUsageProfile.model_validate(service.get_usage_profile(tool_name).model_dump(mode="json"))
+    except KeyError as exc:
+        raise HTTPException(status_code=404, detail=f"Usage profile for CLI tool '{tool_name}' not found") from exc
 
 
 @router.get("/cli-tools/closure/diagnostics")

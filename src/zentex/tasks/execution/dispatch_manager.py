@@ -16,13 +16,25 @@ class TaskDispatchManager:
     Implements 'Option A': Sequential execution with safety locks.
     """
 
-    def __init__(self, plugin_layer: Any = None, transcript_store: Any = None):
+    def __init__(
+        self,
+        plugin_layer: Any = None,
+        transcript_store: Any = None,
+        task_service: Any = None,
+        cli_service: Any = None,
+        mcp_service: Any = None,
+        external_connector_service: Any = None,
+    ):
         # Initialize the physical execution stack
         self._executor = InternalPluginExecutor(plugin_layer)
         self._router = UnifiedTaskRouter(
             internal_executor=self._executor, 
             transcript_store=transcript_store
         )
+        self._task_service = task_service
+        self._cli_service = cli_service
+        self._mcp_service = mcp_service
+        self._external_connector_service = external_connector_service
         
         # Load posture from shared state
         self._posture_store = SharedStateStore("q9_posture")
@@ -30,6 +42,23 @@ class TaskDispatchManager:
     def set_plugin_layer(self, plugin_layer: Any) -> None:
         """Propagate the plugin layer reference to the underlying executor."""
         self._executor.set_plugin_layer(plugin_layer)
+
+    def attach_external_services(
+        self,
+        *,
+        task_service: Any = None,
+        cli_service: Any = None,
+        mcp_service: Any = None,
+        external_connector_service: Any = None,
+    ) -> None:
+        if task_service is not None:
+            self._task_service = task_service
+        if cli_service is not None:
+            self._cli_service = cli_service
+        if mcp_service is not None:
+            self._mcp_service = mcp_service
+        if external_connector_service is not None:
+            self._external_connector_service = external_connector_service
         
     def get_worker(self, task_dao: Any) -> TaskExecutionWorker:
         """Instantiate a worker with current cognitive constraints."""
@@ -47,6 +76,10 @@ class TaskDispatchManager:
             task_dao=task_dao,
             router=self._router,
             internal_executor=self._executor,
+            task_service=self._task_service,
+            cli_service=self._cli_service,
+            mcp_service=self._mcp_service,
+            external_connector_service=self._external_connector_service,
             config=config
         )
 

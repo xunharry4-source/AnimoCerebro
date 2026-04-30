@@ -171,6 +171,14 @@ def _create_full_app(registry: ServiceRegistry) -> object:
             logger.exception("web_dev: failed to seed task/agent runtime state")
     except Exception:
         logger.exception("web_dev: failed to inspect event loop for task/agent runtime seeding")
+
+    attach_task_dependencies = getattr(task_service, "attach_dependencies", None)
+    if callable(attach_task_dependencies):
+        attach_task_dependencies(
+            plugin_service=plugin_service,
+            cli_service=cli_service,
+            mcp_service=mcp_service,
+        )
     
     # --- Create full app ----------------------------------------------------
     app = create_app(

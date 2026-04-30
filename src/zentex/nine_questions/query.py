@@ -86,6 +86,7 @@ QUESTION_MODULE_IDS: dict[str, list[str]] = {
         "connected_agents_inventory",
         "mcp_inventory",
         "cli_inventory",
+        "external_connectors_inventory",
         "memory_strategy_inventory",
         "resource_sufficiency_inference",
     ],

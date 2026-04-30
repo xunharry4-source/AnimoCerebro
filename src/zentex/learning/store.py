@@ -139,6 +139,7 @@ class LearningStore:
         session_id: str,
         entry_type: str,
         limit: int = 100,
+        offset: int = 0,
     ) -> list[LearningStoreEntry]:
         with self._lock:
             rows = self._conn.execute(
@@ -147,11 +148,28 @@ class LearningStore:
                 FROM learning_events
                 WHERE session_id = ? AND entry_type = ?
                 ORDER BY timestamp DESC
-                LIMIT ?
+                LIMIT ? OFFSET ?
                 """,
-                (session_id, entry_type, limit),
+                (session_id, entry_type, limit, max(0, offset)),
             ).fetchall()
         return [self._row_to_entry(row) for row in rows]
+
+    def count_history_entries(
+        self,
+        *,
+        session_id: str,
+        entry_type: str,
+    ) -> int:
+        with self._lock:
+            row = self._conn.execute(
+                """
+                SELECT COUNT(*) AS count
+                FROM learning_events
+                WHERE session_id = ? AND entry_type = ?
+                """,
+                (session_id, entry_type),
+            ).fetchone()
+        return int(row["count"] if row is not None else 0)
 
     def delete_entries(self, entry_ids: list[str]) -> int:
         if not entry_ids:

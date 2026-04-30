@@ -15,6 +15,7 @@ FAIL-CLOSED CONTRACT (Zentex Codex §1):
 
 from fastapi import APIRouter, HTTPException, Query, Request
 
+from zentex.common.flow_audit import FlowAudit
 from zentex.learning.service import LearningDirection
 from zentex.web_console.contracts.learning import (
     LearningHistoryResponse,
@@ -23,7 +24,7 @@ from zentex.web_console.contracts.learning import (
     LearningRunCycleResponse,
 )
 from zentex.web_console.services.learning import (
-    build_learning_history,
+    build_learning_history_page,
     build_learning_plan,
     execute_learning_cycle,
 )
@@ -39,7 +40,8 @@ def learning_plan() -> LearningPlanResponse:
 @router.get("/learning/history", response_model=LearningHistoryResponse)
 def learning_history(
     request: Request,
-    limit: int = Query(default=200, ge=1, le=2000),
+    page: int = Query(default=1, ge=1),
+    page_size: int = Query(default=25, ge=1, le=500),
 ) -> LearningHistoryResponse:
     learning_service = getattr(request.app.state, "learning_service", None)
     if learning_service is None:
@@ -50,8 +52,7 @@ def learning_history(
                 "message": "LearningService 未初始化，学习历史不可用。",
             },
         )
-    rows = build_learning_history(learning_service, limit=limit)
-    return LearningHistoryResponse(rows=rows)
+    return build_learning_history_page(learning_service, page=page, page_size=page_size)
 
 
 @router.post("/learning/run-cycle", response_model=LearningRunCycleResponse)
@@ -70,10 +71,24 @@ async def learning_run_cycle(request: Request, body: LearningRunCycleRequest) ->
         allowed = ", ".join(d.value for d in LearningDirection)
         raise HTTPException(status_code=400, detail=f"Invalid direction. Allowed: {allowed}") from exc
 
-    return await execute_learning_cycle(
-        request,
-        direction=direction,
-        dry_run=body.dry_run,
-        load_factor=body.load_factor,
-        extra_context=body.extra_context,
-    )
+    raw_question_refs = (body.extra_context or {}).get("question_driver_refs")
+    question_refs = [str(item) for item in raw_question_refs] if isinstance(raw_question_refs, list) else []
+    audit_service = getattr(request.app.state, "audit_service", None)
+    audit = FlowAudit.new("learning", source_module=__name__, question_driver_refs=question_refs)
+    if audit_service:
+        audit_service.record_flow_start(audit)
+    try:
+        result = await execute_learning_cycle(
+            request,
+            direction=direction,
+            dry_run=body.dry_run,
+            load_factor=body.load_factor,
+            extra_context={**(body.extra_context or {}), **audit.as_payload()},
+        )
+    except Exception:
+        if audit_service:
+            audit_service.record_flow_end(audit, status="failed")
+        raise
+    if audit_service:
+        audit_service.record_flow_end(audit, status="completed")
+    return result

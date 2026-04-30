@@ -158,6 +158,15 @@ async def test_q3_clinical_authenticity():
     if isinstance(module_runs, dict):
         module_runs = list(module_runs.values())
     assert isinstance(module_runs, list) and len(module_runs) > 0, "No module_runs found in q3 execution diagnosis"
+    invalid_question_ids = [
+        {
+            "module_id": item.get("module_id"),
+            "question_id": item.get("question_id"),
+        }
+        for item in module_runs
+        if isinstance(item, dict) and str(item.get("question_id") or "").strip().lower() != "q3"
+    ]
+    assert not invalid_question_ids, f"Q3 module_runs contain invalid question_id values: {invalid_question_ids}"
 
     required_run_modules = {
         "workspace_permission_inventory",
@@ -211,29 +220,26 @@ async def test_q3_clinical_authenticity():
 
     # 8. 记忆写入检查
     memory_records = memory_service.query_managed_records(trace_id=trace_id, limit=100)
-    if not isinstance(memory_records, list):
-        memory_records = []
-    if not memory_records:
-        memory_records = memory_service.query_managed_records(limit=200)
     assert isinstance(memory_records, list), "memory_service.query_managed_records must return list"
     assert any(
-        "q3" in str(getattr(item, "title", "")).lower()
-        or "q3" in str(getattr(item, "summary", "")).lower()
-        or "q3" in " ".join(getattr(item, "tags", []) or []).lower()
+        str(getattr(item, "trace_id", "") or "") == trace_id
+        and (
+            "q3" in str(getattr(item, "title", "")).lower()
+            or "q3" in str(getattr(item, "summary", "")).lower()
+            or "q3" in " ".join(getattr(item, "tags", []) or []).lower()
+        )
         for item in memory_records
     ), "No Q3-related memory record found for trace_id"
 
     # 9. 反思写入检查
     reflection_records = reflection_service.list_reflections({"trace_id": trace_id})
-    if not isinstance(reflection_records, list):
-        reflection_records = []
-    if not reflection_records:
-        reflection_records = reflection_service.list_reflections({})
     assert isinstance(reflection_records, list), "reflection_service.list_reflections must return list"
     assert any(
         str(getattr(item, "trace_id", "") or "") == trace_id
-        or "q3" in str(getattr(item, "subject", "")).lower()
-        or "q3" in str((getattr(item, "context", {}) or {}).get("question_id", "")).lower()
+        and (
+            "q3" in str(getattr(item, "subject", "")).lower()
+            or "q3" in str((getattr(item, "context", {}) or {}).get("question_id", "")).lower()
+        )
         for item in reflection_records
     ), "No Q3-related reflection record found for trace_id"
 

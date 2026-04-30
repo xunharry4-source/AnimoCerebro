@@ -1,0 +1,20 @@
+{
+  "connector_id": "echo_connector",
+  "name": "Echo Connector",
+  "version": "1.0.0",
+  "runtime": "python",
+  "entrypoint": "connector.py",
+  "target_app": "local.echo",
+  "connector_type": "sdk_app",
+  "profile_level": "described",
+  "capabilities": [
+    {
+      "name": "echo",
+      "description": "Echo a message and return transparent evidence.",
+      "read_only": true,
+      "risk_level": "read_only",
+      "verification": "evidence"
+    }
+  ],
+  "description": "Smallest standalone stdin/stdout JSON connector example."
+}

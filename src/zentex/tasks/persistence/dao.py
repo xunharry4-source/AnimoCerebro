@@ -56,6 +56,7 @@ class TaskDAO(BaseDAO):
     def create_task(self, task_data: Dict[str, Any]) -> bool:
         """Create a new task."""
         try:
+            task_data.setdefault("task_scope", "internal")
             # Serialize JSON fields
             if 'subtask_ids' in task_data and isinstance(task_data['subtask_ids'], list):
                 task_data['subtask_ids'] = json.dumps(task_data['subtask_ids'])
@@ -112,8 +113,10 @@ class TaskDAO(BaseDAO):
     def list_tasks(
         self,
         status: Optional[str] = None,
+        statuses: Optional[List[str]] = None,
         priority: Optional[str] = None,
         task_type: Optional[str] = None,
+        task_scope: Optional[str] = None,
         parent_task_id: Optional[str] = None,
         originator_id: Optional[str] = None,
         target_id: Optional[str] = None,
@@ -127,8 +130,10 @@ class TaskDAO(BaseDAO):
         """List tasks with optional filters applied in SQLite."""
         where_clause, params = self._build_task_filter_clause(
             status=status,
+            statuses=statuses,
             priority=priority,
             task_type=task_type,
+            task_scope=task_scope,
             parent_task_id=parent_task_id,
             originator_id=originator_id,
             target_id=target_id,
@@ -156,8 +161,10 @@ class TaskDAO(BaseDAO):
     def count_tasks(
         self,
         status: Optional[str] = None,
+        statuses: Optional[List[str]] = None,
         priority: Optional[str] = None,
         task_type: Optional[str] = None,
+        task_scope: Optional[str] = None,
         parent_task_id: Optional[str] = None,
         originator_id: Optional[str] = None,
         target_id: Optional[str] = None,
@@ -169,8 +176,10 @@ class TaskDAO(BaseDAO):
         """Count tasks with the same database-backed filters used by list_tasks."""
         where_clause, params = self._build_task_filter_clause(
             status=status,
+            statuses=statuses,
             priority=priority,
             task_type=task_type,
+            task_scope=task_scope,
             parent_task_id=parent_task_id,
             originator_id=originator_id,
             target_id=target_id,
@@ -186,8 +195,10 @@ class TaskDAO(BaseDAO):
         self,
         *,
         status: Optional[str] = None,
+        statuses: Optional[List[str]] = None,
         priority: Optional[str] = None,
         task_type: Optional[str] = None,
+        task_scope: Optional[str] = None,
         parent_task_id: Optional[str] = None,
         originator_id: Optional[str] = None,
         target_id: Optional[str] = None,
@@ -202,12 +213,21 @@ class TaskDAO(BaseDAO):
         if status:
             conditions.append("status = ?")
             params.append(status)
+        if statuses:
+            normalized_statuses = [item for item in statuses if item]
+            if normalized_statuses:
+                placeholders = ", ".join("?" for _ in normalized_statuses)
+                conditions.append(f"status IN ({placeholders})")
+                params.extend(normalized_statuses)
         if priority:
             conditions.append("priority = ?")
             params.append(priority)
         if task_type:
             conditions.append("task_type = ?")
             params.append(task_type)
+        if task_scope:
+            conditions.append("task_scope = ?")
+            params.append(task_scope)
         if parent_task_id:
             conditions.append("parent_task_id = ?")
             params.append(parent_task_id)

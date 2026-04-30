@@ -218,7 +218,10 @@ class SystemAssembler:
                     fromlist=["get_service"],
                 )
                 get_service_fn = getattr(module, "get_service")
-                instance = get_service_fn()
+                if name in {"cli", "mcp"}:
+                    instance = get_service_fn(llm_service=registry.get("llm"))
+                else:
+                    instance = get_service_fn()
                 # Launcher only assembles the public service entrypoint. It must
                 # not trigger module-internal lifecycle work such as plugin
                 # discovery, registration, rehydration, or relation seeding.
@@ -274,7 +277,9 @@ class SystemAssembler:
         elif tasks and hasattr(tasks, "attach_dependencies"):
             tasks.attach_dependencies(
                 plugin_service=registry.get("plugins"),
-                transcript_store=getattr(kernel, "transcript_store", None)
+                transcript_store=getattr(kernel, "transcript_store", None),
+                cli_service=registry.get("cli"),
+                mcp_service=registry.get("mcp"),
             )
             logger.info("SystemAssembler: Attached dependencies to 'tasks' service.")
 

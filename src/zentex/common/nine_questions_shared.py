@@ -112,6 +112,20 @@ class LLMServiceModelProviderAdapter:
             self._root_context.get("llm_request_timeout_seconds"),
             default=240.0,
         )
+        max_output_tokens = int(
+            context.get("max_output_tokens")
+            or context.get("llm_max_output_tokens")
+            or self._root_context.get("max_output_tokens")
+            or self._root_context.get("llm_max_output_tokens")
+            or 1024
+        )
+        temperature = float(
+            context.get("temperature")
+            or context.get("llm_temperature")
+            or self._root_context.get("temperature")
+            or self._root_context.get("llm_temperature")
+            or 0.2
+        )
 
         call = self._llm_service.generate_json(
             prompt=prompt,
@@ -122,6 +136,8 @@ class LLMServiceModelProviderAdapter:
             decision_id=normalized_caller_context.decision_id,
             model_provider=provider_key,
             model=model,
+            temperature=temperature,
+            max_output_tokens=max_output_tokens,
             metadata={
                 "trace_id": normalized_caller_context.trace_id,
                 "question_driver_refs": list(normalized_caller_context.question_driver_refs),
@@ -602,11 +618,13 @@ def start_module_run(
     module_id: str,
     *,
     source: str = "nine_questions",
+    question_id: str | None = None,
 ) -> dict[str, Any]:
     normalized_module_id = str(module_id or "").strip()
+    normalized_question_id = str(question_id or "").strip().lower()
     run = {
         "module_id": normalized_module_id,
-        "question_id": _derive_question_id_from_module(normalized_module_id),
+        "question_id": normalized_question_id or _derive_question_id_from_module(normalized_module_id),
         "status": "running",
         "error_code": "",
         "error_message": "",
@@ -847,10 +865,18 @@ def run_memory_integration(
         )
     else:
         try:
+            memory_content = {
+                "trace_id": trace_id,
+                "question_id": question_id,
+                "module_id": run["module_id"],
+                "recorded_at": datetime.now(timezone.utc).isoformat(),
+                "execution_id": str(uuid4()),
+                "payload": json_safe_payload(payload),
+            }
             remember_result = memory_service.remember(
                 title=title,
                 summary=summary,
-                content=json.dumps(json_safe_payload(payload), ensure_ascii=False, indent=2),
+                content=json.dumps(memory_content, ensure_ascii=False, indent=2),
                 layer=layer,
                 source=source,
                 trace_id=trace_id,
@@ -861,8 +887,21 @@ def run_memory_integration(
             memory_id = str(getattr(remember_result, "memory_id", "") or "")
             if not memory_id:
                 raise RuntimeError("Memory service returned no durable memory_id")
-            if callable(getattr(memory_service, "get_record", None)) and memory_service.get_record(memory_id) is None:
-                raise RuntimeError(f"Memory record not queryable after write: {memory_id}")
+            if callable(getattr(memory_service, "get_record", None)):
+                written_record = memory_service.get_record(memory_id)
+                if written_record is None:
+                    raise RuntimeError(f"Memory record not queryable after write: {memory_id}")
+                if str(getattr(written_record, "trace_id", "") or "") != trace_id:
+                    raise RuntimeError(
+                        f"Memory record trace mismatch after write: memory_id={memory_id} "
+                        f"expected_trace_id={trace_id} actual_trace_id={getattr(written_record, 'trace_id', '')}"
+                    )
+            if callable(getattr(memory_service, "query_managed_records", None)):
+                trace_rows = memory_service.query_managed_records(trace_id=trace_id, limit=100)
+                if not any(str(getattr(item, "memory_id", "") or "") == memory_id for item in trace_rows):
+                    raise RuntimeError(
+                        f"Memory record not queryable by trace_id after write: memory_id={memory_id} trace_id={trace_id}"
+                    )
             run["data"]["memory_id"] = memory_id
             finish_module_run(run, status="completed")
         except Exception as exc:
@@ -916,7 +955,8 @@ def run_reflection_integration(
         )
     else:
         try:
-            normalized_reflection_type = ReflectionType(str(reflection_type).strip())
+            raw_reflection_type = getattr(reflection_type, "value", reflection_type)
+            normalized_reflection_type = ReflectionType(str(raw_reflection_type).strip())
         except ValueError:
             fail_module_run(
                 run,

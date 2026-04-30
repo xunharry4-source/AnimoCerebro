@@ -6,7 +6,7 @@ from typing import Any, Optional, Union
 
 from zentex.common.flow_audit import FlowAudit
 from zentex.common.storage_paths import get_storage_paths
-from zentex.web_console.contracts.audit import AuditPagePayload, TurnAuditPagePayload
+from zentex.web_console.contracts.audit import AuditPagePayload, AuditTraceStartsPagePayload, TurnAuditPagePayload
 from zentex.web_console.contracts.model_provider import ModelProviderTraceItem
 from zentex.web_console.contracts.replay import TraceReplayPayload, TurnReplayPayload
 from zentex.audit.trace_store import AuditTraceStore
@@ -62,6 +62,17 @@ class AuditService:
         status: Optional[str] = None,
     ) -> list[dict[str, Any]]:
         return self._store.list_flows(limit=limit, flow_type=flow_type, status=status)
+
+    def query_trace_starts(self, *, limit: int = 100) -> list[dict[str, Any]]:
+        return self._store.list_trace_starts(limit=limit)
+
+    def query_trace_starts_page(
+        self,
+        *,
+        page: int = 1,
+        page_size: int = 40,
+    ) -> AuditTraceStartsPagePayload:
+        return AuditTraceStartsPagePayload(**self._store.list_trace_starts_page(page=page, page_size=page_size))
 
     def record_flow_start(self, audit: FlowAudit) -> None:
         self._store.record_flow_start(audit)

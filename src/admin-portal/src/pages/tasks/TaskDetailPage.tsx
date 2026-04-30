@@ -89,6 +89,17 @@ const TaskDetailPage: React.FC = () => {
     navigate(`/console/tasks/${subtaskId}`);
   };
 
+  const formatToken = (namespace: string, value?: string | null) => {
+    if (!value) {
+      return t('common.unknown', { defaultValue: '未知' });
+    }
+    return t(`${namespace}.${value}`, { defaultValue: String(value).replace(/_/g, ' ') });
+  };
+
+  const formatTaskDescription = (task: ZentexTask) => {
+    return task.remarks || task.metadata?.description || task.metadata?.summary || task.metadata?.objective || t('tasks.noDescription');
+  };
+
   if (loading) {
     return (
       <Box sx={{ display: 'flex', justifyContent: 'center', alignItems: 'center', minHeight: '60vh' }}>
@@ -109,6 +120,18 @@ const TaskDetailPage: React.FC = () => {
   }
 
   const { task, subtasks, statistics, dependencies, dependents, interventions } = taskData;
+  const executorLabel =
+    task.execution_assignment?.label ||
+    (task.execution_assignment?.status === 'pending_dispatch'
+      ? t('tasks.assignmentStatuses.pending_dispatch')
+      : task.execution_assignment?.status === 'dispatch_blocked'
+        ? t('tasks.assignmentStatuses.dispatch_blocked')
+        : task.target_id || task.dispatch_plugin_id || t('tasks.unassigned'));
+  const executorSourceLabel = task.execution_assignment?.source
+    ? t(`tasks.assignmentSources.${task.execution_assignment.source}`, {
+        defaultValue: String(task.execution_assignment.source).replace(/_/g, ' '),
+      })
+    : '';
 
   return (
     <Box sx={{ p: 3 }}>
@@ -142,7 +165,7 @@ const TaskDetailPage: React.FC = () => {
                     <Typography variant="h5" component="span">
                       {task.title}
                     </Typography>
-                    <Tooltip title="复制任务ID">
+                    <Tooltip title={t('tasks.copyTaskId')}>
                       <IconButton size="small" onClick={handleCopyId}>
                         <CopyIcon fontSize="small" />
                       </IconButton>
@@ -157,14 +180,25 @@ const TaskDetailPage: React.FC = () => {
 
               <Divider />
 
+              <Box>
+                <Typography variant="subtitle2" color="text.secondary">{t('tasks.description')}</Typography>
+                <Typography variant="body1" sx={{ whiteSpace: 'pre-wrap' }}>
+                  {formatTaskDescription(task)}
+                </Typography>
+              </Box>
+
               <Box sx={{ display: 'grid', gridTemplateColumns: { xs: '1fr', md: '1fr 1fr' }, gap: 2 }}>
                 <Box>
                   <Typography variant="subtitle2" color="text.secondary">{t('tasks.type')}</Typography>
-                  <Typography variant="body1">{task.task_type}</Typography>
+                  <Typography variant="body1">{formatToken('tasks.types', task.task_type)}</Typography>
+                </Box>
+                <Box>
+                  <Typography variant="subtitle2" color="text.secondary">{t('tasks.taskScope')}</Typography>
+                  <Typography variant="body1">{formatToken('tasks.scopes', task.task_scope || 'internal')}</Typography>
                 </Box>
                 <Box>
                   <Typography variant="subtitle2" color="text.secondary">{t('tasks.priority')}</Typography>
-                  <Typography variant="body1">{task.priority || 'medium'}</Typography>
+                  <Typography variant="body1">{formatToken('tasks.priorities', task.priority || 'medium')}</Typography>
                 </Box>
                 <Box>
                   <Typography variant="subtitle2" color="text.secondary">{t('tasks.originator')}</Typography>
@@ -172,18 +206,23 @@ const TaskDetailPage: React.FC = () => {
                 </Box>
                 <Box>
                   <Typography variant="subtitle2" color="text.secondary">{t('tasks.executor')}</Typography>
-                  <Typography variant="body1">{task.target_id || t('tasks.unassigned')}</Typography>
+                  <Typography variant="body1">{executorLabel}</Typography>
+                  {executorSourceLabel ? (
+                    <Typography variant="caption" color="text.secondary">
+                      {executorSourceLabel}
+                    </Typography>
+                  ) : null}
                 </Box>
                 <Box>
                   <Typography variant="subtitle2" color="text.secondary">{t('tasks.createdAt')}</Typography>
                   <Typography variant="body1">
-                    {task.created_at ? new Date(task.created_at).toLocaleString('zh-CN') : '-'}
+                    {task.created_at ? new Date(task.created_at).toLocaleString() : '-'}
                   </Typography>
                 </Box>
                 <Box>
                   <Typography variant="subtitle2" color="text.secondary">{t('tasks.startedAt')}</Typography>
                   <Typography variant="body1">
-                    {task.started_at ? new Date(task.started_at).toLocaleString('zh-CN') : '-'}
+                    {task.started_at ? new Date(task.started_at).toLocaleString() : '-'}
                   </Typography>
                 </Box>
               </Box>
@@ -246,7 +285,7 @@ const TaskDetailPage: React.FC = () => {
                     {dependencies.map((dep) => (
                       <Chip
                         key={dep.task_id}
-                        label={`${dep.title} (${dep.status})`}
+                        label={`${dep.title} (${formatToken('tasks.statuses', dep.status)})`}
                         onClick={() => handleViewSubtask(dep.task_id)}
                         sx={{ cursor: 'pointer' }}
                       />
@@ -264,7 +303,7 @@ const TaskDetailPage: React.FC = () => {
                     {dependents.map((dep) => (
                       <Chip
                         key={dep.task_id}
-                        label={`${dep.title} (${dep.status})`}
+                        label={`${dep.title} (${formatToken('tasks.statuses', dep.status)})`}
                         onClick={() => handleViewSubtask(dep.task_id)}
                         sx={{ cursor: 'pointer' }}
                       />
@@ -298,10 +337,18 @@ const TaskDetailPage: React.FC = () => {
               </Typography>
               <Stack spacing={1}>
                 <Typography variant="body2">
-                  <strong>{t('tasks.sourceModule')}:</strong> {String(task.metadata.source_module || '--')}
+                  <strong>{t('tasks.sourceModule')}:</strong> {task.metadata.source_module
+                    ? t(`tasks.sourceModules.${task.metadata.source_module}`, {
+                        defaultValue: String(task.metadata.source_module).replace(/[_-]/g, ' '),
+                      })
+                    : t('tasks.none')}
                 </Typography>
                 <Typography variant="body2">
-                  <strong>{t('tasks.workflowStatus')}:</strong> {String(task.metadata.workflow_status || '--')}
+                  <strong>{t('tasks.workflowStatus')}:</strong> {task.metadata.workflow_status
+                    ? t(`tasks.workflowStatuses.${task.metadata.workflow_status}`, {
+                        defaultValue: String(task.metadata.workflow_status).replace(/_/g, ' '),
+                      })
+                    : t('tasks.none')}
                 </Typography>
                 <Typography variant="body2">
                   <strong>{t('tasks.workflowProgress')}:</strong> {String(task.metadata.workflow_progress ?? '--')}

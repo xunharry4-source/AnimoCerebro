@@ -846,6 +846,22 @@ class NineQuestionService:
                 "preserve_previous_success": True,
                 "reason": "existing_snapshot_qualified_new_snapshot_unqualified",
             }
+        if cls._snapshot_is_intrinsically_qualified(existing) and cls._snapshot_is_intrinsically_qualified(new):
+            existing_metrics = cls._snapshot_health_metrics(existing)
+            new_metrics = cls._snapshot_health_metrics(new)
+            if (
+                new_metrics["authenticity_rank"] >= existing_metrics["authenticity_rank"]
+                and new_metrics["completed_modules"] >= existing_metrics["completed_modules"]
+                and new_metrics["failed_modules"] <= existing_metrics["failed_modules"]
+                and new_metrics["has_real_trace"]
+                and new_metrics["has_summary"]
+            ):
+                return {
+                    "accept_snapshot": True,
+                    "merge_diagnostics_only": False,
+                    "preserve_previous_success": False,
+                    "reason": "qualified_rerun_accepted",
+                }
         if cls._snapshot_is_healthier(existing, new):
             return {
                 "accept_snapshot": False,

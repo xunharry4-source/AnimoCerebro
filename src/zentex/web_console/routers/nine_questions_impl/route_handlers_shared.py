@@ -49,8 +49,11 @@ def inject_app_runtime_context(request: Request, context: dict[str, Any]) -> dic
     for key in (
         "foundation_service",
         "agent_service",
+        "agent_coordination_service",
         "cli_service",
         "mcp_service",
+        "external_connector_service",
+        "task_service",
         "memory_service",
         "audit_service",
         "reflection_service",
@@ -60,6 +63,8 @@ def inject_app_runtime_context(request: Request, context: dict[str, Any]) -> dic
     ):
         if key not in enriched and app_state is not None and hasattr(app_state, key):
             enriched[key] = getattr(app_state, key)
+    if "agent_service" not in enriched and "agent_coordination_service" in enriched:
+        enriched["agent_service"] = enriched["agent_coordination_service"]
     plugin_service = get_plugin_service(request)
     if plugin_service is not None:
         enriched["plugin_service"] = plugin_service

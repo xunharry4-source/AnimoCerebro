@@ -46,7 +46,7 @@ import {
 // --- Types ---
 
 export type AgentTrustLevel = 'unknown' | 'pending' | 'trusted' | 'restricted' | 'revoked';
-export type AgentStatus = 'idle' | 'active' | 'busy' | 'offline' | 'handshake_failed' | 'audit_failed';
+export type AgentStatus = 'idle' | 'active' | 'busy' | 'offline' | 'handshake_failed' | 'audit_failed' | 'invocation_blocked';
 
 export interface AgentAsset {
   agent_id: string;
@@ -138,6 +138,7 @@ const StatusDot = ({ status }: { status: AgentStatus }) => {
     offline: '#9e9e9e',
     handshake_failed: '#f44336',
     audit_failed: '#d32f2f',
+    invocation_blocked: '#d32f2f',
   };
   return (
     <Tooltip title={`Status: ${status}`}>
@@ -306,6 +307,10 @@ export const AgentAssetManager: React.FC = () => {
           </Button>
         </Stack>
 
+        <Alert severity="info" variant="outlined">
+          {t('agents.pageFunctionHelp')}
+        </Alert>
+
         {/* Error Alert */}
         {error && (
           <Alert severity="error" data-testid="agent-list-error">
@@ -339,6 +344,7 @@ export const AgentAssetManager: React.FC = () => {
               <MenuItem value="offline">{t('agents.status.offline')}</MenuItem>
               <MenuItem value="handshake_failed">{t('agents.status.handshakeFailed')}</MenuItem>
               <MenuItem value="audit_failed">{t('agents.status.auditFailed')}</MenuItem>
+              <MenuItem value="invocation_blocked">{t('agents.status.invocationBlocked')}</MenuItem>
             </Select>
           </FormControl>
           <FormControl sx={{ minWidth: { xs: "100%", md: 200 } }} size="small">
@@ -441,7 +447,7 @@ export const AgentAssetManager: React.FC = () => {
                   <Box sx={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 2 }}>
                      <Box>
                        <Typography variant="caption" display="block" color="text.secondary">{t('common.status')}</Typography>
-                       <Typography variant="body2">{t(`agents.status.${agent.status === 'handshake_failed' ? 'handshakeFailed' : agent.status === 'audit_failed' ? 'auditFailed' : agent.status}`)}</Typography>
+                       <Typography variant="body2">{t(`agents.status.${agent.status === 'handshake_failed' ? 'handshakeFailed' : agent.status === 'audit_failed' ? 'auditFailed' : agent.status === 'invocation_blocked' ? 'invocationBlocked' : agent.status}`)}</Typography>
                      </Box>
                      <Box>
                        <Typography variant="caption" display="block" color="text.secondary">{t('agents.registeredAt')}</Typography>
@@ -475,10 +481,14 @@ export const AgentAssetManager: React.FC = () => {
 
           {activeStep === 0 && (
             <Box sx={{ display: 'flex', flexDirection: 'column', gap: 3, mt: 2 }}>
+              <Alert severity="info" variant="outlined">
+                {t('agents.stepProfileHelp')}
+              </Alert>
               <TextField 
                 label={t('agents.techName')} 
                 fullWidth 
                 variant="outlined" 
+                helperText={t('agents.techNameHelp')}
                 value={regData.name} 
                 onChange={(e) => setRegData({ ...regData, name: e.target.value })}
               />
@@ -486,6 +496,7 @@ export const AgentAssetManager: React.FC = () => {
                 label={t('agents.humanName')} 
                 fullWidth 
                 variant="outlined" 
+                helperText={t('agents.humanNameHelp')}
                 value={regData.agent_name} 
                 onChange={(e) => setRegData({ ...regData, agent_name: e.target.value })}
                 required
@@ -494,6 +505,7 @@ export const AgentAssetManager: React.FC = () => {
                 label={t('agents.version')} 
                 fullWidth 
                 variant="outlined" 
+                helperText={t('agents.versionHelp')}
                 value={regData.version} 
                 onChange={(e) => setRegData({ ...regData, version: e.target.value })}
                 required
@@ -504,6 +516,7 @@ export const AgentAssetManager: React.FC = () => {
                 multiline 
                 rows={2} 
                 variant="outlined" 
+                helperText={t('agents.funcDescHelp')}
                 value={regData.function_description} 
                 onChange={(e) => setRegData({ ...regData, function_description: e.target.value })}
                 required
@@ -513,10 +526,14 @@ export const AgentAssetManager: React.FC = () => {
 
           {activeStep === 1 && (
             <Box sx={{ display: 'flex', flexDirection: 'column', gap: 3, mt: 2 }}>
+              <Alert severity="info" variant="outlined">
+                {t('agents.stepSecurityHelp')}
+              </Alert>
               <TextField 
                 label={t('agents.endpoint')} 
                 fullWidth 
                 variant="outlined" 
+                helperText={t('agents.endpointHelp')}
                 value={regData.endpoint} 
                 onChange={(e) => setRegData({ ...regData, endpoint: e.target.value })}
               />
@@ -525,14 +542,34 @@ export const AgentAssetManager: React.FC = () => {
                 fullWidth 
                 variant="outlined" 
                 type="password" 
+                helperText={t('agents.authTokenHelp')}
                 value={regData.auth_token} 
                 onChange={(e) => setRegData({ ...regData, auth_token: e.target.value })}
+              />
+              <TextField
+                label={t('agents.roleTag')}
+                fullWidth
+                variant="outlined"
+                helperText={t('agents.roleTagHelp')}
+                value={regData.role_tag}
+                onChange={(e) => setRegData({ ...regData, role_tag: e.target.value })}
+              />
+              <TextField
+                label={t('agents.scope')}
+                fullWidth
+                variant="outlined"
+                helperText={t('agents.scopeHelp')}
+                value={regData.scope}
+                onChange={(e) => setRegData({ ...regData, scope: e.target.value })}
               />
             </Box>
           )}
 
           {activeStep === 2 && (
             <Box sx={{ mt: 2 }}>
+                <Alert severity="info" variant="outlined" sx={{ mb: 2 }}>
+                  {t('agents.stepHandshakeHelp')}
+                </Alert>
                 <Alert severity="warning" sx={{ mb: 2 }}>
                   {t('agents.auditWarning')}
                 </Alert>

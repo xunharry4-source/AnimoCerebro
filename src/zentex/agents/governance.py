@@ -589,10 +589,10 @@ class RoleAgentGovernanceManager:
         )
 
     def _perform_handshake(self, request: GovernedAgentRegistration, protocol: AgentProtocol) -> CapabilityHandshake:
-        payload = {"agent_id": request.agent_id, "requested_scope": request.scope, "version": request.version}
+        # The local agent_id belongs to Zentex's registry only. Do not require
+        # external Agents to receive, persist, or echo it during discovery.
+        payload = {"version": request.version}
         remote = self._http_json("POST", self._url(request.endpoint, protocol.handshake_path), body=payload, token=request.auth_token)
-        if str(remote.get("agent_id")) != request.agent_id:
-            raise ValueError("agent handshake identity mismatch")
         remote_capabilities = [CapabilityDescriptor.model_validate(row) for row in remote.get("capabilities", [])]
         if not remote_capabilities:
             raise ValueError("agent handshake returned no capabilities")

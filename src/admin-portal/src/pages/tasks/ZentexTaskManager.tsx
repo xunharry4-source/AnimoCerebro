@@ -20,7 +20,6 @@ import {
 import {
   Assignment as TaskIcon,
   Refresh as RefreshIcon,
-  PlayCircle as TestIcon,
 } from '@mui/icons-material';
 import { DataGrid, GridColDef } from '@mui/x-data-grid';
 
@@ -34,12 +33,14 @@ const ZentexTaskManager: React.FC = () => {
   const { t } = useTranslation();
   const navigate = useNavigate();
   const {
-    tasksByStatus,
+    currentRows,
+    rowCount,
+    groupCounts,
+    paginationModel,
+    setPaginationModel,
     loading,
     error,
     fetchTasks,
-    loadTestTasks, // Add test data loader
-    currentTasks,
     tabValue,
     setTabValue,
     sourceModuleFilter,
@@ -48,11 +49,50 @@ const ZentexTaskManager: React.FC = () => {
 
   const TABS = [
     { label: t('tasks.inProgress'), key: 'in_progress' },
-    { label: t('tasks.pending'), key: 'pending' },
+    { label: t('tasks.statuses.todo'), key: 'todo' },
+    { label: t('tasks.statuses.blocked'), key: 'blocked' },
     { label: t('tasks.waitingConfirmation'), key: 'waiting_confirmation' },
     { label: t('tasks.completed'), key: 'completed' },
     { label: t('tasks.cancelled'), key: 'cancelled' },
   ];
+
+  const formatToken = (namespace: string, value?: string | null) => {
+    if (!value) {
+      return t('common.unknown', { defaultValue: '未知' });
+    }
+    return t(`${namespace}.${value}`, { defaultValue: String(value).replace(/_/g, ' ') });
+  };
+
+  const formatSourceModule = (task: ZentexTask) => {
+    const source = task.metadata?.source_module || task.originator_id || 'core';
+    return t(`tasks.sourceModules.${source}`, { defaultValue: String(source).replace(/[_-]/g, ' ') });
+  };
+
+  const formatWorkflowStatus = (task: ZentexTask) => {
+    const workflowStatus = task.metadata?.workflow_status;
+    if (!workflowStatus) {
+      return t('tasks.none');
+    }
+    return t(`tasks.workflowStatuses.${workflowStatus}`, { defaultValue: String(workflowStatus).replace(/_/g, ' ') });
+  };
+
+  const formatTaskDescription = (task: ZentexTask) => {
+    return task.remarks || task.metadata?.description || task.metadata?.summary || task.metadata?.objective || t('tasks.noDescription');
+  };
+
+  const formatExecutor = (task: ZentexTask) => {
+    const assignment = task.execution_assignment;
+    if (assignment?.label) {
+      return assignment.label;
+    }
+    if (assignment?.status === 'pending_dispatch') {
+      return t('tasks.assignmentStatuses.pending_dispatch');
+    }
+    if (assignment?.status === 'dispatch_blocked') {
+      return t('tasks.assignmentStatuses.dispatch_blocked');
+    }
+    return task.target_id || task.dispatch_plugin_id || t('tasks.unassigned');
+  };
 
   const handleTabChange = (_event: React.SyntheticEvent, newValue: number) => {
     setTabValue(newValue);
@@ -65,18 +105,35 @@ const ZentexTaskManager: React.FC = () => {
   const columns: GridColDef[] = [
     { field: 'task_id', headerName: t('tasks.taskId'), width: 100 },
     { field: 'title', headerName: t('tasks.title'), width: 250 },
-    { field: 'task_type', headerName: t('tasks.type'), width: 150 },
+    {
+      field: 'description',
+      headerName: t('tasks.description'),
+      width: 320,
+      valueGetter: (_value, row: ZentexTask) => formatTaskDescription(row),
+    },
+    {
+      field: 'task_type',
+      headerName: t('tasks.type'),
+      width: 150,
+      valueGetter: (_value, row: ZentexTask) => formatToken('tasks.types', row.task_type),
+    },
+    {
+      field: 'task_scope',
+      headerName: t('tasks.taskScope'),
+      width: 120,
+      valueGetter: (_value, row: ZentexTask) => formatToken('tasks.scopes', row.task_scope || 'internal'),
+    },
     {
       field: 'source_module',
       headerName: t('tasks.sourceModule'),
       width: 140,
-      valueGetter: (_value, row: ZentexTask) => row.metadata?.source_module || 'core',
+      valueGetter: (_value, row: ZentexTask) => formatSourceModule(row),
     },
     {
       field: 'workflow_status',
       headerName: t('tasks.workflowStatus'),
       width: 150,
-      valueGetter: (_value, row: ZentexTask) => row.metadata?.workflow_status || '--',
+      valueGetter: (_value, row: ZentexTask) => formatWorkflowStatus(row),
     },
     {
       field: 'status',
@@ -88,7 +145,7 @@ const ZentexTaskManager: React.FC = () => {
       field: 'priority',
       headerName: t('tasks.priority'),
       width: 100,
-      valueGetter: (_value, row: ZentexTask) => row.priority || 'medium',
+      valueGetter: (_value, row: ZentexTask) => formatToken('tasks.priorities', row.priority || 'medium'),
     },
     {
       field: 'progress',
@@ -125,6 +182,12 @@ const ZentexTaskManager: React.FC = () => {
     },
     { field: 'originator_id', headerName: t('tasks.originator'), width: 130 },
     {
+      field: 'executor',
+      headerName: t('tasks.executor'),
+      width: 220,
+      valueGetter: (_value, row: ZentexTask) => formatExecutor(row),
+    },
+    {
       field: 'actions',
       headerName: t('tasks.actions'),
       width: 120,
@@ -136,7 +199,7 @@ const ZentexTaskManager: React.FC = () => {
           onClick={() => handleViewDetail(params.row)}
           startIcon={<TaskIcon />}
         >
-          详情
+          {t('tasks.viewDetails')}
         </Button>
       ),
     },
@@ -158,14 +221,6 @@ const ZentexTaskManager: React.FC = () => {
             </Typography>
           </Box>
           <Stack direction="row" spacing={1}>
-            <Button 
-              startIcon={<TestIcon />} 
-              onClick={loadTestTasks} 
-              variant="contained"
-              color="secondary"
-            >
-              加载测试数据
-            </Button>
             <Button 
               startIcon={<RefreshIcon />} 
               onClick={fetchTasks} 
@@ -215,7 +270,7 @@ const ZentexTaskManager: React.FC = () => {
               scrollButtons="auto"
             >
               {TABS.map((tab, index) => {
-                const count = tasksByStatus[tab.key as keyof typeof tasksByStatus]?.length || 0;
+                const count = groupCounts[tab.key as keyof typeof groupCounts] || 0;
                 return (
                   <Tab
                     key={tab.key}
@@ -243,16 +298,15 @@ const ZentexTaskManager: React.FC = () => {
                 </Typography>
                 <Box sx={{ height: 600, width: '100%' }}>
                   <DataGrid
-                    rows={index === 0 ? tasksByStatus.in_progress :
-                          index === 1 ? tasksByStatus.pending :
-                          index === 2 ? tasksByStatus.waiting_confirmation :
-                          index === 3 ? tasksByStatus.completed :
-                          tasksByStatus.cancelled}
+                    rows={currentRows}
                     columns={columns}
                     loading={loading}
                     getRowId={(row) => row.task_id}
                     pageSizeOptions={[10, 25, 50]}
-                    initialState={{ pagination: { paginationModel: { pageSize: 10 } } }}
+                    paginationMode="server"
+                    paginationModel={paginationModel}
+                    onPaginationModelChange={setPaginationModel}
+                    rowCount={rowCount}
                     disableRowSelectionOnClick
                     localeText={{
                       noRowsLabel: t('tasks.noData'),

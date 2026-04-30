@@ -167,6 +167,7 @@ class KernelService:
         self._agent_service: Any = None
         self._cli_service: Any = None
         self._mcp_service: Any = None
+        self._external_connector_service: Any = None
         self._nq_plugin_service: Any = None
         self._reflection_service: Any = None
         self._learning_service: Any = None
@@ -292,6 +293,7 @@ class KernelService:
         agent_service: Any = None,
         cli_service: Any = None,
         mcp_service: Any = None,
+        external_connector_service: Any = None,
         reflection_service: Any = None,
         learning_service: Any = None,
         task_service: Any = None,
@@ -323,6 +325,8 @@ class KernelService:
             self._cli_service = cli_service
         if mcp_service is not None:
             self._mcp_service = mcp_service
+        if external_connector_service is not None:
+            self._external_connector_service = external_connector_service
         if reflection_service is not None:
             self._reflection_service = reflection_service
         if learning_service is not None:
@@ -2119,6 +2123,7 @@ class KernelService:
             "agent_service": context.get("agent_service") or self._agent_service,
             "cli_service": context.get("cli_service") or self._cli_service,
             "mcp_service": context.get("mcp_service") or self._mcp_service,
+            "external_connector_service": context.get("external_connector_service") or self._external_connector_service,
             "environment_service": context.get("environment_service") or self._environment_service,
             "memory_service": context.get("memory_service") or self._memory_service,
             "audit_service": context.get("audit_service") or self._audit_service,

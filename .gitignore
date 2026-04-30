@@ -46,6 +46,9 @@ MANIFEST
 .env
 .env.local
 .env.*.local
+# Sensitive test configuration files (contain API keys)
+*.local.json
+!tests/**/*.example.local.json
 # Logs
 *.log
 logs/

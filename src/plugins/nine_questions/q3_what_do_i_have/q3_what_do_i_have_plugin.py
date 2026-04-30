@@ -103,8 +103,10 @@ class Q3WhatDoIHavePlugin(BaseModel):
         activated_strategy_patches = runtime_inventory["activated_strategy_patches"]
         runtime_cli_rows = runtime_inventory["runtime_cli_rows"]
         runtime_mcp_rows = runtime_inventory["runtime_mcp_rows"]
+        runtime_external_connector_rows = runtime_inventory["runtime_external_connector_rows"]
         runtime_cli_payloads = runtime_inventory["runtime_cli_payloads"]
         runtime_mcp_payloads = runtime_inventory["runtime_mcp_payloads"]
+        runtime_external_connector_payloads = runtime_inventory["runtime_external_connector_payloads"]
         q3_module_results = runtime_inventory_context["module_results"]
         q3_module_runs = runtime_inventory_context["module_runs"]
         q3_persistent_module_runs = bind_module_runs(context, "q3", initial=q3_module_runs)
@@ -546,8 +548,10 @@ class Q3WhatDoIHavePlugin(BaseModel):
                     "connected_agent_rows": connected_agent_catalog,
                     "mcp_servers": runtime_mcp_payloads,
                     "cli_tools": runtime_cli_payloads,
+                    "external_connectors": runtime_external_connector_payloads,
                     "cli_tool_rows": runtime_cli_rows,
                     "mcp_server_rows": runtime_mcp_rows,
+                    "external_connector_rows": runtime_external_connector_rows,
                     "functional_assets": functional_assets,
                 },
                 "workspaces_and_permissions": {

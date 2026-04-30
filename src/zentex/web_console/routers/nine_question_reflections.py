@@ -4,9 +4,10 @@ from datetime import datetime, timezone
 from threading import Lock
 from typing import Any, Optional
 
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, Request
 from pydantic import BaseModel, Field
 
+from zentex.common.flow_audit import FlowAudit
 from zentex.reflection.nine_question_effectiveness import (
     dependent_questions,
     run_question_reflection,
@@ -32,6 +33,7 @@ class ForceReflectionRequest(BaseModel):
 def force_reflect_question(
     question_id: str,
     body: ForceReflectionRequest,
+    request: Request,
     runtime: Any = Depends(get_runtime),
     upgrade_execution_service: Any = Depends(get_upgrade_execution_service),
     reflection_service: Any = Depends(get_reflection_service),
@@ -49,17 +51,28 @@ def force_reflect_question(
     targets = dependent_questions(qid) if body.include_dependencies else [qid]
 
     results: list[dict[str, Any]] = []
+    audit_service = getattr(request.app.state, "audit_service", None)
+    audit = FlowAudit.new("reflection", source_module=__name__, question_driver_refs=targets)
+    if audit_service:
+        audit_service.record_flow_start(audit)
     with _force_reflection_lock:
-        for target_q in targets:
-            result = run_question_reflection(
-                reflection_service=reflection_service,
-                question_id=target_q,
-                state_payload=state_payload,
-                scope="question_with_dependencies" if body.include_dependencies else "single_question",
-                trigger="manual_force",
-                upgrade_execution_service=upgrade_execution_service,
-            )
-            results.append(result)
+        try:
+            for target_q in targets:
+                result = run_question_reflection(
+                    reflection_service=reflection_service,
+                    question_id=target_q,
+                    state_payload=state_payload,
+                    scope="question_with_dependencies" if body.include_dependencies else "single_question",
+                    trigger="manual_force",
+                    upgrade_execution_service=upgrade_execution_service,
+                )
+                results.append(result)
+        except Exception:
+            if audit_service:
+                audit_service.record_flow_end(audit, status="failed")
+            raise
+    if audit_service:
+        audit_service.record_flow_end(audit, status="completed")
 
     return {
         "started": True,

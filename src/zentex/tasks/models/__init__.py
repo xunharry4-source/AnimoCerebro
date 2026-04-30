@@ -6,6 +6,7 @@ from __future__ import annotations
 from zentex.tasks.models.models import (
     TaskStatus,
     TaskType,
+    TaskScope,
     TaskPriority,
     CoordinationMode,
     SuspendedTask,
@@ -24,6 +25,7 @@ __all__ = [
     # Enums
     "TaskStatus",
     "TaskType",
+    "TaskScope",
     "TaskPriority",
     "CoordinationMode",
     "FailureMode",

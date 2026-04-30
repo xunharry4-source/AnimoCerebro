@@ -11,11 +11,13 @@ from zentex.nine_questions.q8_phase_b_realtime_gate import (
     evaluate_q8_phase_b_realtime_task_gate,
     resolve_phase_b_realtime_gate_config,
 )
-from zentex.tasks.models import TaskContract, TaskPriority, TaskStatus, TaskType, ZentexTask
+from zentex.tasks.models import TaskContract, TaskPriority, TaskScope, TaskStatus, TaskType, ZentexTask
 from zentex.tasks.verification.models import (
     VerificationStrategy,
     VerificationType,
 )
+from plugins.nine_questions.q8_what_should_i_do_now.external_tasks import build_external_task_plan
+from plugins.nine_questions.q8_what_should_i_do_now.internal_tasks import build_internal_task_plan
 
 
 def _string_list(value: object) -> list[str]:
@@ -39,7 +41,8 @@ def normalize_q8_task_rows(raw: object) -> list[dict[str, Any]]:
             title = str(item.get("title") or item.get("task") or item.get("task_id") or item.get("id") or "").strip()
             if not title:
                 continue
-            normalized.append(
+            normalized_item = dict(item)
+            normalized_item.update(
                 {
                     "task_id": str(item.get("task_id") or item.get("id") or f"q8-task-{index}"),
                     "title": title,
@@ -54,6 +57,7 @@ def normalize_q8_task_rows(raw: object) -> list[dict[str, Any]]:
                     "escalation_conditions": _string_list(item.get("escalation_conditions")),
                 }
             )
+            normalized.append(normalized_item)
         else:
             title = str(item or "").strip()
             if title:
@@ -101,6 +105,116 @@ def coerce_task_priority(value: object, default_priority: TaskPriority) -> TaskP
             return TaskPriority.MEDIUM
         return TaskPriority.LOW
     return default_priority
+
+
+def _task_executor_type(task: dict[str, Any]) -> str:
+    metadata = task.get("metadata") if isinstance(task.get("metadata"), dict) else {}
+    return str(task.get("executor_type") or metadata.get("executor_type") or "").strip().lower()
+
+
+def _task_scope(task: dict[str, Any]) -> TaskScope:
+    metadata = task.get("metadata") if isinstance(task.get("metadata"), dict) else {}
+    explicit_scope = str(task.get("task_scope") or metadata.get("task_scope") or "").strip().lower()
+    if explicit_scope == TaskScope.EXTERNAL.value:
+        return TaskScope.EXTERNAL
+    executor_type = _task_executor_type(task)
+    target_id = str(task.get("target_id") or metadata.get("target_id") or "").strip().lower()
+    if executor_type in {"agent", "cli", "mcp", "external_connector", "connector"}:
+        return TaskScope.EXTERNAL
+    if target_id.startswith(("agent:", "cli:", "mcp:", "external_connector:", "connector:")):
+        return TaskScope.EXTERNAL
+    return TaskScope.INTERNAL
+
+
+def _queue_with_rows(task_queue: dict[str, Any], replacements: dict[str, list[dict[str, Any]]]) -> dict[str, Any]:
+    return {
+        "next_self_tasks": replacements.get("next_self_tasks", []),
+        "blocked_self_tasks": replacements.get("blocked_self_tasks", []),
+        "proactive_actions": replacements.get("proactive_actions", []),
+        **{
+            key: value
+            for key, value in task_queue.items()
+            if key not in {"next_self_tasks", "blocked_self_tasks", "proactive_actions"}
+        },
+    }
+
+
+def build_q8_separated_task_plan(
+    *,
+    snapshot_map: dict[str, dict[str, Any]],
+    objective_profile: dict[str, Any],
+    task_queue: dict[str, Any],
+    normalized_task_state: dict[str, list[dict[str, Any]]] | None = None,
+    priority_baseline: dict[str, Any] | None = None,
+    functional_objectives: list[dict[str, Any]] | None = None,
+) -> dict[str, Any]:
+    q8_snapshot = snapshot_map.get("q8") if isinstance(snapshot_map.get("q8"), dict) else {}
+    context_updates = q8_snapshot.get("context_updates") if isinstance(q8_snapshot.get("context_updates"), dict) else {}
+    question_snapshot = (
+        context_updates.get("q8_q1_q7_snapshot")
+        or context_updates.get("q1_q7_snapshot")
+        or context_updates.get("q8_objective_and_queue", {}).get("q1_q7_snapshot")
+        or {}
+    )
+    question_snapshot = question_snapshot if isinstance(question_snapshot, dict) else {}
+    priority = priority_baseline if isinstance(priority_baseline, dict) else {}
+    functional = functional_objectives if isinstance(functional_objectives, list) else []
+    task_state = normalized_task_state if isinstance(normalized_task_state, dict) else {}
+
+    internal_queue_rows: dict[str, list[dict[str, Any]]] = {}
+    external_queue_rows: dict[str, list[dict[str, Any]]] = {}
+    for queue_name in ("next_self_tasks", "blocked_self_tasks", "proactive_actions"):
+        internal_queue_rows[queue_name] = []
+        external_queue_rows[queue_name] = []
+        for item in normalize_q8_task_rows(task_queue.get(queue_name)):
+            item = dict(item)
+            item.setdefault("metadata", {})
+            if _task_scope(item) == TaskScope.EXTERNAL:
+                item["task_scope"] = TaskScope.EXTERNAL.value
+                item["metadata"] = {
+                    **(item.get("metadata") if isinstance(item.get("metadata"), dict) else {}),
+                    "task_scope": TaskScope.EXTERNAL.value,
+                    "source_chain": "external_q8",
+                }
+                external_queue_rows[queue_name].append(item)
+            else:
+                item["task_scope"] = TaskScope.INTERNAL.value
+                item["executor_type"] = "internal"
+                item["metadata"] = {
+                    **(item.get("metadata") if isinstance(item.get("metadata"), dict) else {}),
+                    "task_scope": TaskScope.INTERNAL.value,
+                    "executor_type": "internal",
+                    "source_chain": "internal_q8",
+                }
+                internal_queue_rows[queue_name].append(item)
+
+    internal_queue = _queue_with_rows(task_queue, internal_queue_rows)
+    external_queue = _queue_with_rows(task_queue, external_queue_rows)
+    internal_plan = build_internal_task_plan(
+        question_snapshot=question_snapshot,
+        normalized_task_state=task_state,
+        priority_baseline=priority,
+        functional_objectives=functional,
+        raw_task_queue=internal_queue,
+    )
+    external_plan = build_external_task_plan(
+        question_snapshot=question_snapshot,
+        raw_task_queue=external_queue,
+    )
+    return {
+        "objective_profile": objective_profile,
+        "internal": internal_plan,
+        "external": external_plan,
+        "internal_queue": internal_queue,
+        "external_queue": external_queue,
+        "combined_queue": _queue_with_rows(
+            task_queue,
+            {
+                key: internal_queue_rows[key] + external_queue_rows[key]
+                for key in ("next_self_tasks", "blocked_self_tasks", "proactive_actions")
+            },
+        ),
+    }
 
 
 def build_q8_task_contract(
@@ -228,6 +342,21 @@ async def sync_q8_tasks_to_task_service(
         or {}
     )
     task_queue = task_queue if isinstance(task_queue, dict) else {}
+    separated_plan = build_q8_separated_task_plan(
+        snapshot_map=snapshot_map,
+        objective_profile=objective_profile,
+        task_queue=task_queue,
+        normalized_task_state=context_updates.get("q8_persistent_task_state")
+        if isinstance(context_updates.get("q8_persistent_task_state"), dict)
+        else None,
+        priority_baseline=context_updates.get("q8_priority_baseline")
+        if isinstance(context_updates.get("q8_priority_baseline"), dict)
+        else None,
+        functional_objectives=context_updates.get("q8_functional_objectives")
+        if isinstance(context_updates.get("q8_functional_objectives"), list)
+        else None,
+    )
+    task_queue = separated_plan["combined_queue"]
 
     current_mission = str(
         objective_profile.get("current_mission")
@@ -278,13 +407,27 @@ async def sync_q8_tasks_to_task_service(
                 base_priority=base_priority,
                 evaluation_plan=evaluation_plan,
             )
+            item_metadata = item.get("metadata") if isinstance(item.get("metadata"), dict) else {}
+            scope = _task_scope(item)
+            executor_type = _task_executor_type(item)
+            if scope == TaskScope.INTERNAL:
+                executor_type = "internal"
+            target_id = str(item.get("target_id") or item_metadata.get("target_id") or "").strip()
             metadata = {
                 "source": "nine_questions.q8",
                 "session_id": session_id,
                 "question_id": "q8",
                 "queue_name": queue_name,
+                "task_scope": scope.value,
+                "executor_type": executor_type,
+                "source_chain": "external_q8" if scope == TaskScope.EXTERNAL else "internal_q8",
+                "target_id": target_id,
                 "objective": current_mission,
                 "objective_profile": objective_profile,
+                "q8_separated_task_plan": {
+                    "internal_generated": separated_plan["internal"]["generated"],
+                    "external_generated": separated_plan["external"]["generated"],
+                },
                 "evaluation_profile": evaluation_plan.evaluation_profile,
                 "phase_a_evaluation": priority_decision.metadata,
                 "completion_conditions": _string_list(objective_profile.get("completion_conditions")),
@@ -342,9 +485,11 @@ async def sync_q8_tasks_to_task_service(
                         "idempotency_key": idempotency_key,
                         "title": str(item["title"]),
                         "task_type": TaskType.COGNITIVE_STEP,
+                        "task_scope": scope,
                         "status": effective_status,
                         "priority": priority,
                         "originator_id": session_id,
+                        "target_id": target_id or None,
                         "remarks": remarks,
                         "tags": tags,
                         "metadata": metadata,

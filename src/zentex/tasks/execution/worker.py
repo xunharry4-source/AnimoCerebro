@@ -99,6 +99,10 @@ class TaskExecutionWorker:
         task_dao: Any,
         router: Any,
         internal_executor: Any,
+        task_service: Any = None,
+        cli_service: Any = None,
+        mcp_service: Any = None,
+        external_connector_service: Any = None,
         config: Optional[WorkerConfig] = None,
     ) -> None:
         """
@@ -111,6 +115,10 @@ class TaskExecutionWorker:
         self._dao = task_dao
         self._router = router
         self._executor = internal_executor
+        self._task_service = task_service
+        self._cli_service = cli_service
+        self._mcp_service = mcp_service
+        self._external_connector_service = external_connector_service
         self._cfg = config or WorkerConfig()
 
     # ------------------------------------------------------------------
@@ -313,7 +321,18 @@ class TaskExecutionWorker:
         # 2. Build SubtaskIntent for the router / executor
         subtask_intent = self._build_subtask_intent(task)
 
-        # 3. Get dispatch decision from the router
+        # 3. Task-center selected external executor path.  CLI/MCP tasks are
+        # dispatched serially and write their own result back through
+        # TaskManagementService, so the generic plugin writeback is skipped.
+        external_dispatch = self._external_dispatch_from_task(task)
+        if external_dispatch is not None:
+            exec_result = await self._execute_on_external_executor(external_dispatch, task_id)
+            if exec_result.get("task_center_synchronized") is True:
+                return "succeeded" if exec_result.get("succeeded") else "failed"
+            self._mark_failed(task_id, exec_result.get("error", "External executor did not synchronize task result"))
+            return "failed"
+
+        # 4. Get dispatch decision from the router
         decision = None
         try:
             if self._router is not None:
@@ -343,7 +362,7 @@ class TaskExecutionWorker:
             self._mark_failed(task_id, f"Dispatch routing failed: {exc}")
             return "failed"
 
-        # 4. Execute on the selected plugin
+        # 5. Execute on the selected plugin
         if decision is not None:
             plugin_id = decision.selected_executor.executor_id
         else:
@@ -363,7 +382,7 @@ class TaskExecutionWorker:
 
         exec_result = await self._execute_on_plugin(plugin_id, subtask_intent, task_id)
 
-        # 5. Write result back to DB
+        # 6. Write result back to DB
         if exec_result.get("succeeded"):
             self._write_success(task_id, plugin_id, exec_result)
             await self._update_router_credit(decision, plugin_id, succeeded=True,
@@ -436,6 +455,266 @@ class TaskExecutionWorker:
                 "duration_seconds": 0.0,
                 "failure_classification": "execution_error",
             }
+
+    async def _execute_on_external_executor(self, dispatch: Dict[str, Any], task_id: str) -> Dict[str, Any]:
+        executor_type = dispatch["executor_type"]
+        if self._task_service is None:
+            return {
+                "succeeded": False,
+                "error": "TaskManagementService is not attached to TaskExecutionWorker",
+                "task_center_synchronized": False,
+            }
+
+        try:
+            if executor_type == "cli":
+                if self._cli_service is None:
+                    raise RuntimeError("CliIntegrationService is not attached to TaskExecutionWorker")
+                try:
+                    profile = getattr(self._cli_service, "get_usage_profile", lambda _: None)(dispatch["tool_name"])
+                except KeyError:
+                    profile = None
+                if profile is not None and (
+                    getattr(profile, "learning_status", None) != "learned" or getattr(profile, "degraded", False)
+                ):
+                    raise RuntimeError(f"CLI tool '{dispatch['tool_name']}' is degraded and cannot be auto-dispatched")
+                if profile is not None:
+                    self._validate_profile_arguments(profile, dispatch.get("arguments") or [], executor_type="cli")
+                return await self._cli_service.execute_task(
+                    task_service=self._task_service,
+                    task_id=task_id,
+                    trace_id=dispatch["trace_id"],
+                    tool_name=dispatch["tool_name"],
+                    arguments=dispatch.get("arguments") or [],
+                    stdin_input=dispatch.get("stdin_input"),
+                    working_directory=dispatch.get("working_directory"),
+                    timeout_seconds=float(dispatch.get("timeout_seconds") or self._cfg.execution_timeout_seconds),
+                )
+            if executor_type == "mcp":
+                if self._mcp_service is None:
+                    raise RuntimeError("McpIntegrationService is not attached to TaskExecutionWorker")
+                try:
+                    profile = getattr(self._mcp_service, "get_tool_usage_profile", lambda *_: None)(
+                        dispatch["server_id"],
+                        dispatch["tool_name"],
+                    )
+                except KeyError:
+                    profile = None
+                if profile is not None and (
+                    getattr(profile, "learning_status", None) != "learned" or getattr(profile, "degraded", False)
+                ):
+                    raise RuntimeError(
+                        f"MCP tool '{dispatch['server_id']}/{dispatch['tool_name']}' is degraded and cannot be auto-dispatched"
+                    )
+                if profile is not None:
+                    self._validate_profile_arguments(profile, dispatch.get("arguments") or {}, executor_type="mcp")
+                return await self._mcp_service.execute_task(
+                    task_service=self._task_service,
+                    task_id=task_id,
+                    trace_id=dispatch["trace_id"],
+                    server_id=dispatch["server_id"],
+                    tool_name=dispatch["tool_name"],
+                    arguments=dispatch.get("arguments") or {},
+                )
+            if executor_type == "external_connector":
+                return await self._execute_external_connector_task(dispatch, task_id)
+            raise RuntimeError(f"Unsupported external executor type: {executor_type}")
+        except Exception as exc:
+            logger.exception("External executor dispatch failed for task %s", task_id)
+            raise
+
+    async def _execute_external_connector_task(self, dispatch: Dict[str, Any], task_id: str) -> Dict[str, Any]:
+        if self._external_connector_service is None:
+            raise RuntimeError("ExternalConnectorService is not attached to TaskExecutionWorker")
+
+        from zentex.external_connectors.models import ConnectorTestCallRequest
+        from zentex.tasks.execution.external_result_bridge import (
+            mark_external_execution_started,
+            write_external_execution_result,
+        )
+
+        connector_id = dispatch["connector_id"]
+        capability = dispatch["capability"]
+        expected_plugin_path = str(dispatch.get("external_plugin_path") or "").strip()
+        connector = self._external_connector_service.get_connector(connector_id)
+        actual_plugin_path = str(connector.connection_config.get("plugin_path") or "").strip()
+        if expected_plugin_path and actual_plugin_path != expected_plugin_path:
+            raise RuntimeError(
+                f"External connector plugin path mismatch for {connector_id}: "
+                f"expected {expected_plugin_path}, got {actual_plugin_path}"
+            )
+        capability_record = None
+        for item in connector.capabilities:
+            if item.name == capability:
+                capability_record = item
+                break
+        risk_level = getattr(getattr(capability_record, "risk_level", None), "value", None) or "read_only"
+        profile_level = getattr(getattr(connector, "profile_level", None), "value", None) or "minimal"
+        if capability_record is not None:
+            cap_profile = getattr(getattr(capability_record, "profile_level", None), "value", None)
+            if cap_profile in {"described", "verifiable", "governed"}:
+                profile_level = cap_profile
+        verification_mode = getattr(getattr(capability_record, "verification_mode", None), "value", None) or "none"
+
+        executor_metadata = {
+            "connector_id": connector_id,
+            "capability": capability,
+            "target_app": connector.target_app,
+            "external_plugin_path": actual_plugin_path,
+            "profile_level": profile_level,
+            "risk_level": risk_level,
+            "verification_mode": verification_mode,
+            "manifest_path": connector.manifest_path,
+            "manifest_hash": connector.manifest_hash,
+        }
+        await mark_external_execution_started(
+            task_service=self._task_service,
+            task_id=task_id,
+            trace_id=dispatch["trace_id"],
+            executor_type="external_connector",
+            executor_metadata=executor_metadata,
+        )
+        invocation = self._external_connector_service.test_call(
+            connector_id,
+            ConnectorTestCallRequest(
+                capability=capability,
+                arguments=dispatch.get("arguments") or {},
+                trace_id=dispatch["trace_id"],
+            ),
+        )
+        result_payload = invocation.model_dump(mode="json")
+        completion = await write_external_execution_result(
+            task_service=self._task_service,
+            task_id=task_id,
+            trace_id=dispatch["trace_id"],
+            executor_type="external_connector",
+            executor_metadata=executor_metadata,
+            result_payload=result_payload,
+            succeeded=invocation.status == "success",
+            error_message=invocation.operator_message,
+        )
+        return {
+            "succeeded": invocation.status == "success",
+            "task_center_synchronized": True,
+            "result": result_payload,
+            "completion": completion,
+        }
+
+    @staticmethod
+    def _validate_profile_arguments(profile: Any, arguments: Any, *, executor_type: str) -> None:
+        schema = getattr(profile, "argument_schema", {}) or {}
+        schema_type = schema.get("type") if isinstance(schema, dict) else None
+        if executor_type == "cli":
+            if schema_type == "array" and not isinstance(arguments, list):
+                raise RuntimeError("CLI usage profile expects array arguments")
+            return
+        if executor_type == "mcp" and schema_type == "object" and not isinstance(arguments, dict):
+            raise RuntimeError("MCP usage profile expects object arguments")
+
+    @staticmethod
+    def _external_dispatch_from_task(task: Dict[str, Any]) -> Optional[Dict[str, Any]]:
+        metadata = task.get("metadata") if isinstance(task.get("metadata"), dict) else {}
+        target_id = str(task.get("target_id") or metadata.get("target_id") or "")
+        raw_type = (
+            metadata.get("executor_type")
+            or metadata.get("external_executor_type")
+            or metadata.get("executor_kind")
+            or ""
+        )
+        executor_type = str(raw_type).strip().lower()
+
+        if not executor_type:
+            if target_id.startswith("cli:") or metadata.get("cli_tool_name"):
+                executor_type = "cli"
+            elif target_id.startswith("mcp:") or metadata.get("mcp_server_id"):
+                executor_type = "mcp"
+            elif target_id.startswith("external_connector:") or metadata.get("external_connector_id"):
+                executor_type = "external_connector"
+
+        if executor_type == "cli":
+            tool_name = (
+                metadata.get("cli_tool_name")
+                or metadata.get("tool_name")
+                or metadata.get("command_name")
+                or (target_id.removeprefix("cli:") if target_id.startswith("cli:") else "")
+            )
+            tool_name = str(tool_name or "").strip()
+            if not tool_name:
+                return None
+            return {
+                "executor_type": "cli",
+                "trace_id": str(metadata.get("trace_id") or f"cli-task:{task.get('task_id')}"),
+                "tool_name": tool_name,
+                "arguments": TaskExecutionWorker._list_metadata(metadata, "cli_arguments", "arguments"),
+                "stdin_input": metadata.get("stdin_input") or metadata.get("cli_stdin_input"),
+                "working_directory": metadata.get("working_directory") or metadata.get("cli_working_directory"),
+                "timeout_seconds": metadata.get("timeout_seconds") or metadata.get("cli_timeout_seconds"),
+            }
+
+        if executor_type == "mcp":
+            target_server = ""
+            target_tool = ""
+            if target_id.startswith("mcp:"):
+                parts = target_id.split(":", 2)
+                if len(parts) >= 2:
+                    target_server = parts[1]
+                if len(parts) == 3:
+                    target_tool = parts[2]
+            server_id = str(metadata.get("mcp_server_id") or metadata.get("server_id") or target_server or "").strip()
+            tool_name = str(metadata.get("mcp_tool_name") or metadata.get("tool_name") or target_tool or "").strip()
+            if not server_id or not tool_name:
+                return None
+            arguments = metadata.get("mcp_arguments")
+            if arguments is None:
+                arguments = metadata.get("arguments")
+            return {
+                "executor_type": "mcp",
+                "trace_id": str(metadata.get("trace_id") or f"mcp-task:{task.get('task_id')}"),
+                "server_id": server_id,
+                "tool_name": tool_name,
+                "arguments": arguments if isinstance(arguments, dict) else {},
+            }
+
+        if executor_type in {"external_connector", "connector"}:
+            connector_id = str(
+                metadata.get("external_connector_id")
+                or metadata.get("connector_id")
+                or (target_id.removeprefix("external_connector:") if target_id.startswith("external_connector:") else "")
+                or ""
+            ).strip()
+            capability = str(
+                metadata.get("external_connector_capability")
+                or metadata.get("connector_capability")
+                or metadata.get("capability")
+                or ""
+            ).strip()
+            if not connector_id or not capability:
+                return None
+            arguments = metadata.get("external_connector_arguments")
+            if arguments is None:
+                arguments = metadata.get("connector_arguments")
+            if arguments is None:
+                arguments = metadata.get("arguments")
+            return {
+                "executor_type": "external_connector",
+                "trace_id": str(metadata.get("trace_id") or f"external-connector-task:{task.get('task_id')}"),
+                "connector_id": connector_id,
+                "capability": capability,
+                "external_plugin_path": metadata.get("external_plugin_path") or metadata.get("plugin_path"),
+                "arguments": arguments if isinstance(arguments, dict) else {},
+            }
+
+        return None
+
+    @staticmethod
+    def _list_metadata(metadata: Dict[str, Any], *keys: str) -> List[Any]:
+        for key in keys:
+            value = metadata.get(key)
+            if value is None:
+                continue
+            if isinstance(value, list):
+                return value
+            return [value]
+        return []
 
     async def _direct_plugin_match(self, subtask_intent: Any) -> Optional[str]:
         """Try to find a matching plugin without going through the full router."""

@@ -1,5 +1,5 @@
 from __future__ import annotations
-from typing import Dict, List, Literal, Optional
+from typing import Any, Dict, List, Literal, Optional
 from pydantic import BaseModel, ConfigDict, Field
 
 # Re-exporting from core models
@@ -8,7 +8,8 @@ from zentex.cli.models import (
     CliTaskSummary,
     CliExecutionHistory,
     CliInvocationResult,
-    CliToolRuntimeState
+    CliToolRuntimeState,
+    ToolUsageProfile,
 )
 
 class CliToolRegistrationRequest(BaseModel):
@@ -25,6 +26,12 @@ class CliToolRegistrationRequest(BaseModel):
     project_description: Optional[str] = None
     execution_domain: str = "cli"
     env: Dict[str, str] = Field(default_factory=dict)
+    auth_config: Dict[str, Any] = Field(default_factory=dict)
+    auth_required_for_health: bool = False
+    health_probe_args: List[str] = Field(default_factory=list)
+    help_probe_args: List[str] = Field(default_factory=lambda: ["--help"])
+    version_probe_args: List[str] = Field(default_factory=lambda: ["--version"])
+    documentation_learning_required: bool = True
 
 class CliInvocationRequest(BaseModel):
     model_config = ConfigDict(extra="forbid")

@@ -1,5 +1,5 @@
 from __future__ import annotations
-from typing import List
+from typing import Any, Dict, List
 
 
 from pydantic import BaseModel, ConfigDict, Field
@@ -21,4 +21,4 @@ class Q4WhatCanIDoInference(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     capability_boundary_profile: CapabilityBoundaryProfile
-
+    permission_profile: Dict[str, Any] = Field(default_factory=dict)
