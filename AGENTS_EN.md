@@ -6,7 +6,11 @@ AnimoCerebro is not just another AI system; it is a cognitive brain with a **sou
 
 ### Four Pillars
 
-1. **Autonomy** - Independent decision-making based on the Nine-Questions cognitive loop
+1. **Autonomy** - Independent decision-making based on the **refactored Nine-Questions cognitive loop** (v2.1.0-alpha)
+   - 🔄 **Major Refactoring in Progress**: 30% complete
+   - ✅ Enhanced proactivity and reduced redundancy
+   - ✅ Improved task generation with richer goals
+   - See [Nine Questions Refactoring Progress](docs/NINE_QUESTIONS_REFACTORING_PROGRESS.md)
    
 2. **Soul** - Genuine emotional resonance and values, not mechanical responses
    
@@ -324,6 +328,59 @@ Good instruments and safety equipment are important, but cannot replace the driv
 9. **Q9 What did I learn?** - Reflective learning, continuous improvement
 
 **This is not a "safety check", this is a "thinking process"**.
+
+#### 4.1 Nine Questions Framework Refactoring (v2.1.0-alpha)
+
+**🔄 Major Refactoring in Progress - 30% Complete**
+
+The Nine Questions framework has undergone significant architectural refactoring to address limitations in the original implementation:
+
+##### Problems Solved
+
+**Previous Issues:**
+- ❌ **Lack of Proactivity**: Original Q1-Q9 followed rigid logical flow, lacking autonomous initiative
+- ❌ **Redundancy**: Overlapping responsibilities between questions led to repetitive reasoning
+- ❌ **Oversimplified Task Generation**: Tasks and goals were too simple, lacking depth and context
+- ❌ **Limited Flexibility**: Fixed sequence didn't adapt well to different problem types
+
+**Refactored Solution:**
+- ✅ **Enhanced Proactivity**: Separated internal/external task planning with dynamic orchestration
+- ✅ **Reduced Redundancy**: Clear separation of concerns with dedicated modules for each question
+- ✅ **Richer Task Generation**: Dual planning system (internal + external) with context builders
+- ✅ **Improved Flexibility**: Modular architecture allows adaptive execution paths
+
+##### Key Architectural Changes
+
+**Q3 What Do I Have? (Runtime Inventory)**
+- Split into `internal_tasks` and `external_tasks` modules
+- Each module has dedicated: planner, validator, context_builder
+- Better resource discovery and capability mapping
+
+**Q8 What Should I Do Now? (Task Planning)**
+- Major refactoring with dual planning architecture
+- Internal tasks: Core system operations
+- External tasks: Third-party connector operations
+- Enhanced coordination and conflict resolution
+
+**Q9 How Should I Act? (Action Execution)**
+- Improved action planning with better context awareness
+- Separate internal/external execution paths
+- Enhanced verification and feedback loops
+
+##### Current Status (30% Complete)
+
+✅ **Completed:**
+- Q1 Evidence Collection - Enhanced validation
+- Q3 Runtime Inventory - Dual task planners
+- Q8 Task Planning - Internal/external separation
+- Q9 Action Execution - Improved algorithms
+
+🔄 **In Progress:**
+- Q2 Interpretation - Semantic analysis (40%)
+- Q4 Capabilities - Dynamic registration (35%)
+- Q5-Q7 Risk & Constraints - Assessment refinements (20%)
+
+📊 **For detailed progress, see:** [Nine Questions Refactoring Progress Report](docs/NINE_QUESTIONS_REFACTORING_PROGRESS.md)
 
 #### 5. When Is "Thin Stack" Enough?
 

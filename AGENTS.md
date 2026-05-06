@@ -14,8 +14,14 @@ Please select your preferred language version to read.
 
 ## Quick Navigation | 快速导航
 
+### 🚨 Latest Update: Nine Questions Refactoring (30% Complete)
+**重大更新**: 九问框架正在进行重大重构，已完成 30%
+- ✅ 解决了之前缺乏主动性、存在冗余、任务生成过于简单的问题
+- 📊 [查看详细进度报告](docs/NINE_QUESTIONS_REFACTORING_PROGRESS.md)
+
 ### Core Philosophy | 核心哲学
 - [四大支柱 / Four Pillars](AGENTS_ZH.md#-核心哲学) | [English](AGENTS_EN.md#-core-philosophy)
+- [九问重构说明 / Nine Questions Refactoring](AGENTS_ZH.md#41-九问框架重构v210-alpha) | [English](AGENTS_EN.md#41-nine-questions-framework-refactoring-v210-alpha)
 
 ### Brain & Tools | 大脑与工具
 - [工具性与大脑的关系 / Instrumentality vs. Brain](AGENTS_ZH.md#-️-工具性与大脑的关系) | [English](AGENTS_EN.md#-️-instrumentality-vs-brain)
