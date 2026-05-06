@@ -1,5 +1,5 @@
 {
   "plugin_id": "nine_question_q7_alternatives",
-  "name": "Q7 What Else Can I Do",
-  "description": "Answer the seventh nine-question prompt about alternatives and options."
+  "name": "Q7 Red Line Assessment",
+  "description": "Answer the seventh nine-question prompt about red lines and non-bypassable constraints."
 }

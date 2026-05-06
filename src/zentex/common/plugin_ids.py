@@ -21,13 +21,13 @@ Usage:
 # ============================================================================
 
 NINE_QUESTION_Q1 = "nine-question-q1-where-am-i"
-"""Q1: 我在哪 - Workspace domain inference"""
+"""Q1: 我在那 - Workspace domain inference"""
 
-NINE_QUESTION_Q2 = "nine-question-q2-who-am-i"
-"""Q2: 我是谁 - Identity and role definition"""
+NINE_QUESTION_Q2 = "nine-question-q2-asset-inventory"
+"""Q2: 我有什么 - Asset inventory and resources"""
 
-NINE_QUESTION_Q3 = "nine-question-q3-what-do-i-have"
-"""Q3: 我有什么 - Asset and resource inventory"""
+NINE_QUESTION_Q3 = "nine-question-q3-who-am-i"
+"""Q3: 我是谁 - Role and mission-boundary inference"""
 
 NINE_QUESTION_Q4 = "nine-question-q4-what-can-i-do"
 """Q4: 我能做什么 - Capability boundary assessment"""

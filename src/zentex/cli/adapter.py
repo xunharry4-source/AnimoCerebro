@@ -721,6 +721,7 @@ class CliAdapterPlugin(FunctionalPluginSpec):
             mutates_state=not config.read_only_flag,
             requires_cloud_audit=not config.read_only_flag,
             help_doc_url=config.help_doc_url,
+            project_doc_url=config.project_doc_url,
             project_path=config.project_path,
             project_name=config.project_name,
             project_description=config.project_description,

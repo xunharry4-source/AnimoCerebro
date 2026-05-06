@@ -7,9 +7,10 @@ import { runSingleNineQuestion } from "../pages/nine-questions/nineQuestionsApi"
 type NineQuestionRerunButtonProps = {
   qId: string;
   onCompleted?: () => Promise<void> | void;
+  runPayload?: Record<string, unknown>;
 };
 
-export default function NineQuestionRerunButton({ qId, onCompleted }: NineQuestionRerunButtonProps) {
+export default function NineQuestionRerunButton({ qId, onCompleted, runPayload }: NineQuestionRerunButtonProps) {
   const [running, setRunning] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
@@ -17,7 +18,11 @@ export default function NineQuestionRerunButton({ qId, onCompleted }: NineQuesti
     setRunning(true);
     setError(null);
     try {
-      await runSingleNineQuestion(qId, true);
+      if (runPayload) {
+        await runSingleNineQuestion(qId, true, runPayload);
+      } else {
+        await runSingleNineQuestion(qId, true);
+      }
       if (onCompleted) {
         await onCompleted();
       }

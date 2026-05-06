@@ -1,7 +1,6 @@
 from .posture import (
     coerce_string_list,
     derive_posture_baseline,
-    merge_string_lists,
     normalize_functional_postures,
     normalize_q8_profile,
     normalize_ratio,
@@ -14,7 +13,6 @@ from .posture import (
 __all__ = [
     "coerce_string_list",
     "derive_posture_baseline",
-    "merge_string_lists",
     "normalize_functional_postures",
     "normalize_q8_profile",
     "normalize_ratio",

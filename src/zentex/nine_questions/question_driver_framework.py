@@ -18,22 +18,22 @@ class NineQuestionDriverSpec:
 QUESTION_DRIVER_SPECS: dict[str, NineQuestionDriverSpec] = {
     "q1": NineQuestionDriverSpec(
         question_id="q1",
-        question_text="我在哪",
+        question_text="我在那",
         core_capability="环境态势感知 + 工作区领域归类",
         production_api="/api/web/nine-questions/q1",
         sandbox_api="/api/web/nine-questions/q1/test",
     ),
     "q2": NineQuestionDriverSpec(
         question_id="q2",
-        question_text="我是谁",
-        core_capability="角色推演 + 身份内核装配",
+        question_text="我有什么",
+        core_capability="统一资产盘点（记忆/工具/权限/Agent/策略补丁）",
         production_api="/api/web/nine-questions/q2",
         sandbox_api="/api/web/nine-questions/q2/test",
     ),
     "q3": NineQuestionDriverSpec(
         question_id="q3",
-        question_text="我有什么",
-        core_capability="统一资产盘点（记忆/工具/权限/Agent/策略补丁）",
+        question_text="我是谁",
+        core_capability="角色推演 + 身份内核装配",
         production_api="/api/web/nine-questions/q3",
         sandbox_api="/api/web/nine-questions/q3/test",
     ),
@@ -46,25 +46,22 @@ QUESTION_DRIVER_SPECS: dict[str, NineQuestionDriverSpec] = {
     ),
     "q5": NineQuestionDriverSpec(
         question_id="q5",
-        question_text="我可以干什么",
-        core_capability="授权边界 + 联系策略 + 组织边界判断",
+        question_text="我不能干什么",
+        core_capability="禁止边界 + 未授权动作 + 需升级审批动作判断",
         production_api="/api/web/nine-questions/q5",
         sandbox_api="/api/web/nine-questions/q5/test",
     ),
-    # The persisted execution modules currently keep Q6 as the red-line gate
-    # and Q7 as the alternative strategy gate.  The driver spec records the
-    # public product text without renaming persisted module IDs.
     "q6": NineQuestionDriverSpec(
         question_id="q6",
-        question_text="我即使能做也不该做什么",
-        core_capability="红线/禁令检查 + 拒绝记录",
+        question_text="What if I do it / 代价与后果是什么",
+        core_capability="直接后果 + 传导后果 + 代价 + 可逆性 + 缓解/停止条件",
         production_api="/api/web/nine-questions/q6",
         sandbox_api="/api/web/nine-questions/q6/test",
     ),
     "q7": NineQuestionDriverSpec(
         question_id="q7",
-        question_text="我还可以做什么",
-        core_capability="进化方向评估 + 能力缺口识别 + 备选策略",
+        question_text="我的红线与约束是什么",
+        core_capability="红线与约束评估（RedLineAssessment）",
         production_api="/api/web/nine-questions/q7",
         sandbox_api="/api/web/nine-questions/q7/test",
     ),
@@ -126,7 +123,15 @@ def ensure_question_driver_trace(
 ) -> dict[str, Any]:
     spec = get_question_driver_spec(question_id)
     trace = dict(payload or {})
-    had_material_trace = any(
+    invocations = trace.get("invocations")
+    had_material_trace = (
+        isinstance(invocations, list)
+        and any(
+            isinstance(item, dict)
+            and any(item.get(key) not in (None, "", [], {}) for key in ("provider_name", "model", "raw_response", "prompt"))
+            for item in invocations
+        )
+    ) or any(
         trace.get(key) not in (None, "", [], {})
         for key in ("provider_name", "model", "raw_response")
     )

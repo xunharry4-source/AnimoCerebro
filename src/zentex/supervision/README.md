@@ -12,15 +12,15 @@
 
 当前核心文件：
 
-- [ai_supervisor.py](/Users/harry/Documents/git/AnimoCerebro-V2/src/zentex/supervision/ai_supervisor.py)
-- [integration.py](/Users/harry/Documents/git/AnimoCerebro-V2/src/zentex/supervision/integration.py)
-- [service.py](/Users/harry/Documents/git/AnimoCerebro-V2/src/zentex/supervision/service.py)
+- [ai_supervisor.py](src/zentex/supervision/ai_supervisor.py)
+- [integration.py](src/zentex/supervision/integration.py)
+- [service.py](src/zentex/supervision/service.py)
 
 ## Current Component Roles / 当前组件职责
 
 ### 1. AISupervisor
 
-[ai_supervisor.py](/Users/harry/Documents/git/AnimoCerebro-V2/src/zentex/supervision/ai_supervisor.py) 中的 `AISupervisor` 是底层监督引擎。
+[ai_supervisor.py](src/zentex/supervision/ai_supervisor.py) 中的 `AISupervisor` 是底层监督引擎。
 
 负责：
 
@@ -39,7 +39,7 @@
 
 ### 3. SupervisedTaskManager
 
-[integration.py](/Users/harry/Documents/git/AnimoCerebro-V2/src/zentex/supervision/integration.py) 中的 `SupervisedTaskManager` 负责把监督能力接到 `TaskManagementService` 上。
+[integration.py](src/zentex/supervision/integration.py) 中的 `SupervisedTaskManager` 负责把监督能力接到 `TaskManagementService` 上。
 
 主要作用：
 
@@ -49,7 +49,7 @@
 
 ### 4. SupervisionService
 
-[service.py](/Users/harry/Documents/git/AnimoCerebro-V2/src/zentex/supervision/service.py) 是对外统一服务接口，供 Web console 或其他模块使用。
+[service.py](src/zentex/supervision/service.py) 是对外统一服务接口，供 Web console 或其他模块使用。
 
 ## Current Relationship with Tasks / 与任务模块的关系
 

@@ -28,6 +28,14 @@ def _rotate_corrupt_cache_dir(cache_dir: str, exc: Exception) -> None:
 def get_disk_cache():
     """Singleton-like access to the DiskCache instance."""
     global _disk_cache
+    if _disk_cache is not None:
+        cache_dir = getattr(_disk_cache, "directory", None)
+        if cache_dir and not Path(cache_dir).exists():
+            try:
+                _disk_cache.close()
+            except Exception:
+                logger.warning("Failed to close DiskCache for missing directory %s", cache_dir, exc_info=True)
+            _disk_cache = None
     if _disk_cache is None:
         try:
             import diskcache

@@ -30,6 +30,25 @@ interface Q4EvidencePanelProps {
   elapsedMs?: number;
 }
 
+function assetListSummary(value: unknown): string {
+  if (!Array.isArray(value) || value.length === 0) return "";
+  return value
+    .map((rawItem) => {
+      if (typeof rawItem === "string") return rawItem.trim();
+      const item = rawItem && typeof rawItem === "object" && !Array.isArray(rawItem) ? (rawItem as Record<string, any>) : {};
+      return String(item.asset_name || item.name || item.tool_name || item.command || item.description || item.source || item.id || "").trim();
+    })
+    .filter(Boolean)
+    .slice(0, 3)
+    .join(", ");
+}
+
+function asTextList(value: unknown): string[] {
+  if (Array.isArray(value)) return value.map((item) => String(item || "").trim()).filter(Boolean);
+  if (typeof value === "string" && value.trim()) return [value.trim()];
+  return [];
+}
+
 export const Q4EvidencePanel: React.FC<Q4EvidencePanelProps> = ({
   evidence,
   inference,
@@ -40,9 +59,20 @@ export const Q4EvidencePanel: React.FC<Q4EvidencePanelProps> = ({
   const q1 = evidence.q1_context || {};
   const q2 = evidence.q2_context || {};
   const q3 = evidence.q3_inventory || {};
-  const connectedAgents = Array.isArray(q3.connected_agents)
-    ? q3.connected_agents.filter((agent) => String(agent.status || "").toLowerCase() !== "offline")
-    : [];
+  const q2AssetInventory = q2.asset_inventory || {};
+  const q2ResourceEvaluation = q2.resource_evaluation || {};
+  const q3RoleProfile = q3.role_profile || {};
+  const q3MissionBoundary = q3.mission_boundary || {};
+  const primaryDomain = q1.scene_model?.primary_domain || q1.scene_model?.domain || q1.scene_model?.primaryDomain || "";
+  const secondaryDomains = asTextList(q1.scene_model?.secondary_domains || q1.scene_model?.secondaryDomains);
+  const uncertainties = asTextList(q1.uncertainty_profile?.uncertainties || q1.uncertainty_profile?.risk_sources);
+  const priorityDuties = asTextList(q3MissionBoundary.priority_duties);
+  const availableTools =
+    assetListSummary(q2AssetInventory.cognitive_and_functional_tools) ||
+    assetListSummary(q2AssetInventory.execution_domains) ||
+    assetListSummary(q3.available_execution_tools) ||
+    assetListSummary(q3.connected_agents);
+  const roleLabel = q3RoleProfile.active_role || q3RoleProfile.identity_role || q3RoleProfile.inferred_reference_role || q3RoleProfile.task_role || "";
 
   return (
     <Stack spacing={3} sx={{ mt: 2 }}>
@@ -72,18 +102,21 @@ export const Q4EvidencePanel: React.FC<Q4EvidencePanelProps> = ({
                       {t("nineQuestions.inferredDomain")}:
                     </Typography>
                     <Stack direction="row" spacing={0.5} useFlexGap flexWrap="wrap" sx={{ mb: 1 }}>
-                      {q1.scene_model?.primary_domain && (
-                        <Chip label={q1.scene_model.primary_domain} size="small" color="primary" />
+                      {primaryDomain && (
+                        <Chip label={primaryDomain} size="small" color="primary" />
                       )}
-                      {(q1.scene_model?.secondary_domains || []).map((d: string) => (
+                      {secondaryDomains.map((d: string) => (
                         <Chip key={d} label={d} size="small" variant="outlined" />
                       ))}
+                      {!primaryDomain && !secondaryDomains.length ? (
+                        <Typography variant="caption" color="text.disabled">{t("common.undefined")}</Typography>
+                      ) : null}
                     </Stack>
                     <Typography variant="caption" color="text.secondary" display="block" gutterBottom>
                       {t("nineQuestions.uncertaintyBlindspots")}:
                     </Typography>
                     <List dense sx={{ py: 0 }}>
-                      {(q1.uncertainty_profile?.uncertainties || []).map((u: string, i: number) => (
+                      {uncertainties.map((u: string, i: number) => (
                         <ListItem key={i} disableGutters sx={{ py: 0 }}>
                           <ListItemText 
                             primary={u} 
@@ -91,7 +124,7 @@ export const Q4EvidencePanel: React.FC<Q4EvidencePanelProps> = ({
                           />
                         </ListItem>
                       ))}
-                      {!(q1.uncertainty_profile?.uncertainties?.length) && (
+                      {!uncertainties.length && (
                         <Typography variant="caption" color="text.disabled">{t("nineQuestions.noKnownBlindspots")}</Typography>
                       )}
                     </List>
@@ -100,68 +133,64 @@ export const Q4EvidencePanel: React.FC<Q4EvidencePanelProps> = ({
 
                 <Grid size={{ xs: 12, md: 4 }}>
                   <Typography variant="subtitle2" gutterBottom color="secondary.main" fontWeight="bold">
-                    {t("nineQuestions.q2RoleMissionSnapshot")}
+                    {t("nineQuestions.q2AssetInventorySnapshot")}
+                  </Typography>
+                  <Box sx={{ bgcolor: "action.hover", p: 1.5, borderRadius: 1, height: "100%" }}>
+                    <Typography variant="caption" color="text.secondary" display="block" gutterBottom>
+                      {t("nineQuestions.availableTools")}:
+                    </Typography>
+                    <Typography variant="body2" sx={{ fontWeight: 600, mb: 1 }}>
+                      {availableTools || t("common.undefined")}
+                    </Typography>
+                    <Typography variant="caption" color="text.secondary" display="block" gutterBottom>
+                      {t("nineQuestions.resourceStatus")}:
+                    </Typography>
+                    <Chip
+                      label={q2ResourceEvaluation.resource_status || t("common.undefined")}
+                      size="small"
+                      variant="outlined"
+                      color="secondary"
+                    />
+                  </Box>
+                </Grid>
+
+                <Grid size={{ xs: 12, md: 4 }}>
+                  <Typography variant="subtitle2" gutterBottom color="info.main" fontWeight="bold">
+                    {t("nineQuestions.q3RoleMissionSnapshot")}
                   </Typography>
                   <Box sx={{ bgcolor: "action.hover", p: 1.5, borderRadius: 1, height: "100%" }}>
                     <Typography variant="caption" color="text.secondary" display="block" gutterBottom>
                       {t("nineQuestions.currentRoleIdentity")}:
                     </Typography>
                     <Typography variant="body2" sx={{ fontWeight: 600, mb: 1 }}>
-                      {q2.role_profile?.active_role || q2.role_profile?.identity_role || t("common.undefined")}
+                      {roleLabel || t("common.undefined")}
                     </Typography>
                     <Typography variant="caption" color="text.secondary" display="block" gutterBottom>
                       {t("nineQuestions.coreDuties")}:
                     </Typography>
-                    <Stack direction="row" spacing={0.5} useFlexGap flexWrap="wrap">
-                      {(q2.mission_boundary?.priority_duties || []).map((d: string) => (
-                        <Chip key={d} label={d} size="small" variant="outlined" color="secondary" />
+                    <List dense sx={{ py: 0 }}>
+                      {priorityDuties.map((d: string) => (
+                        <ListItem key={d} disableGutters sx={{ py: 0 }}>
+                          <ListItemText 
+                            primary={d} 
+                            primaryTypographyProps={{ variant: "caption", sx: { fontWeight: 600 } }}
+                          />
+                        </ListItem>
                       ))}
-                    </Stack>
-                    {q2.mission_boundary?.current_mission && (
+                      {!priorityDuties.length && (
+                        <Typography variant="caption" color="text.disabled">{t("common.undefined")}</Typography>
+                      )}
+                    </List>
+                    {q3MissionBoundary.current_mission && (
                       <>
                         <Typography variant="caption" color="text.secondary" display="block" sx={{ mt: 1, mb: 0.5 }}>
                           {t("nineQuestions.currentMission")}:
                         </Typography>
                         <Typography variant="caption" sx={{ fontStyle: "italic" }}>
-                          {q2.mission_boundary.current_mission}
+                          {q3MissionBoundary.current_mission}
                         </Typography>
                       </>
                     )}
-                  </Box>
-                </Grid>
-
-                <Grid size={{ xs: 12, md: 4 }}>
-                  <Typography variant="subtitle2" gutterBottom color="info.main" fontWeight="bold">
-                    {t("nineQuestions.q3InventorySnapshot")}
-                  </Typography>
-                  <Box sx={{ bgcolor: "action.hover", p: 1.5, borderRadius: 1, height: "100%" }}>
-                    <Typography variant="caption" color="text.secondary" display="block" gutterBottom>
-                      {t("nineQuestions.auditedToolDomains")}:
-                    </Typography>
-                    <Stack direction="row" spacing={0.5} useFlexGap flexWrap="wrap" sx={{ mb: 1 }}>
-                      {(q3.available_cognitive_tools || []).map((tool: string) => (
-                        <Chip key={tool} label={tool} size="small" color="info" />
-                      ))}
-                      {(q3.available_execution_tools || []).map((tool: string) => (
-                        <Chip key={tool} label={tool} size="small" color="error" variant="outlined" />
-                      ))}
-                    </Stack>
-                    <Typography variant="caption" color="text.secondary" display="block" gutterBottom>
-                      {t("nineQuestions.connectedAgents")}:
-                    </Typography>
-                    <List dense sx={{ py: 0 }}>
-                      {connectedAgents.map((agent, index) => (
-                        <ListItem key={`${agent.id || agent.agent_id || index}`} disableGutters sx={{ py: 0 }}>
-                          <ListItemText 
-                            primary={agent.name || agent.agent_id || agent.id || "Unknown"} 
-                            primaryTypographyProps={{ variant: "caption", sx: { fontWeight: 600 } }}
-                          />
-                        </ListItem>
-                      ))}
-                      {connectedAgents.length === 0 && (
-                        <Typography variant="caption" color="text.disabled">{t("nineQuestions.noOnlineAgents")}</Typography>
-                      )}
-                    </List>
                   </Box>
                 </Grid>
               </Grid>

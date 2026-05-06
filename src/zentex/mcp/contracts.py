@@ -25,6 +25,8 @@ class McpServerStatusItem(BaseModel):
     status: str
     tool_count: int = 0
     error_message: Optional[str] = None
+    help_doc_url: Optional[str] = None
+    project_doc_url: Optional[str] = None
     tools: List[McpServerToolItem] = Field(default_factory=list)
 
 class McpTaskSummary(BaseModel):
@@ -54,3 +56,5 @@ class McpServerDetailItem(BaseModel):
     uptime_seconds: Optional[int] = None
     tools: List[McpServerToolItem]
     error_message: Optional[str] = None
+    help_doc_url: Optional[str] = None
+    project_doc_url: Optional[str] = None

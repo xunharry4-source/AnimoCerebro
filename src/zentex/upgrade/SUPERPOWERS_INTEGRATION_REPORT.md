@@ -205,7 +205,7 @@ from zentex.upgrade.skills import (
 ### 运行示例
 
 ```bash
-cd /Users/harry/Documents/git/AnimoCerebro-V2
+cd <repo-root>
 PYTHONPATH=src:$PYTHONPATH python -m src.zentex.upgrade.skills.example_usage
 ```
 
@@ -270,7 +270,7 @@ class UpgradeExecutionService:
 
 ```bash
 # 验证导入
-cd /Users/harry/Documents/git/AnimoCerebro-V2
+cd <repo-root>
 PYTHONPATH=src:$PYTHONPATH python -c "from zentex.upgrade import AtomicUpgradePlanner; print('✅ OK')"
 
 # 运行示例

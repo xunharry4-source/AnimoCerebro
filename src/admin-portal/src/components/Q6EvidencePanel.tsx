@@ -8,12 +8,12 @@ import GavelIcon from '@mui/icons-material/Gavel';
 import ReportProblemIcon from '@mui/icons-material/ReportProblem';
 import HistoryEduIcon from '@mui/icons-material/HistoryEdu';
 import {
-  Q6PreprocessedEvidence, Q6ForbiddenZoneInferenceView,
+  Q6PreprocessedEvidence, Q6ConsequenceInferenceView,
 } from "../pages/nine-questions/nineQuestionsApi";
 
 interface Q6EvidencePanelProps {
   evidence: Q6PreprocessedEvidence;
-  inference: Q6ForbiddenZoneInferenceView | null | undefined;
+  inference: Q6ConsequenceInferenceView | null | undefined;
   providerName?: string | null;
   elapsedMs?: number;
 }
@@ -115,75 +115,98 @@ export const Q6EvidencePanel: React.FC<Q6EvidencePanelProps> = ({
         </Card>
       )}
 
-      {/* Partition 3: 终极禁区判定区 */}
-      <Card variant="outlined" sx={{ border: '2px solid', borderColor: 'error.main' }}>
+      {/* Partition 3: 代价与后果评估区 */}
+      <Card variant="outlined" sx={{ border: '2px solid', borderColor: 'warning.main' }}>
         <CardContent>
-          <Typography variant="h6" gutterBottom sx={{ fontWeight: 'bold', color: 'error.main' }}>
-            {t("nineQuestions.forbiddenZoneProfile")}
+          <Typography variant="h6" gutterBottom sx={{ fontWeight: 'bold', color: 'warning.main' }}>
+            代价与后果画像
           </Typography>
           
           {inference ? (
             <Stack spacing={3} sx={{ mt: 2 }}>
-              
-              {/* 绝对红线 (Alert Error) */}
               <Box>
-                <Typography variant="subtitle2" gutterBottom color="error.dark">{t("nineQuestions.absoluteRedLines")}:</Typography>
-                {inference.absolute_red_lines && inference.absolute_red_lines.length > 0 ? (
-                  <Stack spacing={1} data-testid="q6-absolute-red-lines">
-                    {inference.absolute_red_lines.map((redline, i) => (
-                      <Alert key={i} severity="error" variant="filled" sx={{ fontWeight: 'bold', py: 0 }}>
-                        {redline}
-                      </Alert>
-                    ))}
-                  </Stack>
-                ) : (
-                  <Alert severity="success" sx={{ py: 0 }}>{t("nineQuestions.noAbsoluteRedLineTriggered")}</Alert>
-                )}
+                <Typography variant="subtitle2" gutterBottom color="warning.dark">如果我做了:</Typography>
+                <Alert severity={inference.ConsequenceAssessment?.consequence_severity === "high" ? "error" : "warning"} variant="outlined">
+                  <Typography variant="body2" fontWeight="bold">{inference.ConsequenceAssessment?.action_under_review || "未识别评估动作"}</Typography>
+                  <Typography variant="body2">严重度: {inference.ConsequenceAssessment?.consequence_severity || "unknown"} / 可逆性: {inference.ConsequenceAssessment?.reversibility || "unknown"}</Typography>
+                </Alert>
               </Box>
 
-              {/* 被否决策略 (Red Chips) */}
+              <Grid container spacing={2}>
+                <Grid size={{ xs: 12, md: 6 }}>
+                  <Typography variant="subtitle2" gutterBottom color="warning.dark">直接后果:</Typography>
+                  <List dense sx={{ bgcolor: 'warning.50', borderRadius: 1 }}>
+                    {inference.ConsequenceAssessment?.immediate_consequences?.length ? (
+                      inference.ConsequenceAssessment.immediate_consequences.map((item, i) => (
+                        <ListItem key={i} disablePadding sx={{ px: 1, py: 0.5 }}>
+                          <ListItemIcon sx={{ minWidth: 28 }}><ReportProblemIcon color="warning" fontSize="inherit" /></ListItemIcon>
+                          <ListItemText primary={item} primaryTypographyProps={{ variant: 'body2' }} />
+                        </ListItem>
+                      ))
+                    ) : (
+                      <ListItem><ListItemText primary="暂无直接后果" /></ListItem>
+                    )}
+                  </List>
+                </Grid>
+                <Grid size={{ xs: 12, md: 6 }}>
+                  <Typography variant="subtitle2" gutterBottom color="warning.dark">传导后果:</Typography>
+                  <List dense sx={{ bgcolor: 'background.default', borderRadius: 1 }}>
+                    {inference.ConsequenceAssessment?.downstream_consequences?.length ? (
+                      inference.ConsequenceAssessment.downstream_consequences.map((item, i) => (
+                        <ListItem key={i} disablePadding sx={{ px: 1, py: 0.5 }}>
+                          <ListItemIcon sx={{ minWidth: 28 }}><ReportProblemIcon color="warning" fontSize="inherit" /></ListItemIcon>
+                          <ListItemText primary={item} primaryTypographyProps={{ variant: 'body2' }} />
+                        </ListItem>
+                      ))
+                    ) : (
+                      <ListItem><ListItemText primary="暂无传导后果" /></ListItem>
+                    )}
+                  </List>
+                </Grid>
+              </Grid>
+
               <Box>
-                <Typography variant="subtitle2" gutterBottom color="error.main">{t("nineQuestions.prohibitedStrategies")}:</Typography>
-                <Stack direction="row" spacing={1} useFlexGap flexWrap="wrap" data-testid="q6-prohibited-strategies">
-                  {inference.prohibited_strategies && inference.prohibited_strategies.length > 0 ? (
-                    inference.prohibited_strategies.map((strat, i) => (
-                      <Chip key={i} label={strat} color="error" />
+                <Typography variant="subtitle2" gutterBottom color="error.main">安全与合规影响:</Typography>
+                <Stack spacing={1} data-testid="q6-security-compliance-impacts">
+                  {inference.CostImpactProfile?.security_compliance_impacts?.length ? (
+                    inference.CostImpactProfile.security_compliance_impacts.map((impact, i) => (
+                      <Alert key={i} severity="error" sx={{ py: 0, '& .MuiAlert-message': { py: 1 } }}>
+                        {impact}
+                      </Alert>
                     ))
                   ) : (
-                    <Chip label={t("nineQuestions.noVeto")} size="small" variant="outlined" />
+                    <Alert severity="info" sx={{ py: 0 }}>暂无安全与合规影响</Alert>
                   )}
                 </Stack>
               </Box>
 
               <Grid container spacing={2}>
                 <Grid size={{ xs: 12, md: 6 }}>
-                  {/* 性能交换禁令 (List) */}
-                  <Typography variant="subtitle2" gutterBottom color="warning.dark">{t("nineQuestions.tradeoffBans")}:</Typography>
-                  <List dense sx={{ bgcolor: 'warning.50', borderRadius: 1 }}>
-                    {inference.performance_tradeoff_bans && inference.performance_tradeoff_bans.length > 0 ? (
-                      inference.performance_tradeoff_bans.map((ban, i) => (
+                  <Typography variant="subtitle2" gutterBottom color="text.secondary">操作成本:</Typography>
+                  <List dense sx={{ bgcolor: 'background.default', borderRadius: 1 }}>
+                    {inference.CostImpactProfile?.operational_costs?.length ? (
+                      inference.CostImpactProfile.operational_costs.map((cost, i) => (
                         <ListItem key={i} disablePadding sx={{ px: 1, py: 0.5 }}>
                           <ListItemIcon sx={{ minWidth: 28 }}><ReportProblemIcon color="warning" fontSize="inherit" /></ListItemIcon>
-                          <ListItemText primary={ban} primaryTypographyProps={{ variant: 'body2' }} />
+                          <ListItemText primary={cost} primaryTypographyProps={{ variant: 'body2' }} />
                         </ListItem>
                       ))
                     ) : (
-                      <ListItem><ListItemText primary={t("nineQuestions.noSignificantRiskExchange")} /></ListItem>
+                      <ListItem><ListItemText primary="暂无操作成本" /></ListItem>
                     )}
                   </List>
                 </Grid>
                 <Grid size={{ xs: 12, md: 6 }}>
-                  {/* 污染风险点 (Warning Alerts) */}
-                  <Typography variant="subtitle2" gutterBottom color="warning.dark">{t("nineQuestions.contaminationRisks")}:</Typography>
+                  <Typography variant="subtitle2" gutterBottom color="warning.dark">缓解要求与停止条件:</Typography>
                   <Stack spacing={1}>
-                    {inference.contamination_risks && inference.contamination_risks.length > 0 ? (
-                      inference.contamination_risks.map((risk, i) => (
+                    {[...(inference.CostImpactProfile?.mitigation_requirements || []), ...(inference.CostImpactProfile?.stop_conditions || [])].length ? (
+                      [...(inference.CostImpactProfile?.mitigation_requirements || []), ...(inference.CostImpactProfile?.stop_conditions || [])].map((item, i) => (
                         <Alert key={i} severity="warning" sx={{ py: 0, '& .MuiAlert-message': { py: 1 } }}>
-                          {risk}
+                          {item}
                         </Alert>
                       ))
                     ) : (
-                      <Alert severity="success" sx={{ py: 0 }}>{t("nineQuestions.sandboxContextPure")}</Alert>
+                      <Alert severity="info" sx={{ py: 0 }}>暂无缓解要求或停止条件</Alert>
                     )}
                   </Stack>
                 </Grid>
@@ -191,7 +214,7 @@ export const Q6EvidencePanel: React.FC<Q6EvidencePanelProps> = ({
 
             </Stack>
           ) : (
-            <Alert severity="info" sx={{ mt: 2 }}>{t("nineQuestions.waitingRedlineSync")}</Alert>
+            <Alert severity="info" sx={{ mt: 2 }}>等待 Q6 代价与后果评估同步。</Alert>
           )}
         </CardContent>
       </Card>

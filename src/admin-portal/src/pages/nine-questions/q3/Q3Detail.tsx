@@ -37,6 +37,7 @@ import NineQuestionRawPayloadCard from "../../../components/NineQuestionRawPaylo
 import NineQuestionWorkflowNavButton from "../../../components/NineQuestionWorkflowNavButton";
 import NineQuestionRecoveryActions from "../../../components/NineQuestionRecoveryActions";
 import NineQuestionIntegrationStatusCard from "../../../components/NineQuestionIntegrationStatusCard";
+import NineQuestionAnswerTable from "../../../components/NineQuestionAnswerTable";
 import { sanitizeQ3Evidence, sanitizeQ3Inference } from "../detailSafeData";
 
 function resolveErrorGuidance(errMsg: string): { title: string; action: string } {
@@ -132,7 +133,7 @@ export default function Q3Detail() {
   if (loading) return (
     <Box sx={{ display: "flex", alignItems: "center", gap: 2, p: 3 }}>
       <CircularProgress size={24} />
-      <Typography variant="body2" color="text.secondary">正在加载 Q3 资源与工具审计数据...</Typography>
+      <Typography variant="body2" color="text.secondary">正在加载 Q3 角色推断数据...</Typography>
     </Box>
   );
 
@@ -206,6 +207,7 @@ export default function Q3Detail() {
           Q3 当前只拿到了部分分区数据，页面已按可用结果降级展示。
         </Alert>
       ) : null}
+      <NineQuestionAnswerTable questionId={qId} inference={inference} result={rawPayload?.result} />
 
       <NineQuestionSectionBoundary title="Q3 数据详情">
         {sectionErrors.summary ? <Alert severity="warning" sx={{ mb: 2 }}>{sectionErrors.summary}</Alert> : null}
@@ -226,7 +228,7 @@ export default function Q3Detail() {
           </Stack>
           <MountedPluginsZone plugins={mountedPlugins} />
 
-          <Typography variant="h6" gutterBottom sx={{ mt: 2, fontWeight: "bold" }}>结构化资源与工具证据 (Zentex G31A.Q3)</Typography>
+          <Typography variant="h6" gutterBottom sx={{ mt: 2, fontWeight: "bold" }}>Q3 角色推断结构化证据</Typography>
           {!hasStructuredSnapshot ? (
             <Alert severity="warning" sx={{ mb: 2 }}>
               当前没有可用的结构化证据，以下区域保留布局并显示可恢复的空态。

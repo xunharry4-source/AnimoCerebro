@@ -221,13 +221,16 @@ class UpgradeManagementStore:
         target_kind: Optional[UpgradeTargetKind] = None,
         lifecycle: UpgradeLifecycleView = UpgradeLifecycleView.ALL,
         action: Optional[str] = None,
+        limit: Optional[int] = None,
     ) -> list[UpgradeManagementRecord]:
+        capped_limit = max(1, int(limit)) if limit is not None else None
         with self._lock:
             if self._file_path is not None:
                 return self._list_records_from_sqlite(
                     target_kind=target_kind,
                     lifecycle=lifecycle,
                     action=action,
+                    limit=capped_limit,
                 )
             records = list(self._records.values())
 
@@ -240,17 +243,23 @@ class UpgradeManagementStore:
             if action is not None and record.action != action:
                 continue
             filtered.append(record)
-        return sorted(filtered, key=lambda item: item.updated_at, reverse=True)
+        ordered = sorted(filtered, key=lambda item: item.updated_at, reverse=True)
+        return ordered[:capped_limit] if capped_limit is not None else ordered
 
     def build_counts(
         self,
         *,
         target_kind: Optional[UpgradeTargetKind] = None,
+        action: Optional[str] = None,
     ) -> dict[str, int]:
         with self._lock:
             if self._file_path is not None:
-                return self._build_counts_from_sqlite(target_kind=target_kind)
-        all_records = self.list_records(target_kind=target_kind, lifecycle=UpgradeLifecycleView.ALL)
+                return self._build_counts_from_sqlite(target_kind=target_kind, action=action)
+        all_records = self.list_records(
+            target_kind=target_kind,
+            lifecycle=UpgradeLifecycleView.ALL,
+            action=action,
+        )
         return {
             "all": len(all_records),
             "waiting": sum(1 for item in all_records if item.lifecycle_view() is UpgradeLifecycleView.WAITING),
@@ -258,6 +267,48 @@ class UpgradeManagementStore:
             "completed": sum(1 for item in all_records if item.lifecycle_view() is UpgradeLifecycleView.COMPLETED),
             "failed": sum(1 for item in all_records if item.lifecycle_view() is UpgradeLifecycleView.FAILED),
             "cancelled": sum(1 for item in all_records if item.lifecycle_view() is UpgradeLifecycleView.CANCELLED),
+        }
+
+    def build_overview_snapshot(
+        self,
+        *,
+        recent_limit: int = 5,
+    ) -> dict[str, object]:
+        capped_limit = max(1, int(recent_limit))
+        with self._lock:
+            if self._file_path is not None:
+                return self._build_overview_snapshot_from_sqlite(recent_limit=capped_limit)
+            records = list(self._records.values())
+
+        counts_by_target = {
+            UpgradeTargetKind.LLM: self._empty_counts(),
+            UpgradeTargetKind.PLUGIN: self._empty_counts(),
+        }
+        recent_by_target: dict[UpgradeTargetKind, list[UpgradeManagementRecord]] = {
+            UpgradeTargetKind.LLM: [],
+            UpgradeTargetKind.PLUGIN: [],
+        }
+        for record in records:
+            if record.target_kind not in counts_by_target:
+                continue
+            counts = counts_by_target[record.target_kind]
+            counts["all"] += 1
+            counts[record.lifecycle_view().value] += 1
+            recent_by_target[record.target_kind].append(record)
+
+        return {
+            "llm": counts_by_target[UpgradeTargetKind.LLM],
+            "plugins": counts_by_target[UpgradeTargetKind.PLUGIN],
+            "recent_llm": sorted(
+                recent_by_target[UpgradeTargetKind.LLM],
+                key=lambda item: item.updated_at,
+                reverse=True,
+            )[:capped_limit],
+            "recent_plugins": sorted(
+                recent_by_target[UpgradeTargetKind.PLUGIN],
+                key=lambda item: item.updated_at,
+                reverse=True,
+            )[:capped_limit],
         }
 
     def cancel(
@@ -314,6 +365,7 @@ class UpgradeManagementStore:
         target_kind: Optional[UpgradeTargetKind] = None,
         lifecycle: UpgradeLifecycleView = UpgradeLifecycleView.ALL,
         action: Optional[str] = None,
+        limit: Optional[int] = None,
     ) -> list[UpgradeManagementRecord]:
         if self._file_path is None or not self._file_path.exists():
             return []
@@ -333,6 +385,9 @@ class UpgradeManagementStore:
         if where_clauses:
             sql += " WHERE " + " AND ".join(where_clauses)
         sql += " ORDER BY updated_at DESC"
+        if limit is not None:
+            sql += " LIMIT ?"
+            params.append(str(max(1, int(limit))))
         records: list[UpgradeManagementRecord] = []
         with self._get_connection() as conn:
             cursor = conn.execute(sql, tuple(params))
@@ -352,6 +407,7 @@ class UpgradeManagementStore:
         self,
         *,
         target_kind: Optional[UpgradeTargetKind] = None,
+        action: Optional[str] = None,
     ) -> dict[str, int]:
         if self._file_path is None or not self._file_path.exists():
             return {
@@ -363,11 +419,15 @@ class UpgradeManagementStore:
                 "cancelled": 0,
             }
         self._init_db_unlocked()
-        where_sql = ""
-        params: tuple[str, ...] = ()
+        where_clauses: list[str] = []
+        params: list[str] = []
         if target_kind is not None:
-            where_sql = "WHERE target_kind = ?"
-            params = (target_kind.value,)
+            where_clauses.append("target_kind = ?")
+            params.append(target_kind.value)
+        if action is not None:
+            where_clauses.append("action = ?")
+            params.append(action)
+        where_sql = f"WHERE {' AND '.join(where_clauses)}" if where_clauses else ""
         counts = {
             "all": 0,
             "waiting": 0,
@@ -379,7 +439,7 @@ class UpgradeManagementStore:
         with self._get_connection() as conn:
             row = conn.execute(
                 f"SELECT COUNT(*) FROM management_records {where_sql}",
-                params,
+                tuple(params),
             ).fetchone()
             counts["all"] = int(row[0]) if row is not None else 0
             cursor = conn.execute(
@@ -389,7 +449,7 @@ class UpgradeManagementStore:
                 {where_sql}
                 GROUP BY lifecycle_view
                 """,
-                params,
+                tuple(params),
             )
             lifecycle_map = {
                 UpgradeLifecycleView.WAITING.value: "waiting",
@@ -403,6 +463,104 @@ class UpgradeManagementStore:
                 if key is not None:
                     counts[key] = int(count)
         return counts
+
+    def _build_overview_snapshot_from_sqlite(
+        self,
+        *,
+        recent_limit: int,
+    ) -> dict[str, object]:
+        if self._file_path is None or not self._file_path.exists():
+            return {
+                "llm": self._empty_counts(),
+                "plugins": self._empty_counts(),
+                "recent_llm": [],
+                "recent_plugins": [],
+            }
+        self._init_db_unlocked()
+        counts_by_value = {
+            UpgradeTargetKind.LLM.value: self._empty_counts(),
+            UpgradeTargetKind.PLUGIN.value: self._empty_counts(),
+        }
+        lifecycle_map = {
+            UpgradeLifecycleView.WAITING.value: "waiting",
+            UpgradeLifecycleView.ONGOING.value: "ongoing",
+            UpgradeLifecycleView.COMPLETED.value: "completed",
+            UpgradeLifecycleView.FAILED.value: "failed",
+            UpgradeLifecycleView.CANCELLED.value: "cancelled",
+        }
+        target_values = tuple(counts_by_value.keys())
+        with self._get_connection() as conn:
+            cursor = conn.execute(
+                """
+                SELECT target_kind, lifecycle_view, COUNT(*)
+                FROM management_records
+                WHERE target_kind IN (?, ?)
+                GROUP BY target_kind, lifecycle_view
+                """,
+                target_values,
+            )
+            for target_value, lifecycle_value, count in cursor:
+                target_counts = counts_by_value.get(str(target_value))
+                lifecycle_key = lifecycle_map.get(str(lifecycle_value))
+                if target_counts is None or lifecycle_key is None:
+                    continue
+                target_counts["all"] += int(count)
+                target_counts[lifecycle_key] = int(count)
+            recent_llm = self._recent_records_from_sqlite(
+                conn,
+                target_kind=UpgradeTargetKind.LLM,
+                limit=recent_limit,
+            )
+            recent_plugins = self._recent_records_from_sqlite(
+                conn,
+                target_kind=UpgradeTargetKind.PLUGIN,
+                limit=recent_limit,
+            )
+        return {
+            "llm": counts_by_value[UpgradeTargetKind.LLM.value],
+            "plugins": counts_by_value[UpgradeTargetKind.PLUGIN.value],
+            "recent_llm": recent_llm,
+            "recent_plugins": recent_plugins,
+        }
+
+    def _recent_records_from_sqlite(
+        self,
+        conn: sqlite3.Connection,
+        *,
+        target_kind: UpgradeTargetKind,
+        limit: int,
+    ) -> list[UpgradeManagementRecord]:
+        records: list[UpgradeManagementRecord] = []
+        cursor = conn.execute(
+            """
+            SELECT payload
+            FROM management_records
+            WHERE target_kind = ?
+            ORDER BY updated_at DESC
+            LIMIT ?
+            """,
+            (target_kind.value, max(1, int(limit))),
+        )
+        for row in cursor:
+            try:
+                item = json.loads(str(row[0]))
+            except Exception:
+                # POLICY[no-silent-except]: log corrupted DB row and skip it.
+                logger.warning("Skipping corrupted management record — invalid JSON", exc_info=True)
+                continue
+            if isinstance(item, dict):
+                records.append(self._record_from_payload(item))
+        return records
+
+    def _empty_counts(self) -> dict[str, int]:
+        return {
+            "all": 0,
+            "waiting": 0,
+            "ongoing": 0,
+            "completed": 0,
+            "failed": 0,
+            "cancelled": 0,
+        }
 
     def _load_records(self) -> dict[str, UpgradeManagementRecord]:
         if self._file_path is None or not self._file_path.exists():

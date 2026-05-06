@@ -2,6 +2,7 @@
 
 export type TaskStatus = 
   | 'todo' 
+  | 'assignment_pending'
   | 'in_progress' 
   | 'blocked' 
   | 'waiting_confirmation' 
@@ -33,7 +34,9 @@ export interface ZentexTask {
   created_at?: string;
   deadline?: string;
   tags?: string[];
+  contract?: Record<string, any>;
   metadata?: Record<string, any>;
+  subtask_count?: number;
   attempt_count?: number;
   last_error?: string | null;
   execution_started_at?: string | null;
@@ -50,22 +53,30 @@ export interface ZentexTask {
 }
 
 export interface TasksByStatus {
+  all?: ZentexTask[];
   in_progress: ZentexTask[];
   todo?: ZentexTask[];
   blocked?: ZentexTask[];
   pending: ZentexTask[];
   waiting_confirmation: ZentexTask[];
   completed: ZentexTask[];
+  failed?: ZentexTask[];
+  suspended?: ZentexTask[];
+  archived?: ZentexTask[];
   cancelled: ZentexTask[];
 }
 
 export type TaskPresentationGroup =
+  | 'all'
   | 'in_progress'
   | 'todo'
   | 'blocked'
   | 'pending'
   | 'waiting_confirmation'
   | 'completed'
+  | 'failed'
+  | 'suspended'
+  | 'archived'
   | 'cancelled';
 
 export type TaskGroupCounts = Record<TaskPresentationGroup, number>;
@@ -77,6 +88,86 @@ export interface TaskPageResponse {
   limit: number;
   offset: number;
   counts: TaskGroupCounts;
+}
+
+export interface TaskGarbageDuplicateGroup {
+  group_id: string;
+  group_kind: string;
+  severity: 'critical' | 'high' | 'medium' | 'low' | string;
+  signature: string;
+  reason: string;
+  recommended_action: string;
+  task_ids: string[];
+  task_count: number;
+  titles: string[];
+  source_module: string;
+  statuses: string[];
+}
+
+export interface TaskGarbageCandidate {
+  task_id: string;
+  title: string;
+  status: string;
+  severity: 'critical' | 'high' | 'medium' | 'low' | string;
+  issue_type: string;
+  reason: string;
+  recommended_action: string;
+  source_module: string;
+  parent_task_id?: string | null;
+  age_seconds?: number;
+}
+
+export interface TaskGarbageAssessment {
+  task_id: string;
+  rule_based_flags: {
+    is_idempotency_duplicate: boolean;
+    is_orphan_or_stale: boolean;
+    is_dependency_deadlock: boolean;
+    is_retry_budget_exhausted?: boolean;
+  };
+  rule_based_score: number;
+  llm_semantic_evaluation: {
+    status: string;
+    semantic_duplicate_score: number | null;
+    garbage_noise_score: number | null;
+    comprehensive_value_score: number | null;
+    evaluation_reason: string;
+    target_merge_task_id?: string | null;
+    final_decision?: string;
+  };
+  final_decision: string;
+  target_merge_task_id?: string | null;
+  duplicate_group_ids: string[];
+  garbage_issue_types: string[];
+}
+
+export interface TaskGarbageAnalysisReport {
+  report_id: string;
+  generated_at: string;
+  stale_after_seconds: number;
+  summary: {
+    total_tasks: number;
+    active_tasks: number;
+    q9_task_count: number;
+    duplicate_group_count: number;
+    garbage_candidate_count: number;
+    high_risk_count: number;
+  };
+  source_counts: Record<string, number>;
+  duplicate_groups: TaskGarbageDuplicateGroup[];
+  garbage_candidates: TaskGarbageCandidate[];
+  task_assessments: TaskGarbageAssessment[];
+  llm_semantic_scoring: {
+    enabled: boolean;
+    mandatory_for_semantic_decisions: boolean;
+    evaluated_group_count: number;
+    unavailable_group_count: number;
+  };
+  execution_plan: {
+    auto_execution_enabled: boolean;
+    reason: string;
+    candidate_action_count: number;
+  };
 }
 
 export interface TabPanelProps {

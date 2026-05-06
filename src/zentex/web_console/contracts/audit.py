@@ -16,8 +16,11 @@ class AuditRecordItem(BaseModel):
     timestamp: str
     source: str
     summary: str
+    content: str = ""
+    status: str = ""
     question_driver_refs: List[str] = Field(default_factory=list)
     context_info: Dict[str, Any] = Field(default_factory=dict)
+    payload: Dict[str, Any] = Field(default_factory=dict)
 
 
 class AuditPagePayload(BaseModel):

@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from typing import Any, Dict, List
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, Query
 from typing_extensions import Annotated
 
 from zentex.upgrade.service import UpgradeExecutionService, UpgradeManagementStore, UpgradeLifecycleView
@@ -10,7 +10,7 @@ from zentex.web_console.dependencies import (
     get_upgrade_management_store,
 )
 
-router = APIRouter()
+router = APIRouter(prefix="/evolution", tags=["evolution"])
 
 @router.get("/proposals")
 def list_evolution_proposals(
@@ -41,10 +41,11 @@ def approve_proposal(
 @router.get("/jobs")
 def list_upgrade_jobs(
     store: Annotated[UpgradeManagementStore, Depends(get_upgrade_management_store)],
+    limit: Annotated[int, Query(ge=1, le=500)] = 100,
 ) -> List[Dict[str, Any]]:
     """List ongoing, completed, and failed evolution jobs."""
-    records = store.list_records(lifecycle=UpgradeLifecycleView.ALL)
-    return [r._record_to_payload(r) for r in records] # Using internal helper for demo
+    records = store.list_records(lifecycle=UpgradeLifecycleView.ALL, limit=limit)
+    return [store._record_to_payload(record) for record in records]
 
 
 @router.post("/jobs/{record_id}/promote")

@@ -25,6 +25,8 @@ class ModelProviderSpec(Protocol):
         prompt: str,
         context: dict[str, Any],
         caller_context: Union[ModelProviderCallerContext, dict[str], Any],
+        max_output_tokens: Optional[int] = None,
+        metadata: Optional[dict[str, Any]] = None,
     ) -> dict[str, Any]: ...
 
 

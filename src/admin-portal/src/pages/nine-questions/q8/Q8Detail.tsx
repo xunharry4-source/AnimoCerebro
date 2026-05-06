@@ -61,6 +61,18 @@ function resolveErrorGuidance(errMsg: string): { title: string; action: string }
   };
 }
 
+function hasMaterialTracePayload(value: unknown): value is Record<string, any> {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return false;
+  const payload = value as Record<string, any>;
+  if (Array.isArray(payload.invocations) && payload.invocations.some(hasMaterialTracePayload)) return true;
+  return ["provider_name", "model", "prompt", "system_prompt", "context_data", "raw_response", "error_type", "error_message"].some((key) => {
+    const item = payload[key];
+    if (Array.isArray(item)) return item.length > 0;
+    if (item && typeof item === "object") return Object.keys(item).length > 0;
+    return item !== undefined && item !== null && item !== "";
+  });
+}
+
 export const Q8Detail: React.FC = () => {
   const qId = "q8";
   const [summary, setSummary] = useState<Record<string, any> | null>(null);
@@ -190,13 +202,13 @@ export const Q8Detail: React.FC = () => {
   const sanitizedInference = sanitizeQ8Inference(rawInference);
   const evidence = sanitizedEvidence.value as Q8PreprocessedEvidence;
   const inference = sanitizedInference.value as Q8WhatShouldIDoNowInferenceView | null;
-  const llmTrace = tracePayload;
+  const llmTrace = hasMaterialTracePayload(tracePayload) ? tracePayload : null;
   const executionDiagnosis = rawPayload?.context_updates?.q8_execution_diagnosis || null;
   const recoveryPlan = executionDiagnosis?.recovery_plan || null;
   const hasStructuredSnapshot = Boolean(rawEvidence);
   const showIncompleteAlert = !rawEvidence || !rawInference;
   const detailWarnings = [...sanitizedEvidence.warnings, ...sanitizedInference.warnings];
-  const providerName = String(tracePayload?.provider_name || rawPayload?.llm_trace_payload?.provider_name || "");
+  const providerName = String(llmTrace?.provider_name || rawPayload?.llm_trace_payload?.provider_name || "");
   const traceId = String(rawPayload?.trace_id || "");
   const toolId = String(rawPayload?.tool_id || `nine_questions.${qId}`);
   const pageStatus = String(summary?.status || modulesPayload?.status?.status || "partial");
@@ -339,7 +351,7 @@ export const Q8Detail: React.FC = () => {
           evidence={evidence}
           inference={inference}
           providerName={providerName || null}
-          elapsedMs={tracePayload?.elapsed_ms || rawPayload?.llm_trace_payload?.elapsed_ms || 0}
+          elapsedMs={llmTrace?.elapsed_ms || rawPayload?.llm_trace_payload?.elapsed_ms || 0}
         />
       </NineQuestionSectionBoundary>
 
@@ -361,7 +373,7 @@ export const Q8Detail: React.FC = () => {
 
       <NineQuestionSectionBoundary title="Q8 Trace">
         {sectionErrors.trace ? <Alert severity="warning" sx={{ mb: 2 }}>{sectionErrors.trace}</Alert> : null}
-        <LLMTracePanel trace={llmTrace as LLMTracePayloadView} />
+        <LLMTracePanel trace={llmTrace as LLMTracePayloadView | null} />
       </NineQuestionSectionBoundary>
     </Box>
   );

@@ -15,7 +15,7 @@ import {
 
 import { fetchAuditTraceGraph, type AuditGraphNodeView, type AuditGraphPayloadView } from "./auditApi";
 import LearningDashboard from "../learning/LearningDashboard";
-import NineQuestionReflectionsPage from "../nine-questions/NineQuestionReflectionsPage";
+import ReflectionDailyPage from "../reflections/ReflectionDailyPage";
 import NineQuestionsWorkflowPage from "../nine-questions/NineQuestionsWorkflowPage";
 import ExternalConnectorCenter from "../external-connectors/ExternalConnectorCenter";
 
@@ -256,7 +256,7 @@ function isKnownMode(mode: string): mode is AuditTraceMode {
 
 function TableView({ mode }: { mode: AuditTraceMode }) {
   if (mode === "nine_questions") return <NineQuestionsWorkflowPage />;
-  if (mode === "reflection") return <NineQuestionReflectionsPage />;
+  if (mode === "reflection") return <ReflectionDailyPage />;
   if (mode === "external_connectors") return <ExternalConnectorCenter />;
   return <LearningDashboard />;
 }

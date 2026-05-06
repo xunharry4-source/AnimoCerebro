@@ -26,10 +26,11 @@ class ClaudeTool(BaseProviderTool):
     def _build_payload(self, invocation: ToolInvocationRequest) -> Dict[str, Any]:
         payload: Dict[str, Any] = {
             "model": invocation.model,
-            "max_tokens": invocation.max_output_tokens,
             "temperature": invocation.temperature,
             "messages": [{"role": "user", "content": invocation.prompt}],
         }
+        if invocation.max_output_tokens is not None:
+            payload["max_tokens"] = invocation.max_output_tokens
         if invocation.system_prompt:
             payload["system"] = invocation.system_prompt
         return payload

@@ -7,6 +7,7 @@ from datetime import datetime, timezone
 from threading import Event, Thread
 from typing import Any, Dict, List, Optional, Union
 
+from zentex.module_logs import record_module_log
 from zentex.common.startup_markers import log_once
 
 logger = logging.getLogger(__name__)
@@ -27,6 +28,7 @@ class TaskAutoLoopScheduler:
         interval_seconds: int = 15,
         batch_size: int = 50,
         enabled: bool = True,
+        module_log_service: Any = None,
     ) -> None:
         self._task_service = task_service
         self._interval_seconds = max(5, int(interval_seconds))
@@ -36,6 +38,7 @@ class TaskAutoLoopScheduler:
         self._thread: Optional[Thread] = None
         self._last_cycle_at: Optional[datetime] = None
         self._last_cycle_stats: Optional[Dict[str, Any]] = None
+        self._module_log_service = module_log_service
 
     def start(self) -> None:
         if not self._enabled:
@@ -135,6 +138,7 @@ class TaskAutoLoopScheduler:
         stats["cycle_duration_ms"] = elapsed_ms
         self._last_cycle_at = started_at
         self._last_cycle_stats = stats
+        self._record_cycle_log(stats)
 
         did_work = any(
             (
@@ -157,3 +161,26 @@ class TaskAutoLoopScheduler:
     @property
     def last_cycle_at(self) -> Optional[datetime]:
         return self._last_cycle_at
+
+    def _record_cycle_log(self, stats: dict[str, Any]) -> None:
+        status = "failed" if stats.get("errors") else "completed"
+        reason = (
+            "任务自动循环定时任务执行失败，请查看 errors 详情。"
+            if status == "failed"
+            else "任务自动循环定时任务已完成，包含派发、自动恢复、超时检查与重发统计。"
+        )
+        record_module_log(
+            self._module_log_service,
+            source_module="task",
+            module_label="任务模块",
+            action="scheduled_cycle",
+            action_label="定时巡检已执行",
+            object_id="task-auto-loop",
+            object_label="任务自动循环",
+            before_status="running",
+            after_status=status,
+            reason=reason,
+            details=dict(stats),
+            operator_id="task-auto-loop-scheduler",
+            status=status,
+        )

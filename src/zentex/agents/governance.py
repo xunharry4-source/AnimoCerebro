@@ -115,6 +115,9 @@ class RoleState(BaseModel):
 
     identity_role: str
     active_role: str
+    active_role_user_locked: bool = True
+    inferred_reference_role: str = ""
+    role_alignment_gap: str = ""
     task_role: str
     role_description: str
     readonly_skills: list[str]
@@ -275,6 +278,7 @@ class RoleAgentGovernanceManager:
         self._role_state = self._role_state.model_copy(
             update={
                 "active_role": request.new_active_role,
+                "active_role_user_locked": True,
                 "role_description": request.role_description,
                 "recompute_required": True,
                 "last_audit_id": audit.audit_id,

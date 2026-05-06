@@ -22,7 +22,15 @@ from zentex.plugins.models import PluginLifecycleStatus
 from zentex.plugins.storage import PluginStorage
 from zentex.plugins.manager import PluginManager
 from zentex.plugins.plugin_ids import iter_plugin_id_aliases, canonicalize_plugin_id
-from zentex.common.plugin_ids import NINE_QUESTION_Q1
+from zentex.common.plugin_ids import (
+    NINE_QUESTION_Q1,
+    NINE_QUESTION_Q7,
+    NINE_QUESTION_Q8,
+    NINE_QUESTION_Q9,
+    ORACLE_ALTERNATIVE,
+    ORACLE_OBJECTIVE,
+    ORACLE_POSTURE,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -417,10 +425,28 @@ class BasePluginService:
             ("oracle_redline", "functional", 1),
         ]
 
+        q7_cognitive_id = NINE_QUESTION_Q7
+        q7_functional_bindings = [
+            (ORACLE_ALTERNATIVE, "functional", 1),
+        ]
+
+        q8_cognitive_id = NINE_QUESTION_Q8
+        q8_functional_bindings = [
+            (ORACLE_OBJECTIVE, "functional", 1),
+        ]
+
+        q9_cognitive_id = NINE_QUESTION_Q9
+        q9_functional_bindings = [
+            (ORACLE_POSTURE, "functional", 1),
+        ]
+
         all_bindings = [
             (q1_cognitive_id, q1_functional_bindings),
             (q2_cognitive_id, q2_functional_bindings),
             (q6_cognitive_id, q6_functional_bindings),
+            (q7_cognitive_id, q7_functional_bindings),
+            (q8_cognitive_id, q8_functional_bindings),
+            (q9_cognitive_id, q9_functional_bindings),
         ]
 
         created_count = 0

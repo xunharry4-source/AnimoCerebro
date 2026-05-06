@@ -77,10 +77,6 @@ def derive_forbidden_zone_baseline(
     unauthorized_actions = coerce_string_list(q5_permission_boundary.get("unauthorized_actions"))
     prohibited_strategies.extend(unauthorized_actions)
 
-    actionable_space = coerce_string_list(q4_profile.get("actionable_space"))
-    if not actionable_space:
-        absolute_red_lines.append("no action without validated actionable_space")
-
     permission_profile = snapshot.get("q4_permission_profile")
     permission_profile = permission_profile if isinstance(permission_profile, dict) else {}
     if permission_profile.get("is_read_only") is True:

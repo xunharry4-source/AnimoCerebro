@@ -1,16 +1,18 @@
 from __future__ import annotations
 
 import logging
-from typing import Any, Dict, List, Optional, Union
+from typing import TYPE_CHECKING, Any, Dict, List, Optional, Union
 from datetime import datetime, timezone
 
 from zentex.tasks.models import (
     ZentexTask, TaskStatus, TaskType, TaskPriority, 
     SuspendedTask, TaskContract, TaskStateError
 )
-from zentex.tasks.service import TaskManagementService
 from zentex.tasks.registry import TaskRegistry
 from zentex.tasks.core import TaskDecomposerPlugin
+
+if TYPE_CHECKING:
+    from zentex.tasks.management.task_management_service import TaskManagementService
 
 logger = logging.getLogger(__name__)
 

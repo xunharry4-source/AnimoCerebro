@@ -112,6 +112,12 @@ _KERNEL_DEP_KWARG: dict[str, str] = {
     "tasks": "task_service",
 }
 
+_SERVICE_ENTRYPOINT_MODULES: dict[str, str] = {
+    # zentex.tasks.service is the public interface contract module. The real
+    # launcher factory lives with the management implementation.
+    "tasks": "zentex.tasks.management.task_management_service",
+}
+
 
 class SystemAssembler:
     """Assembles all zentex services in topological order."""
@@ -213,8 +219,9 @@ class SystemAssembler:
         else:
             # Optional external service — graceful fallback to stub on ImportError.
             try:
+                module_name = _SERVICE_ENTRYPOINT_MODULES.get(name, f"zentex.{name}.service")
                 module = __import__(
-                    f"zentex.{name}.service",
+                    module_name,
                     fromlist=["get_service"],
                 )
                 get_service_fn = getattr(module, "get_service")

@@ -6,6 +6,9 @@ to enhance the upgrade process without human interaction.
 """
 
 import asyncio
+import tempfile
+from pathlib import Path
+
 from zentex.upgrade import (
     AtomicUpgradePlanner,
     AutomatedRootCauseAnalyzer,
@@ -63,7 +66,7 @@ async def example_code_review():
     reviewer = AutomatedTwoStageReviewer()
     
     class ExampleCandidate:
-        isolation_path = "/tmp/example-plugin"
+        isolation_path = str(Path(tempfile.gettempdir()) / "example-plugin")
         changes = {
             "baseline_version": "1.0.0",
             "candidate_version": "1.1.0-candidate"

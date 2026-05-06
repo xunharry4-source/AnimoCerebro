@@ -146,52 +146,52 @@ export interface NineQuestionIntro {
 export const NINE_QUESTIONS_INTRODUCTIONS: Record<string, NineQuestionIntro> = {
   q1: {
     questionId: "q1",
-    title: "我在哪",
+    title: "我在那",
     goal: "环境态势感知 + 工作区领域归类，识别当前所处的物理和逻辑环境",
     expectedData: "物理主机状态、工作区结构分析、内容采样摘要、不确定性提示",
     finalOutput: "工作区领域推断结果（主领域、次领域、置信度、推理摘要、不确定性列表、建议第一步）",
   },
   q2: {
     questionId: "q2",
-    title: "我是谁",
-    goal: "角色推演 + 身份内核装配，基于 Q1 的环境态势和底层身份约束推断当前最适合的任务角色",
-    expectedData: "Q1 态势结果、身份内核（元动机/禁令/不可绕过约束）、主观风险偏好权重、人工干预回执",
-    finalOutput: "角色画像（身份角色/活跃角色/任务角色）+ 使命连续性边界（当前使命/优先职责/连续性边界）",
-  },
-  q3: {
-    questionId: "q3",
     title: "我有什么",
     goal: "统一资产盘点，全面梳理当前可用的认知工具、执行域、Agent、策略补丁和工作区权限",
     expectedData: "认知工具注册表、执行域目录、已连接 Agent 列表、激活的策略补丁、可访问工作区区域",
     finalOutput: "统一资产清单 + 资源评估（资源状态/缺失关键资产/瓶颈节点/推理摘要）",
   },
+  q3: {
+    questionId: "q3",
+    title: "我是谁",
+    goal: "角色推演 + 身份内核装配，基于 Q1 的环境态势、Q2 的资产盘点和底层身份约束推断当前最适合的任务角色",
+    expectedData: "Q1 态势结果、Q2 资产盘点结果、身份内核（元动机/禁令/不可绕过约束）、主观风险偏好权重、人工干预回执",
+    finalOutput: "角色画像（身份角色/活跃角色/任务角色）+ 使命连续性边界（当前使命/优先职责/连续性边界）",
+  },
   q4: {
     questionId: "q4",
     title: "我能做什么",
-    goal: "能力边界评估，基于 Q3 的资产清单和当前权限，评估系统真正具备的行动能力",
-    expectedData: "Q3 资产清单、活跃执行域、权限边界、Q1-Q2 的前置态势",
+    goal: "能力边界评估，基于 Q2 的资产清单、Q3 的角色推断和当前权限，评估系统真正具备的行动能力",
+    expectedData: "Q2 资产清单、Q3 角色画像、活跃执行域、权限边界、Q1-Q3 的前置态势",
     finalOutput: "能力边界画像（能力上限/可行动空间/可执行策略），严格禁止幻觉声明不存在的能力",
   },
   q5: {
     questionId: "q5",
-    title: "我被允许做什么",
-    goal: "授权边界判断 + 合规性检查，在 Q4 的能力范围内进一步筛选出被授权允许执行的操作",
+    title: "我不能干什么",
+    goal: "禁止边界判断 + 合规性检查，在 Q4 的能力范围内进一步筛选出禁止、未授权和需升级审批的操作",
     expectedData: "Q4 能力边界、联系策略、租户范围、Agent 信任策略、组织边界规则",
-    finalOutput: "授权边界画像（允许操作空间/禁止操作空间及原因/联系和组织边界/需要升级的操作）",
+    finalOutput: "禁止边界画像（禁止操作空间及原因/需升级动作/联系和组织边界/允许操作对照白名单）",
   },
   q6: {
     questionId: "q6",
-    title: "我即使能做也不该做什么",
-    goal: "红线和禁区检查，识别绝对不可触碰的安全边界和性能权衡禁令",
-    expectedData: "可行动空间、授权边界、不可绕过约束、历史策略补丁、安全红线规则",
-    finalOutput: "禁区评估（绝对红线/性能权衡禁令/禁止策略/污染风险）",
+    title: "如果我做了会怎样 / 代价与后果是什么",
+    goal: "What-if 代价与后果评估，在行动前推演直接后果、传导后果、严重度、可逆性、缓解要求和停止条件",
+    expectedData: "可行动空间、Q5 禁止边界、不可绕过约束、历史失败/策略补丁、风险提示",
+    finalOutput: "代价与后果画像（ConsequenceAssessment / CostImpactProfile）",
   },
   q7: {
     questionId: "q7",
-    title: "我还可以做什么",
-    goal: "备选策略生成，当主路径受阻时提供降级方案、协作切换和探索性行动建议",
-    expectedData: "资源瓶颈、能力限制、权限边界、绝对红线、历史失败补丁",
-    finalOutput: "替代策略（回退计划/降级策略/协作切换方案/探索性行动）",
+    title: "我的红线与约束是什么",
+    goal: "红线与约束评估，在 Q8 生成行动目标前识别不可绕过底线",
+    expectedData: "身份内核底线、Q5 授权边界、安全拒绝记录、程序记忆约束",
+    finalOutput: "RedLineAssessment（当前红线命中/拒绝记录/禁令来源/不可绕过约束/引用来源）",
   },
   q8: {
     questionId: "q8",
@@ -238,6 +238,47 @@ export interface LLMTracePayloadView {
   elapsed_ms?: number | null;
   error_type?: string | null;
   error_message?: string | null;
+  invocations?: LLMTracePayloadView[];
+}
+
+export interface Q9LlmTaskRow {
+  session_id: string;
+  task_scope: "internal" | "external" | string;
+  task_index: number;
+  task_key: string;
+  trace_id?: string | null;
+  request_id?: string | null;
+  decision_id?: string | null;
+  provider_name?: string | null;
+  model?: string | null;
+  task_name: string;
+  task_description: string;
+  plan_objective?: string | null;
+  elapsed_ms?: number | null;
+  created_at?: string | null;
+  updated_at?: string | null;
+}
+
+export interface Q9LlmTaskDetail extends Q9LlmTaskRow {
+  q8_task?: Record<string, any> | string | null;
+  llm_input?: Record<string, any> | null;
+  llm_output?: Record<string, any> | null;
+  token_usage?: LLMTokenUsageView | Record<string, any> | null;
+}
+
+export interface Q9LlmTasksPayload {
+  question_id: "q9" | string;
+  session_id: string;
+  source_table: string;
+  task_count: number;
+  tasks: Q9LlmTaskRow[];
+}
+
+export interface Q9LlmTaskDetailPayload {
+  question_id: "q9" | string;
+  session_id: string;
+  source_table: string;
+  task: Q9LlmTaskDetail;
 }
 
 export interface Q1LLMUpgradeProfileView {
@@ -289,7 +330,7 @@ export interface NineQuestionSandboxResponse {
     | Q3WhatDoIHaveInferenceView
     | Q4WhatCanIDoInferenceView
     | Q5WhatAmIAllowedToDoInferenceView
-    | Q6ForbiddenZoneInferenceView
+    | Q6ConsequenceInferenceView
     | Q7AlternativeStrategyInferenceView
     | Q8WhatShouldIDoNowInferenceView
     | Q9ActionPostureInferenceView
@@ -307,10 +348,15 @@ export interface NineQuestionsRunResponse {
 }
 
 const NINE_QUESTION_FETCH_TIMEOUT_MS = 8000;
+const HEAVY_NINE_QUESTION_FETCH_TIMEOUT_MS = 30000;
 
-async function fetchWithTimeout(input: RequestInfo | URL, init?: RequestInit): Promise<Response> {
+function getNineQuestionFetchTimeout(questionId: string): number {
+  return questionId === "q2" ? HEAVY_NINE_QUESTION_FETCH_TIMEOUT_MS : NINE_QUESTION_FETCH_TIMEOUT_MS;
+}
+
+async function fetchWithTimeout(input: RequestInfo | URL, init?: RequestInit, timeoutMs = NINE_QUESTION_FETCH_TIMEOUT_MS): Promise<Response> {
   const controller = new AbortController();
-  const timeoutId = window.setTimeout(() => controller.abort(), NINE_QUESTION_FETCH_TIMEOUT_MS);
+  const timeoutId = window.setTimeout(() => controller.abort(), timeoutMs);
   try {
     return await fetch(input, {
       ...init,
@@ -318,7 +364,7 @@ async function fetchWithTimeout(input: RequestInfo | URL, init?: RequestInit): P
     });
   } catch (error) {
     if ((error as Error)?.name === "AbortError") {
-      throw new Error(`请求超时（>${NINE_QUESTION_FETCH_TIMEOUT_MS}ms）`);
+      throw new Error(`请求超时（>${timeoutMs}ms）`);
     }
     throw error;
   } finally {
@@ -432,14 +478,20 @@ export interface Q2ManualIntervention {
 }
 
 export interface Q2PreprocessedEvidence {
-  q1_summary: Q2Q1Summary;
-  identity_kernel: Q2IdentityKernel;
+  q1_summary?: Q2Q1Summary;
+  identity_kernel?: Q2IdentityKernel;
   manual_intervention?: Q2ManualIntervention | null;
+  workspace_permission?: Record<string, any>;
+  tools_agents?: Record<string, any>;
+  memory_strategy?: Record<string, any>;
+  asset_inventory?: Q3AssetInventoryView;
 }
 
 export interface Q2RoleView {
   identity_role: string;
   active_role: string;
+  inferred_reference_role: string;
+  role_alignment_gap: string;
   task_role: string;
 }
 
@@ -449,9 +501,24 @@ export interface Q2MissionBoundaryView {
   continuity_boundaries: string[];
 }
 
+export interface Q2RoleAlignmentJudgementView {
+  user_configured_role: string;
+  inferred_reference_role: string;
+  role_alignment_gap: string;
+  q2_computed_role_profile: Record<string, any>;
+  final_role_profile: Record<string, any>;
+  aligned: boolean;
+  replacement_allowed: boolean;
+  analysis_source: string;
+  analysis: string;
+}
+
 export interface Q2WhoAmIInferenceView {
-  role_profile: Q2RoleView;
-  mission_boundary: Q2MissionBoundaryView;
+  asset_inventory?: Q3AssetInventoryView;
+  sufficiency_assessment?: Q3ResourceSufficiencyView | Record<string, any>;
+  role_profile?: Q2RoleView;
+  mission_boundary?: Q2MissionBoundaryView;
+  role_alignment_judgement?: Q2RoleAlignmentJudgementView | null;
 }
 
 export interface Q3WorkspaceAndPermission {
@@ -506,10 +573,33 @@ export interface Q3MemoryAndStrategy {
   strategy_patches: string[];
 }
 
+export interface Q3AssetInventoryItemView {
+  asset_name: string;
+  description: string;
+  source: string;
+  plugin_category: string;
+  trust_level: string;
+  validity: string;
+}
+
+export interface Q3AssetInventoryView {
+  inventory_summary?: string;
+  long_term_memory?: Q3AssetInventoryItemView[];
+  cognitive_and_functional_tools?: Q3AssetInventoryItemView[];
+  connected_agents?: Q3AssetInventoryItemView[];
+  strategy_patches?: Q3AssetInventoryItemView[];
+}
+
 export interface Q3PreprocessedEvidence {
   workspace_permission: Q3WorkspaceAndPermission;
   tools_agents: Q3ToolsAndAgents;
   memory_strategy: Q3MemoryAndStrategy;
+  asset_inventory?: Q3AssetInventoryView;
+  q1_environment_inference?: Record<string, any>;
+  q2_asset_inventory?: Q3AssetInventoryView;
+  q1_llm_trace_payload?: LLMTracePayloadView | Record<string, any>;
+  q2_llm_trace_payload?: LLMTracePayloadView | Record<string, any>;
+  identity_kernel_snapshot?: Record<string, any>;
 }
 
 export interface Q3ResourceSufficiencyView {
@@ -522,7 +612,10 @@ export interface Q3ResourceSufficiencyView {
 }
 
 export interface Q3WhatDoIHaveInferenceView {
-  sufficiency_assessment: Q3ResourceSufficiencyView;
+  asset_inventory?: Q3AssetInventoryView;
+  sufficiency_assessment?: Q3ResourceSufficiencyView;
+  role_profile?: Q2RoleView;
+  mission_boundary?: Q2MissionBoundaryView;
 }
 
 export interface Q4PreprocessedEvidence {
@@ -545,6 +638,13 @@ export interface Q5PreprocessedEvidence {
 }
 
 export interface Q5WhatAmIAllowedToDoInferenceView {
+  authorization_boundary?: Record<string, any>;
+  current_authorization_scope?: string;
+  contact_policies?: string[];
+  organizational_boundaries?: string;
+  allowed_actions?: string[];
+  forbidden_actions?: string[];
+  question_driver_refs?: string[];
   execution_tier: string;
   interaction_scope: string;
   requires_human_confirmation: boolean;
@@ -561,26 +661,49 @@ export interface Q6PreprocessedEvidence {
   historical_strategy_patches: string[];
 }
 
-export interface Q6ForbiddenZoneInferenceView {
-  absolute_red_lines: string[];
-  performance_tradeoff_bans: string[];
-  prohibited_strategies: string[];
-  contamination_risks: string[];
+export interface Q6ConsequenceInferenceView {
+  ConsequenceAssessment?: {
+    action_under_review?: string;
+    immediate_consequences?: string[];
+    downstream_consequences?: string[];
+    consequence_severity?: string;
+    reversibility?: string;
+  };
+  CostImpactProfile?: {
+    operational_costs?: string[];
+    security_compliance_impacts?: string[];
+    user_trust_impacts?: string[];
+    mitigation_requirements?: string[];
+    stop_conditions?: string[];
+  };
+  action_under_review?: string;
+  immediate_consequences?: string[];
+  downstream_consequences?: string[];
+  consequence_severity?: string;
+  reversibility?: string;
+  operational_costs?: string[];
+  security_compliance_impacts?: string[];
+  user_trust_impacts?: string[];
+  mitigation_requirements?: string[];
+  stop_conditions?: string[];
 }
 
 export interface Q7PreprocessedEvidence {
-  resource_bottlenecks: string[];
-  capability_limits: string[];
-  permission_boundaries: string[];
-  absolute_red_lines: string[];
-  historical_failure_patches: string[];
+  identity_kernel_constraints: string[];
+  authorization_boundary_constraints: string[];
+  safety_rejection_history: string[];
+  procedural_memory_constraints: string[];
+  non_bypassable_constraints: string[];
+  ban_source_explanations: string[];
+  question_driver_refs: string[];
 }
 
 export interface Q7AlternativeStrategyInferenceView {
-  fallback_plans: string[];
-  degradation_strategies: string[];
-  collaboration_switches: Array<Record<string, any>>;
-  exploratory_actions: string[];
+  current_red_line_hits: string[];
+  rejected_operation_records: string[];
+  ban_source_explanations: string[];
+  non_bypassable_constraints: string[];
+  question_driver_refs: string[];
 }
 
 export interface Q8AggregatedContextEvidence {
@@ -631,6 +754,8 @@ export interface Q8AutonomousTaskQueueView {
 export interface Q8WhatShouldIDoNowInferenceView {
   objective_profile: Q8ObjectiveProfileView;
   task_queue: Q8AutonomousTaskQueueView;
+  q8_internal_cognitive_tasks?: Array<Record<string, any>>;
+  q8_external_execution_tasks?: Array<Record<string, any>>;
 }
 
 export interface Q9CognitiveSnapshotEvidence {
@@ -714,7 +839,7 @@ export interface NineQuestionItem {
     | Q3WhatDoIHaveInferenceView
     | Q4WhatCanIDoInferenceView
     | Q5WhatAmIAllowedToDoInferenceView
-    | Q6ForbiddenZoneInferenceView
+    | Q6ConsequenceInferenceView
     | Q7AlternativeStrategyInferenceView
     | Q8WhatShouldIDoNowInferenceView
     | Q9ActionPostureInferenceView
@@ -766,7 +891,7 @@ export interface TraceDetail {
     | Q3WhatDoIHaveInferenceView
     | Q4WhatCanIDoInferenceView
     | Q5WhatAmIAllowedToDoInferenceView
-    | Q6ForbiddenZoneInferenceView
+    | Q6ConsequenceInferenceView
     | Q7AlternativeStrategyInferenceView
     | Q8WhatShouldIDoNowInferenceView
     | Q9ActionPostureInferenceView
@@ -894,7 +1019,7 @@ export async function fetchNineQuestionsStatus(): Promise<{
 }
 
 
-export async function runAllNineQuestions(forceRefresh = true): Promise<NineQuestionsRunResponse> {
+export async function runAllNineQuestions(forceRefresh = false): Promise<NineQuestionsRunResponse> {
   const resp = await fetch("/api/web/nine-questions/run-all", {
     method: "POST",
     headers: {
@@ -910,13 +1035,17 @@ export async function runAllNineQuestions(forceRefresh = true): Promise<NineQues
   return data as NineQuestionsRunResponse;
 }
 
-export async function runSingleNineQuestion(questionId: string, forceRefresh = true): Promise<NineQuestionsRunResponse> {
+export async function runSingleNineQuestion(
+  questionId: string,
+  forceRefresh = true,
+  runPayload?: Record<string, unknown>,
+): Promise<NineQuestionsRunResponse> {
   const resp = await fetch(`/api/web/nine-questions/${questionId}/run`, {
     method: "POST",
     headers: {
       "Content-Type": "application/json",
     },
-    body: JSON.stringify({ force_refresh: forceRefresh }),
+    body: JSON.stringify({ force_refresh: forceRefresh, ...(runPayload ?? {}) }),
   });
   const data = await readResponseBody(resp);
   if (!resp.ok) {
@@ -1026,7 +1155,7 @@ export async function fetchNineQuestionDetail(
     ? `/api/web/nine-questions/${questionId}?trace_id=${encodeURIComponent(traceId)}`
     : `/api/web/nine-questions/${questionId}`;
 
-  const resp = await fetchWithTimeout(url);
+  const resp = await fetchWithTimeout(url, undefined, getNineQuestionFetchTimeout(questionId));
   const data = await readResponseBody(resp);
 
   if (!resp.ok) {
@@ -1054,7 +1183,11 @@ export async function fetchNineQuestionDetail(
 }
 
 async function _fetchQuestionSubSection(questionId: string, section: string): Promise<Record<string, any>> {
-  const resp = await fetchWithTimeout(`/api/web/nine-questions/${questionId}/${section}`);
+  const resp = await fetchWithTimeout(
+    `/api/web/nine-questions/${questionId}/${section}`,
+    undefined,
+    getNineQuestionFetchTimeout(questionId),
+  );
   const data = await readResponseBody(resp);
   if (!resp.ok) {
     const detail = extractApiErrorMessage(data, "");
@@ -1079,8 +1212,64 @@ export async function fetchNineQuestionTracePayload(questionId: string): Promise
   return _fetchQuestionSubSection(questionId, "trace-payload");
 }
 
+export async function fetchQ9LlmTasks(): Promise<Q9LlmTasksPayload> {
+  const resp = await fetchWithTimeout(
+    "/api/web/nine-questions/q9/llm-tasks",
+    undefined,
+    getNineQuestionFetchTimeout("q9"),
+  );
+  const data = await readResponseBody(resp);
+  if (!resp.ok) {
+    const detail = extractApiErrorMessage(data, "");
+    throw new Error(detail || `获取 q9 llm tasks 失败（HTTP ${resp.status}）`);
+  }
+  return data as Q9LlmTasksPayload;
+}
+
+export async function fetchQ9LlmTaskDetail(taskKey: string): Promise<Q9LlmTaskDetailPayload> {
+  const resp = await fetchWithTimeout(
+    `/api/web/nine-questions/q9/llm-tasks/${encodeURIComponent(taskKey)}`,
+    undefined,
+    getNineQuestionFetchTimeout("q9"),
+  );
+  const data = await readResponseBody(resp);
+  if (!resp.ok) {
+    const detail = extractApiErrorMessage(data, "");
+    throw new Error(detail || `获取 q9 llm task ${taskKey} 失败（HTTP ${resp.status}）`);
+  }
+  return data as Q9LlmTaskDetailPayload;
+}
+
+export async function fetchQ2LlmTrace(): Promise<Record<string, any>> {
+  const resp = await fetchWithTimeout(
+    "/api/web/nine-questions/q2/llm",
+    undefined,
+    getNineQuestionFetchTimeout("q2"),
+  );
+  const data = await readResponseBody(resp);
+  if (!resp.ok) {
+    const detail = extractApiErrorMessage(data, "");
+    throw new Error(detail || `获取 q2 llm 失败（HTTP ${resp.status}）`);
+  }
+  return (data as Record<string, any>) ?? {};
+}
+
 export async function fetchNineQuestionRaw(questionId: string): Promise<Record<string, any>> {
   return _fetchQuestionSubSection(questionId, "raw");
+}
+
+export async function fetchQ2AssetStatistics(): Promise<Record<string, any>> {
+  const resp = await fetchWithTimeout(
+    "/api/web/nine-questions/q2/asset-statistics",
+    undefined,
+    getNineQuestionFetchTimeout("q2"),
+  );
+  const data = await readResponseBody(resp);
+  if (!resp.ok) {
+    const detail = extractApiErrorMessage(data, "");
+    throw new Error(detail || `获取 q2 asset-statistics 失败（HTTP ${resp.status}）`);
+  }
+  return (data as Record<string, any>) ?? {};
 }
 
 export async function fetchNineQuestionModules(questionId: string): Promise<Record<string, any>> {
@@ -1127,11 +1316,11 @@ export async function fetchNineQuestionWorkflow(): Promise<NineQuestionWorkflowP
 export function getQuestionDisplayLabel(questionId: string): string {
   const labels: Record<string, string> = {
     q1: "Q1_Where_Am_I",
-    q2: "Q2_Who_Am_I",
-    q3: "Q3_What_Do_I_Have",
+    q2: "Q2_What_Do_I_Have",
+    q3: "Q3_Who_Am_I",
     q4: "Q4_What_Can_I_Do",
-    q5: "Q5_What_Am_I_Allowed_To_Do",
-    q6: "Q6_What_Should_I_Not_Do",
+    q5: "Q5_What_Can_I_Not_Do",
+    q6: "Q6_What_If_I_Do_It",
     q7: "Q7_What_Else_Can_I_Do",
     q8: "Q8_What_Should_I_Do_Now",
     q9: "Q9_How_Should_I_Act",

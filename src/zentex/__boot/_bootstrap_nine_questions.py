@@ -12,7 +12,7 @@ import os
 import sys
 from typing import Any, Dict, Optional
 
-from zentex.tasks.service import TaskManagementService
+from zentex.tasks import TaskManagementService
 from zentex.agents.service import AgentCoordinationService
 
 logger = logging.getLogger(__name__)

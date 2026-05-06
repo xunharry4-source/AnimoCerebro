@@ -1208,6 +1208,24 @@ class _EnhancedMemorySQLiteStore:
             rows = conn.execute(sql, tuple(params)).fetchall()
         return [str(row[0]) for row in rows]
 
+    def count_records(self) -> int:
+        with self._get_connection() as conn:
+            modular_row = conn.execute(
+                "SELECT COUNT(*) FROM memory_record_headers"
+            ).fetchone()
+            legacy_row = conn.execute(
+                """
+                SELECT COUNT(*)
+                FROM memory_records
+                WHERE memory_id NOT IN (
+                    SELECT memory_id FROM memory_record_headers
+                )
+                """
+            ).fetchone()
+        return int(modular_row[0] if modular_row is not None else 0) + int(
+            legacy_row[0] if legacy_row is not None else 0
+        )
+
     def read_manifest(self, memory_id: str) -> Optional[MemoryRecordManifest]:
         with self._get_connection() as conn:
             row = conn.execute("SELECT manifest_json FROM memory_manifests WHERE memory_id = ?", (memory_id,)).fetchone()
@@ -1956,6 +1974,33 @@ class _MemoryManagementStateStore:
         with self._lock:
             rows = self._sqlite_conn.execute(sql, tuple(params)).fetchall()
         return [str(row[0]) for row in rows]
+
+    def count_by_field(self, field: str) -> dict[str, int]:
+        if field not in {"status", "visibility", "trust_level"}:
+            raise ValueError(f"Unsupported memory management count field: {field}")
+        if self._sqlite_conn is None:
+            with self._lock:
+                states = list(self._states.values())
+            counts: dict[str, int] = {}
+            for state in states:
+                value = str(getattr(state, field))
+                counts[value] = counts.get(value, 0) + 1
+            return counts
+        with self._lock:
+            rows = self._sqlite_conn.execute(
+                f"SELECT {field}, COUNT(*) FROM memory_management_state GROUP BY {field}"
+            ).fetchall()
+        return {str(row[0]): int(row[1]) for row in rows}
+
+    def total_count(self) -> int:
+        if self._sqlite_conn is None:
+            with self._lock:
+                return len(self._states)
+        with self._lock:
+            row = self._sqlite_conn.execute(
+                "SELECT COUNT(*) FROM memory_management_state"
+            ).fetchone()
+        return int(row[0] if row is not None else 0)
 
 
 class _MemoryAuditStore:
@@ -2750,6 +2795,30 @@ class EnhancedMemoryService:
 
     def list_episodic_records(self) -> list[EnhancedMemoryRecord]:
         return self._episodic_store.list_records()
+
+    def build_overview_snapshot(self) -> dict[str, Any]:
+        layer_counts = {
+            "semantic_count": self._semantic_store.count_records(),
+            "procedural_count": self._procedural_store.count_records(),
+            "episodic_count": self._episodic_store.count_records(),
+        }
+        total_records = sum(layer_counts.values())
+        status_counts = self._management_store.count_by_field("status")
+        trust_counts = self._management_store.count_by_field("trust_level")
+        state_count = self._management_store.total_count()
+        missing_state_count = max(0, total_records - state_count)
+        return {
+            **layer_counts,
+            "active_count": int(status_counts.get("active", 0)) + missing_state_count,
+            "deprecated_count": int(status_counts.get("deprecated", 0)),
+            "archived_count": int(status_counts.get("archived", 0)),
+            "suspect_count": int(trust_counts.get("suspect", 0)),
+            "health_snapshot": self.get_health_snapshot(),
+            "projection_failures": self.list_projection_failures(),
+            "initialization_failures": self.list_initialization_failures(),
+            "governance_failures": self.list_governance_failures(),
+            "backends": self.get_backend_status(),
+        }
 
     def query_managed_records(
         self,

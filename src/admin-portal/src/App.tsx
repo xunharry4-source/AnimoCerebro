@@ -12,62 +12,65 @@ import {
 import { Link as RouterLink, Navigate, Route, Routes, useLocation } from "react-router-dom";
 
 import ErrorBoundary from "./components/ErrorBoundary";
-import RealtimeDashboard from "./pages/dashboard/RealtimeDashboard";
-import MemoryReasoning from "./pages/dashboard/MemoryReasoning";
-import SimulationExplorer from "./pages/dashboard/SimulationExplorer";
-import HealthDashboard from "./pages/dashboard/HealthDashboard";
-import WorkspacesPage from "./pages/WorkspacesPage";
-import NineQuestionsReport from "./pages/nine-questions/NineQuestionsReport";
-
-// Q1-Q9 Isolated Audit Components (Zentex G31A Compliance)
-import Q1Detail from "./pages/nine-questions/q1/Q1Detail";
-import Q1Test from "./pages/nine-questions/q1/Q1Test";
-import Q2Detail from "./pages/nine-questions/q2/Q2Detail";
-import Q2Test from "./pages/nine-questions/q2/Q2Test";
-import Q3Detail from "./pages/nine-questions/q3/Q3Detail";
-import Q3Test from "./pages/nine-questions/q3/Q3Test";
-import Q4Detail from "./pages/nine-questions/q4/Q4Detail";
-import Q4Test from "./pages/nine-questions/q4/Q4Test";
-import Q5Detail from "./pages/nine-questions/q5/Q5Detail";
-import Q5Test from "./pages/nine-questions/q5/Q5Test";
-import Q6Detail from "./pages/nine-questions/q6/Q6Detail";
-import Q6Test from "./pages/nine-questions/q6/Q6Test";
-import Q7Detail from "./pages/nine-questions/q7/Q7Detail";
-import Q7Test from "./pages/nine-questions/q7/Q7Test";
-import Q8Detail from "./pages/nine-questions/q8/Q8Detail";
-import Q8Test from "./pages/nine-questions/q8/Q8Test";
-import Q9Detail from "./pages/nine-questions/q9/Q9Detail";
-import Q9Test from "./pages/nine-questions/q9/Q9Test";
-
-import NineQuestionDetailPage from "./pages/nine-questions/NineQuestionDetailPage";
-import NineQuestionSandboxPage from "./pages/nine-questions/NineQuestionSandboxPage";
-import NineQuestionWorkflowGraphPage from "./pages/nine-questions/NineQuestionWorkflowGraphPage";
-import AgentAssetManager from "./pages/agents/AgentAssetManager";
-import AgentDetail from "./pages/agents/AgentDetail";
-import ZentexTaskManager from "./pages/tasks/ZentexTaskManager";
-import TaskDetailPage from "./pages/tasks/TaskDetailPage";
-import PluginManagement from "./pages/plugins/PluginManagement";
-import CognitivePluginDetailPage from "./pages/plugins/CognitivePluginDetailPage";
-import FunctionalPluginDetailPage from "./pages/plugins/FunctionalPluginDetailPage";
-import UpgradeManagement from "./pages/upgrades/UpgradeManagement";
-import UpgradeDetailPage from "./pages/upgrades/UpgradeDetailPage";
-import CliAssetManager from "./pages/cli/CliAssetManager";
-import CliToolDetailPage from "./pages/cli/CliToolDetailPage";
-import ExternalConnectorCenter from "./pages/external-connectors/ExternalConnectorCenter";
-import McpServerDashboard from "./pages/mcp/McpServerDashboard";
-import McpServerDetail from "./pages/mcp/McpServerDetail";
-import AuditReplay from "./pages/audit/AuditReplay";
-import AuditTraceCenterPage from "./pages/audit/AuditTraceCenterPage";
-import AuditTraceModePage from "./pages/audit/AuditTraceModePage";
-import AuditReviewLedgerPage from "./pages/audit/AuditReviewLedgerPage";
-import TranscriptReplayPage from "./pages/audit/TranscriptReplayPage";
-import LearningDashboard from "./pages/learning/LearningDashboard";
 import { fetchLlmStatus, type LLMStatus } from "./api/llmStatus";
-import { useEffect, useMemo, useState } from "react";
+import { lazy, Suspense, useEffect, useMemo, useState } from "react";
 
 const DRAWER_WIDTH = 240;
 
 import { useTranslation } from "react-i18next";
+
+const RealtimeDashboard = lazy(() => import("./pages/dashboard/RealtimeDashboard"));
+const MemoryReasoning = lazy(() => import("./pages/dashboard/MemoryReasoning"));
+const SimulationExplorer = lazy(() => import("./pages/dashboard/SimulationExplorer"));
+const HealthDashboard = lazy(() => import("./pages/dashboard/HealthDashboard"));
+const WorkspacesPage = lazy(() => import("./pages/WorkspacesPage"));
+const NineQuestionsReport = lazy(() => import("./pages/nine-questions/NineQuestionsReport"));
+const Q1Detail = lazy(() => import("./pages/nine-questions/q1/Q1Detail"));
+const Q1Test = lazy(() => import("./pages/nine-questions/q1/Q1Test"));
+const Q2Detail = lazy(() => import("./pages/nine-questions/q2/Q2Detail"));
+const Q2Test = lazy(() => import("./pages/nine-questions/q2/Q2Test"));
+const Q3Detail = lazy(() => import("./pages/nine-questions/q3/Q3Detail"));
+const Q3Test = lazy(() => import("./pages/nine-questions/q3/Q3Test"));
+const Q4Detail = lazy(() => import("./pages/nine-questions/q4/Q4Detail"));
+const Q4Test = lazy(() => import("./pages/nine-questions/q4/Q4Test"));
+const Q5Detail = lazy(() => import("./pages/nine-questions/q5/Q5Detail"));
+const Q5Test = lazy(() => import("./pages/nine-questions/q5/Q5Test"));
+const Q6Detail = lazy(() => import("./pages/nine-questions/q6/Q6Detail"));
+const Q6Test = lazy(() => import("./pages/nine-questions/q6/Q6Test"));
+const Q7Detail = lazy(() => import("./pages/nine-questions/q7/Q7Detail"));
+const Q7Test = lazy(() => import("./pages/nine-questions/q7/Q7Test"));
+const Q8Detail = lazy(() => import("./pages/nine-questions/q8/Q8Detail"));
+const Q8Test = lazy(() => import("./pages/nine-questions/q8/Q8Test"));
+const Q9Detail = lazy(() => import("./pages/nine-questions/q9/Q9Detail"));
+const Q9Test = lazy(() => import("./pages/nine-questions/q9/Q9Test"));
+const NineQuestionDetailPage = lazy(() => import("./pages/nine-questions/NineQuestionDetailPage"));
+const NineQuestionSandboxPage = lazy(() => import("./pages/nine-questions/NineQuestionSandboxPage"));
+const NineQuestionWorkflowGraphPage = lazy(() => import("./pages/nine-questions/NineQuestionWorkflowGraphPage"));
+const AgentAssetManager = lazy(() => import("./pages/agents/AgentAssetManager"));
+const AgentDetail = lazy(() => import("./pages/agents/AgentDetail"));
+const ZentexTaskManager = lazy(() => import("./pages/tasks/ZentexTaskManager"));
+const TaskDetailPage = lazy(() => import("./pages/tasks/TaskDetailPage"));
+const TaskLogsPage = lazy(() => import("./pages/tasks/TaskLogsPage"));
+const TaskWorkflowPage = lazy(() => import("./pages/tasks/TaskWorkflowPage"));
+const ModuleLogsPage = lazy(() => import("./pages/module-logs/ModuleLogsPage"));
+const PluginManagement = lazy(() => import("./pages/plugins/PluginManagement"));
+const CognitivePluginDetailPage = lazy(() => import("./pages/plugins/CognitivePluginDetailPage"));
+const FunctionalPluginDetailPage = lazy(() => import("./pages/plugins/FunctionalPluginDetailPage"));
+const UpgradeManagement = lazy(() => import("./pages/upgrades/UpgradeManagement"));
+const UpgradeDetailPage = lazy(() => import("./pages/upgrades/UpgradeDetailPage"));
+const CliAssetManager = lazy(() => import("./pages/cli/CliAssetManager"));
+const CliToolDetailPage = lazy(() => import("./pages/cli/CliToolDetailPage"));
+const ExternalConnectorCenter = lazy(() => import("./pages/external-connectors/ExternalConnectorCenter"));
+const McpServerDashboard = lazy(() => import("./pages/mcp/McpServerDashboard"));
+const McpServerDetail = lazy(() => import("./pages/mcp/McpServerDetail"));
+const AuditReplay = lazy(() => import("./pages/audit/AuditReplay"));
+const AuditTraceCenterPage = lazy(() => import("./pages/audit/AuditTraceCenterPage"));
+const AuditTraceModePage = lazy(() => import("./pages/audit/AuditTraceModePage"));
+const AuditReviewLedgerPage = lazy(() => import("./pages/audit/AuditReviewLedgerPage"));
+const TranscriptReplayPage = lazy(() => import("./pages/audit/TranscriptReplayPage"));
+const LearningDashboard = lazy(() => import("./pages/learning/LearningDashboard"));
+const ReflectionDailyPage = lazy(() => import("./pages/reflections/ReflectionDailyPage"));
+const SettingsPage = lazy(() => import("./pages/settings/SettingsPage"));
 
 const NAV_ITEMS = (t: any) => [
   {
@@ -160,6 +163,12 @@ const NAV_ITEMS = (t: any) => [
     title: t("app.nav.workspaces.title"),
     subtitle: t("app.nav.workspaces.subtitle"),
   },
+  {
+    path: "/console/settings",
+    matchPrefix: "/console/settings",
+    title: t("app.nav.settings.title"),
+    subtitle: t("app.nav.settings.subtitle"),
+  },
 ];
 
 export default function App() {
@@ -234,6 +243,15 @@ export default function App() {
           </Alert>
         ) : null}
         <ErrorBoundary>
+          <Suspense
+            fallback={
+              <Stack alignItems="center" justifyContent="center" sx={{ py: 8 }}>
+                <Typography variant="body2" color="text.secondary">
+                  {t("common.loading")}
+                </Typography>
+              </Stack>
+            }
+          >
           <Routes>
           <Route path="/" element={<Navigate to="/console/dashboard" replace />} />
           <Route path="/console/dashboard" element={<RealtimeDashboard />} />
@@ -274,8 +292,13 @@ export default function App() {
           <Route path="/console/nine-questions/:q_id" element={<NineQuestionDetailPage />} />
           <Route path="/console/nine-questions/:q_id/sandbox" element={<NineQuestionSandboxPage />} />
           <Route path="/console/agents" element={<AgentAssetManager />} />
+          <Route path="/console/module-logs" element={<ModuleLogsPage />} />
+          <Route path="/console/module-logs/:moduleId" element={<ModuleLogsPage />} />
           <Route path="/console/agents/:agentId" element={<AgentDetail />} />
           <Route path="/console/tasks" element={<ZentexTaskManager />} />
+          <Route path="/console/tasks/logs" element={<TaskLogsPage />} />
+          <Route path="/console/tasks/:task_id/logs" element={<TaskLogsPage />} />
+          <Route path="/console/tasks/:task_id/workflow" element={<TaskWorkflowPage />} />
           <Route path="/console/tasks/:task_id" element={<TaskDetailPage />} />
           <Route path="/console/memory" element={<MemoryReasoning />} />
           <Route path="/console/simulation" element={<SimulationExplorer />} />
@@ -295,10 +318,14 @@ export default function App() {
           <Route path="/console/audit/transcript-replay/:event_id" element={<TranscriptReplayPage />} />
           <Route path="/console/audit/:mode/:view" element={<AuditTraceModePage />} />
           <Route path="/console/learning" element={<LearningDashboard />} />
+          <Route path="/console/reflections" element={<ReflectionDailyPage />} />
+          <Route path="/console/reflections/plugin" element={<ReflectionDailyPage initialSource="plugin" />} />
           <Route path="/console/health" element={<HealthDashboard />} />
           <Route path="/console/workspaces" element={<WorkspacesPage />} />
+          <Route path="/console/settings" element={<SettingsPage />} />
           <Route path="*" element={<Navigate to="/console/dashboard" replace />} />
         </Routes>
+          </Suspense>
         </ErrorBoundary>
       </Box>
     </Box>

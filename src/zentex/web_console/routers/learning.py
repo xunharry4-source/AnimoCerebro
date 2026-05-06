@@ -13,7 +13,10 @@ FAIL-CLOSED CONTRACT (Zentex Codex §1):
 """
 
 
+from typing import Any
+
 from fastapi import APIRouter, HTTPException, Query, Request
+from pydantic import BaseModel, Field
 
 from zentex.common.flow_audit import FlowAudit
 from zentex.learning.service import LearningDirection
@@ -28,8 +31,13 @@ from zentex.web_console.services.learning import (
     build_learning_plan,
     execute_learning_cycle,
 )
+from zentex.web_console.routers.module_log_writer import record_module_management_log
 
 router = APIRouter()
+
+
+class LearningMaintenanceTriggerRequest(BaseModel):
+    force: bool = Field(default=True)
 
 
 @router.get("/learning/plan", response_model=LearningPlanResponse)
@@ -92,3 +100,51 @@ async def learning_run_cycle(request: Request, body: LearningRunCycleRequest) ->
     if audit_service:
         audit_service.record_flow_end(audit, status="completed")
     return result
+
+
+@router.post("/learning/maintenance/trigger")
+def trigger_learning_maintenance(
+    request: Request,
+    body: LearningMaintenanceTriggerRequest | None = None,
+) -> dict[str, Any]:
+    learning_service = getattr(request.app.state, "learning_service", None)
+    if learning_service is None or not callable(getattr(learning_service, "trigger_memory_aware_maintenance", None)):
+        raise HTTPException(
+            status_code=503,
+            detail={
+                "error": "learning_maintenance_unavailable",
+                "message": "LearningService 未初始化或不支持记忆感知维护。",
+            },
+        )
+    force = True if body is None else bool(body.force)
+    try:
+        result = learning_service.trigger_memory_aware_maintenance(
+            operator="web-console-operator",
+            trigger="manual_force" if force else "manual",
+            force=force,
+        )
+    except Exception as exc:
+        raise HTTPException(
+            status_code=500,
+            detail={
+                "error": "learning_maintenance_failed",
+                "operator_message": f"学习自动整理触发失败：{exc}",
+            },
+        ) from exc
+    payload = result.model_dump(mode="json") if hasattr(result, "model_dump") else dict(result)
+    record_module_management_log(
+        request,
+        source_module="learning",
+        module_label="学习模块",
+        action="force_auto_organize" if force else "manual_maintenance",
+        action_label="强制启动自动整理" if force else "手动启动整理",
+        object_id=str(payload.get("trace_id") or "learning-maintenance"),
+        object_label="学习记忆感知维护",
+        before_status="idle",
+        after_status="completed",
+        reason="操作员从学习页面触发自动整理",
+        details={**payload, "force": force},
+        operator_id="web-console-operator",
+        status="completed",
+    )
+    return {"started": True, "forced": force, **payload}

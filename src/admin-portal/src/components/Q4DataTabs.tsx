@@ -55,11 +55,11 @@ export default function Q4DataTabs({ evidence, inference }: Q4DataTabsProps) {
                   <TableCell><Typography variant="body2">{Object.keys(evidence.q1_context || {}).length} 个字段</Typography></TableCell>
                 </TableRow>
                 <TableRow hover>
-                  <TableCell>Q2 上下文</TableCell>
+                  <TableCell>Q2 资产上下文</TableCell>
                   <TableCell><Typography variant="body2">{Object.keys(evidence.q2_context || {}).length} 个字段</Typography></TableCell>
                 </TableRow>
                 <TableRow hover>
-                  <TableCell>Q3 资产清单</TableCell>
+                  <TableCell>Q3 角色上下文</TableCell>
                   <TableCell><Typography variant="body2">{Object.keys(evidence.q3_inventory || {}).length} 个字段</Typography></TableCell>
                 </TableRow>
               </TableBody>

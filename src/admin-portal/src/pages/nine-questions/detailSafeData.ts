@@ -9,7 +9,7 @@ import {
   Q4WhatCanIDoInferenceView,
   Q5PreprocessedEvidence,
   Q5WhatAmIAllowedToDoInferenceView,
-  Q6ForbiddenZoneInferenceView,
+  Q6ConsequenceInferenceView,
   Q6PreprocessedEvidence,
   Q7AlternativeStrategyInferenceView,
   Q7PreprocessedEvidence,
@@ -40,6 +40,69 @@ function asArray(value: unknown): any[] {
 
 function asStringArray(value: unknown): string[] {
   return asArray(value).map((item) => String(item));
+}
+
+function parseMaybeJson(value: string): unknown {
+  const trimmed = value.trim();
+  if (!trimmed || !["{", "["].includes(trimmed[0])) {
+    return value;
+  }
+  try {
+    return JSON.parse(trimmed);
+  } catch {
+    return value;
+  }
+}
+
+function asBusinessText(value: unknown): string {
+  if (value === null || value === undefined) {
+    return "";
+  }
+  if (typeof value === "string") {
+    const parsed = parseMaybeJson(value);
+    if (parsed !== value) {
+      return asBusinessText(parsed);
+    }
+    return value.trim();
+  }
+  if (Array.isArray(value)) {
+    return value.map(asBusinessText).filter(Boolean).join(" / ");
+  }
+  if (isRecord(value)) {
+    const preferred = [
+      "summary",
+      "description",
+      "motivation",
+      "value",
+      "rule",
+      "constraint",
+      "reason",
+      "intent",
+      "name",
+      "title",
+    ];
+    const preferredValues = preferred
+      .filter((key) => Object.prototype.hasOwnProperty.call(value, key))
+      .map((key) => asBusinessText(value[key]))
+      .filter(Boolean);
+    const entries = Object.entries(value)
+      .filter(([key]) => !preferred.includes(key))
+      .map(([key, entryValue]) => {
+        const formatted = asBusinessText(entryValue);
+        return formatted ? `${key}: ${formatted}` : "";
+      })
+      .filter(Boolean);
+    return [...preferredValues, ...entries].join("；");
+  }
+  return String(value);
+}
+
+function asBusinessTextArray(value: unknown): string[] {
+  if (Array.isArray(value)) {
+    return value.map(asBusinessText).filter(Boolean);
+  }
+  const formatted = asBusinessText(value);
+  return formatted ? [formatted] : [];
 }
 
 function asTaskQueueItems(value: unknown): Array<RecordLike> {
@@ -207,42 +270,22 @@ export function sanitizeQ2Evidence(rawEvidence: unknown): SanitizedDetailData<Q2
   }
 
   const evidence = asRecord(rawEvidence);
-  const q1Summary = asRecord(evidence.q1_summary);
-  const identityKernel = asRecord(evidence.identity_kernel);
-  const manualIntervention = asRecord(evidence.manual_intervention);
+  const workspacePermission = asRecord(evidence.workspace_permission);
+  const toolsAgents = asRecord(evidence.tools_agents);
+  const memoryStrategy = asRecord(evidence.memory_strategy);
+  const assetInventory = asRecord(evidence.asset_inventory);
 
-  pushTypeWarning(warnings, "q1_summary", evidence.q1_summary, "object");
-  pushTypeWarning(warnings, "identity_kernel", evidence.identity_kernel, "object");
-  pushTypeWarning(warnings, "manual_intervention", evidence.manual_intervention, "object");
-  pushTypeWarning(warnings, "q1_summary.secondary_domains", q1Summary.secondary_domains, "array");
-  pushTypeWarning(warnings, "q1_summary.uncertainties", q1Summary.uncertainties, "array");
-  pushTypeWarning(
-    warnings,
-    "identity_kernel.non_bypassable_constraints",
-    identityKernel.non_bypassable_constraints,
-    "array",
-  );
+  pushTypeWarning(warnings, "workspace_permission", evidence.workspace_permission, "object");
+  pushTypeWarning(warnings, "tools_agents", evidence.tools_agents, "object");
+  pushTypeWarning(warnings, "memory_strategy", evidence.memory_strategy, "object");
+  pushTypeWarning(warnings, "asset_inventory", evidence.asset_inventory, "object");
 
   return {
     value: {
-      q1_summary: {
-        primary_domain: String(q1Summary.primary_domain || ""),
-        secondary_domains: asStringArray(q1Summary.secondary_domains),
-        uncertainties: asStringArray(q1Summary.uncertainties),
-        risk_summary: q1Summary.risk_summary == null ? null : String(q1Summary.risk_summary),
-      },
-      identity_kernel: {
-        meta_motivation: String(identityKernel.meta_motivation || ""),
-        values_prohibition: String(identityKernel.values_prohibition || ""),
-        non_bypassable_constraints: asStringArray(identityKernel.non_bypassable_constraints),
-      },
-      manual_intervention: {
-        latest_manual_role_modification:
-          manualIntervention.latest_manual_role_modification == null
-            ? null
-            : String(manualIntervention.latest_manual_role_modification),
-        applied_at: manualIntervention.applied_at == null ? null : String(manualIntervention.applied_at),
-      },
+      workspace_permission: workspacePermission,
+      tools_agents: toolsAgents,
+      memory_strategy: memoryStrategy,
+      asset_inventory: assetInventory,
     },
     warnings,
   };
@@ -251,6 +294,115 @@ export function sanitizeQ2Evidence(rawEvidence: unknown): SanitizedDetailData<Q2
 export function sanitizeQ2Inference(
   rawInference: unknown,
 ): SanitizedDetailData<Q2WhoAmIInferenceView | null> {
+  const warnings: string[] = [];
+
+  if (rawInference === null || rawInference === undefined) {
+    return { value: null, warnings };
+  }
+
+  if (!isRecord(rawInference)) {
+    pushTypeWarning(warnings, "inference_result", rawInference, "object");
+    return { value: null, warnings };
+  }
+
+  const inference = asRecord(rawInference);
+  const assetInventory = asRecord(inference.asset_inventory);
+  const sufficiency = asRecord(inference.sufficiency_assessment);
+  pushTypeWarning(warnings, "inference_result.asset_inventory", inference.asset_inventory, "object");
+  pushTypeWarning(warnings, "inference_result.sufficiency_assessment", inference.sufficiency_assessment, "object");
+  pushTypeWarning(warnings, "inference_result.sufficiency_assessment.missing_critical_assets", sufficiency.missing_critical_assets, "array");
+
+  return {
+    value: {
+      asset_inventory: assetInventory,
+      sufficiency_assessment: {
+        ...sufficiency,
+        resource_status: String(sufficiency.resource_status || "unknown"),
+        missing_critical_assets: asStringArray(sufficiency.missing_critical_assets),
+        bottleneck_node: sufficiency.bottleneck_node == null ? null : String(sufficiency.bottleneck_node),
+        reasoning_summary: sufficiency.reasoning_summary == null ? null : String(sufficiency.reasoning_summary),
+        resource_status_label:
+          sufficiency.resource_status_label == null ? null : String(sufficiency.resource_status_label),
+        resource_status_explanation:
+          sufficiency.resource_status_explanation == null
+            ? null
+            : String(sufficiency.resource_status_explanation),
+      },
+    },
+    warnings,
+  };
+}
+
+export function sanitizeQ3Evidence(rawEvidence: unknown): SanitizedDetailData<Q3PreprocessedEvidence> {
+  const warnings: string[] = [];
+
+  if (!isRecord(rawEvidence)) {
+    pushTypeWarning(warnings, "preprocessed_evidence", rawEvidence, "object");
+  }
+
+  const evidence = asRecord(rawEvidence);
+  const workspacePermission = asRecord(evidence.workspace_permission);
+  const toolsAgents = asRecord(evidence.tools_agents);
+  const memoryStrategy = asRecord(evidence.memory_strategy);
+  const assetInventory = asRecord(evidence.asset_inventory);
+  const q1Environment = asRecord(evidence.q1_environment_inference);
+  const q2AssetInventory = asRecord(evidence.q2_asset_inventory);
+  const q1LlmTrace = asRecord(evidence.q1_llm_trace_payload);
+  const q2LlmTrace = asRecord(evidence.q2_llm_trace_payload);
+  const identityKernel = asRecord(evidence.identity_kernel_snapshot);
+
+  pushTypeWarning(warnings, "workspace_permission", evidence.workspace_permission, "object");
+  pushTypeWarning(warnings, "tools_agents", evidence.tools_agents, "object");
+  pushTypeWarning(warnings, "memory_strategy", evidence.memory_strategy, "object");
+  pushTypeWarning(warnings, "workspace_permission.workspaces", workspacePermission.workspaces, "array");
+  pushTypeWarning(warnings, "workspace_permission.tenant_permissions", workspacePermission.tenant_permissions, "array");
+  pushTypeWarning(warnings, "workspace_permission.execution_tokens", workspacePermission.execution_tokens, "array");
+  pushTypeWarning(warnings, "tools_agents.connected_agents", toolsAgents.connected_agents, "array");
+  pushTypeWarning(warnings, "tools_agents.cognitive_tool_rows", toolsAgents.cognitive_tool_rows, "array");
+  pushTypeWarning(warnings, "tools_agents.execution_tool_rows", toolsAgents.execution_tool_rows, "array");
+  pushTypeWarning(warnings, "tools_agents.connected_agent_rows", toolsAgents.connected_agent_rows, "array");
+  pushTypeWarning(warnings, "tools_agents.mcp_servers", toolsAgents.mcp_servers, "array");
+  pushTypeWarning(warnings, "tools_agents.cli_tools", toolsAgents.cli_tools, "array");
+  pushTypeWarning(warnings, "memory_strategy.experience_logs", memoryStrategy.experience_logs, "array");
+  pushTypeWarning(warnings, "memory_strategy.strategy_patches", memoryStrategy.strategy_patches, "array");
+  pushTypeWarning(warnings, "asset_inventory", evidence.asset_inventory, "object");
+
+  return {
+    value: {
+      workspace_permission: {
+        ...workspacePermission,
+        workspaces: asStringArray(workspacePermission.workspaces),
+        tenant_permissions: asStringArray(workspacePermission.tenant_permissions),
+        execution_tokens: asStringArray(workspacePermission.execution_tokens),
+      },
+      tools_agents: {
+        ...toolsAgents,
+        cognitive_tools: asStringArray(toolsAgents.cognitive_tools),
+        execution_tools: asStringArray(toolsAgents.execution_tools),
+        connected_agents: asArray(toolsAgents.connected_agents),
+        cognitive_tool_rows: asArray(toolsAgents.cognitive_tool_rows),
+        execution_tool_rows: asArray(toolsAgents.execution_tool_rows),
+        connected_agent_rows: asArray(toolsAgents.connected_agent_rows),
+        mcp_servers: asArray(toolsAgents.mcp_servers),
+        cli_tools: asArray(toolsAgents.cli_tools),
+      },
+      memory_strategy: {
+        ...memoryStrategy,
+        experience_logs: asStringArray(memoryStrategy.experience_logs),
+        strategy_patches: asStringArray(memoryStrategy.strategy_patches),
+      },
+      asset_inventory: assetInventory,
+      q1_environment_inference: q1Environment,
+      q2_asset_inventory: q2AssetInventory,
+      q1_llm_trace_payload: q1LlmTrace,
+      q2_llm_trace_payload: q2LlmTrace,
+      identity_kernel_snapshot: identityKernel,
+    },
+    warnings,
+  };
+}
+
+export function sanitizeQ3Inference(rawInference: unknown): SanitizedDetailData<Q3WhatDoIHaveInferenceView | null> {
   const warnings: string[] = [];
 
   if (rawInference === null || rawInference === undefined) {
@@ -280,105 +432,14 @@ export function sanitizeQ2Inference(
       role_profile: {
         identity_role: String(roleProfile.identity_role || ""),
         active_role: String(roleProfile.active_role || ""),
+        inferred_reference_role: String(roleProfile.inferred_reference_role || ""),
+        role_alignment_gap: String(roleProfile.role_alignment_gap || ""),
         task_role: String(roleProfile.task_role || ""),
       },
       mission_boundary: {
         current_mission: String(missionBoundary.current_mission || ""),
         priority_duties: asStringArray(missionBoundary.priority_duties),
         continuity_boundaries: asStringArray(missionBoundary.continuity_boundaries),
-      },
-    },
-    warnings,
-  };
-}
-
-export function sanitizeQ3Evidence(rawEvidence: unknown): SanitizedDetailData<Q3PreprocessedEvidence> {
-  const warnings: string[] = [];
-
-  if (!isRecord(rawEvidence)) {
-    pushTypeWarning(warnings, "preprocessed_evidence", rawEvidence, "object");
-  }
-
-  const evidence = asRecord(rawEvidence);
-  const workspacePermission = asRecord(evidence.workspace_permission);
-  const toolsAgents = asRecord(evidence.tools_agents);
-  const memoryStrategy = asRecord(evidence.memory_strategy);
-
-  pushTypeWarning(warnings, "workspace_permission", evidence.workspace_permission, "object");
-  pushTypeWarning(warnings, "tools_agents", evidence.tools_agents, "object");
-  pushTypeWarning(warnings, "memory_strategy", evidence.memory_strategy, "object");
-  pushTypeWarning(warnings, "workspace_permission.workspaces", workspacePermission.workspaces, "array");
-  pushTypeWarning(warnings, "workspace_permission.tenant_permissions", workspacePermission.tenant_permissions, "array");
-  pushTypeWarning(warnings, "workspace_permission.execution_tokens", workspacePermission.execution_tokens, "array");
-  pushTypeWarning(warnings, "tools_agents.connected_agents", toolsAgents.connected_agents, "array");
-  pushTypeWarning(warnings, "tools_agents.cognitive_tool_rows", toolsAgents.cognitive_tool_rows, "array");
-  pushTypeWarning(warnings, "tools_agents.execution_tool_rows", toolsAgents.execution_tool_rows, "array");
-  pushTypeWarning(warnings, "tools_agents.connected_agent_rows", toolsAgents.connected_agent_rows, "array");
-  pushTypeWarning(warnings, "tools_agents.mcp_servers", toolsAgents.mcp_servers, "array");
-  pushTypeWarning(warnings, "tools_agents.cli_tools", toolsAgents.cli_tools, "array");
-  pushTypeWarning(warnings, "memory_strategy.experience_logs", memoryStrategy.experience_logs, "array");
-  pushTypeWarning(warnings, "memory_strategy.strategy_patches", memoryStrategy.strategy_patches, "array");
-
-  return {
-    value: {
-      workspace_permission: {
-        ...workspacePermission,
-        workspaces: asStringArray(workspacePermission.workspaces),
-        tenant_permissions: asStringArray(workspacePermission.tenant_permissions),
-        execution_tokens: asStringArray(workspacePermission.execution_tokens),
-      },
-      tools_agents: {
-        ...toolsAgents,
-        cognitive_tools: asStringArray(toolsAgents.cognitive_tools),
-        execution_tools: asStringArray(toolsAgents.execution_tools),
-        connected_agents: asArray(toolsAgents.connected_agents),
-        cognitive_tool_rows: asArray(toolsAgents.cognitive_tool_rows),
-        execution_tool_rows: asArray(toolsAgents.execution_tool_rows),
-        connected_agent_rows: asArray(toolsAgents.connected_agent_rows),
-        mcp_servers: asArray(toolsAgents.mcp_servers),
-        cli_tools: asArray(toolsAgents.cli_tools),
-      },
-      memory_strategy: {
-        ...memoryStrategy,
-        experience_logs: asStringArray(memoryStrategy.experience_logs),
-        strategy_patches: asStringArray(memoryStrategy.strategy_patches),
-      },
-    },
-    warnings,
-  };
-}
-
-export function sanitizeQ3Inference(rawInference: unknown): SanitizedDetailData<Q3WhatDoIHaveInferenceView | null> {
-  const warnings: string[] = [];
-
-  if (rawInference === null || rawInference === undefined) {
-    return { value: null, warnings };
-  }
-
-  if (!isRecord(rawInference)) {
-    pushTypeWarning(warnings, "inference_result", rawInference, "object");
-    return { value: null, warnings };
-  }
-
-  const inference = asRecord(rawInference);
-  const sufficiency = asRecord(inference.sufficiency_assessment);
-  pushTypeWarning(warnings, "inference_result.sufficiency_assessment", inference.sufficiency_assessment, "object");
-  pushTypeWarning(warnings, "inference_result.sufficiency_assessment.missing_critical_assets", sufficiency.missing_critical_assets, "array");
-
-  return {
-    value: {
-      sufficiency_assessment: {
-        ...sufficiency,
-        resource_status: String(sufficiency.resource_status || "unknown"),
-        missing_critical_assets: asStringArray(sufficiency.missing_critical_assets),
-        bottleneck_node: sufficiency.bottleneck_node == null ? null : String(sufficiency.bottleneck_node),
-        reasoning_summary: sufficiency.reasoning_summary == null ? null : String(sufficiency.reasoning_summary),
-        resource_status_label:
-          sufficiency.resource_status_label == null ? null : String(sufficiency.resource_status_label),
-        resource_status_explanation:
-          sufficiency.resource_status_explanation == null
-            ? null
-            : String(sufficiency.resource_status_explanation),
       },
     },
     warnings,
@@ -471,12 +532,25 @@ export function sanitizeQ5Inference(rawInference: unknown): SanitizedDetailData<
   }
 
   const inference = asRecord(rawInference);
+  const authorizationBoundary = asRecord(inference.authorization_boundary);
+  pushTypeWarning(warnings, "authorization_boundary", inference.authorization_boundary, "object");
+  pushTypeWarning(warnings, "contact_policies", inference.contact_policies, "array");
+  pushTypeWarning(warnings, "allowed_actions", inference.allowed_actions, "array");
+  pushTypeWarning(warnings, "forbidden_actions", inference.forbidden_actions, "array");
+  pushTypeWarning(warnings, "question_driver_refs", inference.question_driver_refs, "array");
   pushTypeWarning(warnings, "explicitly_forbidden_actions", inference.explicitly_forbidden_actions, "array");
   pushTypeWarning(warnings, "compliance_risks", inference.compliance_risks, "array");
   pushTypeWarning(warnings, "allowed_delegation_targets", inference.allowed_delegation_targets, "array");
 
   return {
     value: {
+      authorization_boundary: authorizationBoundary,
+      current_authorization_scope: String(inference.current_authorization_scope || ""),
+      contact_policies: asStringArray(inference.contact_policies),
+      organizational_boundaries: String(inference.organizational_boundaries || ""),
+      allowed_actions: asStringArray(inference.allowed_actions),
+      forbidden_actions: asStringArray(inference.forbidden_actions),
+      question_driver_refs: asStringArray(inference.question_driver_refs),
       execution_tier: String(inference.execution_tier || ""),
       interaction_scope: String(inference.interaction_scope || ""),
       requires_human_confirmation: Boolean(inference.requires_human_confirmation),
@@ -513,7 +587,7 @@ export function sanitizeQ6Evidence(rawEvidence: unknown): SanitizedDetailData<Q6
   };
 }
 
-export function sanitizeQ6Inference(rawInference: unknown): SanitizedDetailData<Q6ForbiddenZoneInferenceView | null> {
+export function sanitizeQ6Inference(rawInference: unknown): SanitizedDetailData<Q6ConsequenceInferenceView | null> {
   const warnings: string[] = [];
 
   if (rawInference === null || rawInference === undefined) {
@@ -526,17 +600,34 @@ export function sanitizeQ6Inference(rawInference: unknown): SanitizedDetailData<
   }
 
   const inference = asRecord(rawInference);
-  pushTypeWarning(warnings, "absolute_red_lines", inference.absolute_red_lines, "array");
-  pushTypeWarning(warnings, "performance_tradeoff_bans", inference.performance_tradeoff_bans, "array");
-  pushTypeWarning(warnings, "prohibited_strategies", inference.prohibited_strategies, "array");
-  pushTypeWarning(warnings, "contamination_risks", inference.contamination_risks, "array");
+  const consequence = asRecord(inference.ConsequenceAssessment || inference.consequence_assessment);
+  const cost = asRecord(inference.CostImpactProfile || inference.cost_impact_profile);
+  pushTypeWarning(warnings, "ConsequenceAssessment", inference.ConsequenceAssessment || inference.consequence_assessment, "object");
+  pushTypeWarning(warnings, "CostImpactProfile", inference.CostImpactProfile || inference.cost_impact_profile, "object");
+  pushTypeWarning(warnings, "immediate_consequences", consequence.immediate_consequences, "array");
+  pushTypeWarning(warnings, "downstream_consequences", consequence.downstream_consequences, "array");
+  pushTypeWarning(warnings, "operational_costs", cost.operational_costs, "array");
+  pushTypeWarning(warnings, "security_compliance_impacts", cost.security_compliance_impacts, "array");
+  pushTypeWarning(warnings, "user_trust_impacts", cost.user_trust_impacts, "array");
+  pushTypeWarning(warnings, "mitigation_requirements", cost.mitigation_requirements, "array");
+  pushTypeWarning(warnings, "stop_conditions", cost.stop_conditions, "array");
 
   return {
     value: {
-      absolute_red_lines: asStringArray(inference.absolute_red_lines),
-      performance_tradeoff_bans: asStringArray(inference.performance_tradeoff_bans),
-      prohibited_strategies: asStringArray(inference.prohibited_strategies),
-      contamination_risks: asStringArray(inference.contamination_risks),
+      ConsequenceAssessment: {
+        action_under_review: String(consequence.action_under_review || ""),
+        immediate_consequences: asStringArray(consequence.immediate_consequences),
+        downstream_consequences: asStringArray(consequence.downstream_consequences),
+        consequence_severity: String(consequence.consequence_severity || ""),
+        reversibility: String(consequence.reversibility || ""),
+      },
+      CostImpactProfile: {
+        operational_costs: asStringArray(cost.operational_costs),
+        security_compliance_impacts: asStringArray(cost.security_compliance_impacts),
+        user_trust_impacts: asStringArray(cost.user_trust_impacts),
+        mitigation_requirements: asStringArray(cost.mitigation_requirements),
+        stop_conditions: asStringArray(cost.stop_conditions),
+      },
     },
     warnings,
   };
@@ -550,19 +641,23 @@ export function sanitizeQ7Evidence(rawEvidence: unknown): SanitizedDetailData<Q7
   }
 
   const evidence = asRecord(rawEvidence);
-  pushTypeWarning(warnings, "resource_bottlenecks", evidence.resource_bottlenecks, "array");
-  pushTypeWarning(warnings, "capability_limits", evidence.capability_limits, "array");
-  pushTypeWarning(warnings, "permission_boundaries", evidence.permission_boundaries, "array");
-  pushTypeWarning(warnings, "absolute_red_lines", evidence.absolute_red_lines, "array");
-  pushTypeWarning(warnings, "historical_failure_patches", evidence.historical_failure_patches, "array");
+  pushTypeWarning(warnings, "identity_kernel_constraints", evidence.identity_kernel_constraints, "array");
+  pushTypeWarning(warnings, "authorization_boundary_constraints", evidence.authorization_boundary_constraints, "array");
+  pushTypeWarning(warnings, "safety_rejection_history", evidence.safety_rejection_history, "array");
+  pushTypeWarning(warnings, "procedural_memory_constraints", evidence.procedural_memory_constraints, "array");
+  pushTypeWarning(warnings, "non_bypassable_constraints", evidence.non_bypassable_constraints, "array");
+  pushTypeWarning(warnings, "ban_source_explanations", evidence.ban_source_explanations, "array");
+  pushTypeWarning(warnings, "question_driver_refs", evidence.question_driver_refs, "array");
 
   return {
     value: {
-      resource_bottlenecks: asStringArray(evidence.resource_bottlenecks),
-      capability_limits: asStringArray(evidence.capability_limits),
-      permission_boundaries: asStringArray(evidence.permission_boundaries),
-      absolute_red_lines: asStringArray(evidence.absolute_red_lines),
-      historical_failure_patches: asStringArray(evidence.historical_failure_patches),
+      identity_kernel_constraints: asStringArray(evidence.identity_kernel_constraints),
+      authorization_boundary_constraints: asStringArray(evidence.authorization_boundary_constraints),
+      safety_rejection_history: asStringArray(evidence.safety_rejection_history),
+      procedural_memory_constraints: asStringArray(evidence.procedural_memory_constraints),
+      non_bypassable_constraints: asStringArray(evidence.non_bypassable_constraints),
+      ban_source_explanations: asStringArray(evidence.ban_source_explanations),
+      question_driver_refs: asStringArray(evidence.question_driver_refs),
     },
     warnings,
   };
@@ -581,17 +676,19 @@ export function sanitizeQ7Inference(rawInference: unknown): SanitizedDetailData<
   }
 
   const inference = asRecord(rawInference);
-  pushTypeWarning(warnings, "inference_result.fallback_plans", inference.fallback_plans, "array");
-  pushTypeWarning(warnings, "inference_result.degradation_strategies", inference.degradation_strategies, "array");
-  pushTypeWarning(warnings, "inference_result.collaboration_switches", inference.collaboration_switches, "array");
-  pushTypeWarning(warnings, "inference_result.exploratory_actions", inference.exploratory_actions, "array");
+  pushTypeWarning(warnings, "inference_result.current_red_line_hits", inference.current_red_line_hits, "array");
+  pushTypeWarning(warnings, "inference_result.rejected_operation_records", inference.rejected_operation_records, "array");
+  pushTypeWarning(warnings, "inference_result.ban_source_explanations", inference.ban_source_explanations, "array");
+  pushTypeWarning(warnings, "inference_result.non_bypassable_constraints", inference.non_bypassable_constraints, "array");
+  pushTypeWarning(warnings, "inference_result.question_driver_refs", inference.question_driver_refs, "array");
 
   return {
     value: {
-      fallback_plans: asStringArray(inference.fallback_plans),
-      degradation_strategies: asStringArray(inference.degradation_strategies),
-      collaboration_switches: asArray(inference.collaboration_switches),
-      exploratory_actions: asStringArray(inference.exploratory_actions),
+      current_red_line_hits: asStringArray(inference.current_red_line_hits),
+      rejected_operation_records: asStringArray(inference.rejected_operation_records),
+      ban_source_explanations: asStringArray(inference.ban_source_explanations),
+      non_bypassable_constraints: asStringArray(inference.non_bypassable_constraints),
+      question_driver_refs: asStringArray(inference.question_driver_refs),
     },
     warnings,
   };
@@ -656,7 +753,9 @@ export function sanitizeQ8Inference(rawInference: unknown): SanitizedDetailData<
     Object.keys(taskQueue).length > 0 ||
     Array.isArray(inference.next_self_tasks) ||
     Array.isArray(inference.blocked_self_tasks) ||
-    Array.isArray(inference.proactive_actions);
+    Array.isArray(inference.proactive_actions) ||
+    Array.isArray(inference.q8_internal_cognitive_tasks) ||
+    Array.isArray(inference.q8_external_execution_tasks);
 
   if (!hasObjectiveData && !hasTaskQueueData) {
     return { value: null, warnings };
@@ -690,6 +789,8 @@ export function sanitizeQ8Inference(rawInference: unknown): SanitizedDetailData<
         blocked_self_tasks: asTaskQueueItems(taskQueue.blocked_self_tasks),
         proactive_actions: asTaskQueueItems(taskQueue.proactive_actions),
       },
+      q8_internal_cognitive_tasks: asTaskQueueItems(inference.q8_internal_cognitive_tasks),
+      q8_external_execution_tasks: asTaskQueueItems(inference.q8_external_execution_tasks),
     },
     warnings,
   };

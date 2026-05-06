@@ -23,7 +23,7 @@ import {
   fetchNineQuestionTracePayload,
   getQuestionDisplayLabel,
   LLMTracePayloadView,
-  Q6ForbiddenZoneInferenceView,
+  Q6ConsequenceInferenceView,
   Q6PreprocessedEvidence,
 } from "../nineQuestionsApi";
 import Q6EvidencePanel from "../../../components/Q6EvidencePanel";
@@ -37,6 +37,7 @@ import NineQuestionRawPayloadCard from "../../../components/NineQuestionRawPaylo
 import NineQuestionWorkflowNavButton from "../../../components/NineQuestionWorkflowNavButton";
 import NineQuestionRecoveryActions from "../../../components/NineQuestionRecoveryActions";
 import NineQuestionIntegrationStatusCard from "../../../components/NineQuestionIntegrationStatusCard";
+import NineQuestionAnswerTable from "../../../components/NineQuestionAnswerTable";
 import { sanitizeQ6Evidence, sanitizeQ6Inference } from "../detailSafeData";
 
 function resolveErrorGuidance(errMsg: string): { title: string; action: string } {
@@ -62,6 +63,18 @@ function resolveErrorGuidance(errMsg: string): { title: string; action: string }
     title: "加载数据失败",
     action: "请检查网络或确认后台服务状态后刷新重试。",
   };
+}
+
+function hasMaterialTracePayload(value: unknown): value is Record<string, any> {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return false;
+  const payload = value as Record<string, any>;
+  if (Array.isArray(payload.invocations) && payload.invocations.some(hasMaterialTracePayload)) return true;
+  return ["provider_name", "model", "prompt", "system_prompt", "context_data", "raw_response", "error_type", "error_message"].some((key) => {
+    const item = payload[key];
+    if (Array.isArray(item)) return item.length > 0;
+    if (item && typeof item === "object") return Object.keys(item).length > 0;
+    return item !== undefined && item !== null && item !== "";
+  });
 }
 
 export const Q6Detail: React.FC = () => {
@@ -149,7 +162,7 @@ export const Q6Detail: React.FC = () => {
   if (loading) return (
     <Box sx={{ display: "flex", alignItems: "center", gap: 2, p: 3 }}>
       <CircularProgress size={24} />
-      <Typography variant="body2" color="text.secondary">正在加载 Q6 禁区审计数据...</Typography>
+      <Typography variant="body2" color="text.secondary">正在加载 Q6 代价与后果评估数据...</Typography>
     </Box>
   );
 
@@ -171,11 +184,17 @@ export const Q6Detail: React.FC = () => {
   const sanitizedEvidence = sanitizeQ6Evidence(rawEvidence);
   const sanitizedInference = sanitizeQ6Inference(rawInference);
   const evidence = sanitizedEvidence.value as Q6PreprocessedEvidence;
-  const inference = sanitizedInference.value as Q6ForbiddenZoneInferenceView | null;
-  const llmTrace = tracePayload;
+  const inference = sanitizedInference.value as Q6ConsequenceInferenceView | null;
+  const llmTrace = hasMaterialTracePayload(tracePayload)
+    ? tracePayload
+    : hasMaterialTracePayload(rawPayload?.llm_trace_payload)
+      ? rawPayload?.llm_trace_payload
+      : hasMaterialTracePayload(rawPayload?.context_updates?.llm_trace_payload)
+        ? rawPayload?.context_updates?.llm_trace_payload
+        : null;
   const hasStructuredSnapshot = Boolean(rawEvidence || rawInference);
   const detailWarnings = [...sanitizedEvidence.warnings, ...sanitizedInference.warnings];
-  const providerName = String(tracePayload?.provider_name || rawPayload?.llm_trace_payload?.provider_name || "");
+  const providerName = String(llmTrace?.provider_name || rawPayload?.llm_trace_payload?.provider_name || "");
   const traceId = String(rawPayload?.trace_id || "");
   const toolId = String(rawPayload?.tool_id || `nine_questions.${qId}`);
   const pageStatus = String(summary?.status || modulesPayload?.status?.status || "partial");
@@ -190,7 +209,7 @@ export const Q6Detail: React.FC = () => {
             {getQuestionDisplayLabel(qId)} 正式审计页
           </Typography>
           <Typography variant="body2" color="text.secondary">
-            Cognitive Redlines & Forbidden Boundaries (Independent API GET /nine-questions/q6)
+            What-If Cost & Consequence Assessment (Independent API GET /nine-questions/q6)
           </Typography>
         </Box>
         <Stack direction="row" spacing={1}>
@@ -231,6 +250,7 @@ export const Q6Detail: React.FC = () => {
           Q6 当前只拿到了部分分区数据，页面已按可用结果降级展示。
         </Alert>
       ) : null}
+      <NineQuestionAnswerTable questionId={qId} inference={inference} result={rawPayload?.result} />
       <NineQuestionSectionBoundary title="Q6 数据详情">
         {sectionErrors.summary ? <Alert severity="warning" sx={{ mb: 2 }}>{sectionErrors.summary}</Alert> : null}
         {sectionErrors.evidence ? <Alert severity="warning" sx={{ mb: 2 }}>{sectionErrors.evidence}</Alert> : null}
@@ -276,7 +296,7 @@ export const Q6Detail: React.FC = () => {
           evidence={evidence}
           inference={inference}
           providerName={providerName || null}
-          elapsedMs={tracePayload?.elapsed_ms || rawPayload?.llm_trace_payload?.elapsed_ms || 0}
+          elapsedMs={llmTrace?.elapsed_ms || rawPayload?.llm_trace_payload?.elapsed_ms || 0}
         />
       </NineQuestionSectionBoundary>
 
@@ -298,7 +318,7 @@ export const Q6Detail: React.FC = () => {
 
       <NineQuestionSectionBoundary title="Q6 Trace">
         {sectionErrors.trace ? <Alert severity="warning" sx={{ mb: 2 }}>{sectionErrors.trace}</Alert> : null}
-        <LLMTracePanel trace={llmTrace as LLMTracePayloadView} />
+        <LLMTracePanel trace={llmTrace as LLMTracePayloadView | null} />
       </NineQuestionSectionBoundary>
     </Box>
   );

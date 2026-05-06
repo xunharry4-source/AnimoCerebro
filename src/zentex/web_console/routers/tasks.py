@@ -43,13 +43,14 @@ from fastapi import APIRouter, HTTPException, Request, WebSocket, WebSocketDisco
 from typing_extensions import Annotated
 from fastapi import Depends, Query, Body
 
-from zentex.tasks.service import TaskManagementService, ZentexTask, TaskStatus, TaskStateError, TaskType, TaskScope
+from zentex.tasks import TaskManagementService, ZentexTask, TaskStatus, TaskStateError, TaskType, TaskScope
 from zentex.web_console.dependencies import get_task_service
 from .tasks_handlers import (
     handle_get_task_detail,
     handle_get_subtasks,
     handle_get_execution_history,
     handle_bulk_operation,
+    handle_list_task_logs,
 )
 
 
@@ -100,6 +101,7 @@ async def list_tasks(
     status_filter: Optional[str] = Query(None, description="Filter by status"),
     task_scope: Optional[str] = Query(None, description="Filter by task scope: internal or external"),
     source_module: Optional[str] = Query(None, description="Filter by workflow source module"),
+    root_only: bool = Query(False, description="Only return top-level tasks without a parent_task_id"),
     metadata_filters: Optional[List[str]] = Query(
         None,
         description="Metadata filters as key=value pairs; repeat the parameter or separate with commas.",
@@ -123,6 +125,7 @@ async def list_tasks(
                 task_scope=scope_enum,
                 source_module=source_module,
                 metadata_filters=parsed_metadata_filters,
+                root_only=root_only,
                 limit=limit,
                 offset=offset,
             )
@@ -132,6 +135,7 @@ async def list_tasks(
         task_scope=scope_enum,
         source_module=source_module,
         metadata_filters=parsed_metadata_filters,
+        root_only=root_only,
         limit=limit,
         offset=offset,
     )
@@ -155,6 +159,7 @@ async def create_task(
 async def get_tasks_grouped_by_status(
     service: Annotated[TaskManagementService, Depends(_require_task_service)],
     source_module: Optional[str] = Query(None, description="Filter grouped tasks by workflow source module"),
+    root_only: bool = Query(True, description="Only return top-level tasks without a parent_task_id"),
     limit_per_group: int = Query(100, ge=1, le=500, description="Maximum tasks per group"),
     offset: int = Query(0, ge=0, description="Database offset applied to each status query"),
 ) -> Dict[str, List[ZentexTask]]:
@@ -164,6 +169,7 @@ async def get_tasks_grouped_by_status(
     """
     return service.list_tasks_grouped(
         source_module=source_module,
+        root_only=root_only,
         limit_per_group=limit_per_group,
         offset=offset,
     )
@@ -172,9 +178,10 @@ async def get_tasks_grouped_by_status(
 @router.get("/tasks/page")
 async def get_tasks_page(
     service: Annotated[TaskManagementService, Depends(_require_task_service)],
-    group: str = Query("completed", description="Presentation group to page"),
+    group: str = Query("all", description="Presentation group to page"),
     source_module: Optional[str] = Query(None, description="Filter tasks by workflow source module"),
     task_scope: Optional[str] = Query(None, description="Filter by task scope: internal or external"),
+    root_only: bool = Query(True, description="Only return top-level tasks without a parent_task_id"),
     metadata_filters: Optional[List[str]] = Query(
         None,
         description="Metadata filters as key=value pairs; repeat the parameter or separate with commas.",
@@ -196,6 +203,7 @@ async def get_tasks_page(
             source_module=source_module,
             task_scope=scope_enum,
             metadata_filters=parsed_metadata_filters,
+            root_only=root_only,
             limit=limit,
             offset=offset,
         )
@@ -209,6 +217,20 @@ async def diagnose_task_management_closure(
     stale_after_seconds: int = Query(300, ge=0),
 ) -> Dict[str, Any]:
     return service.diagnose_task_management_closure(stale_after_seconds=stale_after_seconds)
+
+
+@router.get("/tasks/garbage-analysis")
+async def analyze_task_garbage_and_duplicates(
+    service: Annotated[TaskManagementService, Depends(_require_task_service)],
+    stale_after_seconds: int = Query(300, ge=0),
+    enable_llm_semantic_scoring: bool = Query(False),
+    max_llm_groups: int = Query(8, ge=0, le=50),
+) -> Dict[str, Any]:
+    return service.analyze_task_garbage_and_duplicates(
+        stale_after_seconds=stale_after_seconds,
+        enable_llm_semantic_scoring=enable_llm_semantic_scoring,
+        max_llm_groups=max_llm_groups,
+    )
 
 
 @router.get("/tasks/worker/status")
@@ -231,6 +253,17 @@ async def get_task_worker_status(
     }
 
 
+@router.get("/tasks/logs")
+async def list_task_module_logs(
+    service: Annotated[TaskManagementService, Depends(_require_task_service)],
+    limit: int = Query(25, ge=1, le=500, description="Maximum log rows to return"),
+    offset: int = Query(0, ge=0, description="Database offset for pagination"),
+    search: Optional[str] = Query(None, description="Search log content"),
+    status: Optional[str] = Query(None, description="Filter by status/action"),
+) -> Dict[str, Any]:
+    return handle_list_task_logs(service, limit=limit, offset=offset, search=search, status=status)
+
+
 @router.post("/tasks/diagnostics/fault-injection")
 async def run_task_fault_injection_matrix(
     service: Annotated[TaskManagementService, Depends(_require_task_service)],
@@ -245,6 +278,43 @@ async def get_task_detail(
     service: Annotated[TaskManagementService, Depends(_require_task_service)],
 ) -> Dict[str, Any]:
     return handle_get_task_detail(task_id, service)
+
+
+@router.get("/tasks/{task_id}/outcome")
+async def get_task_outcome(
+    task_id: str,
+    service: Annotated[TaskManagementService, Depends(_require_task_service)],
+) -> Dict[str, Any]:
+    outcome = service.get_task_outcome(task_id)
+    if outcome is None:
+        raise HTTPException(status_code=404, detail=f"Task outcome {task_id} not found")
+    return outcome
+
+
+@router.delete("/tasks/{task_id}")
+async def delete_task(
+    task_id: str,
+    service: Annotated[TaskManagementService, Depends(_require_task_service)],
+    force: bool = Query(True, description="Force deletion even when task has dependencies"),
+) -> Dict[str, Any]:
+    deleted = service.delete_task(task_id, force=force)
+    if not deleted:
+        raise HTTPException(status_code=404, detail=f"Task {task_id} not found")
+    return {"success": True, "task_id": task_id, "deleted": True, "force": force}
+
+
+@router.get("/tasks/{task_id}/logs")
+async def list_single_task_logs(
+    task_id: str,
+    service: Annotated[TaskManagementService, Depends(_require_task_service)],
+    limit: int = Query(25, ge=1, le=500, description="Maximum log rows to return"),
+    offset: int = Query(0, ge=0, description="Database offset for pagination"),
+    search: Optional[str] = Query(None, description="Search log content"),
+    status: Optional[str] = Query(None, description="Filter by status/action"),
+) -> Dict[str, Any]:
+    if not service.get_task(task_id):
+        raise HTTPException(status_code=404, detail=f"Task {task_id} not found")
+    return handle_list_task_logs(service, task_id=task_id, limit=limit, offset=offset, search=search, status=status)
 
 
 @router.get("/tasks/{task_id}/subtasks")
@@ -390,4 +460,4 @@ async def bulk_operation(
     remarks = payload.get("remarks", "")
     if not task_ids:
         raise HTTPException(status_code=400, detail="task_ids is required")
-    return handle_bulk_operation(service, task_ids, action, remarks)
+    return await handle_bulk_operation(service, task_ids, action, remarks)

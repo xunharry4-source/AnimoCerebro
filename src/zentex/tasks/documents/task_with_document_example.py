@@ -8,6 +8,7 @@
 4. 从任务列表查看原始产品文档
 """
 
+import tempfile
 from pathlib import Path
 from zentex.tasks.product_document import (
     ProductDocument,
@@ -230,7 +231,7 @@ def example_save_and_view():
     
     # 3. 保存任务列表到JSON（包含产品文档）
     print("3️⃣  保存任务列表到JSON文件...")
-    output_dir = Path("/tmp/zentex_tasks")
+    output_dir = Path(tempfile.gettempdir()) / "zentex_tasks"
     output_file = output_dir / "task_list_with_document.json"
     success, error = save_task_list_to_json(task_list, output_file)
     if success:

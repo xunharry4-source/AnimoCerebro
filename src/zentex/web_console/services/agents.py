@@ -18,7 +18,7 @@ from typing import Any, Dict, List, Optional
 from datetime import datetime
 
 from zentex.agents.service import AgentCoordinationService
-from zentex.tasks.service import TaskManagementService
+from zentex.tasks import TaskManagementService
 
 logger = logging.getLogger(__name__)
 

@@ -56,7 +56,8 @@ from zentex.tasks import (
 
 ### Service Layer / 服务层
 
-- **TaskService** (`service.py`): Main task service implementation / 主任务服务实现
+- **TaskService** (`../service.py`): Public export boundary only / 仅作为公共导出边界
+- **TaskManagementService** (`../management/task_management_service.py`): Main task lifecycle implementation / 主任务生命周期实现
 - **TaskServiceInterface** (`interface.py`): Task service interface definition / 任务服务接口定义
 
 ### Task Decomposition / 任务分解

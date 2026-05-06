@@ -83,14 +83,18 @@ class InternalPluginExecutor:
             return candidates
         
         try:
-            # Get all functional plugins
-            functional_plugins = self.plugin_layer.get_plugins(
-                category="FUNCTIONAL",  # Only functional plugins for internal routing
-            )
+            # Get all internal functional and cognitive plugins.
+            functional_plugins = list(self.plugin_layer.get_plugins(category="FUNCTIONAL") or [])
+            cognitive_plugins = list(self.plugin_layer.get_plugins(category="COGNITIVE") or [])
+            plugins_by_id: Dict[str, Dict[str, Any]] = {}
+            for plugin in functional_plugins + cognitive_plugins:
+                plugin_id = plugin.get("id") or plugin.get("plugin_id")
+                if plugin_id:
+                    plugins_by_id[str(plugin_id)] = plugin
             
             required_caps = set(subtask.required_capabilities) if subtask.required_capabilities else set()
             
-            for plugin in functional_plugins:
+            for plugin in plugins_by_id.values():
                 plugin_id = plugin.get("id")
                 plugin_name = plugin.get("name", plugin_id)
                 plugin_capabilities = set(plugin.get("capabilities", []))

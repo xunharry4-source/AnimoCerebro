@@ -2,7 +2,7 @@ from typing import Any, Dict, List, Optional
 from enum import Enum
 from pydantic import BaseModel, Field
 from datetime import datetime, timezone
-from zentex.tasks.service import ZentexTask
+from zentex.tasks import ZentexTask
 
 
 class AgentTrustLevel(str, Enum):

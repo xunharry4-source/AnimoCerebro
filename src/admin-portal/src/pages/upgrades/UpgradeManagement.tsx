@@ -27,6 +27,7 @@ import {
   TableRow,
   Typography,
 } from "@mui/material";
+import ArticleIcon from "@mui/icons-material/Article";
 
 import {
   cancelUpgradeRecord,
@@ -188,16 +189,21 @@ export default function UpgradeManagement() {
             {t("upgrades.subtitle")}
           </Typography>
         </Box>
-        <Button
-          variant="contained"
-          onClick={() => {
-            void loadOverview();
-            void loadTabData();
-          }}
-          disabled={loadingOverview || loadingTabs}
-        >
-          {loadingOverview || loadingTabs ? t("common.refreshing") : t("common.refresh")}
-        </Button>
+        <Stack direction="row" spacing={1}>
+          <Button variant="outlined" startIcon={<ArticleIcon />} onClick={() => navigate("/console/module-logs/upgrades")}>
+            {t("moduleLogs.view")}
+          </Button>
+          <Button
+            variant="contained"
+            onClick={() => {
+              void loadOverview();
+              void loadTabData();
+            }}
+            disabled={loadingOverview || loadingTabs}
+          >
+            {loadingOverview || loadingTabs ? t("common.refreshing") : t("common.refresh")}
+          </Button>
+        </Stack>
       </Stack>
 
       {errorMessage && <Alert severity="error">{errorMessage}</Alert>}

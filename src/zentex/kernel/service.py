@@ -14,6 +14,7 @@ never imports external service modules directly.
 import json
 import logging
 import os
+import sqlite3
 import threading
 from datetime import datetime, timezone
 from copy import deepcopy
@@ -123,6 +124,7 @@ class KernelService:
     def __init__(
         self,
         transcript_db_dir: Optional[str] = None,
+        system_identity_store: Any = None,
     ) -> None:
         # --- infrastructure ---
         self._transcript_db_dir = transcript_db_dir or str(get_storage_paths().transcript_dir)
@@ -172,6 +174,7 @@ class KernelService:
         self._reflection_service: Any = None
         self._learning_service: Any = None
         self._task_service: Any = None
+        self._system_identity_store: Any = system_identity_store
         self._brain_daemon: Any = None
 
         self._initialized = True
@@ -229,6 +232,15 @@ class KernelService:
             except Exception as e:
                 logger.exception(f"Failed to initialize engine state for {default_session_id}")
                 raise e
+        return state.conflict_engine
+
+    def get_conflict_engine(self, session_id: str = "zentex-default-session") -> Any:
+        """Return the conflict engine for a concrete session."""
+        state = self._get_state(session_id)
+        if state is None and session_id == self._DEFAULT_SESSION_ID:
+            state = self._get_or_create_default_state()
+        if state is None:
+            raise KeyError(f"session state not found: {session_id}")
         return state.conflict_engine
 
     @property
@@ -297,6 +309,7 @@ class KernelService:
         reflection_service: Any = None,
         learning_service: Any = None,
         task_service: Any = None,
+        system_identity_store: Any = None,
     ) -> None:
         """Inject all external service references.
 
@@ -333,6 +346,8 @@ class KernelService:
             self._learning_service = learning_service
         if task_service is not None:
             self._task_service = task_service
+        if system_identity_store is not None:
+            self._system_identity_store = system_identity_store
 
         # Initialize Nine-Question implementation service
         if plugins_service is not None:
@@ -1518,6 +1533,7 @@ class KernelService:
     # ------------------------------------------------------------------
 
     _DEFAULT_SESSION_ID = "zentex-default-session"
+    _NINE_QUESTION_BASELINE_SESSION_ID = "nq-baseline"
 
     def _get_or_create_default_state(self) -> "_SessionState":
         """Return the default session state, creating it if necessary."""
@@ -1528,7 +1544,72 @@ class KernelService:
         return state
 
     def _persist_incremental_nine_question_record(self, response: NineQuestionResponse) -> None:
-        return None
+        question_id = str(getattr(response, "question_id", "") or "").strip().lower()
+        if not question_id:
+            return
+        context_updates = getattr(response, "context_updates", None)
+        if not isinstance(context_updates, dict):
+            result_payload = getattr(response, "result_payload", None)
+            if isinstance(result_payload, dict):
+                context_updates = result_payload.get("context_updates")
+        if not isinstance(context_updates, dict):
+            return
+        diagnosis = context_updates.get(f"{question_id}_execution_diagnosis")
+        if not isinstance(diagnosis, dict):
+            return
+        module_runs = diagnosis.get("module_runs")
+        if isinstance(module_runs, list):
+            self._persist_incremental_nine_question_module_runs(question_id, module_runs)
+
+    def _persist_incremental_nine_question_module_runs(
+        self,
+        question_id: str,
+        module_runs: list[dict[str, Any]],
+    ) -> None:
+        session_id = self._NINE_QUESTION_BASELINE_SESSION_ID
+        now = datetime.now(UTC).isoformat()
+        db_path = get_storage_paths().session_db
+        with sqlite3.connect(str(db_path)) as conn:
+            for run in module_runs:
+                if not isinstance(run, dict):
+                    continue
+                module_id = str(run.get("module_id") or "").strip()
+                if not module_id:
+                    continue
+                existing = conn.execute(
+                    """
+                    SELECT run_version, created_at
+                    FROM nine_question_module_runs
+                    WHERE session_id = ? AND question_id = ? AND module_id = ?
+                    """,
+                    (session_id, question_id, module_id),
+                ).fetchone()
+                run_version = int(existing[0]) + 1 if existing else 1
+                created_at = str(existing[1]) if existing else now
+                conn.execute(
+                    """
+                    INSERT INTO nine_question_module_runs
+                    (session_id, question_id, module_id, schema_version, run_version, status, run_json, created_at, updated_at)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    ON CONFLICT(session_id, question_id, module_id) DO UPDATE SET
+                        schema_version = excluded.schema_version,
+                        run_version = excluded.run_version,
+                        status = excluded.status,
+                        run_json = excluded.run_json,
+                        updated_at = excluded.updated_at
+                    """,
+                    (
+                        session_id,
+                        question_id,
+                        module_id,
+                        1,
+                        run_version,
+                        str(run.get("status") or ""),
+                        json.dumps(run, ensure_ascii=False, separators=(",", ":"), default=str),
+                        created_at,
+                        now,
+                    ),
+                )
 
     def _persist_incremental_nine_question_module_output(
         self,
@@ -1536,7 +1617,56 @@ class KernelService:
         module_id: str,
         payload: dict[str, Any],
     ) -> None:
-        return None
+        if not isinstance(payload, dict):
+            return
+        status = str(payload.get("status") or "").strip().lower()
+        if status not in {"completed", "ready"}:
+            return
+        session_id = self._NINE_QUESTION_BASELINE_SESSION_ID
+        question_text = str(question_id or "").strip().lower()
+        module_text = str(module_id or payload.get("module_id") or "").strip()
+        if not question_text or not module_text:
+            return
+        now = datetime.now(UTC).isoformat()
+        db_path = get_storage_paths().session_db
+        with sqlite3.connect(str(db_path)) as conn:
+            existing = conn.execute(
+                """
+                SELECT output_version, created_at
+                FROM nine_question_module_outputs
+                WHERE session_id = ? AND question_id = ? AND module_id = ?
+                """,
+                (session_id, question_text, module_text),
+            ).fetchone()
+            output_version = int(existing[0]) + 1 if existing else 1
+            created_at = str(existing[1]) if existing else now
+            conn.execute(
+                """
+                INSERT INTO nine_question_module_outputs
+                (session_id, question_id, module_id, schema_version, output_version, status,
+                 output_kind, output_json, created_at, updated_at)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                ON CONFLICT(session_id, question_id, module_id) DO UPDATE SET
+                    schema_version = excluded.schema_version,
+                    output_version = excluded.output_version,
+                    status = excluded.status,
+                    output_kind = excluded.output_kind,
+                    output_json = excluded.output_json,
+                    updated_at = excluded.updated_at
+                """,
+                (
+                    session_id,
+                    question_text,
+                    module_text,
+                    1,
+                    output_version,
+                    status,
+                    str(payload.get("output_kind") or ""),
+                    json.dumps(payload, ensure_ascii=False, separators=(",", ":"), default=str),
+                    created_at,
+                    now,
+                ),
+            )
 
     def ensure_nine_questions_bootstrap(
         self,
@@ -1621,6 +1751,7 @@ class KernelService:
         max_retries: int = 1,
         rollback_on_failure: bool = False,
         merge_on_partial: bool = False,
+        context_overrides: Optional[dict[str, Any]] = None,
     ) -> BootstrapStatus:
         """Execute a single question in isolation within the shared baseline context."""
         default_state = self._get_or_create_default_state()
@@ -1635,6 +1766,8 @@ class KernelService:
 
             # Build startup snapshot context
             context: dict = self._nq_coordinator._snapshot_builder.build(self._DEFAULT_SESSION_ID)
+            if isinstance(context_overrides, dict):
+                context.update(context_overrides)
 
             # Execute single question via executor directly
             responses = self._nq_coordinator._executor.execute(
@@ -1838,10 +1971,14 @@ class KernelService:
         runtime_id = self._svc_call(self._foundation_service, "get_runtime_id") or "zentex-kernel"
         start_time = self._svc_call(self._foundation_service, "get_start_time") or datetime.now(timezone.utc)
         
+        active_session_ids = self.list_active_sessions()
+        if not active_session_ids and session_id == self._DEFAULT_SESSION_ID:
+            self._get_or_create_default_state()
+
         runtime_payload = {
             "runtime_id": runtime_id,
             "started_at": start_time.isoformat() if hasattr(start_time, "isoformat") else str(start_time),
-            "active_session_ids": self.list_active_sessions(),
+            "active_session_ids": active_session_ids,
             "default_workspace": getattr(self.get_config(), "default_workspace", "unknown") if hasattr(self, 'get_config') else "unknown",
             "identity_kernel_ref": "v1",
             "tool_registry_version": "v1",
@@ -1854,7 +1991,12 @@ class KernelService:
         }
 
         # 2. Session Context
-        session_snapshot = self.get_session_state(session_id) or {}
+        session_snapshot = self.get_session_state(session_id)
+        if session_snapshot is None and session_id == self._DEFAULT_SESSION_ID:
+            state = self._get_or_create_default_state()
+            session_snapshot = self._build_session_state_payload(session_id, state)
+        session_snapshot = session_snapshot or {}
+        enriched = self._enrich_runtime_overview_state(session_id=session_id, session_snapshot=session_snapshot)
         
         # 3. Transcript Analysis
         all_entries = self.get_transcript(session_id, limit=100)
@@ -1871,11 +2013,11 @@ class KernelService:
         
         return {
             "runtime": runtime_payload,
-            "session": session_snapshot.get("session_meta") or {},
-            "working_memory": {"slots": session_snapshot.get("working_memory", [])},
-            "metacognition": session_snapshot.get("metacognition", {}),
-            "living_self_model": session_snapshot.get("self_model", {}),
-            "temporal_agenda": session_snapshot.get("temporal", {}),
+            "session": enriched["session"],
+            "working_memory": enriched["working_memory"],
+            "metacognition": enriched["metacognition"],
+            "living_self_model": enriched["living_self_model"],
+            "temporal_agenda": enriched["temporal_agenda"],
             "recent_entries": recent_entries,
             "last_intervention": last_intervention,
             "weights": {
@@ -1883,6 +2025,96 @@ class KernelService:
                 "fallback_occurred": getattr(weight_snapshot, "weight_fallback_occurred", False),
                 "profile": weight_snapshot.model_dump() if hasattr(weight_snapshot, "model_dump") else {}
             } if weight_snapshot else None
+        }
+
+    def _build_session_state_payload(self, session_id: str, state: "_SessionState") -> dict[str, Any]:
+        return {
+            "session_id": session_id,
+            "session_meta": {
+                "session_id": session_id,
+                "status": "active",
+            },
+            "working_memory": state.working_memory.snapshot(),
+            "self_model": state.self_model.snapshot(),
+            "metacognition": state.meta_cognition.last_decision_snapshot() or {},
+            "temporal": state.temporal.snapshot(),
+            "nine_question_state": self._nq_shared_state.to_dict(),
+        }
+
+    def _enrich_runtime_overview_state(self, *, session_id: str, session_snapshot: dict[str, Any]) -> dict[str, Any]:
+        state = self._get_state(session_id)
+        slots = session_snapshot.get("working_memory", [])
+        frame: dict[str, Any] | None = None
+        if state is not None:
+            try:
+                frame = state.working_memory.frame_snapshot()
+            except KeyError:
+                frame = None
+
+        active_items = frame.get("active_items", []) if isinstance(frame, dict) else []
+        active_titles = [
+            str(item.get("title")).strip()
+            for item in active_items
+            if isinstance(item, dict) and str(item.get("title") or "").strip()
+        ]
+        active_summaries = [
+            str(item.get("summary")).strip()
+            for item in active_items
+            if isinstance(item, dict) and str(item.get("summary") or "").strip()
+        ]
+        context_summary = str(frame.get("context_summary") or "").strip() if isinstance(frame, dict) else ""
+        current_focus_summary = context_summary or (active_summaries[0] if active_summaries else None)
+
+        self_model = dict(session_snapshot.get("self_model") or {})
+        metacognition = dict(session_snapshot.get("metacognition") or {})
+        temporal = dict(session_snapshot.get("temporal") or {})
+        temporal_state = temporal.get("temporal_agenda_state") if isinstance(temporal.get("temporal_agenda_state"), dict) else {}
+        cognitive_agenda = temporal_state.get("cognitive_agenda") if isinstance(temporal_state.get("cognitive_agenda"), dict) else {}
+        agenda_items = cognitive_agenda.get("ordered_items") if isinstance(cognitive_agenda.get("ordered_items"), list) else []
+
+        def _titles_for(ids: list[Any]) -> list[str]:
+            wanted = {str(item_id) for item_id in ids}
+            titles: list[str] = []
+            for item in agenda_items:
+                if not isinstance(item, dict) or str(item.get("item_id")) not in wanted:
+                    continue
+                title = str(item.get("title") or item.get("summary") or item.get("item_id") or "").strip()
+                if title:
+                    titles.append(title)
+            return titles or [str(item_id) for item_id in ids if str(item_id).strip()]
+
+        review_now_ids = temporal_state.get("review_now_item_ids") or temporal.get("review_now_item_ids") or []
+        overdue_ids = temporal_state.get("overdue_item_ids") or temporal.get("overdue_item_ids") or []
+        temporal["review_now_item_ids"] = list(review_now_ids)
+        temporal["overdue_item_ids"] = list(overdue_ids)
+        temporal["review_now_item_titles"] = _titles_for(list(review_now_ids))
+        temporal["overdue_item_titles"] = _titles_for(list(overdue_ids))
+
+        decision = metacognition.get("decision_bundle") if isinstance(metacognition.get("decision_bundle"), dict) else {}
+        reasoning = decision.get("reasoning_mode_decision") if isinstance(decision.get("reasoning_mode_decision"), dict) else {}
+        metacognition.setdefault("scheduler_status", "idle")
+        if reasoning.get("thought_mode"):
+            metacognition.setdefault("current_reasoning_mode", reasoning["thought_mode"])
+
+        session = dict(session_snapshot.get("session_meta") or {})
+        session.setdefault("session_id", session_id)
+        session.setdefault("active_goal_titles", active_titles)
+        session.setdefault("current_focus_summary", current_focus_summary)
+        session.setdefault("current_reasoning_mode", metacognition.get("current_reasoning_mode"))
+        session.setdefault("turn_count", self_model.get("turn_count") or temporal.get("total_turns") or 0)
+        session.setdefault("degraded_flags", [])
+
+        return {
+            "session": session,
+            "working_memory": {
+                "slots": slots,
+                "frame": frame,
+                "active_focus_titles": active_titles,
+                "current_focus_summary": current_focus_summary,
+            },
+            "metacognition": metacognition,
+            "living_self_model": self_model,
+            "temporal_agenda": temporal,
         }
 
     # ------------------------------------------------------------------
@@ -2024,6 +2256,16 @@ class KernelService:
         return result if isinstance(result, list) else []
 
     def get_system_identity(self) -> dict:
+        if self._system_identity_store is not None:
+            get_identity = getattr(self._system_identity_store, "get_identity", None)
+            if callable(get_identity):
+                stored_identity = get_identity()
+                if isinstance(stored_identity, dict) and stored_identity.get("user_configured"):
+                    return stored_identity
+
+        if self._foundation_service is None:
+            return {"role_name": "Zentex Agent", "mission": ""}
+
         identity = self._svc_call(self._foundation_service, "get_identity_snapshot")
         if identity is not None:
             # Sync with Q2 plugin expectations: needs identity_kernel_snapshot key
@@ -2072,7 +2314,10 @@ class KernelService:
 
         plugin_audit_store = transcript_store
 
-        nine_question_state_payload = self._nq_shared_state.to_dict()
+        nine_question_state_payload = self._build_scoped_nine_question_upstream_state(
+            question_id=question.question_id,
+            state_payload=self._nq_shared_state.to_dict(),
+        )
         base_grounded_context = self._build_grounded_context(
             base_context=context,
             nine_question_state_payload=nine_question_state_payload,
@@ -2185,9 +2430,18 @@ class KernelService:
                 trace_id=str(response.trace_id or trace_id),
                 plugin_context=plugin_context,
             )
-            response.execution_context = snapshot_artifacts.get("execution_context", response.execution_context)
-            response.execution_result = snapshot_artifacts.get("execution_result", response.execution_result)
-            response.llm_trace_payload = snapshot_artifacts.get("llm_trace_payload", response.llm_trace_payload)
+            response.execution_context = self._prefer_material_dict(
+                snapshot_artifacts.get("execution_context"),
+                response.execution_context,
+            )
+            response.execution_result = self._prefer_material_dict(
+                snapshot_artifacts.get("execution_result"),
+                response.execution_result,
+            )
+            response.llm_trace_payload = self._prefer_material_dict(
+                snapshot_artifacts.get("llm_trace_payload"),
+                response.llm_trace_payload,
+            )
             _write_plugin_audit(
                 {
                     "phase": "completed",
@@ -2361,12 +2615,12 @@ class KernelService:
             return str(answer).strip()
 
         question_titles = {
-            "q1": "我在哪",
-            "q2": "我是谁",
-            "q3": "我有什么",
+            "q1": "我在那",
+            "q2": "我有什么",
+            "q3": "我是谁",
             "q4": "我能做什么",
-            "q5": "我被允许做什么",
-            "q6": "我即使能做也不该做什么",
+            "q5": "我不能干什么",
+            "q6": "如果我做了会怎样 / 代价与后果是什么",
             "q7": "我还可以做什么",
             "q8": "我现在应该做什么",
             "q9": "我应该如何行动",
@@ -2514,6 +2768,35 @@ class KernelService:
             "context_trigger": trigger,
         }
 
+    @staticmethod
+    def _build_scoped_nine_question_upstream_state(
+        *,
+        question_id: str,
+        state_payload: dict[str, Any],
+    ) -> dict[str, Any]:
+        from zentex.common.nine_questions_shared import build_authoritative_question_llm_snapshot
+
+        qid = str(question_id or "").strip().lower()
+        try:
+            current_order = int(qid[1:]) if qid.startswith("q") else 0
+        except ValueError:
+            current_order = 0
+        upstream_question_ids = [f"q{i}" for i in range(1, current_order)] if current_order > 1 else []
+        question_snapshots = state_payload.get("question_snapshots")
+        question_snapshots = question_snapshots if isinstance(question_snapshots, dict) else {}
+        scoped_snapshots = {
+            upstream_q: build_authoritative_question_llm_snapshot(upstream_q, snapshot)
+            for upstream_q in upstream_question_ids
+            if isinstance((snapshot := question_snapshots.get(upstream_q)), dict)
+        }
+        return {
+            "session_id": state_payload.get("session_id"),
+            "bootstrap_status": state_payload.get("bootstrap_status"),
+            "last_updated_at": state_payload.get("last_updated_at"),
+            "upstream_for_question": qid,
+            "question_snapshots": scoped_snapshots,
+        }
+
     @classmethod
     def _build_nine_question_context_snapshot(
         cls,
@@ -2606,32 +2889,44 @@ class KernelService:
             session_id=session_id,
             trace_id=trace_id,
         )
-        invoked_payload: dict[str, Any] = {}
-        completed_payload: dict[str, Any] = {}
-        failed_payload: dict[str, Any] = {}
+        grouped_payloads: list[dict[str, dict[str, Any]]] = []
+        group_index: dict[str, dict[str, dict[str, Any]]] = {}
+
+        def _group_key(payload: dict[str, Any], fallback: str) -> str:
+            return str(payload.get("request_id") or payload.get("decision_id") or fallback)
+
+        def _get_group(payload: dict[str, Any], fallback: str) -> dict[str, dict[str, Any]]:
+            key = _group_key(payload, fallback)
+            group = group_index.get(key)
+            if group is None:
+                group = {}
+                group_index[key] = group
+                grouped_payloads.append(group)
+            return group
+
         for entry in entries:
             entry_type = str(getattr(getattr(entry, "entry_type", None), "value", getattr(entry, "entry_type", "")) or "")
             payload = getattr(entry, "payload", None)
             payload = payload if isinstance(payload, dict) else {}
+            group = _get_group(payload, f"entry-{len(grouped_payloads)}")
             if entry_type == "model_provider_invoked":
-                invoked_payload = payload
+                group["invoked"] = payload
             elif entry_type == "model_provider_completed":
-                completed_payload = payload
+                group["completed"] = payload
             elif entry_type == "model_provider_failed":
-                failed_payload = payload
+                group["failed"] = payload
 
-        execution_context = invoked_payload.get("context")
-        execution_context = execution_context if isinstance(execution_context, dict) else self._sanitize_snapshot_payload(plugin_context)
-        execution_result = completed_payload.get("result")
-        execution_result = execution_result if isinstance(execution_result, dict) else {}
-        token_usage = completed_payload.get("token_usage")
-        token_usage = token_usage if isinstance(token_usage, dict) else {}
-
-        llm_trace_payload = {}
-        if invoked_payload or completed_payload or failed_payload:
+        def _build_llm_payload(group: dict[str, dict[str, Any]]) -> dict[str, Any]:
+            invoked_payload = group.get("invoked") or {}
+            completed_payload = group.get("completed") or {}
+            failed_payload = group.get("failed") or {}
             caller_context = invoked_payload.get("caller_context")
             caller_context = caller_context if isinstance(caller_context, dict) else {}
-            llm_trace_payload = {
+            execution_context = invoked_payload.get("context")
+            execution_context = execution_context if isinstance(execution_context, dict) else {}
+            token_usage = completed_payload.get("token_usage")
+            token_usage = token_usage if isinstance(token_usage, dict) else {}
+            return {
                 "request_id": invoked_payload.get("request_id"),
                 "decision_id": invoked_payload.get("decision_id"),
                 "provider_name": invoked_payload.get("provider_name") or invoked_payload.get("provider_plugin_id"),
@@ -2652,6 +2947,39 @@ class KernelService:
                 "error_type": failed_payload.get("error_type"),
                 "error_message": failed_payload.get("error_message") or failed_payload.get("error"),
             }
+
+        invocations = [
+            self._sanitize_snapshot_payload(_build_llm_payload(group))
+            for group in grouped_payloads
+            if group.get("invoked") or group.get("completed") or group.get("failed")
+        ]
+        material_invocations = [
+            item for item in invocations
+            if any(item.get(key) not in (None, "", [], {}) for key in ("provider_name", "model", "prompt", "raw_response", "error_type"))
+        ]
+
+        execution_context: dict[str, Any] = self._sanitize_snapshot_payload(plugin_context)
+        execution_result: dict[str, Any] = {}
+        llm_trace_payload: dict[str, Any] = {}
+        if material_invocations:
+            primary = dict(material_invocations[-1])
+            aggregate_usage = {
+                "input_tokens": sum(int((item.get("token_usage") or {}).get("input_tokens") or 0) for item in material_invocations),
+                "output_tokens": sum(int((item.get("token_usage") or {}).get("output_tokens") or 0) for item in material_invocations),
+                "total_tokens": sum(int((item.get("token_usage") or {}).get("total_tokens") or 0) for item in material_invocations),
+            }
+            primary["token_usage"] = aggregate_usage
+            primary["elapsed_ms"] = sum(int(item.get("elapsed_ms") or 0) for item in material_invocations)
+            primary["invocations"] = material_invocations
+            llm_trace_payload = primary
+            first_context = material_invocations[0].get("context_data")
+            if isinstance(first_context, dict) and first_context:
+                execution_context = first_context
+            for group in reversed(grouped_payloads):
+                completed_result = (group.get("completed") or {}).get("result")
+                if isinstance(completed_result, dict):
+                    execution_result = completed_result
+                    break
 
         return {
             "execution_context": self._sanitize_snapshot_payload(execution_context),
@@ -2789,6 +3117,14 @@ class KernelService:
             execution_result=snapshot_artifacts["execution_result"],
             llm_trace_payload=snapshot_artifacts["llm_trace_payload"],
         )
+
+    @staticmethod
+    def _prefer_material_dict(primary: Any, secondary: Any) -> dict[str, Any]:
+        if isinstance(primary, dict) and primary:
+            return primary
+        if isinstance(secondary, dict):
+            return secondary
+        return {}
 
     @staticmethod
     def _svc_call(service: Any, method: str, *args: Any, **kwargs: Any) -> Any:

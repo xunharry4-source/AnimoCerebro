@@ -153,6 +153,7 @@ def build_upgrade_collection(
     target_kind: UpgradeTargetKind,
     lifecycle: UpgradeLifecycleView,
     action: Optional[str] = None,
+    limit: Optional[int] = None,
 ) -> UpgradeRecordCollection:
     items = [
         build_upgrade_record_item(record)
@@ -160,6 +161,7 @@ def build_upgrade_collection(
             target_kind=target_kind,
             lifecycle=lifecycle,
             action=action,
+            limit=limit,
         )
     ]
     counts = UpgradeCountSummary.model_validate(store.build_counts(target_kind=target_kind))
@@ -173,19 +175,18 @@ def build_upgrade_collection(
 
 
 def build_upgrade_overview(store: UpgradeManagementStore) -> UpgradeOverviewPayload:
+    snapshot = store.build_overview_snapshot(recent_limit=5)
     llm_recent = [
         build_upgrade_record_item(record)
-        for record in store.list_records(target_kind=UpgradeTargetKind.LLM)[:5]
+        for record in snapshot["recent_llm"]
     ]
     plugin_recent = [
         build_upgrade_record_item(record)
-        for record in store.list_records(target_kind=UpgradeTargetKind.PLUGIN)[:5]
+        for record in snapshot["recent_plugins"]
     ]
     return UpgradeOverviewPayload(
-        llm=UpgradeCountSummary.model_validate(store.build_counts(target_kind=UpgradeTargetKind.LLM)),
-        plugins=UpgradeCountSummary.model_validate(
-            store.build_counts(target_kind=UpgradeTargetKind.PLUGIN)
-        ),
+        llm=UpgradeCountSummary.model_validate(snapshot["llm"]),
+        plugins=UpgradeCountSummary.model_validate(snapshot["plugins"]),
         recent_llm=llm_recent,
         recent_plugins=plugin_recent,
     )
@@ -204,48 +205,43 @@ def build_upgrades_by_lifecycle_view(
     *,
     target_kind: Optional[UpgradeTargetKind] = None,
     plugin_action: Optional[str] = None,
+    per_group_limit: int = 50,
 ) -> UpgradesByLifecycleViewPayload:
     """Build upgrades grouped by lifecycle view for tabbed display."""
-    all_records = store.list_records(
-        target_kind=target_kind,
-        lifecycle=UpgradeLifecycleView.ALL,
-        action=plugin_action if target_kind == UpgradeTargetKind.PLUGIN else None,
-    )
-    
-    # Group records by lifecycle view
-    grouped: dict[str, list[UpgradeManagementRecord]] = {
-        "ongoing": [],
-        "waiting": [],
-        "failed": [],
-        "cancelled": [],
-        "completed": [],
-    }
-    
-    for record in all_records:
-        view = record.lifecycle_view().value
-        if view in grouped:
-            grouped[view].append(record)
-    
-    # Build response
+    action = plugin_action if target_kind == UpgradeTargetKind.PLUGIN else None
+    counts = store.build_counts(target_kind=target_kind, action=action)
+    capped_limit = max(1, min(int(per_group_limit), 200))
+
+    def items_for(lifecycle: UpgradeLifecycleView) -> list[UpgradeRecordItem]:
+        return [
+            build_upgrade_record_item(record)
+            for record in store.list_records(
+                target_kind=target_kind,
+                lifecycle=lifecycle,
+                action=action,
+                limit=capped_limit,
+            )
+        ]
+
     return UpgradesByLifecycleViewPayload(
         ongoing=LifecycleGroupedRecords(
-            count=len(grouped["ongoing"]),
-            items=[build_upgrade_record_item(r) for r in grouped["ongoing"]],
+            count=counts["ongoing"],
+            items=items_for(UpgradeLifecycleView.ONGOING),
         ),
         waiting=LifecycleGroupedRecords(
-            count=len(grouped["waiting"]),
-            items=[build_upgrade_record_item(r) for r in grouped["waiting"]],
+            count=counts["waiting"],
+            items=items_for(UpgradeLifecycleView.WAITING),
         ),
         failed=LifecycleGroupedRecords(
-            count=len(grouped["failed"]),
-            items=[build_upgrade_record_item(r) for r in grouped["failed"]],
+            count=counts["failed"],
+            items=items_for(UpgradeLifecycleView.FAILED),
         ),
         cancelled=LifecycleGroupedRecords(
-            count=len(grouped["cancelled"]),
-            items=[build_upgrade_record_item(r) for r in grouped["cancelled"]],
+            count=counts["cancelled"],
+            items=items_for(UpgradeLifecycleView.CANCELLED),
         ),
         completed=LifecycleGroupedRecords(
-            count=len(grouped["completed"]),
-            items=[build_upgrade_record_item(r) for r in grouped["completed"]],
+            count=counts["completed"],
+            items=items_for(UpgradeLifecycleView.COMPLETED),
         ),
     )

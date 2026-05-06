@@ -106,9 +106,9 @@ def _extract_q5_preprocessed_evidence(context_payload: object) -> Optional[Q5Pre
         baseline_trust = authorization_baseline.get("agent_trust_status")
         if isinstance(baseline_trust, dict):
             trust = baseline_trust
-    if not trust and isinstance(context_payload.get("q3_connected_agents"), list):
+    if not trust and isinstance(context_payload.get("q2_connected_agents"), list):
         derived_trust: dict[str, str] = {}
-        for raw_agent in context_payload.get("q3_connected_agents", []):
+        for raw_agent in context_payload.get("q2_connected_agents", []):
             if not isinstance(raw_agent, dict):
                 continue
             agent_id = raw_agent.get("agent_id") or raw_agent.get("id") or raw_agent.get("name")
@@ -118,12 +118,12 @@ def _extract_q5_preprocessed_evidence(context_payload: object) -> Optional[Q5Pre
         trust = derived_trust
     if not trust:
         connected_agents_inventory = context_payload.get("connected_agents_inventory")
-        q3_inventory = context_payload.get("q3_unified_asset_inventory")
+        q2_inventory = context_payload.get("q2_unified_asset_inventory")
         connected_agents = []
         if isinstance(connected_agents_inventory, dict) and isinstance(connected_agents_inventory.get("connected_agents"), list):
             connected_agents = connected_agents_inventory.get("connected_agents", [])
-        elif isinstance(q3_inventory, dict) and isinstance(q3_inventory.get("connected_agents"), list):
-            connected_agents = q3_inventory.get("connected_agents", [])
+        elif isinstance(q2_inventory, dict) and isinstance(q2_inventory.get("connected_agents"), list):
+            connected_agents = q2_inventory.get("connected_agents", [])
         derived_trust = {}
         for raw_agent in connected_agents:
             if not isinstance(raw_agent, dict):
@@ -147,11 +147,16 @@ def _extract_q5_preprocessed_evidence(context_payload: object) -> Optional[Q5Pre
 def _extract_q5_inference_result(result_payload: object) -> Optional[Q5WhatAmIAllowedToDoInferenceView]:
     if not isinstance(result_payload, dict):
         return None
-    # Q5 plugin 写入 context_updates 的是 q5_authorization_boundary_profile（直接是 profile dict）
-    # 也可能整个 result_payload 就是 profile
-    profile = result_payload.get("authorization_boundary_profile")
+    authorization_boundary = result_payload.get("authorization_boundary") or result_payload.get("q5_authorization_boundary")
+    if not isinstance(authorization_boundary, dict):
+        authorization_boundary = {}
+    boundary_body = authorization_boundary.get("AuthorizationBoundary")
+    if isinstance(boundary_body, dict):
+        authorization_boundary = boundary_body
+    # Q5 plugin 写入 context_updates 的是 q5_authorization_boundary_profile（派生 profile dict）
+    profile = result_payload.get("authorization_boundary_profile") or result_payload.get("q5_authorization_boundary_profile")
     if not isinstance(profile, dict):
-        profile = result_payload  # compatibility path: 整个 payload 直接就是 profile
+        profile = result_payload
     if not isinstance(profile, dict):
         return None
 
@@ -218,6 +223,41 @@ def _extract_q5_inference_result(result_payload: object) -> Optional[Q5WhatAmIAl
         return None
 
     return Q5WhatAmIAllowedToDoInferenceView(
+        authorization_boundary=authorization_boundary,
+        current_authorization_scope=str(
+            authorization_boundary.get("current_authorization_scope")
+            or profile.get("current_authorization_scope")
+            or ""
+        ),
+        contact_policies=_coerce_string_list(
+            authorization_boundary.get("contact_policies")
+            or authorization_boundary.get("communication_policy")
+            or profile.get("contact_policies")
+            or profile.get("communication_policy")
+        ),
+        organizational_boundaries=str(
+            authorization_boundary.get("organizational_boundaries")
+            or authorization_boundary.get("organizational_boundary")
+            or profile.get("organizational_boundaries")
+            or profile.get("organizational_boundary")
+            or ""
+        ),
+        allowed_actions=_coerce_string_list(
+            authorization_boundary.get("allowed_actions")
+            or authorization_boundary.get("allowed_operations")
+            or profile.get("allowed_actions")
+            or profile.get("allowed_operations")
+            or profile.get("allowed_action_space")
+        ),
+        forbidden_actions=_coerce_string_list(
+            authorization_boundary.get("forbidden_actions")
+            or authorization_boundary.get("forbidden_operations")
+            or profile.get("forbidden_actions")
+            or profile.get("forbidden_operations")
+        ),
+        question_driver_refs=_coerce_string_list(
+            authorization_boundary.get("question_driver_refs") or profile.get("question_driver_refs")
+        ),
         execution_tier=execution_tier,
         interaction_scope=interaction_scope,
         requires_human_confirmation=requires_human_confirmation,

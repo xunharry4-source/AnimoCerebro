@@ -27,6 +27,8 @@ def handle_list_mcp_servers(service: McpIntegrationService) -> List[McpServerSta
             status=state.status,
             tool_count=state.tool_count,
             error_message=state.error_message,
+            help_doc_url=state.help_doc_url,
+            project_doc_url=state.project_doc_url,
             tools=[
                 McpServerToolItem(
                     tool_name=tool.tool_name,

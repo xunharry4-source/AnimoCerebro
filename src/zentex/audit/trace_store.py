@@ -440,6 +440,22 @@ class AuditTraceStore:
         return json.dumps(value, ensure_ascii=False)
 
     @staticmethod
+    def _extract_entry_status(
+        *,
+        entry_type: str,
+        context_info: dict[str, Any],
+        payload: dict[str, Any],
+    ) -> str:
+        for key in ("status", "new_status", "result_status"):
+            value = context_info.get(key)
+            if isinstance(value, str) and value.strip():
+                return value.strip()
+            value = payload.get(key)
+            if isinstance(value, str) and value.strip():
+                return value.strip()
+        return str(entry_type or "")
+
+    @staticmethod
     def _extract_request_id(payload: dict[str, Any]) -> str:
         return str(payload.get("request_id") or "").strip()
 
@@ -692,6 +708,9 @@ class AuditTraceStore:
         page_size: int = 40,
         request_id: Optional[str] = None,
         decision_id: Optional[str] = None,
+        source_module: Optional[str] = None,
+        status: Optional[str] = None,
+        search: Optional[str] = None,
     ) -> AuditPagePayload:
         page = max(page, 1)
         page_size = max(min(page_size, 200), 1)
@@ -703,11 +722,50 @@ class AuditTraceStore:
         if decision_id:
             where_parts.append("decision_id = ?")
             params.append(decision_id)
+        if source_module:
+            source_like = f"%{source_module}%"
+            where_parts.append(
+                """(
+                    source LIKE ?
+                    OR session_id LIKE ?
+                    OR json_extract(context_info, '$.source_module') LIKE ?
+                    OR json_extract(payload_json, '$.source_module') LIKE ?
+                    OR json_extract(payload_json, '$.module') LIKE ?
+                    OR json_extract(payload_json, '$.module_id') LIKE ?
+                )"""
+            )
+            params.extend([source_like] * 6)
+        if status:
+            where_parts.append(
+                """(
+                    json_extract(context_info, '$.status') = ?
+                    OR json_extract(payload_json, '$.status') = ?
+                    OR json_extract(payload_json, '$.new_status') = ?
+                    OR entry_type = ?
+                )"""
+            )
+            params.extend([status] * 4)
+        if search:
+            search_like = f"%{search}%"
+            where_parts.append(
+                """(
+                    entry_id LIKE ?
+                    OR trace_id LIKE ?
+                    OR session_id LIKE ?
+                    OR turn_id LIKE ?
+                    OR entry_type LIKE ?
+                    OR source LIKE ?
+                    OR summary LIKE ?
+                    OR context_info LIKE ?
+                    OR payload_json LIKE ?
+                )"""
+            )
+            params.extend([search_like] * 9)
         where_clause = f"WHERE {' AND '.join(where_parts)}" if where_parts else ""
         count_sql = f"SELECT COUNT(*) AS count FROM audit_entries {where_clause}"
         select_sql = f"""
             SELECT entry_id, trace_id, session_id, turn_id, entry_type, timestamp, source, summary,
-                   question_driver_refs, context_info
+                   question_driver_refs, context_info, payload_json
             FROM audit_entries
             {where_clause}
             ORDER BY timestamp DESC
@@ -720,21 +778,32 @@ class AuditTraceStore:
             offset = (page - 1) * page_size
             rows = self._conn.execute(select_sql, (*params, page_size, offset)).fetchall()
 
-        items = [
-            AuditRecordItem(
-                entry_id=row["entry_id"],
-                trace_id=row["trace_id"],
-                session_id=row["session_id"],
-                turn_id=row["turn_id"],
-                entry_type=row["entry_type"],
-                timestamp=row["timestamp"],
-                source=row["source"],
-                summary=row["summary"],
-                question_driver_refs=json.loads(row["question_driver_refs"] or "[]"),
-                context_info=json.loads(row["context_info"] or "{}"),
+        items: list[AuditRecordItem] = []
+        for row in rows:
+            context_info = json.loads(row["context_info"] or "{}")
+            payload = json.loads(row["payload_json"] or "{}")
+            summary = row["summary"]
+            items.append(
+                AuditRecordItem(
+                    entry_id=row["entry_id"],
+                    trace_id=row["trace_id"],
+                    session_id=row["session_id"],
+                    turn_id=row["turn_id"],
+                    entry_type=row["entry_type"],
+                    timestamp=row["timestamp"],
+                    source=row["source"],
+                    summary=summary,
+                    content=summary,
+                    status=self._extract_entry_status(
+                        entry_type=row["entry_type"],
+                        context_info=context_info,
+                        payload=payload,
+                    ),
+                    question_driver_refs=json.loads(row["question_driver_refs"] or "[]"),
+                    context_info=context_info,
+                    payload=payload,
+                )
             )
-            for row in rows
-        ]
         return AuditPagePayload(
             items=items,
             page=page,

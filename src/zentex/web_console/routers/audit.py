@@ -99,6 +99,9 @@ async def list_audit_entries(
     page_size: int = 40,
     request_id: Optional[str] = None,
     decision_id: Optional[str] = None,
+    source_module: Optional[str] = None,
+    status: Optional[str] = None,
+    search: Optional[str] = None,
 ) -> AuditPagePayload:
     """
     Get audit entries with optional filtering and pagination
@@ -118,5 +121,8 @@ async def list_audit_entries(
         page=page,
         page_size=page_size,
         request_id=request_id,
-        decision_id=decision_id
+        decision_id=decision_id,
+        source_module=source_module,
+        status=status,
+        search=search,
     )

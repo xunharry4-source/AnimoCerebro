@@ -6,7 +6,7 @@ import { useNavigate } from "react-router-dom";
 
 import {
   ReportPayload,
-  fetchNineQuestionsStatus,
+  fetchNineQuestionsReport,
   getQuestionDisplayLabel,
   runAllNineQuestions,
 } from "./nineQuestionsApi";
@@ -38,7 +38,7 @@ export default function NineQuestionsReport() {
     setLoading(true);
     setError(null);
     try {
-      const data = await fetchNineQuestionsStatus();
+      const data = await fetchNineQuestionsReport();
       setReport(data.report);
       setNotice(data.notice);
     } catch (err: any) {

@@ -35,12 +35,18 @@ class AuditService:
         page_size: int = 40,
         request_id: Optional[str] = None,
         decision_id: Optional[str] = None,
+        source_module: Optional[str] = None,
+        status: Optional[str] = None,
+        search: Optional[str] = None,
     ) -> AuditPagePayload:
         return self._store.list_audit_entries(
             page=page,
             page_size=page_size,
             request_id=request_id,
             decision_id=decision_id,
+            source_module=source_module,
+            status=status,
+            search=search,
         )
 
     def query_turn_audit_items(
@@ -79,6 +85,31 @@ class AuditService:
 
     def record_flow_end(self, audit: FlowAudit, *, status: str) -> None:
         self._store.record_flow_end(audit, status=status)
+
+    def record_audit_entry(
+        self,
+        *,
+        trace_id: str,
+        session_id: str,
+        turn_id: str,
+        entry_type: str,
+        source: str,
+        summary: str,
+        question_driver_refs: Optional[list[str]] = None,
+        context_info: Optional[dict[str, Any]] = None,
+        payload: Optional[dict[str, Any]] = None,
+    ) -> str:
+        return self._store.record_audit_entry(
+            trace_id=trace_id,
+            session_id=session_id,
+            turn_id=turn_id,
+            entry_type=entry_type,
+            source=source,
+            summary=summary,
+            question_driver_refs=question_driver_refs,
+            context_info=context_info,
+            payload=payload,
+        )
 
     def list_recent_events(self, *, limit: int = 1000) -> list[Any]:
         return self._store.get_entries_snapshot(limit=limit)

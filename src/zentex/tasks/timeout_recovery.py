@@ -94,6 +94,24 @@ def build_timeout_recovery_action(
         "recovery_source": RECOVERY_SOURCE,
         "previous_status": task.status.value,
     }
+    metadata["orphan_recovery"] = {
+        "orphan_detected": True,
+        "detector": "G39.stale_in_progress_orphan_detector",
+        "from_status": task.status.value,
+        "to_status": next_status.value,
+        "elapsed_seconds": elapsed_seconds,
+        "stale_threshold_seconds": timeout_seconds,
+        "resources_reclaimed": True,
+        "reassign": {
+            "strategy": (
+                "failed_reassign_to_dispatch_queue"
+                if next_status == TaskStatus.TODO
+                else "non_retriable_failed_no_reassign"
+            ),
+            "target_status": next_status.value,
+        },
+        "previous_lease": lease,
+    }
     remarks = (
         f"Timeout recovery after {elapsed_seconds:.0f}s without heartbeat; "
         f"lease expired at {now.isoformat()}."

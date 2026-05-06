@@ -81,7 +81,7 @@ src/zentex/upgrade/
 ## 运行示例
 
 ```bash
-cd /Users/harry/Documents/git/AnimoCerebro-V2
+cd <repo-root>
 PYTHONPATH=src:$PYTHONPATH python -m src.zentex.upgrade.skills.example_usage
 ```
 

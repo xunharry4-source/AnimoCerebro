@@ -9,6 +9,8 @@ decides whether to skip, upgrade, or create based on explicit intent payloads,
 then delegates to the specialized upgrade planners.
 """
 
+from pathlib import Path
+
 from dataclasses import dataclass
 from typing import Any, Optional, Dict, List, Union
 from zentex.common.storage_paths import get_storage_paths
@@ -209,7 +211,7 @@ def list_prompt_upgrade_contracts() -> list[ModulePromptUpgradeContract]:
         ModulePromptUpgradeContract(
             prompt_id="upgrade.ai_executors.plugin_generation",
             module_id="upgrade",
-            prompt_file_path="/Users/harry/Documents/git/AnimoCerebro-V2/src/zentex/upgrade/ai_executors_llm_prompt.py",
+            prompt_file_path=str(Path(__file__).resolve().with_name("ai_executors_llm_prompt.py")),
             prompt_builder_name="build_plugin_generation_request",
             prompt_builder_symbol="zentex.upgrade.ai_executors_llm_prompt.build_plugin_generation_request",
             target_component="upgrade.ai_executors.plugin_generation.prompt",

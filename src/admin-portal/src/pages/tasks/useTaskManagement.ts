@@ -1,23 +1,32 @@
 import { useState, useEffect, useRef, useCallback } from 'react';
-import { TaskGroupCounts, TaskPageResponse, TaskPresentationGroup, TasksByStatus, ZentexTask } from './types';
+import { TaskGarbageAnalysisReport, TaskGroupCounts, TaskPageResponse, TaskPresentationGroup, TasksByStatus, ZentexTask } from './types';
 
 const DEFAULT_PAGE_SIZE = 25;
+const TASK_PAGE_FETCH_TIMEOUT_MS = 10000;
 const EMPTY_COUNTS: TaskGroupCounts = {
+  all: 0,
   in_progress: 0,
   todo: 0,
   blocked: 0,
   pending: 0,
   waiting_confirmation: 0,
   completed: 0,
+  failed: 0,
+  suspended: 0,
+  archived: 0,
   cancelled: 0,
 };
 
 const TAB_GROUPS: TaskPresentationGroup[] = [
+  'all',
   'in_progress',
   'todo',
   'blocked',
   'waiting_confirmation',
   'completed',
+  'failed',
+  'suspended',
+  'archived',
   'cancelled',
 ];
 
@@ -35,7 +44,11 @@ interface UseTaskManagementReturn {
   setPaginationModel: (value: PaginationModel) => void;
   loading: boolean;
   error: string | null;
+  garbageAnalysis: TaskGarbageAnalysisReport | null;
+  garbageAnalysisLoading: boolean;
+  garbageAnalysisError: string | null;
   fetchTasks: () => Promise<void>;
+  fetchGarbageAnalysis: (enableLlmSemanticScoring?: boolean) => Promise<void>;
   tabValue: number;
   setTabValue: (value: number) => void;
   sourceModuleFilter: string;
@@ -46,12 +59,16 @@ const useTaskManagement = (): UseTaskManagementReturn => {
   const [tabValue, setTabValue] = useState(0);
   const [sourceModuleFilter, setSourceModuleFilter] = useState("all");
   const [tasksByStatus, setTasksByStatus] = useState<TasksByStatus>({
+    all: [],
     in_progress: [],
     todo: [],
     blocked: [],
     pending: [],
     waiting_confirmation: [],
     completed: [],
+    failed: [],
+    suspended: [],
+    archived: [],
     cancelled: []
   });
   const [groupCounts, setGroupCounts] = useState<TaskGroupCounts>(EMPTY_COUNTS);
@@ -61,6 +78,9 @@ const useTaskManagement = (): UseTaskManagementReturn => {
   });
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
+  const [garbageAnalysis, setGarbageAnalysis] = useState<TaskGarbageAnalysisReport | null>(null);
+  const [garbageAnalysisLoading, setGarbageAnalysisLoading] = useState(false);
+  const [garbageAnalysisError, setGarbageAnalysisError] = useState<string | null>(null);
 
   const wsRef = useRef<WebSocket | null>(null);
   const reconnectTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
@@ -68,29 +88,36 @@ const useTaskManagement = (): UseTaskManagementReturn => {
   const fetchTasks = useCallback(async () => {
     setLoading(true);
     setError(null);
+    const controller = new AbortController();
+    const timeoutId = window.setTimeout(() => controller.abort(), TASK_PAGE_FETCH_TIMEOUT_MS);
     try {
       const params = new URLSearchParams();
       if (sourceModuleFilter !== "all") {
         params.set("source_module", sourceModuleFilter);
       }
-      const group = TAB_GROUPS[tabValue] ?? 'completed';
+      const group = TAB_GROUPS[tabValue] ?? 'all';
       params.set("group", group);
+      params.set("root_only", "true");
       params.set("limit", String(paginationModel.pageSize));
       params.set("offset", String(paginationModel.page * paginationModel.pageSize));
       const url = `/api/web/tasks/page?${params.toString()}`;
-      const res = await fetch(url);
+      const res = await fetch(url, { signal: controller.signal });
       if (!res.ok) {
         throw new Error(`获取任务列表失败（HTTP ${res.status}）`);
       }
       const data: TaskPageResponse = await res.json();
       const rows = data.items.map(t => ({ ...t, id: t.task_id }));
       const processedData: TasksByStatus = {
+        all: [],
         in_progress: [],
         todo: [],
         blocked: [],
         pending: [],
         waiting_confirmation: [],
         completed: [],
+        failed: [],
+        suspended: [],
+        archived: [],
         cancelled: [],
         [group]: rows,
       };
@@ -98,11 +125,37 @@ const useTaskManagement = (): UseTaskManagementReturn => {
       setGroupCounts(data.counts);
     } catch (err) {
       console.error('Failed to fetch tasks', err);
-      setError(err instanceof Error ? err.message : "获取任务列表失败");
+      if (err instanceof DOMException && err.name === "AbortError") {
+        setError(`获取任务列表超时（${TASK_PAGE_FETCH_TIMEOUT_MS / 1000} 秒），请检查后端 /api/web/tasks/page 是否正常响应。`);
+      } else {
+        setError(err instanceof Error ? err.message : "获取任务列表失败");
+      }
     } finally {
+      window.clearTimeout(timeoutId);
       setLoading(false);
     }
   }, [paginationModel.page, paginationModel.pageSize, sourceModuleFilter, tabValue]);
+
+  const fetchGarbageAnalysis = useCallback(async (enableLlmSemanticScoring = false) => {
+    setGarbageAnalysisLoading(true);
+    setGarbageAnalysisError(null);
+    try {
+      const params = new URLSearchParams();
+      params.set("stale_after_seconds", "300");
+      params.set("enable_llm_semantic_scoring", String(enableLlmSemanticScoring));
+      const res = await fetch(`/api/web/tasks/garbage-analysis?${params.toString()}`);
+      if (!res.ok) {
+        throw new Error(`获取垃圾与重复任务分析失败（HTTP ${res.status}）`);
+      }
+      const data: TaskGarbageAnalysisReport = await res.json();
+      setGarbageAnalysis(data);
+    } catch (err) {
+      console.error('Failed to fetch task garbage analysis', err);
+      setGarbageAnalysisError(err instanceof Error ? err.message : "获取垃圾与重复任务分析失败");
+    } finally {
+      setGarbageAnalysisLoading(false);
+    }
+  }, []);
 
   const connectWebSocket = useCallback(() => {
     if (wsRef.current) {
@@ -156,6 +209,7 @@ const useTaskManagement = (): UseTaskManagementReturn => {
 
   useEffect(() => {
     fetchTasks();
+    fetchGarbageAnalysis(false);
     connectWebSocket();
     
     return () => {
@@ -166,7 +220,7 @@ const useTaskManagement = (): UseTaskManagementReturn => {
         clearTimeout(reconnectTimeoutRef.current);
       }
     };
-  }, [fetchTasks, connectWebSocket]);
+  }, [fetchTasks, fetchGarbageAnalysis, connectWebSocket]);
 
   const handleSetTabValue = useCallback((value: number) => {
     setTabValue(value);
@@ -178,27 +232,12 @@ const useTaskManagement = (): UseTaskManagementReturn => {
     setPaginationModel(previous => ({ ...previous, page: 0 }));
   }, []);
 
+  const currentGroup = TAB_GROUPS[tabValue] ?? 'all';
   const getCurrentTasks = useCallback((): ZentexTask[] => {
-    switch (tabValue) {
-      case 0:
-        return tasksByStatus.in_progress;
-      case 1:
-        return tasksByStatus.todo ?? [];
-      case 2:
-        return tasksByStatus.blocked ?? [];
-      case 3:
-        return tasksByStatus.waiting_confirmation;
-      case 4:
-        return tasksByStatus.completed;
-      case 5:
-        return tasksByStatus.cancelled;
-      default:
-        return [];
-    }
-  }, [tabValue, tasksByStatus]);
+    return tasksByStatus[currentGroup] ?? [];
+  }, [currentGroup, tasksByStatus]);
 
   const currentTasks = getCurrentTasks();
-  const currentGroup = TAB_GROUPS[tabValue] ?? 'completed';
 
   return {
     tasksByStatus,
@@ -209,7 +248,11 @@ const useTaskManagement = (): UseTaskManagementReturn => {
     setPaginationModel,
     loading,
     error,
+    garbageAnalysis,
+    garbageAnalysisLoading,
+    garbageAnalysisError,
     fetchTasks,
+    fetchGarbageAnalysis,
     tabValue,
     setTabValue: handleSetTabValue,
     sourceModuleFilter,

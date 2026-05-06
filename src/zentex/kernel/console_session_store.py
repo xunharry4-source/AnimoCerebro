@@ -2,6 +2,7 @@ from __future__ import annotations
 """SQLite-backed Session Store"""
 
 
+import asyncio
 import sqlite3
 import json
 from datetime import datetime, timezone
@@ -9,6 +10,7 @@ UTC = timezone.utc
 from pathlib import Path
 from typing import List, Dict, Any, Optional, Union
 import logging
+import time
 
 from zentex.web_console.contracts.kernel_service import SessionSnapshot
 
@@ -66,12 +68,19 @@ class SQLiteSessionStore:
 
     async def get(self, session_id: str) -> Optional[SessionSnapshot]:
         """Get session by ID"""
+        return await asyncio.to_thread(self._get_sync, session_id)
+
+    def _get_sync(self, session_id: str) -> Optional[SessionSnapshot]:
+        started = time.monotonic()
         with sqlite3.connect(str(self.db_path)) as conn:
             conn.row_factory = sqlite3.Row
             row = conn.execute(
                 "SELECT * FROM sessions WHERE session_id = ? AND is_active = 1",
                 (session_id,),
             ).fetchone()
+        elapsed = time.monotonic() - started
+        if elapsed >= 1.0:
+            logger.warning("SQLiteSessionStore.get slow session_id=%s elapsed=%.3fs", session_id, elapsed)
 
         if not row:
             return None
@@ -86,6 +95,10 @@ class SQLiteSessionStore:
 
     async def save(self, session: SessionSnapshot) -> None:
         """Save or update session"""
+        await asyncio.to_thread(self._save_sync, session)
+
+    def _save_sync(self, session: SessionSnapshot) -> None:
+        started = time.monotonic()
         try:
             with sqlite3.connect(str(self.db_path)) as conn:
                 conn.execute(
@@ -107,6 +120,9 @@ class SQLiteSessionStore:
                     ),
                 )
                 conn.commit()
+            elapsed = time.monotonic() - started
+            if elapsed >= 1.0:
+                logger.warning("SQLiteSessionStore.save slow session_id=%s elapsed=%.3fs", session.session_id, elapsed)
         except Exception:
             # Standard redline: never let session persistence failure surface without
             # a traceback, and never let callers mistake it for a successful save.
@@ -115,6 +131,10 @@ class SQLiteSessionStore:
 
     async def delete(self, session_id: str) -> None:
         """Soft-delete session (mark as inactive)"""
+        await asyncio.to_thread(self._delete_sync, session_id)
+
+    def _delete_sync(self, session_id: str) -> None:
+        started = time.monotonic()
         try:
             with sqlite3.connect(str(self.db_path)) as conn:
                 conn.execute(
@@ -122,17 +142,27 @@ class SQLiteSessionStore:
                     (_utc_now_iso(), session_id),
                 )
                 conn.commit()
+            elapsed = time.monotonic() - started
+            if elapsed >= 1.0:
+                logger.warning("SQLiteSessionStore.delete slow session_id=%s elapsed=%.3fs", session_id, elapsed)
         except Exception:
             logger.exception("Failed to soft-delete session snapshot for session_id=%s", session_id)
             raise
 
     async def list_active(self) -> List[SessionSnapshot]:
         """List all active sessions"""
+        return await asyncio.to_thread(self._list_active_sync)
+
+    def _list_active_sync(self) -> List[SessionSnapshot]:
+        started = time.monotonic()
         with sqlite3.connect(str(self.db_path)) as conn:
             conn.row_factory = sqlite3.Row
             rows = conn.execute(
                 "SELECT * FROM sessions WHERE is_active = 1 ORDER BY created_at DESC"
             ).fetchall()
+        elapsed = time.monotonic() - started
+        if elapsed >= 1.0:
+            logger.warning("SQLiteSessionStore.list_active slow count=%d elapsed=%.3fs", len(rows), elapsed)
 
         return [self._row_to_snapshot(row) for row in rows]
 

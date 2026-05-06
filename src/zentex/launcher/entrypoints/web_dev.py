@@ -172,12 +172,17 @@ def _create_full_app(registry: ServiceRegistry) -> object:
     except Exception:
         logger.exception("web_dev: failed to inspect event loop for task/agent runtime seeding")
 
-    attach_task_dependencies = getattr(task_service, "attach_dependencies", None)
+    attach_task_dependencies = None
+    if getattr(task_service, "_is_stub", False):
+        logger.warning("web_dev: skipping dependency injection for stub 'tasks' service.")
+    else:
+        attach_task_dependencies = getattr(task_service, "attach_dependencies", None)
     if callable(attach_task_dependencies):
         attach_task_dependencies(
             plugin_service=plugin_service,
             cli_service=cli_service,
             mcp_service=mcp_service,
+            agent_service=agent_service,
         )
     
     # --- Create full app ----------------------------------------------------

@@ -1,6 +1,5 @@
 import React from "react";
 import ExpandMoreIcon from "@mui/icons-material/ExpandMore";
-import AdjustIcon from "@mui/icons-material/Adjust";
 import { useTranslation } from "react-i18next";
 import {
   Accordion,
@@ -46,20 +45,6 @@ function loadChipColor(load: string): "success" | "warning" | "error" | "default
   return "default";
 }
 
-function riskChipColor(risk: string): "success" | "warning" | "error" | "default" {
-  const normalized = risk.toLowerCase();
-  if (normalized === "zero_tolerance") {
-    return "error";
-  }
-  if (normalized === "fast_fail" || normalized === "guarded") {
-    return "warning";
-  }
-  if (normalized === "balanced" || normalized === "low_risk") {
-    return "success";
-  }
-  return "default";
-}
-
 function progressColor(value: number): "primary" | "warning" | "error" {
   if (value < 20) {
     return "error";
@@ -72,7 +57,6 @@ function progressColor(value: number): "primary" | "warning" | "error" {
 
 export const Q9EvidencePanel: React.FC<Q9EvidencePanelProps> = ({
   evidence,
-  inference,
   providerName,
   elapsedMs = 0,
 }) => {
@@ -228,59 +212,6 @@ export const Q9EvidencePanel: React.FC<Q9EvidencePanelProps> = ({
                   {t("nineQuestions.budgetPressure")}: {budget?.budget_pressure || "unknown"}
                 </Alert>
               </Stack>
-            </CardContent>
-          </Card>
-        </Grid>
-
-        <Grid size={{ xs: 12 }}>
-          <Card
-            variant="outlined"
-            sx={{
-              borderWidth: 2,
-              borderColor: "warning.main",
-              bgcolor: "rgba(237, 108, 2, 0.05)",
-            }}
-          >
-            <CardContent>
-              <Typography variant="h6" gutterBottom sx={{ fontWeight: "bold" }}>
-                {t("nineQuestions.finalActionPosture")}
-              </Typography>
-              {inference ? (
-                <Stack spacing={2}>
-                  <Stack direction="row" spacing={1} useFlexGap flexWrap="wrap" data-testid="q9-posture-chip-zone">
-                    <Chip
-                      label={inference.evaluation_style}
-                      color={riskChipColor(inference.evaluation_style)}
-                      sx={{ fontSize: "0.95rem", fontWeight: "bold" }}
-                    />
-                    <Chip
-                      label={inference.risk_tolerance}
-                      color={riskChipColor(inference.risk_tolerance)}
-                      sx={{ fontSize: "0.95rem", fontWeight: "bold" }}
-                      data-testid="q9-risk-tolerance-chip"
-                    />
-                  </Stack>
-
-                  <Alert severity="info" data-testid="q9-action-rhythm-alert">
-                    {t("nineQuestions.actionRhythm")}: {inference.action_rhythm || "-"}
-                  </Alert>
-                  <Alert
-                    severity={/human confirmation|human/i.test(inference.confirmation_strategy || "") ? "warning" : "info"}
-                    data-testid="q9-confirmation-strategy-alert"
-                  >
-                    {t("nineQuestions.confirmationStrategy")}: {inference.confirmation_strategy || "-"}
-                  </Alert>
-
-                  <List dense sx={{ py: 0 }}>
-                    <ListItem disableGutters>
-                      <AdjustIcon fontSize="small" color="success" style={{ marginRight: 8 }} />
-                      <ListItemText primary={inference.evolution_direction || "Stable"} secondary={t("nineQuestions.evolutionDirection")} />
-                    </ListItem>
-                  </List>
-                </Stack>
-              ) : (
-                <Alert severity="info">{t("nineQuestions.waitingPostureSync")}</Alert>
-              )}
             </CardContent>
           </Card>
         </Grid>

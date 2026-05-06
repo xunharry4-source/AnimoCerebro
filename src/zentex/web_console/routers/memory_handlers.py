@@ -134,7 +134,7 @@ async def update_memory_record_management(
         ) from exc
 
 
-async def trigger_consolidation_cycle(request: Request) -> dict[str, object]:
+async def trigger_consolidation_cycle(request: Request, *, force_auto_organize: bool = False) -> dict[str, object]:
     """Trigger a manual memory consolidation cycle.
     
     Consolidation process:
@@ -156,6 +156,32 @@ async def trigger_consolidation_cycle(request: Request) -> dict[str, object]:
         HTTPException (503): If consolidation engine unavailable
     """
     try:
+        if force_auto_organize:
+            service = _get_memory_service(request)
+            if service is None or not callable(getattr(service, "force_start_automatic_organization", None)):
+                raise HTTPException(
+                    status_code=503,
+                    detail={
+                        "error": "memory_service_unavailable",
+                        "message": "Memory service cannot force-start automatic organization",
+                    },
+                )
+            handle = service.force_start_automatic_organization(operator="web_console")
+            engine = service.get_consolidation_engine()
+            queried = engine.list_cycles(cycle_id=handle.cycle_id)
+            if not queried:
+                raise RuntimeError(f"Consolidation read-after-write failed for cycle {handle.cycle_id}")
+            return {
+                "status": "triggered",
+                "mode": "force_auto_organize",
+                "cycle_id": handle.cycle_id,
+                "lease_id": handle.lease_id,
+                "idempotency_key": handle.idempotency_key,
+                "snapshot_version": handle.snapshot_version,
+                "queued_cycle": queried[0].model_dump(mode="json") if hasattr(queried[0], "model_dump") else {},
+                "message": "已强制启动记忆自动整理流程。",
+            }
+
         consolidation_engine = _get_consolidation_engine(request)
         if consolidation_engine is None:
             raise HTTPException(

@@ -6,6 +6,7 @@ import logging
 from pathlib import Path
 import subprocess
 import sys
+import time
 from typing import Any
 from uuid import uuid4
 
@@ -128,12 +129,19 @@ class ExternalConnectorService:
         registry_path: Path | str | None = None,
         registry_store: ExternalCapabilityRegistryStore | None = None,
     ) -> None:
+        started = time.monotonic()
         self._connectors: dict[str, ExternalConnectorRecord] = {}
         self._history: dict[str, list[ConnectorInvocationRecord]] = {}
         self._transcript_store = transcript_store
         self._registry_path = Path(registry_path) if registry_path is not None else get_storage_paths().runtime_data_dir / "external_connectors.json"
         self._registry_store = registry_store or ExternalCapabilityRegistryStore()
         self._restore_connectors()
+        logger.info(
+            "[external-connectors] service initialized connectors=%d registry_path=%s elapsed=%.3fs",
+            len(self._connectors),
+            self._registry_path,
+            time.monotonic() - started,
+        )
 
     def attach_transcript_store(self, transcript_store: Any) -> None:
         self._transcript_store = transcript_store
@@ -237,7 +245,45 @@ class ExternalConnectorService:
         return self.register_connector(payload)
 
     def list_connectors(self) -> list[ExternalConnectorRecord]:
-        return sorted(self._connectors.values(), key=lambda item: item.created_at)
+        started = time.monotonic()
+        records = sorted(self._connectors.values(), key=lambda item: item.created_at)
+        logger.info(
+            "[external-connectors] list_connectors count=%d elapsed=%.3fs",
+            len(records),
+            time.monotonic() - started,
+        )
+        return records
+
+    def get_external_connector_statistics(self) -> dict[str, Any]:
+        records = self.list_connectors()
+        status_counts: dict[str, int] = {}
+        type_counts: dict[str, int] = {}
+        total_capabilities = 0
+        read_only_capabilities = 0
+        mutating_capabilities = 0
+        for record in records:
+            status = record.status.value
+            connector_type = record.connector_type.value
+            status_counts[status] = status_counts.get(status, 0) + 1
+            type_counts[connector_type] = type_counts.get(connector_type, 0) + 1
+            for capability in record.capabilities:
+                total_capabilities += 1
+                if capability.read_only:
+                    read_only_capabilities += 1
+                else:
+                    mutating_capabilities += 1
+        return {
+            "asset_type": "external_connector",
+            "total_connectors": len(records),
+            "active_connectors": status_counts.get("active", 0),
+            "degraded_connectors": status_counts.get("degraded", 0),
+            "revoked_connectors": status_counts.get("revoked", 0),
+            "total_capabilities": total_capabilities,
+            "read_only_capabilities": read_only_capabilities,
+            "mutating_capabilities": mutating_capabilities,
+            "status_counts": status_counts,
+            "type_counts": type_counts,
+        }
 
     def get_connector(self, connector_id: str) -> ExternalConnectorRecord:
         try:
@@ -282,6 +328,32 @@ class ExternalConnectorService:
         )
         return updated
 
+    def activate_connector(self, connector_id: str) -> ExternalConnectorRecord:
+        updated = self.update_connector(
+            connector_id,
+            ConnectorUpdateRequest(status=ConnectorStatus.ACTIVE),
+        )
+        report = self.health_check(connector_id)
+        if report.health_status != ConnectorHealthStatus.HEALTHY:
+            self.update_connector(
+                connector_id,
+                ConnectorUpdateRequest(status=ConnectorStatus.DEGRADED),
+            )
+            raise ConnectorError(
+                error_code="CONNECTOR_ACTIVATION_HEALTH_CHECK_FAILED",
+                error_stage="connector_activation",
+                operator_message=f"connector health check failed during activation: {connector_id}",
+                recovery_hint="Fix the connector target, plugin path, or capability declaration and retry activation.",
+                status_code=409,
+            )
+        return updated
+
+    def disable_connector(self, connector_id: str) -> ExternalConnectorRecord:
+        return self.update_connector(
+            connector_id,
+            ConnectorUpdateRequest(status=ConnectorStatus.REVOKED),
+        )
+
     def delete_connector(self, connector_id: str) -> dict[str, Any]:
         existing = self.get_connector(connector_id)
         del self._connectors[connector_id]
@@ -294,16 +366,33 @@ class ExternalConnectorService:
         return {"deleted": True, "connector_id": connector_id}
 
     def _restore_connectors(self) -> None:
+        started = time.monotonic()
+        logger.info("[external-connectors] restore start registry_path=%s", self._registry_path)
         db_rows = self._registry_store.list_current("external_connector")
+        logger.info(
+            "[external-connectors] restore db rows=%d elapsed=%.3fs",
+            len(db_rows),
+            time.monotonic() - started,
+        )
         if db_rows:
             payload = [row["payload"] for row in db_rows]
         elif self._registry_path.exists():
+            file_started = time.monotonic()
             try:
                 payload = json.loads(self._registry_path.read_text(encoding="utf-8"))
             except Exception as exc:
                 logger.error("Failed to read external connector registry from %s: %s", self._registry_path, exc)
                 raise RuntimeError(f"failed to read external connector registry: {exc}") from exc
+            logger.info(
+                "[external-connectors] restore json registry bytes=%d elapsed=%.3fs",
+                self._registry_path.stat().st_size,
+                time.monotonic() - file_started,
+            )
         else:
+            logger.info(
+                "[external-connectors] restore skipped no persisted registry elapsed=%.3fs",
+                time.monotonic() - started,
+            )
             return
         if not isinstance(payload, list):
             raise RuntimeError("persisted external connector registry must be a list")
@@ -320,6 +409,11 @@ class ExternalConnectorService:
                     display_name=record.display_name,
                     action="import_json_registry",
                 )
+        logger.info(
+            "[external-connectors] restore complete connectors=%d elapsed=%.3fs",
+            len(self._connectors),
+            time.monotonic() - started,
+        )
 
     def _persist_connectors(self) -> None:
         self._registry_path.parent.mkdir(parents=True, exist_ok=True)
@@ -898,7 +992,11 @@ class ExternalConnectorService:
     @staticmethod
     def _summarize_input(arguments: dict[str, Any]) -> dict[str, Any]:
         return {
-            key: ("[REDACTED]" if any(token in key.lower() for token in ("token", "secret", "password", "key")) else value)
+            key: (
+                "[REDACTED]"
+                if any(token in key.lower() for token in ("token", "secret", "password", "key", "uri", "connection_string"))
+                else value
+            )
             for key, value in arguments.items()
         }
 
@@ -927,3 +1025,21 @@ class ExternalConnectorService:
             source="external_connectors.service",
             trace_id=invocation.trace_id,
         )
+
+
+_SERVICE: ExternalConnectorService | None = None
+
+
+def resolve_service(candidate: Any = None) -> ExternalConnectorService:
+    global _SERVICE
+    if candidate is not None and callable(getattr(candidate, "list_connectors", None)):
+        _SERVICE = candidate
+        return candidate
+    return get_service()
+
+
+def get_service() -> ExternalConnectorService:
+    global _SERVICE
+    if _SERVICE is None:
+        _SERVICE = ExternalConnectorService()
+    return _SERVICE

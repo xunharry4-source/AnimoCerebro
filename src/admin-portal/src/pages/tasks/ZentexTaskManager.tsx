@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React from 'react';
 import { useTranslation } from 'react-i18next';
 import { useNavigate } from 'react-router-dom';
 import {
@@ -18,7 +18,9 @@ import {
   MenuItem,
 } from '@mui/material';
 import {
+  AccountTree as WorkflowIcon,
   Assignment as TaskIcon,
+  Article as LogsIcon,
   Refresh as RefreshIcon,
 } from '@mui/icons-material';
 import { DataGrid, GridColDef } from '@mui/x-data-grid';
@@ -28,6 +30,10 @@ import useTaskManagement from './useTaskManagement';
 import StatusChip from './TaskStatusChip';
 import TaskTabPanel from './TaskTabPanel';
 import { ZentexTask } from './types';
+
+const TASK_SOURCE_FILTERS = ['nine_questions', 'nine_questions.q8', 'nine_questions.q9', 'reflection', 'learning', 'upgrade', 'manual'];
+const taskSourceModuleLabelKey = (source: string) => `tasks.sourceModules.${source.replace(/\./g, '_')}`;
+const EMPTY_VALUE = '-';
 
 const ZentexTaskManager: React.FC = () => {
   const { t } = useTranslation();
@@ -48,51 +54,17 @@ const ZentexTaskManager: React.FC = () => {
   } = useTaskManagement();
 
   const TABS = [
+    { label: t('tasks.allStatuses'), key: 'all' },
     { label: t('tasks.inProgress'), key: 'in_progress' },
     { label: t('tasks.statuses.todo'), key: 'todo' },
     { label: t('tasks.statuses.blocked'), key: 'blocked' },
     { label: t('tasks.waitingConfirmation'), key: 'waiting_confirmation' },
     { label: t('tasks.completed'), key: 'completed' },
+    { label: t('tasks.failed'), key: 'failed' },
+    { label: t('tasks.statuses.suspended'), key: 'suspended' },
+    { label: t('tasks.statuses.archived'), key: 'archived' },
     { label: t('tasks.cancelled'), key: 'cancelled' },
   ];
-
-  const formatToken = (namespace: string, value?: string | null) => {
-    if (!value) {
-      return t('common.unknown', { defaultValue: '未知' });
-    }
-    return t(`${namespace}.${value}`, { defaultValue: String(value).replace(/_/g, ' ') });
-  };
-
-  const formatSourceModule = (task: ZentexTask) => {
-    const source = task.metadata?.source_module || task.originator_id || 'core';
-    return t(`tasks.sourceModules.${source}`, { defaultValue: String(source).replace(/[_-]/g, ' ') });
-  };
-
-  const formatWorkflowStatus = (task: ZentexTask) => {
-    const workflowStatus = task.metadata?.workflow_status;
-    if (!workflowStatus) {
-      return t('tasks.none');
-    }
-    return t(`tasks.workflowStatuses.${workflowStatus}`, { defaultValue: String(workflowStatus).replace(/_/g, ' ') });
-  };
-
-  const formatTaskDescription = (task: ZentexTask) => {
-    return task.remarks || task.metadata?.description || task.metadata?.summary || task.metadata?.objective || t('tasks.noDescription');
-  };
-
-  const formatExecutor = (task: ZentexTask) => {
-    const assignment = task.execution_assignment;
-    if (assignment?.label) {
-      return assignment.label;
-    }
-    if (assignment?.status === 'pending_dispatch') {
-      return t('tasks.assignmentStatuses.pending_dispatch');
-    }
-    if (assignment?.status === 'dispatch_blocked') {
-      return t('tasks.assignmentStatuses.dispatch_blocked');
-    }
-    return task.target_id || task.dispatch_plugin_id || t('tasks.unassigned');
-  };
 
   const handleTabChange = (_event: React.SyntheticEvent, newValue: number) => {
     setTabValue(newValue);
@@ -102,108 +74,111 @@ const ZentexTaskManager: React.FC = () => {
     navigate(`/console/tasks/${task.task_id}`);
   };
 
+  const handleViewWorkflow = (task: ZentexTask) => {
+    navigate(`/console/tasks/${task.task_id}/workflow`);
+  };
+
+  const handleViewLogs = () => {
+    navigate('/console/module-logs/tasks');
+  };
+
+  const formatSourceValue = (source?: string | null) => {
+    if (!source) {
+      return EMPTY_VALUE;
+    }
+    return t(taskSourceModuleLabelKey(String(source)), { defaultValue: String(source).replace(/[_-]/g, ' ') });
+  };
+
+  const formatSourceModule = (task: ZentexTask) => {
+    const source = task.metadata?.source_module || task.metadata?.source || task.originator_id || 'core';
+    const parentSource = task.metadata?.parent_source_module;
+    const sourceLabel = formatSourceValue(String(source));
+    if (parentSource && parentSource !== source) {
+      return `${sourceLabel} / ${formatSourceValue(String(parentSource))}`;
+    }
+    return sourceLabel;
+  };
+
+  const formatTaskObjective = (task: ZentexTask) => {
+    const metadata = task.metadata || {};
+    const q9Blueprint = metadata.q9_action_blueprint || metadata.q9_action_plan || {};
+    const q8Task = metadata.q9_q8_task || {};
+    return (
+      metadata.objective ||
+      metadata.intent_objective ||
+      q9Blueprint.plan_objective ||
+      q8Task.intent_objective ||
+      metadata.summary ||
+      metadata.description ||
+      task.remarks ||
+      EMPTY_VALUE
+    );
+  };
+
+  const formatTriggerEvent = (task: ZentexTask) => {
+    const metadata = task.metadata || {};
+    return (
+      metadata.trigger_event ||
+      metadata.event ||
+      metadata.event_type ||
+      metadata.workflow_event_type ||
+      metadata.trigger ||
+      metadata.creation_reason ||
+      metadata.source_chain ||
+      EMPTY_VALUE
+    );
+  };
+
   const columns: GridColDef[] = [
-    { field: 'task_id', headerName: t('tasks.taskId'), width: 100 },
-    { field: 'title', headerName: t('tasks.title'), width: 250 },
+    { field: 'task_id', headerName: t('tasks.taskId'), width: 120 },
+    { field: 'title', headerName: t('tasks.title'), flex: 1, minWidth: 220 },
     {
-      field: 'description',
-      headerName: t('tasks.description'),
-      width: 320,
-      valueGetter: (_value, row: ZentexTask) => formatTaskDescription(row),
-    },
-    {
-      field: 'task_type',
-      headerName: t('tasks.type'),
-      width: 150,
-      valueGetter: (_value, row: ZentexTask) => formatToken('tasks.types', row.task_type),
-    },
-    {
-      field: 'task_scope',
-      headerName: t('tasks.taskScope'),
-      width: 120,
-      valueGetter: (_value, row: ZentexTask) => formatToken('tasks.scopes', row.task_scope || 'internal'),
+      field: 'objective',
+      headerName: t('tasks.metadataFields.objective'),
+      flex: 1.3,
+      minWidth: 280,
+      valueGetter: (_value, row: ZentexTask) => formatTaskObjective(row),
     },
     {
       field: 'source_module',
       headerName: t('tasks.sourceModule'),
-      width: 140,
+      width: 180,
       valueGetter: (_value, row: ZentexTask) => formatSourceModule(row),
     },
     {
-      field: 'workflow_status',
-      headerName: t('tasks.workflowStatus'),
-      width: 150,
-      valueGetter: (_value, row: ZentexTask) => formatWorkflowStatus(row),
+      field: 'trigger_event',
+      headerName: t('tasks.triggerEvent', { defaultValue: '任务触发事件' }),
+      flex: 1,
+      minWidth: 220,
+      valueGetter: (_value, row: ZentexTask) => formatTriggerEvent(row),
     },
     {
       field: 'status',
       headerName: t('tasks.status'),
-      width: 150,
+      width: 130,
       renderCell: (params) => <StatusChip status={params.value} />,
-    },
-    {
-      field: 'priority',
-      headerName: t('tasks.priority'),
-      width: 100,
-      valueGetter: (_value, row: ZentexTask) => formatToken('tasks.priorities', row.priority || 'medium'),
-    },
-    {
-      field: 'progress',
-      headerName: t('tasks.progress'),
-      width: 150,
-      renderCell: (params) => (
-        <Box sx={{ width: '100%', display: 'flex', alignItems: 'center', gap: 1 }}>
-          <Box
-            sx={{
-              flex: 1,
-              height: 8,
-              borderRadius: 4,
-              bgcolor: 'action.hover',
-              position: 'relative',
-            }}
-          >
-            <Box
-              sx={{
-                position: 'absolute',
-                left: 0,
-                top: 0,
-                height: '100%',
-                width: `${params.value * 100}%`,
-                borderRadius: 4,
-                bgcolor: 'primary.main',
-              }}
-            />
-          </Box>
-          <Typography variant="caption" color="text.secondary">
-            {Math.round(params.value * 100)}%
-          </Typography>
-        </Box>
-      ),
-    },
-    { field: 'originator_id', headerName: t('tasks.originator'), width: 130 },
-    {
-      field: 'executor',
-      headerName: t('tasks.executor'),
-      width: 220,
-      valueGetter: (_value, row: ZentexTask) => formatExecutor(row),
     },
     {
       field: 'actions',
       headerName: t('tasks.actions'),
-      width: 120,
+      width: 220,
       sortable: false,
       renderCell: (params) => (
-        <Button
-          size="small"
-          variant="outlined"
-          onClick={() => handleViewDetail(params.row)}
-          startIcon={<TaskIcon />}
-        >
-          {t('tasks.viewDetails')}
-        </Button>
+        <Stack direction="row" spacing={1} alignItems="center">
+          <Button size="small" variant="outlined" onClick={() => handleViewDetail(params.row)}>
+            {t('tasks.view', { defaultValue: '查看' })}
+          </Button>
+          <Button
+            size="small"
+            variant="outlined"
+            startIcon={<WorkflowIcon />}
+            onClick={() => handleViewWorkflow(params.row)}
+          >
+            {t('tasks.viewWorkflow')}
+          </Button>
+        </Stack>
       ),
     },
-    { field: 'created_at', headerName: t('tasks.createdAt'), width: 180 },
   ];
 
   return (
@@ -221,6 +196,13 @@ const ZentexTaskManager: React.FC = () => {
             </Typography>
           </Box>
           <Stack direction="row" spacing={1}>
+            <Button
+              startIcon={<LogsIcon />}
+              onClick={handleViewLogs}
+              variant="outlined"
+            >
+              {t('tasks.logs.viewModuleLogs')}
+            </Button>
             <Button 
               startIcon={<RefreshIcon />} 
               onClick={fetchTasks} 
@@ -232,11 +214,6 @@ const ZentexTaskManager: React.FC = () => {
           </Stack>
         </Stack>
 
-        {/* Info Alert */}
-        <Alert severity="info" sx={{ bgcolor: 'info.50', border: '1px solid', borderColor: 'info.200' }}>
-          {t('tasks.tabInfo')}
-        </Alert>
-
         <FormControl sx={{ width: { xs: '100%', sm: 260 } }}>
           <InputLabel id="task-source-module-filter-label">{t('tasks.sourceModuleFilter')}</InputLabel>
           <Select
@@ -247,8 +224,11 @@ const ZentexTaskManager: React.FC = () => {
             onChange={(event) => setSourceModuleFilter(String(event.target.value))}
           >
             <MenuItem value="all">{t('tasks.allSourceModules')}</MenuItem>
-            <MenuItem value="reflection">{t('tasks.sourceModules.reflection')}</MenuItem>
-            <MenuItem value="upgrade">{t('tasks.sourceModules.upgrade')}</MenuItem>
+            {TASK_SOURCE_FILTERS.map((source) => (
+              <MenuItem key={source} value={source}>
+                {t(taskSourceModuleLabelKey(source))}
+              </MenuItem>
+            ))}
           </Select>
         </FormControl>
 

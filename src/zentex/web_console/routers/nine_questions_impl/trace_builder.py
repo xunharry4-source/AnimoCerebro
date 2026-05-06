@@ -137,49 +137,87 @@ def _resolve_transcript_stores(request: Request) -> list[Any]:
 
 
 def _extract_llm_trace_payload(entries: list[Any]) -> dict[str, Optional[Any]]:
-    invoked_payload: dict[str, Any] = {}
-    completed_payload: dict[str, Any] = {}
-    failed_payload: dict[str, Any] = {}
+    grouped_payloads: list[dict[str, dict[str, Any]]] = []
+    group_index: dict[str, dict[str, dict[str, Any]]] = {}
+
+    def _group_key(payload: dict[str, Any], fallback: str) -> str:
+        return str(payload.get("request_id") or payload.get("decision_id") or fallback)
+
+    def _get_group(payload: dict[str, Any], fallback: str) -> dict[str, dict[str, Any]]:
+        key = _group_key(payload, fallback)
+        group = group_index.get(key)
+        if group is None:
+            group = {}
+            group_index[key] = group
+            grouped_payloads.append(group)
+        return group
 
     for entry in entries:
         entry_type = _entry_type_value(entry)
         payload = _entry_payload(entry)
+        group = _get_group(payload, f"entry-{len(grouped_payloads)}")
         if entry_type == "model_provider_invoked":
-            invoked_payload = payload
+            group["invoked"] = payload
         elif entry_type == "model_provider_completed":
-            completed_payload = payload
+            group["completed"] = payload
         elif entry_type == "model_provider_failed":
-            failed_payload = payload
+            group["failed"] = payload
 
-    if not invoked_payload and not completed_payload and not failed_payload:
+    if not grouped_payloads:
         return None
 
-    caller_context = invoked_payload.get("caller_context")
-    caller_context = caller_context if isinstance(caller_context, dict) else {}
-    token_usage = completed_payload.get("token_usage")
-    token_usage = token_usage if isinstance(token_usage, dict) else {}
+    def _build_payload(group: dict[str, dict[str, Any]]) -> dict[str, Any]:
+        invoked_payload = group.get("invoked") or {}
+        completed_payload = group.get("completed") or {}
+        failed_payload = group.get("failed") or {}
+        caller_context = invoked_payload.get("caller_context")
+        caller_context = caller_context if isinstance(caller_context, dict) else {}
+        token_usage = completed_payload.get("token_usage")
+        token_usage = token_usage if isinstance(token_usage, dict) else {}
 
-    return {
-        "request_id": invoked_payload.get("request_id"),
-        "decision_id": invoked_payload.get("decision_id"),
-        "provider_name": invoked_payload.get("provider_name") or invoked_payload.get("provider_plugin_id"),
-        "model": completed_payload.get("model") or failed_payload.get("model"),
-        "system_prompt": invoked_payload.get("system_prompt"),
-        "prompt": invoked_payload.get("prompt"),
-        "source_module": caller_context.get("source_module"),
-        "invocation_phase": caller_context.get("invocation_phase"),
-        "question_driver_refs": caller_context.get("question_driver_refs") or [],
-        "context_data": invoked_payload.get("context") if isinstance(invoked_payload.get("context"), dict) else {},
-        "raw_response": completed_payload.get("raw_response") if isinstance(completed_payload.get("raw_response"), dict) else None,
-        "token_usage": {
-            "input_tokens": int(token_usage.get("input_tokens") or 0),
-            "output_tokens": int(token_usage.get("output_tokens") or 0),
-            "total_tokens": int(token_usage.get("total_tokens") or 0),
-        },
-        "elapsed_ms": completed_payload.get("elapsed_ms") or failed_payload.get("elapsed_ms"),
-        "error_type": failed_payload.get("error_type"),
-        "error_message": failed_payload.get("error_message") or failed_payload.get("error"),
+        return {
+            "request_id": invoked_payload.get("request_id"),
+            "decision_id": invoked_payload.get("decision_id"),
+            "provider_name": invoked_payload.get("provider_name") or invoked_payload.get("provider_plugin_id"),
+            "model": completed_payload.get("model") or failed_payload.get("model"),
+            "system_prompt": invoked_payload.get("system_prompt"),
+            "prompt": invoked_payload.get("prompt"),
+            "source_module": caller_context.get("source_module"),
+            "invocation_phase": caller_context.get("invocation_phase"),
+            "question_driver_refs": caller_context.get("question_driver_refs") or [],
+            "context_data": invoked_payload.get("context") if isinstance(invoked_payload.get("context"), dict) else {},
+            "raw_response": completed_payload.get("raw_response") if isinstance(completed_payload.get("raw_response"), dict) else None,
+            "token_usage": {
+                "input_tokens": int(token_usage.get("input_tokens") or 0),
+                "output_tokens": int(token_usage.get("output_tokens") or 0),
+                "total_tokens": int(token_usage.get("total_tokens") or 0),
+            },
+            "elapsed_ms": completed_payload.get("elapsed_ms") or failed_payload.get("elapsed_ms"),
+            "error_type": failed_payload.get("error_type"),
+            "error_message": failed_payload.get("error_message") or failed_payload.get("error"),
+        }
+
+    invocations = [
+        _build_payload(group)
+        for group in grouped_payloads
+        if group.get("invoked") or group.get("completed") or group.get("failed")
+    ]
+    material_invocations = [
+        item for item in invocations
+        if any(item.get(key) not in (None, "", [], {}) for key in ("provider_name", "model", "prompt", "raw_response", "error_type"))
+    ]
+    if not material_invocations:
+        return None
+
+    primary = dict(material_invocations[-1])
+    primary["token_usage"] = {
+        "input_tokens": sum(int((item.get("token_usage") or {}).get("input_tokens") or 0) for item in material_invocations),
+        "output_tokens": sum(int((item.get("token_usage") or {}).get("output_tokens") or 0) for item in material_invocations),
+        "total_tokens": sum(int((item.get("token_usage") or {}).get("total_tokens") or 0) for item in material_invocations),
     }
+    primary["elapsed_ms"] = sum(int(item.get("elapsed_ms") or 0) for item in material_invocations)
+    primary["invocations"] = material_invocations
+    return primary
 
 
 async def build_trace_detail(

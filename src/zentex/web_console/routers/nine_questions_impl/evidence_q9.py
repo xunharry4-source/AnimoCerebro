@@ -178,6 +178,20 @@ def _extract_q9_inference_result(result_payload: object) -> Optional[Q9ActionPos
     if not isinstance(result_payload, dict):
         return None
     aggregate_raw = result_payload.get("q9_action_posture_profile") or {}
+    action_plan = (
+        result_payload.get("action_plan")
+        or result_payload.get("q9_action_plan")
+        or (aggregate_raw.get("action_plan") if isinstance(aggregate_raw, dict) else None)
+        or {}
+    )
+    if (
+        not action_plan
+        and isinstance(aggregate_raw, dict)
+        and isinstance(aggregate_raw.get("current_action_plan"), list)
+    ):
+        action_plan = aggregate_raw
+    if not isinstance(action_plan, dict):
+        action_plan = {}
     # Q9 plugin 写入的是三个嵌套对象
     eval_prof = (
         result_payload.get("evaluation_profile")
@@ -204,8 +218,8 @@ def _extract_q9_inference_result(result_payload: object) -> Optional[Q9ActionPos
     if not isinstance(esc_prof, dict):
         esc_prof = {}
 
-    # 若三个 profile 都为空，返回 None
-    if not eval_prof and not evol_prof and not esc_prof:
+    # 若 ActionPlan 与三个兼容 profile 都为空，返回 None
+    if not action_plan and not eval_prof and not evol_prof and not esc_prof:
         return None
 
     # 将嵌套结构映射到 Q9ActionPostureInferenceView 的扁平字段
@@ -223,10 +237,30 @@ def _extract_q9_inference_result(result_payload: object) -> Optional[Q9ActionPos
     allowed_dirs = evol_prof.get("allowed_directions") or []
     evolution_direction = "; ".join(_coerce_string_list(allowed_dirs)) if allowed_dirs else ""
 
-    if not any((evaluation_style, risk_tolerance, confirmation_strategy, evolution_direction)):
+    current_action_plan = _coerce_string_list(action_plan.get("current_action_plan"))
+    required_resources = _coerce_string_list(action_plan.get("required_resources"))
+    alternative_candidates = _coerce_string_list(action_plan.get("alternative_candidates"))
+    question_driver_refs = _coerce_string_list(action_plan.get("question_driver_refs"))
+
+    if not any(
+        (
+            current_action_plan,
+            evaluation_style,
+            risk_tolerance,
+            confirmation_strategy,
+            evolution_direction,
+        )
+    ):
         return None
 
     return Q9ActionPostureInferenceView(
+        current_action_plan=current_action_plan,
+        method_selection=str(action_plan.get("method_selection") or ""),
+        required_resources=required_resources,
+        risk_assessment=str(action_plan.get("risk_assessment") or ""),
+        expected_outcome=str(action_plan.get("expected_outcome") or ""),
+        alternative_candidates=alternative_candidates,
+        question_driver_refs=question_driver_refs,
         evaluation_style=evaluation_style,
         risk_tolerance=risk_tolerance,
         action_rhythm=action_rhythm,

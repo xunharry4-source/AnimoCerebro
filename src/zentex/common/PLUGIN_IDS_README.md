@@ -22,8 +22,8 @@ src/zentex/common/plugin_ids.py
 ```python
 from zentex.common.plugin_ids import (
     NINE_QUESTION_Q1,  # "nine-question-q1-where-am-i"
-    NINE_QUESTION_Q2,  # "nine-question-q2-who-am-i"
-    NINE_QUESTION_Q3,  # "nine-question-q3-what-do-i-have"
+    NINE_QUESTION_Q2,  # "nine-question-q2-asset-inventory"
+    NINE_QUESTION_Q3,  # "nine-question-q3-who-am-i"
     NINE_QUESTION_Q4,  # "nine-question-q4-what-can-i-do"
     NINE_QUESTION_Q5,  # "nine-question-q5-what-am-i-allowed-to-do"
     NINE_QUESTION_Q6,  # "nine-question-q6-what-should-i-not-do"
@@ -224,7 +224,7 @@ plugin_id = NINE_QUESTION_Q1
 运行测试验证常量是否正确：
 
 ```bash
-cd /Users/harry/Documents/git/AnimoCerebro-V2
+cd <repo-root>
 PYTHONPATH=src:$PYTHONPATH python tests/common/test_plugin_ids.py
 ```
 

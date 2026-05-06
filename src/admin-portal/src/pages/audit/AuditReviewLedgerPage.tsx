@@ -5,7 +5,7 @@ const FILE_GROUPS = [
     title: "上游更新复查重点",
     items: [
       "src/zentex/nine_questions/query.py",
-      "src/plugins/nine_questions/q2_who_am_i/q2_who_am_i_plugin.py",
+      "src/plugins/nine_questions/q2_asset_inventory/q2_asset_inventory_plugin.py",
       "src/plugins/nine_questions/q6_what_should_i_not_do/q6_what_should_i_not_do_plugin.py",
       "src/plugins/nine_questions/q8_what_should_i_do_now/q8_what_should_i_do_now_plugin.py",
       "src/plugins/nine_questions/q9_how_should_i_act/q9_how_should_i_act_plugin.py",

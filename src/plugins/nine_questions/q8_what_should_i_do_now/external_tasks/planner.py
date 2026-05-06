@@ -29,16 +29,54 @@ def _derive_executor_type(task: dict[str, Any]) -> str:
 def _externalize_task(task: dict[str, Any], *, queue_name: str, index: int, executor_type: str) -> dict[str, Any]:
     metadata = task.get("metadata") if isinstance(task.get("metadata"), dict) else {}
     target_id = _text(task.get("target_id") or metadata.get("target_id"))
+    capabilities = list(metadata.get("required_capabilities") or task.get("required_capabilities") or [])
+    if not isinstance(capabilities, list):
+        capabilities = [str(capabilities)]
+    if executor_type == "cli":
+        tool_name = _text(metadata.get("cli_tool_name") or metadata.get("tool_name") or target_id.removeprefix("cli:"))
+        capabilities.extend(["external.cli"] + ([f"cli.{tool_name}"] if tool_name else []))
+        metadata = {**metadata, "cli_tool_name": tool_name}
+    elif executor_type == "mcp":
+        parts = target_id.split(":", 2) if target_id.startswith("mcp:") else []
+        server_id = _text(metadata.get("mcp_server_id") or (parts[1] if len(parts) >= 2 else ""))
+        tool_name = _text(metadata.get("mcp_tool_name") or (parts[2] if len(parts) == 3 else ""))
+        capabilities.extend(["external.mcp"] + ([f"mcp.{server_id}.{tool_name}"] if server_id and tool_name else []))
+        metadata = {**metadata, "mcp_server_id": server_id, "mcp_tool_name": tool_name}
+    elif executor_type in {"external_connector", "connector"}:
+        connector_id = _text(
+            metadata.get("external_connector_id")
+            or metadata.get("connector_id")
+            or target_id.removeprefix("external_connector:")
+        )
+        capability = _text(metadata.get("external_connector_capability") or metadata.get("connector_capability") or metadata.get("capability"))
+        capabilities.extend(
+            ["external.external_connector"]
+            + ([f"external_connector.{connector_id}.{capability}"] if connector_id and capability else [])
+        )
+        metadata = {
+            **metadata,
+            "external_connector_id": connector_id,
+            "external_connector_capability": capability,
+        }
+        executor_type = "external_connector"
+    elif executor_type == "agent":
+        agent_id = _text(metadata.get("agent_id") or target_id.removeprefix("agent:"))
+        capabilities.extend(["external.agent"] + ([f"agent.{agent_id}"] if agent_id else []))
+        metadata = {**metadata, "agent_id": agent_id}
+    capabilities = list(dict.fromkeys(str(item).strip() for item in capabilities if str(item).strip()))
     normalized = dict(task)
     normalized["task_id"] = _text(task.get("task_id") or task.get("id") or f"external-{queue_name}-{index}")
     normalized["title"] = _text(task.get("title") or task.get("task") or normalized["task_id"])
     normalized["task_scope"] = "external"
     normalized["executor_type"] = executor_type
+    normalized["required_capabilities"] = capabilities
     normalized["metadata"] = {
         **metadata,
         "task_scope": "external",
         "executor_type": executor_type,
+        "external_executor_type": executor_type,
         "target_id": target_id,
+        "required_capabilities": capabilities,
         "source_chain": "external_q8",
     }
     if target_id:

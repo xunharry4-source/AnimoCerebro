@@ -9,7 +9,7 @@ from zentex.plugins.contracts import (
     PluginHealthStatus,
     PluginLifecycleStatus,
 )
-from zentex.tasks.service import task_plugin_extract_evidence
+from zentex.tasks import task_plugin_extract_evidence
 
 
 class TaskEvidenceExtractorPlugin(FunctionalPluginSpec):

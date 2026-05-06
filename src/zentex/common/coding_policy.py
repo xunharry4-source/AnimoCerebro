@@ -1,5 +1,5 @@
 """
-Zentex Coding Policy — enforced conventions for error handling.
+Zentex Coding Policy — enforced conventions for engineering changes.
 
 This module documents mandatory rules. Import it nowhere; it exists as the
 canonical reference point for inline ``# POLICY`` comments throughout the
@@ -198,7 +198,7 @@ POLICY[service-only-execution] — ONLY call service.py for execution
 
 ✅ REQUIRED — use the public service entry point:
 
-    from zentex.tasks.service import TaskManagementService
+    from zentex.tasks import TaskManagementService
     service = TaskManagementService(...)
     service.run_worker_cycle()
 
@@ -236,7 +236,7 @@ POLICY[pure-plugin-group-containers] — Plugin group directories must NOT conta
     src/plugins/nine_questions/
       ├── _partial_failure.py  <-- ❌ VIOLATION
       ├── q1_where_am_i/
-      └── q2_who_am_i/
+      └── q2_asset_inventory/
 
 ✅ REQUIRED — place all shared helpers in the official shared location:
 
@@ -246,4 +246,37 @@ RATIONALE:
     Plugin group directories (like nine_questions) are pure containers. 
     Adding logic there breaks architectural rules, bypasses oversight, 
     and leads to hidden "shadow utilities" that are hard to audit and maintain.
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+POLICY[single-source-only] — EXACTLY one authoritative source is allowed
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+For any business fact, runtime state, configuration, prompt contract, schema,
+or policy decision, there MUST be exactly one authoritative source.
+
+Secondary sources are forbidden. This includes duplicate databases, shadow
+files, compatibility blobs, fallback snapshots, copied constants, alternate
+prompt/schema definitions, and sync-by-convention mirrors.
+
+❌ FORBIDDEN — keeping multiple sources and reconciling them later:
+
+    sqlite_status = plugin_storage.get_status(plugin_id)
+    json_status = legacy_manifest["lifecycle_status"]
+
+    if sqlite_status != json_status:
+        reconcile_status(sqlite_status, json_status)
+
+✅ REQUIRED — read and write the canonical source only:
+
+    status = plugin_storage.get_status(plugin_id)
+
+Rules:
+  1. Do not add a second source for a field, decision, schema, prompt contract,
+     runtime state, or policy result that already has a canonical source.
+  2. When multiple sources already exist, delete the non-authoritative sources
+     or migrate their data into the canonical source before claiming completion.
+  3. Do not preserve duplicate sources by adding synchronization,
+     reconciliation, fallback selection, or "compatibility" merge logic.
+  4. Tests must verify the canonical source path. A test that writes to or
+     asserts against a secondary source does not prove the real system works.
 """

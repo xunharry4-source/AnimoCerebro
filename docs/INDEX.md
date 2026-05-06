@@ -1,8 +1,33 @@
-# AnimoCerebro v2.0 Documentation Index
+# AnimoCerebro Documentation Index
 
-**Version**: 2.0.0  
+**Version**: 2.1.0-alpha  
 **Last Updated**: April 29, 2026  
-**Status**: ✅ Current Release
+**Status**: 🔄 Active Development - Nine Questions Refactoring (30% Complete)
+
+---
+
+## 🚨 Latest Update: Nine Questions Framework Refactoring
+
+**Major refactoring of the core Nine Questions cognitive engine is now 30% complete!**
+
+📊 **[View Detailed Progress Report](NINE_QUESTIONS_REFACTORING_PROGRESS.md)**
+
+### What's Completed (30%)
+- ✅ **Q1 Evidence Collection** - Enhanced data gathering and validation
+- ✅ **Q3 Runtime Inventory** - Separated internal/external task planners
+- ✅ **Q8 Task Planning** - Major refactoring with dual planning system
+- ✅ **Q9 Action Execution** - Improved action planning algorithms
+
+### What's In Progress
+- 🔄 **Q2 Interpretation** - Semantic analysis improvements
+- 🔄 **Q4 Capabilities** - Dynamic capability registration
+- 🔄 **Q5-Q7 Risk & Constraints** - Assessment refinements
+
+### New Features in This Update
+- 🆕 External Connectors System for third-party integrations
+- 🆕 Enhanced Agent protocol with bilingual documentation
+- 🆕 Comprehensive test coverage (50+ new test files)
+- 🔒 Security improvements for sensitive data handling
 
 ---
 
@@ -12,369 +37,240 @@
 1. **[README.md](../README.md)** - Project overview and getting started
 2. **[STARTUP_AND_TEST.md](operability/STARTUP_AND_TEST.md)** - One-click startup guide
 3. **[RELEASE_NOTES_v2.0.md](RELEASE_NOTES_v2.0.md)** - What's new in v2.0
+4. **[NINE_QUESTIONS_REFACTORING_PROGRESS.md](NINE_QUESTIONS_REFACTORING_PROGRESS.md)** - Latest refactoring progress
 
 ### For Developers
 1. **[FUNCTION_MODULES.md](operability/FUNCTION_MODULES.md)** - Module architecture overview
 2. **[PLUGIN_GUIDES.md](operability/PLUGIN_GUIDES.md)** - Plugin development guide
 3. **[RUNTIME_AND_TESTS.md](operability/RUNTIME_AND_TESTS.md)** - Runtime architecture and testing
 
-### Documentation Organization
-- **[README_STRUCTURE.md](README_STRUCTURE.md)** - Complete docs directory structure and organization
-
 ---
 
 ## 🎯 Core Documentation
 
 ### Architecture & Design
+- **[Nine Questions Refactoring Progress](NINE_QUESTIONS_REFACTORING_PROGRESS.md)** - ⭐ NEW: Detailed refactoring status
 - **[MAJOR_VERSION_UPDATE.md](MAJOR_VERSION_UPDATE.md)** - v2.0 architectural evolution (English)
 - **[MAJOR_VERSION_UPDATE_ZH.md](MAJOR_VERSION_UPDATE_ZH.md)** - v2.0 架构演进（中文）
-- **[RELEASE_NOTES_v2.0.md](RELEASE_NOTES_v2.0.md)** - Comprehensive release notes with all new features
-- **[LATEST_DIRECTORY_MAP.md](operability/LATEST_DIRECTORY_MAP.md)** - Current project structure (English)
-- **[LATEST_DIRECTORY_MAP_ZH.md](operability/LATEST_DIRECTORY_MAP_ZH.md)** - 项目目录结构（中文）
+- **[RELEASE_NOTES_v2.0.md](RELEASE_NOTES_v2.0.md)** - Comprehensive release notes
 
-### Philosophy & Principles
-- **[AGENTS_CORE_PHILOSOPHY_UPDATE.md](AGENTS_CORE_PHILOSOPHY_UPDATE.md)** - Core philosophy: Autonomy, Soul, Learning, Reflection
-- **[THINK_LOOP_DEEP_DIVE.md](operability/THINK_LOOP_DEEP_DIVE.md)** - Nine-question cognitive loop deep dive
-
-### Integration & Protocols
-- **[AGENT_AND_MCP.md](operability/AGENT_AND_MCP.md)** - Agent integration and MCP protocol
-- **[zmsp_protocol_design.md](zmsp_protocol_design.md)** - ZMSP protocol design
-
----
-
-## 🚀 New v2.0 Modules Documentation
-
-### 1. Autonomous Control System (G31A)
-**Location**: `src/zentex/autonomy/`
-
-**Key Features**:
-- Stimulus aggregation and task state machine
-- Priority-based task ranking with risk assessment
-- Nine-question cognitive mapping (Q1, Q3, Q4, Q8, Q9)
-- Full audit trail for autonomous decisions
-
-**Documentation**:
-- See [RELEASE_NOTES_v2.0.md](RELEASE_NOTES_v2.0.md#1-autonomous-control-system-g31a)
-- Code: `src/zentex/autonomy/autonomous_loop.py`
-
----
-
-### 2. Multi-Zentex Collaboration Protocol (G36)
-**Location**: `src/zentex/collaboration/`
-
-**Key Features**:
-- Cross-instance delegated command execution
-- Secure communication with heartbeat monitoring
-- Experience exchange for collective learning
-- 25+ exception types with recovery strategies
-
-**Documentation**:
-- See [RELEASE_NOTES_v2.0.md](RELEASE_NOTES_v2.0.md#2-multi-zentex-collaboration-protocol-g36)
-- Code: `src/zentex/collaboration/organization_protocol.py` (46.3KB)
-
----
-
-### 3. Soul Migration & Continuity (G34)
-**Location**: `src/zentex/continuity/`
-
-**Key Features**:
-- AES-GCM-256 encrypted soul snapshots
-- PBKDF2-HMAC-SHA256 key derivation (200K iterations)
-- Continuity verification with identity kernel binding
-- Tamper-proof backup packages
-
-**Documentation**:
-- See [RELEASE_NOTES_v2.0.md](RELEASE_NOTES_v2.0.md#3-soul-migration--continuity-g34)
-- Code: `src/zentex/continuity/soul_migration.py`
-
----
-
-### 4. Governance & Observability
-**Location**: `src/zentex/governance/`
-
-**Key Features**:
-- Unified error system with cross-module codes
-- Trace observability with replay capabilities
-- Architecture redline matrix enforcement
-- Multi-audience error messages
-
-**Documentation**:
-- See [RELEASE_NOTES_v2.0.md](RELEASE_NOTES_v2.0.md#4-governance--observability)
-- Code: `src/zentex/governance/unified_errors.py`
-
----
-
-### 5. Kernel Runtime (Domain-Driven Architecture)
-**Location**: `src/zentex/kernel/`
-
-**Sub-domains**:
-- **Cognition Flow** (`kernel/cognition_flow/`) - Cognitive processing pipeline
-- **Flow Domain** (`kernel/flow_domain/`) - Think loop and turn protocol
-- **Session Domain** (`kernel/session_domain/`) - Session lifecycle management
-- **State Domain** (`kernel/state_domain/`) - Self model, working memory, meta-cognition
-
-**Core Services**:
-- Identity Kernel (G6) - `identity_kernel.py` (18.6KB)
-- Value Engine - `value_engine.py` (18.7KB)
-- Self-Refactor - `self_refactor.py` (20.2KB)
-- Self-Coding - `self_coding.py` (15.2KB)
-- External Brain - `external_brain.py` (12.3KB)
-- And 30+ more runtime components
-
-**Documentation**:
-- See [RELEASE_NOTES_v2.0.md](RELEASE_NOTES_v2.0.md#5-kernel-runtime-refactoring)
-- Main service: `src/zentex/kernel/service.py` (111.0KB)
-
----
-
-### 6. Foundation Framework
-**Location**: `src/zentex/foundation/`
-
-**Components**:
-- **Contracts** - Typed interface definitions
-- **Identity** - Identity services and contracts
-- **Meta** - Capability registry and feature families
-- **Specs** - Technical specifications for plugins, execution, etc.
-
-**Documentation**:
-- See [RELEASE_NOTES_v2.0.md](RELEASE_NOTES_v2.0.md#6-foundation-framework)
-- README: `src/zentex/foundation/README.md`
-
----
-
-### 7. Audit & Tracing
-**Location**: `src/zentex/audit/`
-
-**Features**:
-- Immutable brain transcript chain
-- Cross-session trace storage
-- Integrity verification
-- Replay support
-
-**Documentation**:
-- See [RELEASE_NOTES_v2.0.md](RELEASE_NOTES_v2.0.md#7-audit--tracing)
-- Code: `src/zentex/audit/trace_store.py` (32.0KB)
-
----
-
-### 8. Background Task Management
-**Location**: `src/zentex/background_tasks/`
-
-**Features**:
-- Priority-based task queue
-- Real-time monitoring
-- Failure recovery
-
-**Documentation**:
-- See [RELEASE_NOTES_v2.0.md](RELEASE_NOTES_v2.0.md#8-background-task-management)
+### Core Philosophy
+- **[AGENTS_CORE_PHILOSOPHY_UPDATE.md](AGENTS_CORE_PHILOSOPHY_UPDATE.md)** - Four pillars: Autonomy, Soul, Learning, Reflection
 
 ---
 
 ## 📖 Operational Guides
 
-### Startup & Testing
-- **[STARTUP_AND_TEST.md](operability/STARTUP_AND_TEST.md)** - Quick start commands (English)
-- **[STARTUP_AND_TEST_ZH.md](operability/STARTUP_AND_TEST_ZH.md)** - 快速启动指南（中文）
+### Getting Started
+- **[STARTUP_AND_TEST.md](operability/STARTUP_AND_TEST.md)** - Startup guide and testing procedures
+- **[FUNCTION_MODULES.md](operability/FUNCTION_MODULES.md)** - Functional modules overview
+- **[RUNTIME_AND_TESTS.md](operability/RUNTIME_AND_TESTS.md)** - Runtime environment and testing
+- **[LATEST_DIRECTORY_MAP.md](operability/LATEST_DIRECTORY_MAP.md)** - Current project structure
 
-### Functional Modules
-- **[FUNCTION_MODULES.md](operability/FUNCTION_MODULES.md)** - Module responsibilities and architecture (Bilingual)
-- **[RUNTIME_AND_TESTS.md](operability/RUNTIME_AND_TESTS.md)** - Runtime implementation details (English)
-- **[RUNTIME_AND_TESTS_ZH.md](operability/RUNTIME_AND_TESTS_ZH.md)** - 运行时实现详情（中文）
+### Integration & Protocols
+- **[AGENT_AND_MCP.md](operability/AGENT_AND_MCP.md)** - Agent and MCP integration guide
+- **[PLUGIN_GUIDES.md](operability/PLUGIN_GUIDES.md)** - Plugin development guides
+- **[THINK_LOOP_DEEP_DIVE.md](operability/THINK_LOOP_DEEP_DIVE.md)** - Deep dive into thinking loops
 
-### Plugin Development
-- **[PLUGIN_GUIDES.md](operability/PLUGIN_GUIDES.md)** - Plugin development guides (Bilingual)
-- **Plugin Features**: See `docs/operability/plugin_features/` directory
+### Plugin Features (32 Documents)
+Located in `docs/operability/plugin_features/`:
+- Cognitive conflict detection
+- Decision summary mechanisms
+- Evidence ranking systems
+- Execution browser integration
+- Memory consolidation
+- Model providers (Gemini, OpenAI-compatible, Ollama)
+- Risk assessment frameworks
+- Sensory processing
+- Simulation engines
+- Subjective preference weights
 
-### Agent Integration
-- **[AGENT_AND_MCP.md](operability/AGENT_AND_MCP.md)** - Agent and MCP integration guide (Bilingual)
+---
 
-### Deep Dives
-- **[THINK_LOOP_DEEP_DIVE.md](operability/THINK_LOOP_DEEP_DIVE.md)** - Nine-question loop deep dive (Bilingual)
+## 🧪 Testing & Quality Assurance
+
+### Test Documentation
+- Test coverage reports in `tests/ci_acceptance/`
+- Clinical tests for Q1-Q9 questions
+- Integration tests for external connectors
+- Performance benchmarks
+
+### Test Categories
+- **Nine Questions Tests**: Q1-Q9 clinical validation
+- **External Connectors**: MongoDB, Gemini CLI, GitHub/Notion MCP
+- **Agent System**: Auth, adapters, lifecycle management
+- **Task Management**: Execution, persistence, scheduling
+- **Audit & Observability**: Trace replay, audit trails
 
 ---
 
 ## 📊 Progress Reports
 
-### Translation Progress
-- **[TRANSLATION_STATUS_REPORT.md](TRANSLATION_STATUS_REPORT.md)** - Overall translation status
-- **[DOCS_TRANSLATION_PROGRESS.md](DOCS_TRANSLATION_PROGRESS.md)** - Detailed translation progress
-- **[TRANSLATION_PROGRESS_UPDATE_20260427.md](TRANSLATION_PROGRESS_UPDATE_20260427.md)** - Latest update
+### Translation Status
+- **[TRANSLATION_STATUS_REPORT.md](TRANSLATION_STATUS_REPORT.md)** - Overall translation progress
+- **[DOCS_TRANSLATION_PROGRESS.md](DOCS_TRANSLATION_PROGRESS.md)** - Documentation translation details
+- **[BILINGUAL_UPDATE_REPORT.md](BILINGUAL_UPDATE_REPORT.md)** - Bilingual update summary
 
-### Completion Reports
-- **[COMPLETION_REPORT_20260427.md](COMPLETION_REPORT_20260427.md)** - Documentation completion report
-- **[FINAL_SUMMARY_20260427.md](FINAL_SUMMARY_20260427.md)** - Final summary of translation work
-- **[FINAL_PROGRESS_SUMMARY_20260427.md](FINAL_PROGRESS_SUMMARY_20260427.md)** - Mid-term progress summary
-
-### Specific Module Reports
-- **[FUNCTION_MODULES_BILINGUAL_COMPLETE.md](FUNCTION_MODULES_BILINGUAL_COMPLETE.md)** - Function modules bilingual completion
-- **[THINK_LOOP_BILINGUAL_COMPLETE.md](THINK_LOOP_BILINGUAL_COMPLETE.md)** - Think loop bilingual completion
-- **[PLUGIN_GUIDES_BILINGUAL_COMPLETE.md](PLUGIN_GUIDES_BILINGUAL_COMPLETE.md)** - Plugin guides bilingual completion
-- **[README_EN_CREATION_COMPLETE.md](README_EN_CREATION_COMPLETE.md)** - English README creation report
-
-### Historical Reports
-- **[BILINGUAL_UPDATE_REPORT.md](BILINGUAL_UPDATE_REPORT.md)** - Bilingual update report
-- **[DOCUMENTATION_PROGRESS_REPORT.md](DOCUMENTATION_PROGRESS_REPORT.md)** - Documentation progress report
-- **[DOCUMENTATION_SUMMARY.md](DOCUMENTATION_SUMMARY.md)** - Documentation summary
-- **[TODAY_SUMMARY_20260427.md](TODAY_SUMMARY_20260427.md)** - Daily summary
+### Development Progress
+- **[COMPLETION_REPORT_20260427.md](COMPLETION_REPORT_20260427.md)** - Completion status report
+- **[FINAL_PROGRESS_SUMMARY_20260427.md](FINAL_PROGRESS_SUMMARY_20260427.md)** - Final progress summary
+- **[DOCUMENTATION_PROGRESS_REPORT.md](DOCUMENTATION_PROGRESS_REPORT.md)** - Documentation progress
 
 ---
 
-## 🛠️ Development Resources
+## 🛠️ Developer Resources
 
-### Templates & Standards
-- **[DOCUMENTATION_TEMPLATES.md](DOCUMENTATION_TEMPLATES.md)** - Documentation templates and standards
-- **[DOCUMENTATION_TODO.md](DOCUMENTATION_TODO.md)** - Documentation TODO list
+### Configuration
+- Background execution settings (`config/background_execution.yml`)
+- Provider tools configuration (`config/provider_tools.yml`)
+- Storage configuration (`config/storage.toml`)
 
-### Philosophy Updates
-- **[AGENTS_CORE_PHILOSOPHY_UPDATE.md](AGENTS_CORE_PHILOSOPHY_UPDATE.md)** - Core philosophy updates
+### Scripts
+- Deployment scripts in `scripts/`
+- Validation tools including `scripts/validate_docs.py`
 
----
-
-## 🔍 Finding What You Need
-
-### By Role
-
-**For End Users**:
-- Start with [README.md](../README.md)
-- Check [STARTUP_AND_TEST.md](operability/STARTUP_AND_TEST.md) for quick start
-- Read [RELEASE_NOTES_v2.0.md](RELEASE_NOTES_v2.0.md) for new features
-
-**For Developers**:
-- Review [FUNCTION_MODULES.md](operability/FUNCTION_MODULES.md) for architecture
-- Follow [PLUGIN_GUIDES.md](operability/PLUGIN_GUIDES.md) for plugin development
-- Study [RUNTIME_AND_TESTS.md](operability/RUNTIME_AND_TESTS.md) for implementation details
-
-**For Integrators**:
-- Read [AGENT_AND_MCP.md](operability/AGENT_AND_MCP.md) for integration protocols
-- Check [zmsp_protocol_design.md](zmsp_protocol_design.md) for protocol details
-
-**For Architects**:
-- Study [MAJOR_VERSION_UPDATE.md](MAJOR_VERSION_UPDATE.md) for v2.0 architecture
-- Review [LATEST_DIRECTORY_MAP.md](operability/LATEST_DIRECTORY_MAP.md) for structure
-- Explore kernel domain documentation in `src/zentex/kernel/*/README.md`
-
-### By Topic
-
-**New v2.0 Features**:
-- [RELEASE_NOTES_v2.0.md](RELEASE_NOTES_v2.0.md) - Complete feature list
-- [MAJOR_VERSION_UPDATE.md](MAJOR_VERSION_UPDATE.md) - Architectural overview
-
-**Cognitive Loop**:
-- [THINK_LOOP_DEEP_DIVE.md](operability/THINK_LOOP_DEEP_DIVE.md)
-- Nine questions implementation: `src/zentex/nine_questions/`
-
-**Plugins**:
-- [PLUGIN_GUIDES.md](operability/PLUGIN_GUIDES.md)
-- Plugin features: `docs/operability/plugin_features/`
-
-**Security & Governance**:
-- Governance module: `src/zentex/governance/`
-- Safety module: `src/zentex/safety/`
-- Audit module: `src/zentex/audit/`
-
-**Collaboration**:
-- Collaboration protocol: `src/zentex/collaboration/`
-- Multi-agent coordination: `src/zentex/kernel/inter_agent.py`
+### Examples
+- Plugin examples in `plugins/examples/`
+  - Echo Connector (minimal example)
+  - MongoDB CRUD Connector (database operations)
 
 ---
 
-## 📝 Documentation Conventions
+## 🔍 Find Documentation By Topic
 
-### Language Policy
-- All core documents are bilingual (English + Chinese)
-- Small documents (< 20KB): Single file with both languages
-- Large documents (> 20KB): Separate files (_ZH.md for Chinese)
+### I want to...
 
-### File Naming
-- English: `DOCUMENT_NAME.md`
-- Chinese: `DOCUMENT_NAME_ZH.md` or included in same file
+**Understand the Architecture**
+→ Read [MAJOR_VERSION_UPDATE.md](MAJOR_VERSION_UPDATE.md) or [FUNCTION_MODULES.md](operability/FUNCTION_MODULES.md)
 
-### Directory Structure
+**Start Using the System**
+→ Follow [STARTUP_AND_TEST.md](operability/STARTUP_AND_TEST.md)
+
+**Develop Plugins**
+→ Check [PLUGIN_GUIDES.md](operability/PLUGIN_GUIDES.md) and [plugins/CONNECTOR_GUIDE.md](../plugins/CONNECTOR_GUIDE.md)
+
+**Integrate External Systems**
+→ See [AGENT_AND_MCP.md](operability/AGENT_AND_MCP.md) and [External Connectors Guide](../plugins/CONNECTOR_GUIDE.md)
+
+**Understand Nine Questions**
+→ Read [NINE_QUESTIONS_REFACTORING_PROGRESS.md](NINE_QUESTIONS_REFACTORING_PROGRESS.md) and [THINK_LOOP_DEEP_DIVE.md](operability/THINK_LOOP_DEEP_DIVE.md)
+
+**Run Tests**
+→ Follow [RUNTIME_AND_TESTS.md](operability/RUNTIME_AND_TESTS.md)
+
+**Contribute to Development**
+→ Review progress reports and check open issues on GitHub
+
+---
+
+## 📁 Directory Structure
+
 ```
 docs/
-├── *.md                    # Top-level documentation
-├── operability/            # Operational guides
-│   ├── *.md               # Bilingual operational docs
-│   └── plugin_features/   # Plugin-specific documentation
-└── logo.jpeg              # Project logo
+├── INDEX.md                          # This file - documentation index
+├── NINE_QUESTIONS_REFACTORING_PROGRESS.md  # ⭐ NEW: Refactoring progress
+├── RELEASE_NOTES_v2.0.md            # Release notes
+├── MAJOR_VERSION_UPDATE*.md         # Architecture docs (EN/CN)
+├── AGENTS_CORE_PHILOSOPHY_UPDATE.md # Core philosophy
+├── TRANSLATION_*.md                 # Translation progress reports
+├── *_PROGRESS_*.md                  # Development progress reports
+│
+└── operability/                      # Operational guides
+    ├── STARTUP_AND_TEST.md          # Getting started
+    ├── FUNCTION_MODULES.md          # Module overview
+    ├── RUNTIME_AND_TESTS.md         # Runtime & testing
+    ├── AGENT_AND_MCP.md             # Integration guide
+    ├── PLUGIN_GUIDES.md             # Plugin development
+    ├── THINK_LOOP_DEEP_DIVE.md      # Thinking loops
+    └── plugin_features/             # Feature-specific docs (32 files)
+        ├── cognitive_conflict_detection*.md
+        ├── decision_summary*.md
+        ├── evidence_ranking*.md
+        ├── execution_*.md
+        ├── memory_consolidation*.md
+        ├── model_provider_*.md
+        ├── risk_assessment*.md
+        ├── sensory_*.md
+        ├── simulation_*.md
+        └── weights_subjective_preferences*.md
 ```
 
 ---
 
-## 🔄 Keeping Documentation Updated
+## 🌐 Language Policy
 
-### When to Update Docs
-1. **New Features**: Add to RELEASE_NOTES and relevant module docs
-2. **API Changes**: Update FUNCTION_MODULES and integration guides
-3. **Architecture Changes**: Update MAJOR_VERSION_UPDATE and LATEST_DIRECTORY_MAP
-4. **Bug Fixes**: Document in release notes if significant
+This project maintains bilingual documentation:
 
-### Documentation Workflow
-1. Create/update technical documentation in code comments
-2. Extract to markdown docs in `docs/` directory
-3. Ensure bilingual coverage (English + Chinese)
-4. Update index and navigation links
-5. Commit with clear commit message
+### Large Documents (>20KB): Separate Files
+- English: `FILENAME.md`
+- Chinese: `FILENAME_ZH.md`
 
----
+### Smaller Documents (<20KB): Bilingual in Single File
+- Both languages in one file with clear section markers
 
-## 📞 Getting Help
-
-### Documentation Issues
-- Missing information? → Open an issue on GitHub
-- Incorrect information? → Submit a PR with corrections
-- Need clarification? → Ask in GitHub Discussions
-
-### Contributing to Docs
-1. Fork the repository
-2. Make your changes
-3. Ensure bilingual coverage
-4. Submit a pull request
-5. Follow documentation templates
+### Examples
+- ✅ Separate: `MAJOR_VERSION_UPDATE.md` / `MAJOR_VERSION_UPDATE_ZH.md`
+- ✅ Separate: `STARTUP_AND_TEST.md` / `STARTUP_AND_TEST_ZH.md`
+- ✅ Bilingual: Most plugin feature documents
 
 ---
 
 ## 📈 Documentation Statistics
 
-| Metric | Value |
-|--------|-------|
-| Total Documents | 24+ files |
-| Bilingual Coverage | 26% (9/34 core docs) |
-| High Priority Docs | 100% complete (5/5) |
-| Medium Priority Docs | 22% complete (4/18) |
-| Total Lines | ~5000+ lines |
-| Languages | English, Chinese |
+| Category | Count | Description |
+|----------|-------|-------------|
+| Core Docs | 15+ | Architecture, philosophy, releases |
+| Operational Guides | 6+ | How-to guides and tutorials |
+| Plugin Features | 32 | Feature-specific documentation |
+| Progress Reports | 10+ | Translation and development status |
+| Test Documentation | Embedded | Within test files and directories |
+| **Total** | **65+** | **Markdown documents** |
 
 ---
 
-## 🎯 Next Steps for Documentation
+## 🔗 Related Resources
 
-### Short-term (Q2 2026)
-- [ ] Complete medium priority documents (14 remaining)
-- [ ] Add detailed API documentation for all new v2.0 modules
-- [ ] Create visual diagrams for architecture
-- [ ] Add more code examples and tutorials
+### Code Documentation
+- Inline code comments throughout `src/zentex/`
+- Module README files in major subsystems
+- API documentation via docstrings
 
-### Medium-term (Q3 2026)
-- [ ] Translate low priority documents (11 remaining)
-- [ ] Create video tutorials
-- [ ] Build interactive documentation site
-- [ ] Add multi-language support beyond English/Chinese
-
-### Long-term (2026 H2)
-- [ ] Achieve 80-90% bilingual coverage
-- [ ] Complete plugin feature documentation
-- [ ] Create comprehensive user manual
-- [ ] Build searchable documentation portal
+### External Resources
+- [GitHub Repository](https://github.com/xunharry4-source/AnimoCerebro)
+- [Issues & Bug Reports](https://github.com/xunharry4-source/AnimoCerebro/issues)
+- [Discussions](https://github.com/xunharry4-source/AnimoCerebro/discussions)
 
 ---
 
-## 🙏 Acknowledgments
+## 📝 Contributing to Documentation
 
-This documentation represents extensive work by the AnimoCerebro team and community contributors. Special thanks to everyone who has contributed to making these docs comprehensive and accessible.
+When adding or updating documentation:
+
+1. **Follow Language Policy**: Use separate files for large docs, bilingual for small
+2. **Update INDEX.md**: Add links to new documents here
+3. **Maintain Consistency**: Use consistent formatting and terminology
+4. **Include Examples**: Provide code examples where applicable
+5. **Cross-Reference**: Link related documents
+6. **Keep Current**: Update when features change
+
+---
+
+## ⚠️ Important Notes
+
+### Authenticity Principle
+All documentation reflects real implementation and testing results. We adhere to strict honesty standards:
+- No fabricated test results
+- No false success claims
+- Clear indication of work-in-progress status
+- Transparent about limitations and known issues
+
+### Version Tracking
+- Documentation version matches software version
+- Change history maintained in commit logs
+- Breaking changes clearly marked with migration guides
 
 ---
 
 **Last Updated**: April 29, 2026  
-**Maintained by**: AnimoCerebro Documentation Team  
-**Next Review**: May 2026
+**Maintained by**: AnimoCerebro Development Team  
+**License**: GNU GPL v3

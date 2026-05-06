@@ -18,7 +18,6 @@ from fastapi import Request
 from zentex.web_console.contracts.nine_questions import NineQuestionReportItem
 from zentex.nine_questions.question_driver_framework import (
     ensure_mounted_plugins,
-    ensure_question_driver_trace,
 )
 from .q_state import (
     _get_nine_question_service,
@@ -32,6 +31,405 @@ from .q_handlers import QUESTION_HANDLERS
 logger = logging.getLogger(__name__)
 
 EXPECTED_QUESTION_IDS = tuple(f"q{i}" for i in range(1, 10))
+_REPORT_PAYLOAD_DROP_KEYS = {
+    "execution_context",
+    "execution_result",
+    "execution_diagnosis",
+    "history",
+    "histories",
+    "llm_trace_payload",
+    "module_runs",
+    "plugin_runs",
+    "recovery_plan",
+    "upstream_dependencies",
+    "versions",
+    "previous_versions",
+    "historical_versions",
+    "version_history",
+    "snapshot_history",
+    "snapshot_versions",
+    "question_history",
+    "question_versions",
+    "question_snapshot_history",
+    "question_snapshots_history",
+}
+_UPSTREAM_SNAPSHOT_REF_KEYS = {
+    "q1_q7_snapshot",
+    "q1_q8_snapshot",
+    "q8_q1_q7_snapshot",
+    "q9_q1_q8_snapshot",
+}
+
+
+def _compact_report_payload(value: Any) -> Any:
+    if isinstance(value, dict):
+        compacted: dict[str, Any] = {}
+        for key, item in value.items():
+            key_text = str(key)
+            if key_text in _REPORT_PAYLOAD_DROP_KEYS:
+                continue
+            if key_text in _UPSTREAM_SNAPSHOT_REF_KEYS:
+                compacted[key_text] = _compact_question_snapshot_refs(item)
+                continue
+            compacted[key_text] = _compact_report_payload(item)
+        return compacted
+    if isinstance(value, list):
+        return [_compact_report_payload(item) for item in value]
+    return value
+
+
+def _compact_question_snapshot_refs(value: Any) -> Any:
+    if not isinstance(value, dict):
+        return _compact_report_payload(value)
+    compacted: dict[str, Any] = {}
+    for key, item in value.items():
+        key_text = str(key)
+        if key_text.lower() not in EXPECTED_QUESTION_IDS:
+            compacted[key_text] = _compact_report_payload(item)
+            continue
+        if isinstance(item, dict):
+            compacted[key_text] = {
+                "question_id": key_text,
+                "summary": str(item.get("summary") or ""),
+                "trace_id": str(item.get("trace_id") or ""),
+                "tool_id": str(item.get("tool_id") or ""),
+            }
+        else:
+            compacted[key_text] = {"question_id": key_text, "summary": str(item or "")}
+    return compacted
+
+
+def _build_question_ref_map(
+    refs: dict[str, dict[str, Any]],
+    question_ids: tuple[str, ...],
+) -> dict[str, dict[str, Any]]:
+    return {
+        question_id: dict(
+            refs.get(question_id)
+            or {
+                "question_id": question_id,
+                "summary": QUESTION_TITLES.get(question_id, question_id),
+                "trace_id": "",
+                "tool_id": f"nine_questions.{question_id}",
+            }
+        )
+        for question_id in question_ids
+    }
+
+
+def _first_present(*values: Any) -> Any:
+    for value in values:
+        if value not in (None, "", [], {}):
+            return value
+    return None
+
+
+def _dict_or_empty(value: Any) -> dict[str, Any]:
+    return dict(value) if isinstance(value, dict) else {}
+
+
+def _list_or_strings(value: Any) -> list[Any]:
+    if isinstance(value, list):
+        return value
+    return _coerce_string_list(value)
+
+
+def _slim_q8_task_row(row: Any, *, index: int, proactive: bool = False) -> dict[str, Any]:
+    item = dict(row) if isinstance(row, dict) else {"title": str(row or "")}
+    title = str(item.get("title") or item.get("action") or item.get("task_id") or f"task-{index}").strip()
+    slim = {
+        "task_id": str(item.get("task_id") or item.get("physical_task_id") or f"task-{index}"),
+        "title": title,
+        "status": str(item.get("status") or item.get("task_status") or ""),
+        "reason": str(item.get("reason") or item.get("details") or item.get("description") or title),
+    }
+    if proactive:
+        normalized = _normalize_q8_proactive_actions([item])[0]
+        slim.update(
+            {
+                "source_signal": normalized["source_signal"],
+                "authorization_status": normalized["authorization_status"],
+                "evidence_ref": normalized["evidence_ref"],
+            }
+        )
+    return slim
+
+
+def _slim_q8_task_queue(task_queue: Any) -> dict[str, Any]:
+    queue = _dict_or_empty(task_queue)
+    next_rows = _list_or_strings(queue.get("next_self_tasks"))
+    blocked_rows = _list_or_strings(queue.get("blocked_self_tasks"))
+    proactive_rows = _normalize_q8_proactive_actions(queue.get("proactive_actions") or [])
+    return {
+        "next_self_tasks": [
+            _slim_q8_task_row(row, index=index)
+            for index, row in enumerate(next_rows[:10])
+        ],
+        "blocked_self_tasks": [
+            _slim_q8_task_row(row, index=index)
+            for index, row in enumerate(blocked_rows[:10])
+        ],
+        "proactive_actions": [
+            _slim_q8_task_row(row, index=index, proactive=True)
+            for index, row in enumerate(proactive_rows[:10])
+        ],
+    }
+
+
+def _slim_q8_objective_profile(objective_profile: Any, task_queue: Any) -> dict[str, Any]:
+    objective = _dict_or_empty(objective_profile)
+    queue = _slim_q8_task_queue(task_queue)
+    slim = {
+        "objective_profile": str(objective.get("objective_profile") or objective.get("profile_id") or "q8_current_objective"),
+        "current_mission": str(objective.get("current_mission") or objective.get("current_primary_objective") or ""),
+        "current_primary_objective": str(objective.get("current_primary_objective") or objective.get("current_mission") or ""),
+        "primary_objectives": _list_or_strings(objective.get("primary_objectives"))[:10],
+        "secondary_objectives": _list_or_strings(objective.get("secondary_objectives"))[:10],
+        "completion_conditions": _list_or_strings(objective.get("completion_conditions"))[:10],
+        "pause_conditions": _list_or_strings(objective.get("pause_conditions"))[:10],
+        "escalation_conditions": _list_or_strings(objective.get("escalation_conditions"))[:10],
+        "proactive_actions": queue["proactive_actions"],
+    }
+    return {key: value for key, value in slim.items() if value not in (None, "", [], {})}
+
+
+def _project_list_report_payload(
+    question_id: str,
+    result_payload: dict[str, Any],
+    context_updates: dict[str, Any],
+) -> tuple[dict[str, Any], dict[str, Any], Any, Any]:
+    """Return the bounded read model for report/list endpoints."""
+    if question_id == "q1":
+        result = {
+            "workspace_path": _first_present(result_payload.get("workspace_path"), context_updates.get("workspace_path"), result_payload.get("workspace")),
+            "session_id": _first_present(result_payload.get("session_id"), context_updates.get("session_id")),
+            "runtime": _first_present(result_payload.get("runtime"), context_updates.get("runtime"), context_updates.get("environment_event")),
+        }
+        return result, {"nine_questions": context_updates.get("nine_questions", {})}, None, None
+
+    if question_id == "q2":
+        inventory = _dict_or_empty(_first_present(result_payload.get("asset_inventory"), context_updates.get("q2_asset_inventory")))
+        resource = _dict_or_empty(_first_present(result_payload.get("resource_evaluation"), context_updates.get("q2_resource_evaluation")))
+        result = {
+            "asset_inventory": inventory,
+            "resource_status": _first_present(resource.get("resource_status"), result_payload.get("resource_status")),
+            "missing_critical_assets": _list_or_strings(resource.get("missing_critical_assets"))[:10],
+            "bottleneck_node": resource.get("bottleneck_node"),
+        }
+        return result, {}, None, None
+
+    if question_id == "q3":
+        q3_result = result_payload.get("Q3InferenceResult") if isinstance(result_payload.get("Q3InferenceResult"), dict) else {}
+        role = _dict_or_empty(_first_present(q3_result.get("RoleProfile"), context_updates.get("q3_role_profile")))
+        boundary = _dict_or_empty(_first_present(q3_result.get("MissionContinuityBoundary"), context_updates.get("q3_mission_boundary")))
+        result = {
+            "identity": _first_present(result_payload.get("identity"), role.get("identity_role"), role.get("active_role"), "zentex_agent"),
+            "role": _first_present(result_payload.get("role"), role.get("active_role"), role),
+            "inferred_reference_role": role.get("inferred_reference_role"),
+            "role_alignment_gap": role.get("role_alignment_gap"),
+            "mission_boundary": boundary,
+        }
+        return result, {}, None, None
+
+    if question_id == "q4":
+        result = {
+            "action_candidates": _list_or_strings(_first_present(result_payload.get("action_candidates"), context_updates.get("action_candidates"), []))[:20],
+            "required_inputs": _list_or_strings(_first_present(result_payload.get("required_inputs"), context_updates.get("required_inputs"), []))[:20],
+            "verification": _list_or_strings(_first_present(result_payload.get("verification"), context_updates.get("verification"), []))[:20],
+        }
+        context = {"capability_action_mapping": context_updates.get("capability_action_mapping") or {"action_candidates": result["action_candidates"]}}
+        return result, context, None, None
+
+    if question_id == "q5":
+        result = {
+            "allowed": _list_or_strings(_first_present(result_payload.get("allowed"), context_updates.get("allowed"), []))[:20],
+            "confirmation": _list_or_strings(_first_present(result_payload.get("confirmation"), context_updates.get("confirmation"), []))[:20],
+            "denied": _list_or_strings(_first_present(result_payload.get("denied"), context_updates.get("blocked"), []))[:20],
+        }
+        return result, {"blocked": result["denied"]}, None, None
+
+    if question_id == "q6":
+        prohibited = _list_or_strings(_first_present(result_payload.get("prohibited"), result_payload.get("forbidden"), context_updates.get("blocked_patterns"), []))[:30]
+        result = {
+            "risk_flags": _list_or_strings(_first_present(result_payload.get("risk_flags"), context_updates.get("risk_flags"), ["risk_unverified_action"]))[:20],
+            "prohibited": prohibited,
+            "forbidden": prohibited,
+        }
+        context = {"blocked_patterns": prohibited, "pause": _first_present(context_updates.get("pause"), context_updates.get("escalation"), ["risk review required"])}
+        return result, context, None, None
+
+    if question_id == "q7":
+        result = {
+            "current_red_line_hits": _list_or_strings(
+                _first_present(result_payload.get("current_red_line_hits"), context_updates.get("q7_current_red_line_hits"), [])
+            )[:20],
+            "rejected_operation_records": _list_or_strings(
+                _first_present(result_payload.get("rejected_operation_records"), context_updates.get("q7_rejected_operation_records"), [])
+            )[:20],
+            "non_bypassable_constraints": _list_or_strings(
+                _first_present(result_payload.get("non_bypassable_constraints"), context_updates.get("q7_non_bypassable_constraints"), [])
+            )[:30],
+        }
+        return result, {"q7_red_line_assessment": result}, None, result
+
+    if question_id == "q8":
+        objective = _first_present(result_payload.get("objective_profile"), context_updates.get("q8_objective_profile"), {})
+        queue = _first_present(result_payload.get("task_queue"), context_updates.get("q8_task_queue"), {})
+        slim_queue = _slim_q8_task_queue(queue)
+        slim_objective = _slim_q8_objective_profile(objective, queue)
+        upstream = _compact_question_snapshot_refs(
+            _first_present(context_updates.get("q8_q1_q7_snapshot"), context_updates.get("q1_q7_snapshot"), result_payload.get("q1_q7_snapshot"), {})
+        )
+        result = {"objective_profile": slim_objective, "task_queue": slim_queue, "q1_q7_snapshot": upstream}
+        context = {"q8_objective_profile": slim_objective, "q8_task_queue": slim_queue, "q8_q1_q7_snapshot": upstream}
+        inference = {"objective_profile": slim_objective, "task_queue": slim_queue}
+        return result, context, None, inference
+
+    if question_id == "q9":
+        upstream = _compact_question_snapshot_refs(
+            _first_present(context_updates.get("q9_q1_q8_snapshot"), context_updates.get("q1_q8_snapshot"), result_payload.get("q1_q8_snapshot"), {})
+        )
+        posture = _first_present(result_payload.get("posture"), result_payload.get("q9_evaluation_profile"), context_updates.get("q9_evaluation_profile"), {"posture": "steady_fail_closed"})
+        result = {
+            "posture": posture,
+            "q9_evaluation_profile": posture,
+            "action_rhythm_hint": _first_present(result_payload.get("action_rhythm_hint"), context_updates.get("action_rhythm_hint"), "conservative"),
+            "dispatch_gate": _first_present(result_payload.get("dispatch_gate"), context_updates.get("dispatch_gate"), "confirm_before_commit"),
+        }
+        context = {"q9_q1_q8_snapshot": upstream, "q9_evaluation_profile": posture, "dispatch_gate": result["dispatch_gate"]}
+        return result, context, None, None
+
+    return result_payload, context_updates, None, None
+
+
+def _ensure_q4_action_mapping_aliases(
+    result_payload: dict[str, Any],
+    context_updates: dict[str, Any],
+) -> None:
+    candidates = result_payload.get("action_candidates")
+    if not candidates:
+        candidates = result_payload.get("ranked_options") or result_payload.get("proposals")
+    if not candidates:
+        candidates = context_updates.get("q4_functional_capabilities") or context_updates.get("q4_capability_baseline")
+    if candidates and not result_payload.get("action_candidates"):
+        result_payload["action_candidates"] = candidates
+    if candidates and not context_updates.get("capability_action_mapping"):
+        context_updates["capability_action_mapping"] = {
+            "action_candidates": candidates,
+            "source": "q4_existing_capability_projection",
+        }
+
+
+def _normalize_q8_proactive_actions(rows: Any) -> list[dict[str, Any]]:
+    if not isinstance(rows, list):
+        rows = _coerce_string_list(rows)
+    normalized: list[dict[str, Any]] = []
+    for index, row in enumerate(rows):
+        item = dict(row) if isinstance(row, dict) else {"title": str(row or "")}
+        title = str(item.get("title") or item.get("action") or f"proactive-{index}").strip()
+        detail = str(item.get("details") or item.get("description") or item.get("action") or title).strip()
+        metadata = item.get("metadata") if isinstance(item.get("metadata"), dict) else {}
+        item["title"] = title or f"proactive-{index}"
+        item["reason"] = str(item.get("reason") or detail or "q8 proactive action derived from current objective").strip()
+        item["source_signal"] = str(
+            item.get("source_signal")
+            or metadata.get("source_signal")
+            or metadata.get("source_chain")
+            or "q8_task_queue.proactive_actions"
+        ).strip()
+        item["authorization_status"] = str(
+            item.get("authorization_status")
+            or metadata.get("authorization_status")
+            or "authorized_by_q5_current_boundary"
+        ).strip()
+        item["evidence_ref"] = str(
+            item.get("evidence_ref")
+            or item.get("trace_id")
+            or item.get("task_id")
+            or f"q8:proactive:{index}"
+        ).strip()
+        normalized.append(item)
+    return normalized
+
+
+def _ensure_legacy_report_aliases(
+    question_id: str,
+    result_payload: dict[str, Any],
+    context_updates: dict[str, Any],
+) -> None:
+    if question_id == "q4":
+        _ensure_q4_action_mapping_aliases(result_payload, context_updates)
+        return
+    if question_id == "q5":
+        denied = (
+            result_payload.get("denied")
+            or result_payload.get("denied_actions")
+            or result_payload.get("blocked")
+            or result_payload.get("blocked_actions")
+            or result_payload.get("explicitly_forbidden_actions")
+            or context_updates.get("denied")
+            or context_updates.get("denied_actions")
+            or context_updates.get("blocked")
+            or context_updates.get("blocked_actions")
+            or context_updates.get("explicitly_forbidden_actions")
+            or []
+        )
+        result_payload.setdefault("denied", denied)
+        context_updates.setdefault("blocked", denied)
+        return
+    if question_id == "q6":
+        standard_redlines = [
+            "fake_runtime_state",
+            "mock_runtime_state",
+            "silent_fallback_on_missing_dependency",
+            "secret_disclosure",
+            "risk_unverified_action",
+        ]
+        prohibited = (
+            result_payload.get("prohibited")
+            or result_payload.get("blocked_patterns")
+            or result_payload.get("forbidden")
+            or context_updates.get("prohibited")
+            or context_updates.get("blocked_patterns")
+            or context_updates.get("forbidden")
+            or []
+        )
+        if not isinstance(prohibited, list):
+            prohibited = [prohibited]
+        prohibited = list(dict.fromkeys([*prohibited, *standard_redlines]))
+        result_payload["prohibited"] = prohibited
+        result_payload.setdefault("forbidden", prohibited)
+        context_updates.setdefault("blocked_patterns", prohibited)
+        context_updates.setdefault("pause", context_updates.get("escalation") or result_payload.get("escalation") or {})
+        return
+    if question_id == "q7":
+        result_payload.setdefault("alternative", result_payload.get("alternatives") or context_updates.get("alternatives") or [])
+        result_payload.setdefault("fallback", result_payload.get("fallback_policy") or context_updates.get("fallback_policy") or {})
+        context_updates.setdefault("recovery", result_payload.get("recovery") or context_updates.get("recover") or {})
+        return
+    if question_id == "q8":
+        objective_profile = (
+            result_payload.get("objective_profile")
+            or context_updates.get("q8_objective_profile")
+            or {}
+        )
+        task_queue = (
+            result_payload.get("task_queue")
+            or context_updates.get("q8_task_queue")
+            or {}
+        )
+        objective_profile = dict(objective_profile) if isinstance(objective_profile, dict) else {}
+        task_queue = dict(task_queue) if isinstance(task_queue, dict) else {}
+        proactive = _normalize_q8_proactive_actions(
+            objective_profile.get("proactive_actions") or task_queue.get("proactive_actions") or []
+        )
+        if proactive:
+            objective_profile["proactive_actions"] = proactive
+            task_queue["proactive_actions"] = proactive
+        result_payload["objective_profile"] = objective_profile
+        result_payload["task_queue"] = task_queue
+        context_updates["q8_objective_profile"] = objective_profile
+        context_updates["q8_task_queue"] = task_queue
 
 
 def _model_dump(value: Any) -> dict[str, Any]:
@@ -178,25 +576,40 @@ def _coerce_string_list(value: Any) -> list[str]:
     return []
 
 
+def _trace_payload_has_material(payload: Any) -> bool:
+    if not isinstance(payload, dict):
+        return False
+    invocations = payload.get("invocations")
+    if isinstance(invocations, list) and any(_trace_payload_has_material(item) for item in invocations):
+        return True
+    return any(
+        payload.get(key) not in (None, "", [], {})
+        for key in ("provider_name", "model", "prompt", "system_prompt", "context_data", "raw_response", "error_type", "error_message")
+    )
+
+
+def _first_material_trace_payload(*payloads: Any) -> dict[str, Any] | None:
+    for payload in payloads:
+        if isinstance(payload, dict) and _trace_payload_has_material(payload):
+            return payload
+    return None
+
+
 def _material_trace_payload(
     *,
-    question_id: str,
     snapshot: dict[str, Any],
-    trace_detail: dict[str, Optional[Any]] | None,
-    context_updates: dict[str, Any],
-    result_payload: dict[str, Any],
-) -> dict[str, Any]:
-    payload = snapshot.get("llm_trace_payload")
-    if not isinstance(payload, dict) and trace_detail is not None:
-        candidate = trace_detail.get("llm_trace_payload")
-        payload = candidate if isinstance(candidate, dict) else {}
-    if not isinstance(payload, dict):
-        payload = {}
-    return ensure_question_driver_trace(
-        question_id,
-        payload,
-        context_data=context_updates,
-        raw_response=result_payload,
+    record_trace_payload: dict[str, Any] | None = None,
+    raw_llm_payload: dict[str, Any] | None = None,
+    raw_context_llm_payload: dict[str, Any] | None = None,
+) -> dict[str, Any] | None:
+    snapshot_payload = snapshot.get("llm_trace_payload")
+    snapshot_payload = snapshot_payload if isinstance(snapshot_payload, dict) else {}
+
+    return _first_material_trace_payload(
+        record_trace_payload,
+        raw_llm_payload,
+        raw_context_llm_payload,
+        snapshot_payload,
     )
 
 
@@ -228,15 +641,36 @@ def _humanize_question_summary(
         return "，".join(parts)
 
     if question_id == "q2":
+        resource_eval = (
+            result_payload.get("resource_evaluation")
+            or result_payload.get("sufficiency_assessment")
+            or context_updates.get("q2_resource_evaluation")
+            or {}
+        )
+        resource_eval = resource_eval if isinstance(resource_eval, dict) else {}
+        resource_status = str(resource_eval.get("resource_status") or "").strip()
+        missing_assets = _coerce_string_list(resource_eval.get("missing_critical_assets"))
+        bottleneck = str(resource_eval.get("bottleneck_node") or "").strip()
+        parts = []
+        if resource_status:
+            parts.append(f"当前资源状态：{resource_status}")
+        if bottleneck:
+            parts.append(f"瓶颈节点：{bottleneck}")
+        if missing_assets:
+            parts.append(f"缺失关键资产 {len(missing_assets)} 项")
+        return "，".join(parts)
+
+    if question_id == "q3":
+        q3_result = result_payload.get("Q3InferenceResult") if isinstance(result_payload.get("Q3InferenceResult"), dict) else {}
         role_profile = (
-            result_payload.get("role_profile")
-            or context_updates.get("q2_role_profile")
+            q3_result.get("RoleProfile")
+            or context_updates.get("q3_role_profile")
             or {}
         )
         role_profile = role_profile if isinstance(role_profile, dict) else {}
         mission_boundary = (
-            result_payload.get("mission_boundary")
-            or context_updates.get("q2_mission_boundary")
+            q3_result.get("MissionContinuityBoundary")
+            or context_updates.get("q3_mission_boundary")
             or {}
         )
         mission_boundary = mission_boundary if isinstance(mission_boundary, dict) else {}
@@ -248,32 +682,11 @@ def _humanize_question_summary(
             parts.append(f"当前身份角色为 {identity_role}")
         if active_role:
             parts.append(f"活跃角色为 {active_role}")
+        inferred_reference_role = str(role_profile.get("inferred_reference_role") or "").strip()
+        if inferred_reference_role:
+            parts.append(f"系统参考角色为 {inferred_reference_role}")
         if current_mission:
             parts.append(f"当前使命：{current_mission}")
-        return "，".join(parts)
-
-    if question_id == "q3":
-        resource_eval = (
-            result_payload.get("resource_evaluation")
-            or result_payload.get("sufficiency_assessment")
-            or context_updates.get("q3_resource_evaluation")
-            or {}
-        )
-        resource_eval = resource_eval if isinstance(resource_eval, dict) else {}
-        resource_status = str(
-            resource_eval.get("resource_status_label")
-            or resource_eval.get("resource_status")
-            or ""
-        ).strip()
-        missing_assets = _coerce_string_list(resource_eval.get("missing_critical_assets"))
-        bottleneck = str(resource_eval.get("bottleneck_node") or "").strip()
-        parts = []
-        if resource_status:
-            parts.append(f"当前资源状态：{resource_status}")
-        if missing_assets:
-            parts.append(f"缺失关键资产 {len(missing_assets)} 项")
-        if bottleneck:
-            parts.append(f"主要瓶颈：{bottleneck}")
         return "，".join(parts)
 
     if question_id == "q4":
@@ -297,15 +710,17 @@ def _humanize_question_summary(
 
     if question_id == "q5":
         auth_profile = (
-            result_payload.get("authorization_boundary_profile")
+            result_payload.get("authorization_boundary")
+            or result_payload.get("authorization_boundary_profile")
+            or context_updates.get("q5_authorization_boundary")
             or context_updates.get("q5_authorization_boundary_profile")
             or context_updates.get("q5_permission_boundary")
             or {}
         )
         auth_profile = auth_profile if isinstance(auth_profile, dict) else {}
         execution_tier = str(auth_profile.get("execution_tier") or "").strip()
-        allowed_actions = _coerce_string_list(auth_profile.get("allowed_action_space"))
-        forbidden_actions = _coerce_string_list(auth_profile.get("forbidden_action_space"))
+        allowed_actions = _coerce_string_list(auth_profile.get("allowed_actions") or auth_profile.get("allowed_action_space"))
+        forbidden_actions = _coerce_string_list(auth_profile.get("forbidden_actions") or auth_profile.get("forbidden_action_space"))
         escalation_actions = _coerce_string_list(auth_profile.get("requires_escalation_actions"))
         parts = []
         if execution_tier:
@@ -316,6 +731,10 @@ def _humanize_question_summary(
             parts.append(f"禁止动作 {len(forbidden_actions)} 项")
         if escalation_actions:
             parts.append(f"需升级确认 {len(escalation_actions)} 项")
+        if not parts and any(key in result_payload for key in ("allowed", "confirmation", "denied")):
+            parts.append(f"允许动作 {len(_coerce_string_list(result_payload.get('allowed')))} 项")
+            parts.append(f"需确认动作 {len(_coerce_string_list(result_payload.get('confirmation')))} 项")
+            parts.append(f"拒绝动作 {len(_coerce_string_list(result_payload.get('denied')))} 项")
         return "，".join(parts)
 
     if question_id == "q6":
@@ -341,25 +760,26 @@ def _humanize_question_summary(
         return "，".join(parts)
 
     if question_id == "q7":
-        strategy_profile = (
-            result_payload.get("alternative_strategy_profile")
-            or context_updates.get("q7_alternative_strategy_profile")
+        red_line_assessment = (
+            result_payload.get("red_line_assessment")
+            or context_updates.get("q7_red_line_assessment")
+            or context_updates.get("red_line_assessment")
             or {}
         )
-        strategy_profile = strategy_profile if isinstance(strategy_profile, dict) else {}
-        fallback_plans = _coerce_string_list(strategy_profile.get("fallback_plans"))
-        degradation = _coerce_string_list(strategy_profile.get("degradation_strategies"))
-        collaboration = _coerce_string_list(strategy_profile.get("collaboration_switches"))
-        exploratory = _coerce_string_list(strategy_profile.get("exploratory_actions"))
+        red_line_assessment = red_line_assessment if isinstance(red_line_assessment, dict) else {}
+        hits = _coerce_string_list(red_line_assessment.get("current_red_line_hits"))
+        rejections = _coerce_string_list(red_line_assessment.get("rejected_operation_records"))
+        sources = _coerce_string_list(red_line_assessment.get("ban_source_explanations"))
+        constraints = _coerce_string_list(red_line_assessment.get("non_bypassable_constraints"))
         parts = []
-        if fallback_plans:
-            parts.append(f"回退方案 {len(fallback_plans)} 项")
-        if degradation:
-            parts.append(f"降级策略 {len(degradation)} 项")
-        if collaboration:
-            parts.append(f"协作切换 {len(collaboration)} 项")
-        if exploratory:
-            parts.append(f"探索动作 {len(exploratory)} 项")
+        if hits:
+            parts.append(f"当前红线命中 {len(hits)} 项")
+        if rejections:
+            parts.append(f"拒绝记录 {len(rejections)} 项")
+        if sources:
+            parts.append(f"禁令来源 {len(sources)} 项")
+        if constraints:
+            parts.append(f"不可绕过约束 {len(constraints)} 项")
         return "，".join(parts)
 
     if question_id == "q8":
@@ -436,14 +856,9 @@ def _humanize_question_summary(
 def _derive_provider_name(
     snapshot: dict[str, Any],
     trace_detail: dict[str, Optional[Any]],
+    *trace_payloads: Any,
 ) -> Optional[str]:
     provider_name = str(snapshot.get("provider_name") or "").strip()
-    if provider_name:
-        return provider_name
-
-    llm_trace_payload = snapshot.get("llm_trace_payload")
-    llm_trace_payload = llm_trace_payload if isinstance(llm_trace_payload, dict) else {}
-    provider_name = str(llm_trace_payload.get("provider_name") or "").strip()
     if provider_name:
         return provider_name
 
@@ -457,6 +872,19 @@ def _derive_provider_name(
         ).strip()
         if provider_name:
             return provider_name
+
+    for payload in (*trace_payloads, snapshot.get("llm_trace_payload")):
+        payload = payload if isinstance(payload, dict) else {}
+        provider_name = str(payload.get("provider_name") or "").strip()
+        if provider_name:
+            return provider_name
+        invocations = payload.get("invocations")
+        if isinstance(invocations, list):
+            for invocation in invocations:
+                invocation = invocation if isinstance(invocation, dict) else {}
+                provider_name = str(invocation.get("provider_name") or "").strip()
+                if provider_name:
+                    return provider_name
 
     return None
 
@@ -504,7 +932,73 @@ def _derive_question_summary(
     if summary:
         return summary
 
+    if result_payload or context_updates:
+        return f"{QUESTION_TITLES.get(question_id, question_id)} 已生成"
+
     return ""
+
+
+async def build_question_report_summary_items(
+    request: Request,
+    state: Any,
+) -> list[NineQuestionReportItem]:
+    """Build the nine-question list view without composing detail payloads."""
+    nq_service = _get_nine_question_service(request)
+    question_ids = [f"q{i}" for i in range(1, 10)]
+    rows_by_question: dict[str, dict[str, Any]] = {}
+    get_rows = getattr(nq_service, "get_latest_question_summary_rows", None)
+    if callable(get_rows):
+        try:
+            rows_by_question = await get_rows(question_ids)
+        except Exception:
+            logger.warning(
+                "build_question_report_summary_items: get_latest_question_summary_rows failed",
+                exc_info=True,
+            )
+            rows_by_question = {}
+    if not rows_by_question:
+        rows_by_question = get_question_snapshot_map(state)
+
+    items: list[NineQuestionReportItem] = []
+    for question_id in question_ids:
+        row = rows_by_question.get(question_id) or {}
+        trace_id = str(row.get("trace_id") or f"{question_id}:no-trace")
+        summary = str(row.get("summary") or "").strip()
+        cache_status = str(row.get("cache_status") or "").strip()
+        if not cache_status or cache_status == "未知":
+            if summary:
+                cache_status = "已就绪"
+            elif trace_id and not trace_id.endswith(":no-trace"):
+                cache_status = "已缓存"
+            else:
+                cache_status = "缺失"
+
+        items.append(NineQuestionReportItem(
+            question_id=question_id,
+            title=QUESTION_TITLES.get(question_id, question_id),
+            tool_id=str(row.get("tool_id") or f"nine_questions.{question_id}"),
+            summary=summary,
+            confidence=float(row.get("confidence") or 0.0),
+            result={},
+            context_updates={},
+            trace_id=trace_id,
+            timestamp=str(row.get("timestamp") or datetime.now(timezone.utc).isoformat()),
+            preprocessed_evidence=None,
+            inference_result=None,
+            q1_llm_upgrade=None,
+            cache_status=cache_status,
+            provider_name=_derive_provider_name(
+                row,
+                None,
+            ),
+            mounted_plugins=ensure_mounted_plugins(
+                question_id,
+                row.get("mounted_plugins") if isinstance(row.get("mounted_plugins"), list) else [],
+            ),
+            llm_trace_payload=None,
+        ))
+
+    return items
 
 
 async def build_question_report_items(
@@ -525,91 +1019,135 @@ async def build_question_report_items(
         request: FastAPI request
         state: Current nine-question state (used only for question_filter
                fallback; field reads are now upstream-sourced)
-        include_trace_detail: Whether to fetch full trace details (slow path)
+        include_trace_detail: Kept for API compatibility; report data is read from SQLite snapshots.
         question_filter: If set, only return this single question (e.g. 'q1')
 
     Returns:
         List of NineQuestionReportItem for each requested question
     """
-    from .trace_builder import build_trace_detail
-
     nq_service = _get_nine_question_service(request)
     question_ids = [question_filter] if question_filter else [f"q{i}" for i in range(1, 10)]
     items = []
+    report_refs: dict[str, dict[str, Any]] = {}
+    snapshot_map: dict[str, dict[str, Any]] = {}
+    get_snapshots = getattr(nq_service, "get_latest_question_snapshots", None)
+    if callable(get_snapshots):
+        try:
+            snapshot_map = await get_snapshots(question_ids)
+        except Exception:
+            logger.warning(
+                "build_question_report_items: get_latest_question_snapshots failed",
+                exc_info=True,
+            )
+            snapshot_map = {}
+    if not snapshot_map and question_filter != "q2":
+        snapshot_map = get_question_snapshot_map(state)
+    records_by_question: dict[str, dict[str, Any]] = {}
+    get_records = getattr(nq_service, "get_question_records", None)
+    if callable(get_records):
+        try:
+            records_by_question = await get_records(question_ids)
+        except Exception:
+            logger.warning(
+                "build_question_report_items: get_question_records failed",
+                exc_info=True,
+            )
 
     for question_id in question_ids:
         # ── 1. Full composed record from upstream (SQLite → filesystem) ──────
-        try:
-            record = await nq_service.get_question_record(question_id)
-        except Exception:
-            logger.warning(
-                "build_question_report_items: get_question_record failed for %s",
-                question_id,
-                exc_info=True,
-            )
-            record = {}
+        record = records_by_question.get(question_id)
+        if record is None:
+            try:
+                record = await nq_service.get_question_record(question_id)
+            except Exception:
+                logger.warning(
+                    "build_question_report_items: get_question_record failed for %s",
+                    question_id,
+                    exc_info=True,
+                )
+                record = {}
 
         composed = record.get("composed") if isinstance(record.get("composed"), dict) else {}
+        record_trace_payload = composed.get("trace") if isinstance(composed.get("trace"), dict) else {}
         raw_payload = composed.get("raw") if isinstance(composed.get("raw"), dict) else {}
-        result_payload: dict[str, Any] = raw_payload.get("result") or {}
-        context_updates: dict[str, Any] = raw_payload.get("context_updates") or {}
-        preprocessed_evidence: dict[str, Any] = composed.get("evidence") or {}
-        inference_result: Any = composed.get("inference") or {}
+        raw_llm_payload = raw_payload.get("llm_trace_payload") if isinstance(raw_payload.get("llm_trace_payload"), dict) else {}
+        raw_context_updates = raw_payload.get("context_updates") if isinstance(raw_payload.get("context_updates"), dict) else {}
+        raw_context_llm_payload = (
+            raw_context_updates.get("llm_trace_payload")
+            if isinstance(raw_context_updates.get("llm_trace_payload"), dict)
+            else {}
+        )
+        result_payload: dict[str, Any] = _compact_report_payload(raw_payload.get("result") or {})
+        context_updates: dict[str, Any] = _compact_report_payload(raw_payload.get("context_updates") or {})
+        _ensure_legacy_report_aliases(question_id, result_payload, context_updates)
+        if question_filter:
+            preprocessed_evidence: dict[str, Any] | None = composed.get("evidence") if "evidence" in composed else None
+            inference_result: Any = composed.get("inference") if "inference" in composed else None
+        else:
+            result_payload, context_updates, preprocessed_evidence, inference_result = _project_list_report_payload(
+                question_id,
+                result_payload,
+                context_updates,
+            )
 
         # ── 2. Lightweight snapshot metadata (trace_id / confidence / ts) ────
-        try:
-            snapshot: dict[str, Any] = await nq_service.get_question_snapshot(question_id) or {}
-        except Exception:
-            logger.warning(
-                "build_question_report_items: get_question_snapshot failed for %s",
-                question_id,
-                exc_info=True,
-            )
-            snapshot = {}
+        snapshot = snapshot_map.get(question_id) or {}
+        if not snapshot:
+            try:
+                snapshot = await nq_service.get_question_snapshot(question_id) or {}
+            except Exception:
+                logger.warning(
+                    "build_question_report_items: get_question_snapshot failed for %s",
+                    question_id,
+                    exc_info=True,
+                )
+                snapshot = {}
 
         trace_id = str(snapshot.get("trace_id") or f"{question_id}:no-trace")
 
-        # ── 3. Optional trace detail (expensive; only on real trace_id) ───────
+        # ── 3. Trace payload is SQLite-authoritative; transcript memory is not queried here.
         trace_detail: dict[str, Optional[Any]] = None
-        if include_trace_detail and trace_id and not trace_id.endswith(":no-trace"):
-            try:
-                session = await get_or_create_session(request)
-                raw_td = await build_trace_detail(
-                    request=request,
-                    trace_id=trace_id,
-                    session_id=session.session_id,
-                )
-                trace_detail = raw_td if isinstance(raw_td, dict) else None
-            except Exception:
-                logger.warning(
-                    "build_question_report_items: build_trace_detail failed for trace %s",
-                    trace_id,
-                    exc_info=True,
-                )
 
-        # Merge trace detail payloads when present (fills gaps in record)
-        if trace_detail is not None:
-            result_payload, context_updates = _merge_trace_projection_payloads(
-                snapshot,
-                result_payload,
-                context_updates,
-                trace_detail,
-            )
-
-        # ── 4. Handler fallback for evidence / inference ──────────────────────
+        # ── 4. Legacy handler projection for non-Q2 single-question pages ─────
         handler = QUESTION_HANDLERS[question_id]
-        if not preprocessed_evidence:
+        # Q2 detail is intentionally database-authoritative: missing composed
+        # evidence/inference must stay missing instead of being rebuilt from raw
+        # result/context payloads.
+        allow_single_question_handler_projection = bool(question_filter and question_id != "q2")
+        if allow_single_question_handler_projection and not preprocessed_evidence:
             preprocessed_evidence = handler["evidence"](context_updates)
-        if not inference_result:
+        if allow_single_question_handler_projection and not inference_result:
             inference_result = handler["result"](result_payload)
             if inference_result is None and isinstance(context_updates, dict):
                 inference_result = handler["result"](context_updates)
-        if question_id == "q8":
+        if question_filter and question_id == "q8":
             inference_result = _enrich_q8_queue_rows_with_task_bindings(
                 request,
                 trace_id=trace_id,
                 inference_result=inference_result,
             )
+
+        if question_id == "q8":
+            upstream = _first_present(
+                context_updates.get("q8_q1_q7_snapshot"),
+                context_updates.get("q1_q7_snapshot"),
+                result_payload.get("q1_q7_snapshot"),
+            )
+            if not isinstance(upstream, dict) or not all(qid in upstream for qid in EXPECTED_QUESTION_IDS[:7]):
+                upstream = _build_question_ref_map(report_refs, EXPECTED_QUESTION_IDS[:7])
+                result_payload["q1_q7_snapshot"] = upstream
+                context_updates["q8_q1_q7_snapshot"] = upstream
+
+        if question_id == "q9":
+            upstream = _first_present(
+                context_updates.get("q9_q1_q8_snapshot"),
+                context_updates.get("q1_q8_snapshot"),
+                result_payload.get("q1_q8_snapshot"),
+            )
+            if not isinstance(upstream, dict) or not all(qid in upstream for qid in EXPECTED_QUESTION_IDS[:8]):
+                upstream = _build_question_ref_map(report_refs, EXPECTED_QUESTION_IDS[:8])
+                result_payload["q1_q8_snapshot"] = upstream
+                context_updates["q9_q1_q8_snapshot"] = upstream
 
         derived_summary = _derive_question_summary(
             question_id,
@@ -617,11 +1155,12 @@ async def build_question_report_items(
             result_payload,
             context_updates,
         )
+        tool_id = str(snapshot.get("tool_id") or f"nine_questions.{question_id}")
 
         items.append(NineQuestionReportItem(
             question_id=question_id,
             title=QUESTION_TITLES.get(question_id, question_id),
-            tool_id=str(snapshot.get("tool_id") or f"nine_questions.{question_id}"),
+            tool_id=tool_id,
             summary=derived_summary,
             confidence=float(snapshot.get("confidence") or 0.0),
             result=result_payload,
@@ -632,18 +1171,33 @@ async def build_question_report_items(
             inference_result=inference_result,
             q1_llm_upgrade=_extract_q1_llm_upgrade(context_updates) if question_id == "q1" else None,
             cache_status=_derive_cache_status(snapshot, result_payload, context_updates),
-            provider_name=_derive_provider_name(snapshot, trace_detail),
+            provider_name=_derive_provider_name(
+                snapshot,
+                trace_detail,
+                record_trace_payload,
+                raw_llm_payload,
+                raw_context_llm_payload,
+            ),
             mounted_plugins=ensure_mounted_plugins(
                 question_id,
                 snapshot.get("mounted_plugins") if isinstance(snapshot.get("mounted_plugins"), list) else [],
             ),
-            llm_trace_payload=_material_trace_payload(
-                question_id=question_id,
-                snapshot=snapshot,
-                trace_detail=trace_detail,
-                context_updates=context_updates,
-                result_payload=result_payload,
+            llm_trace_payload=(
+                _material_trace_payload(
+                    snapshot=snapshot,
+                    record_trace_payload=record_trace_payload,
+                    raw_llm_payload=raw_llm_payload,
+                    raw_context_llm_payload=raw_context_llm_payload,
+                )
+                if question_filter
+                else None
             ),
         ))
+        report_refs[question_id] = {
+            "question_id": question_id,
+            "summary": derived_summary,
+            "trace_id": trace_id,
+            "tool_id": tool_id,
+        }
 
     return items

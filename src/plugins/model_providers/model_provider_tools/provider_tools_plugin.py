@@ -65,6 +65,9 @@ class ProviderToolsModelProvider(BaseModel):
         caller_context: Any,
         *,
         model: Optional[str] = None,
+        temperature: float = 0.2,
+        max_output_tokens: Optional[int] = None,
+        metadata: Optional[dict[str, Any]] = None,
     ) -> dict[str, Any]:
         normalized_context = self._normalize_caller_context(caller_context)
         result = self._gateway.invoke_generate_json(
@@ -73,6 +76,9 @@ class ProviderToolsModelProvider(BaseModel):
             caller_context=normalized_context,
             provider_key=self.provider_name,
             model=str(model or self.default_model),
+            temperature=temperature,
+            max_output_tokens=max_output_tokens,
+            metadata=metadata or {},
         )
         object.__setattr__(self, "_last_token_usage", result.usage.__dict__)
         object.__setattr__(self, "_last_raw_response", result.raw_response)

@@ -58,6 +58,7 @@ class DefaultKernelServiceFacade(KernelServiceFacade):
         self._event_bus = state_services.event_bus
         self._cache_manager = state_services.cache_manager
         self._workspace_store = state_services.workspace_store
+        self._system_identity_store = state_services.system_identity_store
 
     def _load_kernel_service(self) -> Any:
         """Load kernel.service lazily so failure semantics are testable."""
@@ -155,6 +156,33 @@ class DefaultKernelServiceFacade(KernelServiceFacade):
         """Get the core workspace metadata store."""
         return self._workspace_store
 
+    def get_system_identity(self) -> dict[str, Any]:
+        """Get the single system role used by Q2."""
+        return self._system_identity_store.get_identity()
+
+    def update_system_identity(
+        self,
+        *,
+        role_name: str,
+        mission: str = "",
+        core_values: list[str] | str | None = None,
+    ) -> dict[str, Any]:
+        """Create or replace the single user-configured system role."""
+        updated = self._system_identity_store.update_identity(
+            role_name=role_name,
+            mission=mission,
+            core_values=core_values,
+        )
+        kernel = self._get_kernel_service()
+        attach = getattr(kernel, "attach_dependencies", None) if kernel is not None else None
+        if callable(attach):
+            attach(system_identity_store=self._system_identity_store)
+        return updated
+
+    def reset_system_identity(self) -> dict[str, Any]:
+        """Clear the user-configured system role."""
+        return self._system_identity_store.reset_identity()
+
     def get_config(self) -> AppConfig:
         """Get application configuration"""
         return self._config
@@ -194,14 +222,74 @@ class DefaultKernelServiceFacade(KernelServiceFacade):
             "rerun_nine_questions_from",
         )(question_id, max_retries=max_retries)
 
-    def run_single_nine_question(self, question_id: str, max_retries: int = 1) -> Any:
+    def run_single_nine_question(
+        self,
+        question_id: str,
+        max_retries: int = 1,
+        context_overrides: dict[str, Any] | None = None,
+    ) -> Any:
         """Run only one nine-question and keep downstream questions untouched."""
         kernel = self._require_kernel_service("run_single_nine_question")
         return self._require_kernel_method(
             kernel,
             "run_single_nine_question",
             "run_single_nine_question",
-        )(question_id, max_retries=max_retries)
+        )(question_id, max_retries=max_retries, context_overrides=context_overrides or {})
+
+    def hydrate_nine_question_state_from_snapshots(self, snapshot_map: dict[str, dict[str, Any]]) -> None:
+        """Load latest SQLite question snapshots into the in-memory kernel baseline."""
+        if not isinstance(snapshot_map, dict) or not snapshot_map:
+            return
+        from zentex.kernel.cognition_flow.models import NineQuestionResponse
+
+        kernel = self._require_kernel_service("hydrate_nine_question_state_from_snapshots")
+        state_manager = getattr(kernel, "_nq_shared_state", None)
+        update_response = getattr(state_manager, "update_response", None)
+        if not callable(update_response):
+            raise RuntimeError("Kernel nine-question state manager cannot hydrate snapshots")
+
+        for question_id, snapshot in sorted(snapshot_map.items()):
+            if not isinstance(snapshot, dict):
+                continue
+            qid = str(question_id or snapshot.get("question_id") or "").strip().lower()
+            if not qid:
+                continue
+            result_payload = snapshot.get("result") if isinstance(snapshot.get("result"), dict) else {}
+            context_updates = (
+                snapshot.get("context_updates")
+                if isinstance(snapshot.get("context_updates"), dict)
+                else {}
+            )
+            execution_context = (
+                snapshot.get("execution_context")
+                if isinstance(snapshot.get("execution_context"), dict)
+                else {}
+            )
+            execution_result = (
+                snapshot.get("execution_result")
+                if isinstance(snapshot.get("execution_result"), dict)
+                else {}
+            )
+            llm_trace_payload = (
+                snapshot.get("llm_trace_payload")
+                if isinstance(snapshot.get("llm_trace_payload"), dict)
+                else {}
+            )
+            update_response(
+                NineQuestionResponse(
+                    question_id=qid,
+                    answer=str(snapshot.get("summary") or ""),
+                    confidence=float(snapshot.get("confidence") or 0.0),
+                    tool_id=str(snapshot.get("tool_id") or f"nine_questions.{qid}"),
+                    trace_id=str(snapshot.get("trace_id") or f"{qid}:no-trace"),
+                    timestamp=str(snapshot.get("timestamp") or snapshot.get("updated_at") or ""),
+                    result_payload=result_payload,
+                    context_updates=context_updates,
+                    execution_context=execution_context,
+                    execution_result=execution_result,
+                    llm_trace_payload=llm_trace_payload,
+                )
+            )
 
     def get_session_state(self, session_id: str) -> Optional[dict]:
         """Get comprehensive session state"""

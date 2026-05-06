@@ -1,7 +1,7 @@
 # nine-question-q1-where-am-i
 
-- Name: Q1 Where Am I
-- Description: Answer the first nine-question prompt about current position and context.
+- Name: Q1 我在那
+- Description: 识别当前环境事实，给下游九问提供环境锚点。
 
 This plugin is an independent unit.
 Required files:

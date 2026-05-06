@@ -30,6 +30,7 @@ def build_external_task_context(*, question_snapshot: dict[str, Any]) -> dict[st
     return {
         "context_type": "q8_external_task_context",
         "external_capabilities": {
+            "functional_plugins": _list(q3.get("functional_plugins")) or _list(_dict(question_snapshot.get("q2")).get("functional_plugins")),
             "execution_tools": _list(q3.get("available_execution_tools")),
             "connected_agents": _list(q3.get("connected_agents")),
             "cli_tools": _list(q3.get("cli_tools")),

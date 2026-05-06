@@ -11,10 +11,10 @@
 
 关键后端入口：
 
-- [routers/tasks.py](/Users/harry/Documents/git/AnimoCerebro-V2/src/zentex/web_console/routers/tasks.py)
-- [routers/upgrades.py](/Users/harry/Documents/git/AnimoCerebro-V2/src/zentex/web_console/routers/upgrades.py)
-- [services/upgrades.py](/Users/harry/Documents/git/AnimoCerebro-V2/src/zentex/web_console/services/upgrades.py)
-- [contracts/upgrades.py](/Users/harry/Documents/git/AnimoCerebro-V2/src/zentex/web_console/contracts/upgrades.py)
+- [routers/tasks.py](src/zentex/web_console/routers/tasks.py)
+- [routers/upgrades.py](src/zentex/web_console/routers/upgrades.py)
+- [services/upgrades.py](src/zentex/web_console/services/upgrades.py)
+- [contracts/upgrades.py](src/zentex/web_console/contracts/upgrades.py)
 
 ## Tasks Console / 任务控制台
 

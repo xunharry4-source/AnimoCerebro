@@ -1,4 +1,6 @@
 import { useEffect, useState } from "react";
+import { useTranslation } from "react-i18next";
+import { Link as RouterLink } from "react-router-dom";
 import {
   Alert,
   Button,
@@ -9,6 +11,7 @@ import {
   TextField,
   Typography,
 } from "@mui/material";
+import ArticleIcon from "@mui/icons-material/Article";
 import { Locale, formatLocalizedToken, formatUserFacingError, simulationCopy } from "../../i18n";
 
 /** 单个预演分支在前端中的展示结构。 */
@@ -36,6 +39,7 @@ type SimulationBundle = {
 };
 
 export default function SimulationExplorer() {
+  const { t } = useTranslation();
   const locale: Locale = "zh-CN";
   const copy = simulationCopy[locale];
   const [goalId, setGoalId] = useState("");
@@ -87,6 +91,14 @@ export default function SimulationExplorer() {
         />
         <Button variant="contained" onClick={() => void loadBundle()} disabled={!goalId.trim()}>
           {copy.refresh}
+        </Button>
+        <Button
+          component={RouterLink}
+          to="/console/module-logs/simulation"
+          variant="outlined"
+          startIcon={<ArticleIcon />}
+        >
+          {t("moduleLogs.view")}
         </Button>
       </Stack>
 

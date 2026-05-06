@@ -176,6 +176,7 @@ class AgentInvocationLedger:
         *,
         token: str,
         status: str,
+        trace_id: str | None = None,
         normalized_result: Any = None,
         raw_response: Any = None,
     ) -> AgentInvocationRecord | None:
@@ -184,6 +185,8 @@ class AgentInvocationLedger:
             return None
         if record.callback_token_hash and not secrets.compare_digest(record.callback_token_hash, hash_callback_token(token)):
             raise PermissionError("Invalid callback token")
+        if trace_id and record.trace_id and record.trace_id != trace_id:
+            raise ValueError("Callback trace_id does not match invocation ledger")
         return self.update_result(
             external_task_ref,
             status=status,

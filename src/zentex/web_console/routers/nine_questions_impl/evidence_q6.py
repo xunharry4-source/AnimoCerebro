@@ -11,6 +11,9 @@ from typing import Any, Dict, List, Optional, Union
 from zentex.web_console.contracts.nine_questions import (
     Q6PreprocessedEvidence,
     Q6ForbiddenZoneInferenceView,
+    Q6EvolutionDirectionView,
+    Q6EvolutionInferenceView,
+    Q6EvolutionProfileView,
 )
 
 from .helpers import _coerce_string_list
@@ -49,9 +52,48 @@ def _extract_q6_preprocessed_evidence(context_payload: object) -> Optional[Q6Pre
     )
 
 
-def _extract_q6_inference_result(result_payload: object) -> Optional[Q6ForbiddenZoneInferenceView]:
+def _extract_q6_inference_result(
+    result_payload: object,
+) -> Optional[Union[Q6EvolutionInferenceView, Q6ForbiddenZoneInferenceView]]:
     if not isinstance(result_payload, dict):
         return None
+    evolution_direction = (
+        result_payload.get("EvolutionDirection")
+        or result_payload.get("evolution_direction")
+        or result_payload.get("q6_evolution_direction")
+    )
+    evolution_profile = (
+        result_payload.get("EvolutionProfile")
+        or result_payload.get("evolution_profile")
+        or result_payload.get("q6_evolution_profile")
+    )
+    if isinstance(evolution_direction, dict) and isinstance(evolution_profile, dict):
+        return Q6EvolutionInferenceView(
+            EvolutionDirection=Q6EvolutionDirectionView(
+                current_evolution_assessment=str(
+                    evolution_direction.get("current_evolution_assessment")
+                    or evolution_direction.get("capability_gap_identification")
+                    or ""
+                ),
+                capability_gaps=_coerce_string_list(
+                    evolution_direction.get("capability_gaps")
+                    or evolution_direction.get("capability_gap_identification")
+                ),
+                recommended_expansions=_coerce_string_list(
+                    evolution_direction.get("recommended_expansions")
+                    or evolution_direction.get("recommended_expansion_directions")
+                ),
+                risk_threshold=str(evolution_direction.get("risk_threshold") or evolution_profile.get("risk_threshold") or ""),
+            ),
+            EvolutionProfile=Q6EvolutionProfileView(
+                allowed_directions=_coerce_string_list(evolution_profile.get("allowed_directions")),
+                forbidden_boundaries=_coerce_string_list(
+                    evolution_profile.get("forbidden_boundaries")
+                    or evolution_profile.get("forbidden_directions")
+                ),
+                validation_requirements=_coerce_string_list(evolution_profile.get("validation_requirements")),
+            ),
+        )
     source_payload = (
         result_payload.get("forbidden_zone_profile")
         or result_payload.get("q6_forbidden_zone_profile")

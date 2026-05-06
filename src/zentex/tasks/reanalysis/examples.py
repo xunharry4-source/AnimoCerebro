@@ -5,7 +5,7 @@ This module demonstrates how to use the task reanalysis functionality
 for handling partial completion and improvement opportunities.
 """
 
-from zentex.tasks.service import TaskManagementService
+from zentex.tasks import TaskManagementService
 from zentex.tasks.reanalysis import PartialCompletionReason, ReanalysisService
 
 

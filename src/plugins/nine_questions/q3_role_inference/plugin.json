@@ -1,0 +1,5 @@
+{
+  "plugin_id": "nine-question-q3-who-am-i",
+  "name": "Q3 我是谁",
+  "description": "基于身份内核、上游约束与红线信息推断当前角色状态与角色一致性。"
+}

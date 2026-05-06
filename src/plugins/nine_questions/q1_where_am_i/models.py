@@ -6,7 +6,7 @@ from pydantic import BaseModel, ConfigDict, Field
 
 class WorkspaceDomainInference(BaseModel):
     """
-    Strict output contract for "Q1: 我在哪" inference.
+    Strict output contract for Q1 environment inference.
 
     Hard requirements:
     - Missing any required field is a hard failure (fail-closed).
@@ -23,4 +23,3 @@ class WorkspaceDomainInference(BaseModel):
     suggested_first_step: str = Field(min_length=1)
     host_runtime_type: Optional[str] = Field(default=None)
     host_runtime_reason: Optional[str] = Field(default=None)
-

@@ -21,6 +21,7 @@ class CliToolRegistrationRequest(BaseModel):
     description: str = Field(min_length=1)
     read_only_flag: bool = True
     help_doc_url: Optional[str] = None
+    project_doc_url: Optional[str] = None
     project_path: Optional[str] = None
     project_name: Optional[str] = None
     project_description: Optional[str] = None
@@ -56,6 +57,7 @@ class CliToolItem(BaseModel):
     requires_cloud_audit: bool = False
     status: str = "active"
     help_doc_url: Optional[str] = None
+    project_doc_url: Optional[str] = None
     project_path: Optional[str] = None
     project_name: Optional[str] = None
     project_description: Optional[str] = None
@@ -101,6 +103,7 @@ class CliToolDetailResponse(BaseModel):
     requires_cloud_audit: bool = False
     status: str = "active"
     help_doc_url: Optional[str] = None
+    project_doc_url: Optional[str] = None
     project_path: Optional[str] = None
     project_name: Optional[str] = None
     project_description: Optional[str] = None

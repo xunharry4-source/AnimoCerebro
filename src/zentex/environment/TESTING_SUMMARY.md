@@ -16,7 +16,7 @@
 
 ### Command Used / 使用的命令
 ```bash
-cd /Users/shadow/Documents/git/AnimoCerebro
+cd <repo-root>
 .venv/bin/python -m pytest tests/environment/test_environment_awareness.py -v
 ```
 

@@ -1,12 +1,13 @@
 from __future__ import annotations
 
 """
-Q2 (我是谁) evidence building and extraction.
+Q2 (我有什么) evidence building and extraction.
 
 Contains functions for building Q2 preprocessed evidence from context snapshots
 and extracting Q2 inference results from tool outputs.
 """
 
+import json
 from typing import Any, Dict, List, Optional, Union
 
 from zentex.web_console.contracts.nine_questions import (
@@ -16,10 +17,54 @@ from zentex.web_console.contracts.nine_questions import (
     Q2IdentityKernel,
     Q2ManualIntervention,
     Q2RoleView,
+    Q2RoleAlignmentJudgementView,
     Q2MissionBoundaryView,
 )
 
 from .helpers import _coerce_string_list, _humanize_constraint_text
+
+
+def _identity_text(value: object) -> str:
+    if value is None:
+        return ""
+    if isinstance(value, str):
+        text = value.strip()
+        if text and text[0] in {"{", "["}:
+            try:
+                return _identity_text(json.loads(text))
+            except Exception:
+                return text
+        return text
+    if isinstance(value, (list, tuple)):
+        return " / ".join(item for raw in value if (item := _identity_text(raw)))
+    if isinstance(value, dict):
+        preferred_keys = (
+            "summary",
+            "description",
+            "motivation",
+            "value",
+            "rule",
+            "constraint",
+            "reason",
+            "intent",
+            "name",
+            "title",
+        )
+        preferred_values = [_identity_text(value.get(key)) for key in preferred_keys if key in value]
+        remaining_values = [
+            f"{key}: {text}"
+            for key, raw in value.items()
+            if key not in preferred_keys and (text := _identity_text(raw))
+        ]
+        return "；".join(item for item in preferred_values + remaining_values if item)
+    return str(value).strip()
+
+
+def _identity_text_list(value: object) -> list[str]:
+    if isinstance(value, list):
+        return [text for item in value if (text := _identity_text(item))]
+    text = _identity_text(value)
+    return [text] if text else []
 
 
 def _has_material_q2_q1_summary(evidence: object) -> bool:
@@ -43,6 +88,26 @@ def _has_material_q2_q1_summary(evidence: object) -> bool:
 
 def _build_q2_preprocessed_evidence(context_payload: dict[str, Any]) -> Optional[Q2PreprocessedEvidence]:
     """Build Q2 preprocessed evidence from context payload."""
+    asset_inventory = context_payload.get("q2_asset_inventory") or context_payload.get("asset_inventory") or {}
+    unified_inventory = context_payload.get("q2_unified_asset_inventory") or {}
+    humanized_inventory = context_payload.get("q2_humanized_asset_inventory") or {}
+    if isinstance(asset_inventory, dict) and (
+        asset_inventory or isinstance(unified_inventory, dict) and unified_inventory
+    ):
+        return Q2PreprocessedEvidence(
+            workspace_permission=context_payload.get("workspaces_and_permissions")
+            if isinstance(context_payload.get("workspaces_and_permissions"), dict)
+            else {},
+            tools_agents={
+                "unified_inventory": unified_inventory if isinstance(unified_inventory, dict) else {},
+                "humanized_inventory": humanized_inventory if isinstance(humanized_inventory, dict) else {},
+            },
+            memory_strategy=context_payload.get("memory_and_strategy")
+            if isinstance(context_payload.get("memory_and_strategy"), dict)
+            else {},
+            asset_inventory=asset_inventory,
+        )
+
     q1_inference = context_payload.get("workspace_domain_inference", {})
     q1_scene_model = context_payload.get("q1_scene_model", {})
     q1_uncertainty_profile = context_payload.get("q1_uncertainty_profile", {})
@@ -85,17 +150,26 @@ def _build_q2_preprocessed_evidence(context_payload: dict[str, Any]) -> Optional
 
     meta_motivation = identity_kernel_raw.get("meta_motivation")
     if not meta_motivation:
-        meta_motivation = " / ".join(_coerce_string_list(identity_kernel_raw.get("meta_drives")))
+        meta_motivation = _identity_text(
+            identity_kernel_raw.get("meta_drives")
+            or identity_kernel_raw.get("meta_motivations")
+            or identity_kernel_raw.get("motivation")
+        )
     values_prohibition = identity_kernel_raw.get("values_prohibition")
     if not values_prohibition:
-        values_prohibition = " / ".join(_coerce_string_list(identity_kernel_raw.get("value_vetoes")))
+        values_prohibition = _identity_text(
+            identity_kernel_raw.get("value_vetoes")
+            or identity_kernel_raw.get("values_prohibitions")
+            or identity_kernel_raw.get("core_value_prohibitions")
+            or identity_kernel_raw.get("prohibitions")
+        )
 
     identity_kernel = Q2IdentityKernel(
-        meta_motivation=str(meta_motivation or "No meta-motivation defined."),
-        values_prohibition=str(values_prohibition or "No value prohibitions defined."),
+        meta_motivation=_identity_text(meta_motivation) or "No meta-motivation defined.",
+        values_prohibition=_identity_text(values_prohibition) or "No value prohibitions defined.",
         non_bypassable_constraints=[
             text
-            for item in _coerce_string_list(identity_kernel_raw.get("non_bypassable_constraints"))
+            for item in _identity_text_list(identity_kernel_raw.get("non_bypassable_constraints"))
             if (text := _humanize_constraint_text(item))
         ],
     )
@@ -129,13 +203,12 @@ def _extract_q2_preprocessed_evidence(context_payload: object) -> Optional[Q2Pre
     if not any(
         key in context_payload
         for key in (
-            "identity_core",
-            "identity_kernel_snapshot",
-            "workspace_domain_inference",
-            "q1_scene_model",
-            "q1_uncertainty_profile",
-            "manual_role_intervention",
-            "manual_role_overrides",
+            "q2_asset_inventory",
+            "asset_inventory",
+            "q2_unified_asset_inventory",
+            "q2_humanized_asset_inventory",
+            "workspaces_and_permissions",
+            "memory_and_strategy",
         )
     ):
         return None
@@ -147,44 +220,39 @@ def _extract_q2_inference_result(result_payload: object) -> Optional[Q2WhoAmIInf
     if not isinstance(result_payload, dict):
         return None
 
-    role_profile_raw = result_payload.get("role_profile")
-    mission_boundary_raw = result_payload.get("mission_boundary")
+    asset_inventory = result_payload.get("q2_asset_inventory") or result_payload.get("asset_inventory")
+    if not isinstance(asset_inventory, dict):
+        asset_inventory = {
+            key: result_payload.get(key)
+            for key in (
+                "long_term_memory",
+                "cognitive_and_functional_tools",
+                "connected_agents",
+                "strategy_patches",
+                "inventory_summary",
+            )
+            if key in result_payload
+        }
+    context_updates = result_payload.get("context_updates") if isinstance(result_payload.get("context_updates"), dict) else {}
+    if not asset_inventory and isinstance(context_updates, dict):
+        asset_inventory = context_updates.get("q2_asset_inventory") or context_updates.get("asset_inventory")
+    if isinstance(asset_inventory, dict) and asset_inventory:
+        sufficiency_raw = (
+            result_payload.get("sufficiency_assessment")
+            or result_payload.get("resource_evaluation")
+            or result_payload.get("q2_resource_evaluation")
+            or (context_updates.get("q2_resource_evaluation") if isinstance(context_updates, dict) else None)
+        )
+        if not isinstance(sufficiency_raw, dict):
+            return None
+        return Q2WhoAmIInferenceView(
+            asset_inventory=asset_inventory,
+            sufficiency_assessment={
+                "resource_status": str(sufficiency_raw.get("resource_status") or "unknown"),
+                "missing_critical_assets": _coerce_string_list(sufficiency_raw.get("missing_critical_assets")),
+                "bottleneck_node": sufficiency_raw.get("bottleneck_node"),
+                "reasoning_summary": sufficiency_raw.get("reasoning_summary"),
+            },
+        )
 
-    if not isinstance(role_profile_raw, dict) or not isinstance(mission_boundary_raw, dict):
-        role_profile_raw = result_payload.get("q2_role_profile")
-        mission_boundary_raw = result_payload.get("q2_mission_boundary")
-
-    if (not isinstance(role_profile_raw, dict) or not isinstance(mission_boundary_raw, dict)) and isinstance(
-        result_payload.get("context_updates"), dict
-    ):
-        context_updates = result_payload.get("context_updates") or {}
-        role_profile_raw = context_updates.get("q2_role_profile")
-        mission_boundary_raw = context_updates.get("q2_mission_boundary")
-
-    if (not isinstance(role_profile_raw, dict) or not isinstance(mission_boundary_raw, dict)) and isinstance(
-        result_payload.get("proposals"), list
-    ):
-        for proposal in result_payload.get("proposals") or []:
-            if not isinstance(proposal, dict):
-                continue
-            kind = str(proposal.get("kind") or "").strip()
-            if kind == "role_profile":
-                role_profile_raw = proposal
-            elif kind == "mission_continuity_boundary":
-                mission_boundary_raw = proposal
-
-    if not isinstance(role_profile_raw, dict) or not isinstance(mission_boundary_raw, dict):
-        return None
-
-    return Q2WhoAmIInferenceView(
-        role_profile=Q2RoleView(
-            identity_role=str(role_profile_raw.get("identity_role") or ""),
-            active_role=str(role_profile_raw.get("active_role") or ""),
-            task_role=str(role_profile_raw.get("task_role") or ""),
-        ),
-        mission_boundary=Q2MissionBoundaryView(
-            current_mission=str(mission_boundary_raw.get("current_mission") or ""),
-            priority_duties=_coerce_string_list(mission_boundary_raw.get("priority_duties")),
-            continuity_boundaries=_coerce_string_list(mission_boundary_raw.get("continuity_boundaries")),
-        ),
-    )
+    return None

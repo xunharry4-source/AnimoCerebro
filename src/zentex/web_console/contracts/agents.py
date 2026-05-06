@@ -74,6 +74,8 @@ class AgentDispatchTaskRequest(BaseModel):
 class AgentCallbackResultRequest(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
+    external_task_ref: Optional[str] = None
+    trace_id: Optional[str] = None
     callback_token: Optional[str] = None
     status: str
     normalized_result: Any = None

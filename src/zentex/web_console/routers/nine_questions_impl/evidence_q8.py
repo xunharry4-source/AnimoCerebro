@@ -22,6 +22,10 @@ from zentex.web_console.contracts.nine_questions import (
 from .helpers import _coerce_string_list
 
 
+def _dict_or_empty(value: Any) -> dict[str, Any]:
+    return value if isinstance(value, dict) else {}
+
+
 def _extract_q8_snapshot_dict(context_payload: dict[str, Any]) -> dict[str, Any]:
     snapshot = (
         context_payload.get("q8_q1_q7_snapshot")
@@ -37,12 +41,16 @@ def _extract_q8_snapshot_dict(context_payload: dict[str, Any]) -> dict[str, Any]
 def _count_q8_redlines(snapshot: dict[str, Any]) -> int:
     q6 = snapshot.get("q6") if isinstance(snapshot.get("q6"), dict) else {}
     q5 = snapshot.get("q5") if isinstance(snapshot.get("q5"), dict) else {}
+    q7 = snapshot.get("q7") if isinstance(snapshot.get("q7"), dict) else {}
     q6_profile = q6.get("forbidden_zone_profile") if isinstance(q6.get("forbidden_zone_profile"), dict) else {}
     q5_profile = q5.get("authorization_boundary_profile") if isinstance(q5.get("authorization_boundary_profile"), dict) else {}
+    q7_profile = q7.get("red_line_assessment") if isinstance(q7.get("red_line_assessment"), dict) else {}
     return len(
         _coerce_string_list(q6.get("absolute_red_lines") or q6_profile.get("absolute_red_lines"))
         + _coerce_string_list(q6.get("non_bypassable_constraints") or q6_profile.get("non_bypassable_constraints"))
         + _coerce_string_list(q5.get("explicitly_forbidden_actions") or q5_profile.get("explicitly_forbidden_actions"))
+        + _coerce_string_list(q7.get("non_bypassable_constraints") or q7_profile.get("non_bypassable_constraints"))
+        + _coerce_string_list(q7.get("current_red_line_hits") or q7_profile.get("current_red_line_hits"))
     )
 
 
@@ -170,7 +178,29 @@ def _extract_q8_inference_result(result_payload: object) -> Optional[Q8WhatShoul
         or (aggregate_raw.get("q8_task_queue") if isinstance(aggregate_raw, dict) else None)
         or (aggregate_raw.get("task_queue") if isinstance(aggregate_raw, dict) else None)
     )
-    if not isinstance(objective_raw, dict) or not isinstance(queue_raw, dict):
+    internal_tasks_raw = (
+        result_payload.get("q8_internal_cognitive_tasks")
+        or result_payload.get("internal_cognitive_tasks")
+        or (_dict_or_empty(result_payload.get("q8_internal_llm_output")).get("internal_cognitive_tasks"))
+        or (aggregate_raw.get("q8_internal_cognitive_tasks") if isinstance(aggregate_raw, dict) else None)
+        or (aggregate_raw.get("internal_cognitive_tasks") if isinstance(aggregate_raw, dict) else None)
+        or (_dict_or_empty(aggregate_raw.get("q8_internal_llm_output")).get("internal_cognitive_tasks") if isinstance(aggregate_raw, dict) else None)
+        or []
+    )
+    external_tasks_raw = (
+        result_payload.get("q8_external_execution_tasks")
+        or result_payload.get("external_execution_tasks")
+        or (_dict_or_empty(result_payload.get("q8_external_llm_output")).get("external_execution_tasks"))
+        or (aggregate_raw.get("q8_external_execution_tasks") if isinstance(aggregate_raw, dict) else None)
+        or (aggregate_raw.get("external_execution_tasks") if isinstance(aggregate_raw, dict) else None)
+        or (_dict_or_empty(aggregate_raw.get("q8_external_llm_output")).get("external_execution_tasks") if isinstance(aggregate_raw, dict) else None)
+        or []
+    )
+    if not isinstance(objective_raw, dict):
+        objective_raw = {}
+    if not isinstance(queue_raw, dict):
+        queue_raw = {}
+    if not objective_raw and not queue_raw and not internal_tasks_raw and not external_tasks_raw:
         return None
 
     def _normalize_queue_rows(value: object, *, status: str) -> list[dict[str, Any]]:
@@ -226,4 +256,10 @@ def _extract_q8_inference_result(result_payload: object) -> Optional[Q8WhatShoul
             blocked_self_tasks=_normalize_queue_rows(queue_raw.get("blocked_self_tasks"), status="blocked"),
             proactive_actions=_normalize_queue_rows(queue_raw.get("proactive_actions"), status="proactive"),
         ),
+        q8_internal_cognitive_tasks=[
+            item for item in internal_tasks_raw if isinstance(item, dict)
+        ] if isinstance(internal_tasks_raw, list) else [],
+        q8_external_execution_tasks=[
+            item for item in external_tasks_raw if isinstance(item, dict)
+        ] if isinstance(external_tasks_raw, list) else [],
     )

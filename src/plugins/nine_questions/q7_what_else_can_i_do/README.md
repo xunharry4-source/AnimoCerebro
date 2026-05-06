@@ -1,33 +1,26 @@
-# nine_question_q7_alternatives
+# nine_question_q7_red_line_assessment
 
-- Name: Q7 What Else Can I Do
-- Description: Answer the seventh nine-question prompt about alternatives and options.
+- Name: Q7 Red Line Assessment
+- Description: Answer the seventh nine-question prompt: "我的红线与约束是什么".
 
-This plugin is an independent unit.
-Required files:
-- startup.py
-- plugin.json
-- register.py
-- README.md
+Q7 is the final cognitive firewall before Q8 objective generation. The live LLM output must be a strict JSON object whose only top-level key is `RedLineAssessment`. The `RedLineAssessment` object has exactly these fields:
 
-## Functional Plugin Expansion Rules
+- `current_redline_hits`
+- `rejected_operations_log`
+- `constraint_sources_explanation`
+- `non_bypassable_constraints`
 
-- This cognitive plugin may discover and execute bound functional plugins only through `src/zentex/plugins/service.py`.
-- Do not read relationship tables directly and do not bypass the public service boundary.
-- Query enabled functional plugins with `query_cognitive_plugin_functionals_by_operational_status(..., operational_status="enabled")`.
-- Execute functional plugins through `SystemPluginService.execute_plugin_once(...)` or `execute_plugin_once_sync(...)`.
-- Every functional execution must pass `caller_plugin_id=<current cognitive plugin id>`.
+## Evidence Sources
 
-## Write Locations
+- Q3 mission and continuity boundaries.
+- Q5 forbidden operations and authorization boundaries.
+- Identity boundary bottom constraints and self-binding rules.
+- Recent safety-gate and audit-channel rejected operations.
+- Current intent context for active red-line hit detection.
 
-- Functional plugin outputs must first be merged into Q7's alternative-strategy inputs.
-- Preferred input-side merge targets are:
-  - `alt_oracles`
-  - `alternative_catalog`
-- If the plugin preserves the derived effect in final outputs, the result must be reflected through:
-  - `q7_alternative_strategy_profile`
+## Runtime Rules
 
-## Constraints
-
-- Functional plugin outputs are fallback-strategy evidence, not a replacement for Q7's synthesized alternative profile.
-- Do not create a separate top-level Q7 output branch for this feature.
+- Q7 must validate the live LLM output against the strict schema.
+- Invalid or incomplete LLM output must trigger another LLM call before failing closed.
+- Prompt, context, raw response, token usage, attempts, and question driver refs must be persisted in `llm_trace_payload`.
+- Q8 must treat active Q7 red-line hits as a hard gate and convert external tasking into internal cognitive preflight or negotiation tasks.

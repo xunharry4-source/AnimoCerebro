@@ -21,6 +21,18 @@ from uuid import uuid4
 logger = logging.getLogger(__name__)
 
 
+def _jsonable_supervision_value(value: Any) -> Any:
+    if isinstance(value, Enum):
+        return value.value
+    if isinstance(value, datetime):
+        return value.isoformat()
+    if isinstance(value, dict):
+        return {str(k): _jsonable_supervision_value(v) for k, v in value.items()}
+    if isinstance(value, (list, tuple, set)):
+        return [_jsonable_supervision_value(v) for v in value]
+    return value
+
+
 class SupervisionLevel(Enum):
     """Levels of supervision intensity."""
     MINIMAL = "minimal"      # Basic logging only
@@ -125,9 +137,18 @@ class AISupervisor:
                 with open(self.records_file, "r") as f:
                     data = json.load(f)
                     for r_id, r_data in data.items():
-                        r_data["start_time"] = datetime.fromisoformat(r_data["start_time"])
-                        if r_data.get("end_time"):
+                        if isinstance(r_data.get("start_time"), str):
+                            r_data["start_time"] = datetime.fromisoformat(r_data["start_time"])
+                        if isinstance(r_data.get("end_time"), str):
                             r_data["end_time"] = datetime.fromisoformat(r_data["end_time"])
+                        r_data["verification_results"] = {
+                            key: (
+                                VerificationStatus(value)
+                                if isinstance(value, str) and value in {item.value for item in VerificationStatus}
+                                else value
+                            )
+                            for key, value in dict(r_data.get("verification_results") or {}).items()
+                        }
                         self.execution_records[r_id] = ExecutionRecord(**r_data)
         except Exception as e:
             logger.critical(f"Supervision Integrity Failure: Failed to load audit history: {e}")
@@ -140,20 +161,16 @@ class AISupervisor:
             # 1. Save Alerts
             temp_alerts = self.alerts_file.with_suffix(".tmp")
             with open(temp_alerts, "w") as f:
-                json.dump([vars(a) for a in self.alerts], f, default=str, indent=2)
+                json.dump([_jsonable_supervision_value(vars(a)) for a in self.alerts], f, indent=2)
             temp_alerts.replace(self.alerts_file)
 
             # 2. Save Records
             temp_records = self.records_file.with_suffix(".tmp")
             with open(temp_records, "w") as f:
-                # Convert recs to dicts with ISO dates
-                out = {}
-                for r_id, r in self.execution_records.items():
-                    d = vars(r).copy()
-                    d["start_time"] = d["start_time"].isoformat()
-                    if d.get("end_time"):
-                        d["end_time"] = d["end_time"].isoformat()
-                    out[r_id] = d
+                out = {
+                    r_id: _jsonable_supervision_value(vars(r).copy())
+                    for r_id, r in self.execution_records.items()
+                }
                 json.dump(out, f, indent=2)
             temp_records.replace(self.records_file)
         except Exception as e:

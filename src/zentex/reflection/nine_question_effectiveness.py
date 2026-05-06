@@ -64,14 +64,14 @@ def analyze_question_effectiveness(question_id: str, snapshot: dict[str, Any], s
 
     required_by_question = {
         "q1": ["workspace_domain_inference"],
-        "q2": ["q2_role_profile"],
-        "q3": ["q3_resource_sufficiency"],
+        "q2": ["q2_asset_inventory"],
+        "q3": ["q3_role_profile"],
         "q4": ["q4_capability_boundary"],
         "q5": ["q5_permission_boundary"],
         "q6": ["q6_forbidden_zone"],
         "q7": ["q7_alternative_strategies"],
         "q8": ["q8_objective_profile"],
-        "q9": ["q9_action_posture"],
+        "q9": ["q9_action_plan"],
     }
 
     missing_data = _build_missing_data(snapshot, required_by_question.get(question_id, []))

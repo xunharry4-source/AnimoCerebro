@@ -171,7 +171,16 @@ class SystemPluginService(BasePluginService):
         # The internal executor expects 'id' and 'capabilities' keys
         for row in results:
             row["id"] = row["plugin_id"]
-            row["capabilities"] = self.get_plugin_capabilities(row["plugin_id"])
+            capabilities = self.get_plugin_capabilities(row["plugin_id"])
+            for value in (
+                row.get("plugin_id"),
+                row.get("feature_code"),
+                row.get("behavior_key"),
+            ):
+                text = str(value or "").strip()
+                if text:
+                    capabilities.append(text)
+            row["capabilities"] = list(dict.fromkeys(capabilities))
         return results
 
     def get_plugin(self, plugin_id: str, category: Optional[str] = None) -> Any:
@@ -295,6 +304,33 @@ class SystemPluginService(BasePluginService):
     def get_active_inventory(self) -> list:
         """Get all active plugins."""
         return self._query_service.get_active_inventory()
+
+    def get_plugin_asset_statistics(self) -> Dict[str, Any]:
+        rows = self.query_plugins_by_operational_status(limit=500)
+        lifecycle_counts: Dict[str, int] = {}
+        operational_counts: Dict[str, int] = {}
+        category_counts: Dict[str, int] = {}
+        for row in rows:
+            lifecycle = str(row.get("lifecycle_status") or "unknown")
+            operational = str(row.get("operational_status") or "unknown")
+            category = str(row.get("category") or "unknown")
+            lifecycle_counts[lifecycle] = lifecycle_counts.get(lifecycle, 0) + 1
+            operational_counts[operational] = operational_counts.get(operational, 0) + 1
+            category_counts[category] = category_counts.get(category, 0) + 1
+        return {
+            "asset_type": "internal_plugin",
+            "total_plugins": len(rows),
+            "cognitive_plugins": category_counts.get("cognitive", 0),
+            "functional_plugins": category_counts.get("functional", 0),
+            "enabled_plugins": operational_counts.get("enabled", 0),
+            "stopped_plugins": operational_counts.get("stopped", 0),
+            "abnormal_plugins": operational_counts.get("abnormal", 0),
+            "unavailable_plugins": operational_counts.get("unavailable", 0),
+            "active_lifecycle_plugins": lifecycle_counts.get("active", 0),
+            "lifecycle_counts": lifecycle_counts,
+            "operational_counts": operational_counts,
+            "category_counts": category_counts,
+        }
     
     def get_plugin_execution_stats(self, plugin_id: str) -> Dict[str, Any]:
         """Get execution stats for a plugin."""
@@ -392,9 +428,16 @@ class SystemPluginService(BasePluginService):
                 caller_plugin_id=caller_plugin_id,
             )
 
-        try:
-            asyncio.get_running_loop()
-        except RuntimeError:
+        def _running_loop_exists() -> bool:
+            try:
+                asyncio.get_running_loop()
+                return True
+            except RuntimeError:
+                return False
+
+        running_loop_exists = _running_loop_exists()
+
+        if not running_loop_exists:
             return asyncio.run(_runner())
 
         result: Dict[str, TaskFeedback] = {}

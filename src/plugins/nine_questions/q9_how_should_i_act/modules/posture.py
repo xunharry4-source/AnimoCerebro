@@ -79,6 +79,17 @@ def normalize_q8_profile(raw: object) -> dict[str, Any]:
 def normalize_self_model(raw: object) -> dict[str, Any]:
     if not isinstance(raw, dict):
         return {}
+    has_source = any(
+        key in raw
+        for key in (
+            "current_cognitive_load",
+            "cognitive_load",
+            "current_state",
+            "recent_weaknesses",
+        )
+    )
+    if not has_source:
+        return {}
     current_state = raw.get("current_state")
     current_state = current_state if isinstance(current_state, dict) else {}
     weaknesses = raw.get("recent_weaknesses")
@@ -96,7 +107,7 @@ def normalize_self_model(raw: object) -> dict[str, Any]:
                 }
             )
     return {
-        "cognitive_load": normalize_text(raw.get("current_cognitive_load") or raw.get("cognitive_load") or "unknown"),
+        "cognitive_load": normalize_text(raw.get("current_cognitive_load") or raw.get("cognitive_load")),
         "stability_level": normalize_text(current_state.get("stability_level")) or None,
         "recent_weaknesses": normalized_weaknesses,
     }
@@ -104,6 +115,21 @@ def normalize_self_model(raw: object) -> dict[str, Any]:
 
 def normalize_reasoning_budget(raw: object) -> dict[str, Any]:
     if not isinstance(raw, dict):
+        return {}
+    has_source = any(
+        key in raw
+        for key in (
+            "compute_remaining_ratio",
+            "remaining",
+            "compute_remaining",
+            "token_remaining_ratio",
+            "token_remaining",
+            "time_remaining_ratio",
+            "time_remaining",
+            "budget_pressure",
+        )
+    )
+    if not has_source:
         return {}
     return {
         "compute_remaining_ratio": normalize_ratio(
@@ -157,7 +183,7 @@ def derive_posture_baseline(
     summary_mission = _extract_q8_summary_mission(question_snapshot)
     current_mission = summary_mission or normalize_text(q8.get("current_mission"))
 
-    role_context = normalize_text(q2.get("active_role") or q2.get("task_role") or q2.get("identity_role") or "unknown role")
+    role_context = normalize_text(q2.get("active_role") or q2.get("task_role") or q2.get("identity_role"))
     resource_context_parts: list[str] = []
     bottleneck = normalize_text(q3.get("bottleneck_node"))
     if bottleneck:
@@ -168,9 +194,6 @@ def derive_posture_baseline(
     budget_pressure = normalize_text(budget.get("budget_pressure"))
     if budget_pressure:
         resource_context_parts.append(f"budget_pressure={budget_pressure}")
-    if not resource_context_parts:
-        resource_context_parts.append("resource_context=stable")
-
     compute_ratio = normalize_ratio(budget.get("compute_remaining_ratio"))
     token_ratio = normalize_ratio(budget.get("token_remaining_ratio"))
     time_ratio = normalize_ratio(budget.get("time_remaining_ratio"))
@@ -199,15 +222,15 @@ def derive_posture_baseline(
     if not current_phase_tasks and current_mission:
         current_phase_tasks = [current_mission]
 
-    validation_requirements = [f"validate before action: {item}" for item in red_lines[:3]]
-    validation_requirements.extend([f"protect objective continuity: {item}" for item in priority_order[:3]])
+    validation_requirements = [f"validate before action: {item}" for item in red_lines]
+    validation_requirements.extend([f"protect objective continuity: {item}" for item in priority_order])
 
-    allowed_directions = [f"advance current objective: {item}" for item in current_phase_tasks[:3]]
-    forbidden_directions = [f"avoid red-line direction: {item}" for item in red_lines[:3]]
+    allowed_directions = [f"advance current objective: {item}" for item in current_phase_tasks]
+    forbidden_directions = [f"avoid red-line direction: {item}" for item in red_lines]
     pause_conditions = [f"pause on budget exhaustion: {label}" for label, ratio in (("compute", compute_ratio), ("token", token_ratio), ("time", time_ratio)) if ratio and ratio < 0.15]
-    help_request_conditions = [f"request help for missing asset: {item}" for item in missing_assets[:3]]
-    confirmation_required_conditions = [f"confirmation required for unstable posture: {item}" for item in red_lines[:3]]
-    rollback_conditions = [f"rollback on forbidden direction: {item}" for item in forbidden_directions[:3]]
+    help_request_conditions = [f"request help for missing asset: {item}" for item in missing_assets]
+    confirmation_required_conditions = [f"confirmation required for unstable posture: {item}" for item in red_lines]
+    rollback_conditions = [f"rollback on forbidden direction: {item}" for item in forbidden_directions]
 
     for item in functional_postures:
         allowed_directions.extend(coerce_string_list(item.get("allowed_directions")))
@@ -244,7 +267,3 @@ def derive_posture_baseline(
             "rollback_conditions": list(dict.fromkeys(item for item in rollback_conditions if normalize_text(item))),
         },
     }
-
-
-def merge_string_lists(primary: list[str], baseline: list[str]) -> list[str]:
-    return list(dict.fromkeys(coerce_string_list(primary) + coerce_string_list(baseline)))

@@ -8,6 +8,7 @@ from pathlib import Path
 import logging
 import os
 import asyncio
+import time
 import traceback
 
 from typing import Any, Dict, List, Optional, Union
@@ -28,9 +29,10 @@ from zentex.foundation.specs.model_provider import (
 )
 from zentex.plugins.contracts import BasePluginSpec, PluginHealthStatus, PluginLifecycleStatus
 from zentex.plugins.service import CognitiveToolRegistry
-from zentex.tasks.service import TaskManagementService, TaskAutoLoopScheduler
+from zentex.tasks import TaskManagementService, TaskAutoLoopScheduler
 from zentex.memory.service import build_default_episode_graph_adapter, get_memory_service
 from zentex.memory.repair_scheduler import MemoryRepairScheduler
+from zentex.module_logs import get_module_log_service
 from zentex.audit.trace_store import AuditTraceStore
 from zentex.upgrade.service import (
     UpgradeAuditStore,
@@ -60,6 +62,12 @@ LLM_GUARDED_PREFIXES = (
     "/api/web/nine-questions",
     "/api/web/reflections",
     "/api/reflection",
+)
+
+_REQUEST_LOG_PREFIXES = (
+    "/api/web/health",
+    "/api/web/external-connectors",
+    "/api/web/nine-questions",
 )
 
 
@@ -273,6 +281,10 @@ def create_app(
     # Policy: Failure to initialize DI is catastrophic.
     WebConsoleContainer.initialize()
     logger.info("✓ WebConsoleContainer initialized successfully")
+    kernel_facade = WebConsoleContainer.get_kernel_service()
+    app.state.default_workspace = kernel_facade.get_config().default_workspace
+    app.state.workspace_store = kernel_facade.get_workspace_store()
+    app.state.system_identity_store = getattr(kernel_facade, "_system_identity_store", None)
 
     @app.exception_handler(ModelProviderError)
     async def model_provider_error_handler(request: Request, exc: ModelProviderError):  # type: ignore[no-untyped-def]
@@ -391,6 +403,8 @@ def create_app(
         from zentex.audit.service import get_service as get_audit_service
         resolved_audit_service = get_audit_service()
     app.state.audit_service = resolved_audit_service
+    module_log_service = get_module_log_service()
+    app.state.module_log_service = module_log_service
         
     # KuzuDB initialization moved to startup event for better performance
     app.state.kuzu_adapter = None 
@@ -516,7 +530,13 @@ def create_app(
         reflection_service=reflection_service,
         learning_service=learning_service,
         audit_service=resolved_audit_service,
+        module_log_service=module_log_service,
     )
+    for service_name in ("reflection_service", "learning_service"):
+        service = getattr(app.state, service_name, None)
+        attach_module_logs = getattr(service, "attach_module_log_service", None)
+        if callable(attach_module_logs):
+            attach_module_logs(module_log_service)
 
     if task_service is not None:
         attach_task_dependencies = getattr(task_service, "attach_dependencies", None)
@@ -537,6 +557,7 @@ def create_app(
             interval_seconds=int(os.getenv("ZENTEX_TASK_AUTO_LOOP_INTERVAL_SECONDS", "15")),
             batch_size=int(os.getenv("ZENTEX_TASK_AUTO_LOOP_BATCH_SIZE", "50")),
             enabled=task_auto_loop_enabled,
+            module_log_service=module_log_service,
         )
         app.state.task_auto_loop_scheduler = task_auto_loop_scheduler
 
@@ -553,14 +574,23 @@ def create_app(
             # 1. Initialize KuzuDB
             cluster_mode = os.environ.get("ZENTEX_CLUSTER_MODE", "false").lower() == "true"
             if not cluster_mode:
-                logger.info("Initializing KuzuDB graph client...")
+                kuzu_timeout_seconds = float(os.getenv("ZENTEX_KUZU_STARTUP_TIMEOUT_SECONDS", "5.0"))
+                logger.info("Initializing KuzuDB graph client with timeout %.1fs...", kuzu_timeout_seconds)
                 try:
-                    kuzu_adapter = build_default_episode_graph_adapter()
+                    kuzu_adapter = await asyncio.wait_for(
+                        asyncio.to_thread(build_default_episode_graph_adapter),
+                        timeout=kuzu_timeout_seconds,
+                    )
                     app.state.kuzu_adapter = kuzu_adapter
                     # Attach to the single MemoryService facade.
                     if hasattr(app.state.memory_service, "bind_episodic_adapter"):
                         app.state.memory_service.bind_episodic_adapter(kuzu_adapter)
                     logger.info("✓ KuzuDB initialized and attached to Memory Service")
+                except asyncio.TimeoutError:
+                    logger.warning(
+                        "KuzuDB graph client initialization timed out after %.1fs; continuing without episodic graph adapter.",
+                        kuzu_timeout_seconds,
+                    )
                 except Exception as exc:
                     logger.warning(
                         "KuzuDB graph client unavailable; continuing without episodic graph adapter: %s",
@@ -586,6 +616,7 @@ def create_app(
                 reflection_service=resolved_reflection_service,
                 upgrade_execution_service=getattr(app.state, "upgrade_execution_service", None),
                 interval_seconds=3600,
+                module_log_service=module_log_service,
             )
             app.state.nine_question_reflection_scheduler = scheduler
 
@@ -616,6 +647,7 @@ def create_app(
                 "yes",
                 "on",
             },
+            module_log_service=module_log_service,
         )
         app.state.memory_repair_scheduler = memory_repair_scheduler
 
@@ -639,6 +671,49 @@ def create_app(
         "/api/web/upgrades/llm/execute",
         "/api/web/upgrades/plugins/execute",
     )
+
+    @app.middleware("http")
+    async def request_timing_logger(request: Request, call_next):  # type: ignore[no-untyped-def]
+        started = time.monotonic()
+        path = request.url.path
+        method = request.method.upper()
+        request_id = f"{time.time_ns():x}"
+        trace_all = str(os.getenv("ZENTEX_HTTP_TRACE_ALL", "0")).strip().lower() in {"1", "true", "yes", "on"}
+        slow_threshold_seconds = float(os.getenv("ZENTEX_HTTP_SLOW_LOG_SECONDS", "2.0"))
+        should_trace = trace_all or any(path.startswith(prefix) for prefix in _REQUEST_LOG_PREFIXES)
+        client_host = request.client.host if request.client else "unknown"
+        if should_trace:
+            logger.info(
+                "[http] start request_id=%s method=%s path=%s client=%s",
+                request_id,
+                method,
+                path,
+                client_host,
+            )
+        try:
+            response = await call_next(request)
+        except Exception:
+            elapsed = time.monotonic() - started
+            logger.exception(
+                "[http] error request_id=%s method=%s path=%s elapsed=%.3fs",
+                request_id,
+                method,
+                path,
+                elapsed,
+            )
+            raise
+        elapsed = time.monotonic() - started
+        if should_trace or elapsed >= slow_threshold_seconds:
+            log = logger.warning if elapsed >= slow_threshold_seconds else logger.info
+            log(
+                "[http] end request_id=%s method=%s path=%s status=%s elapsed=%.3fs",
+                request_id,
+                method,
+                path,
+                response.status_code,
+                elapsed,
+            )
+        return response
 
     @app.middleware("http")
     async def llm_disable_guard(request: Request, call_next):  # type: ignore[no-untyped-def]

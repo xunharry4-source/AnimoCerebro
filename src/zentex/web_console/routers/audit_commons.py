@@ -148,6 +148,9 @@ async def query_audit_entries(
     page_size: int = 40,
     request_id: Optional[str] = None,
     decision_id: Optional[str] = None,
+    source_module: Optional[str] = None,
+    status: Optional[str] = None,
+    search: Optional[str] = None,
 ) -> AuditPagePayload:
     """Query audit entries from the canonical audit store."""
     try:
@@ -159,6 +162,9 @@ async def query_audit_entries(
             page_size=page_size,
             request_id=request_id,
             decision_id=decision_id,
+            source_module=source_module,
+            status=status,
+            search=search,
         )
     except Exception as exc:
         # Do not fake an empty audit page when the audit backend failed.

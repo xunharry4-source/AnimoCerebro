@@ -4,9 +4,9 @@ import { Alert, Box, Button, Card, CardContent, CircularProgress, Divider, Grid,
 import { useParams } from "react-router-dom";
 
 import {
+  NineQuestionItem,
   NineQuestionSandboxResponse,
-  ReportPayload,
-  fetchNineQuestionsReport,
+  fetchNineQuestionDetail,
   getQuestionDisplayLabel,
   runNineQuestionSandboxTest,
 } from "./nineQuestionsApi";
@@ -31,7 +31,7 @@ import {
   Q5PreprocessedEvidence,
   Q5WhatAmIAllowedToDoInferenceView,
   Q6PreprocessedEvidence,
-  Q6ForbiddenZoneInferenceView,
+  Q6ConsequenceInferenceView,
   Q7PreprocessedEvidence,
   Q7AlternativeStrategyInferenceView,
   Q8PreprocessedEvidence,
@@ -66,7 +66,7 @@ function renderJsonBlock(value: unknown, minHeight = 120) {
 export default function NineQuestionSandboxPage() {
   const { t } = useTranslation();
   const { q_id: qId = "" } = useParams();
-  const [report, setReport] = useState<ReportPayload | null>(null);
+  const [question, setQuestion] = useState<NineQuestionItem | null>(null);
   const [draftJson, setDraftJson] = useState("{}");
   const [loading, setLoading] = useState(true);
   const [running, setRunning] = useState(false);
@@ -81,18 +81,15 @@ export default function NineQuestionSandboxPage() {
     setLoading(true);
     setError(null);
     try {
-      const data = await fetchNineQuestionsReport();
-      setReport(data.report);
-      const question = data.report.questions.find((item) => item.question_id === qId);
-      setDraftJson(JSON.stringify(question?.context_updates || {}, null, 2));
+      const data = await fetchNineQuestionDetail(qId);
+      setQuestion(data);
+      setDraftJson(JSON.stringify(data.context_updates || {}, null, 2));
     } catch (err: any) {
       setError(err?.message || t("nineQuestions.fetchSandboxError"));
     } finally {
       setLoading(false);
     }
   };
-
-  const question = report?.questions.find((item) => item.question_id === qId);
 
   const handleFillLiveContext = () => {
     setDraftJson(JSON.stringify(question?.context_updates || {}, null, 2));
@@ -214,7 +211,7 @@ export default function NineQuestionSandboxPage() {
                   ) : qId === "q6" && result.preprocessed_evidence ? (
                     <Q6EvidencePanel
                       evidence={result.preprocessed_evidence as Q6PreprocessedEvidence}
-                      inference={result.inference_result as Q6ForbiddenZoneInferenceView}
+                      inference={result.inference_result as Q6ConsequenceInferenceView}
                       providerName={result.provider_name || null}
                       elapsedMs={result.elapsed_ms || 0}
                     />

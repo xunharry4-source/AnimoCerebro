@@ -12,7 +12,7 @@ from datetime import datetime
 from fastapi import APIRouter, HTTPException, Query
 from pydantic import BaseModel
 
-from zentex.tasks.service import get_service
+from zentex.tasks import get_service
 from zentex.web_console.models_observability import (
     DispatchExplanation,
     VerificationDetailExplanation,

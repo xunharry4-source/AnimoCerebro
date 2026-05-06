@@ -8,14 +8,6 @@ from zentex.common.nine_questions_prompts import (
     build_prompt_section,
 )
 
-_MAX_Q8_CONTEXT_CHARS = 4000
-_MAX_OBJECTIVE_CATALOG_CHARS = 2000
-_MAX_TASK_STATE_ITEMS = 6
-_MAX_TASK_STATE_ITEM_CHARS = 500
-_MAX_FUNCTIONAL_OBJECTIVES = 12
-_MAX_FUNCTIONAL_OBJECTIVE_CHARS = 800
-_MAX_ACTIVE_OBJECTIVES = 12
-_MAX_ACTIVE_OBJECTIVE_CHARS = 220
 _TASK_STATE_ALLOWED_KEYS = {
     "task_id",
     "id",
@@ -73,6 +65,8 @@ _Q8_FIELD_INTENT_MAP: dict[str, Any] = {
         "missing_critical_assets": ("list", 6, 180),
         "available_cognitive_tools": ("list", 6, 140),
         "available_execution_tools": ("list", 6, 140),
+        "functional_plugins": ("list", 12, 180),
+        "cognitive_plugins": ("list", 12, 180),
         "accessible_workspace_zones": ("list", 6, 140),
     },
     "q4": {
@@ -90,12 +84,18 @@ _Q8_FIELD_INTENT_MAP: dict[str, Any] = {
     },
     "q5": {
         "status": ("text", 80),
+        "current_authorization_scope": ("text", 180),
+        "contact_policies": ("list", 6, 180),
+        "organizational_boundaries": ("text", 180),
         "allowed_action_space": ("list", 8, 180),
         "forbidden_action_space": ("list", 8, 180),
         "requires_escalation_actions": ("list", 6, 180),
         "authorized_actions": ("list", 8, 160),
         "unauthorized_actions": ("list", 8, 180),
         "conditional_actions": ("list", 8, 180),
+        "objective_scope": ("text", 80),
+        "collaboration_available": ("bool",),
+        "authorization_limited": ("bool",),
     },
     "q6": {
         "status": ("text", 80),
@@ -107,13 +107,11 @@ _Q8_FIELD_INTENT_MAP: dict[str, Any] = {
     },
     "q7": {
         "status": ("text", 80),
-        "fallback_plans": ("list", 8, 180),
-        "degradation_strategies": ("list", 8, 180),
-        "collaboration_switches": ("list", 6, 180),
-        "exploratory_actions": ("list", 6, 180),
-        "capability_limits": ("list", 8, 180),
-        "permission_boundaries": ("list", 8, 180),
-        "resource_bottlenecks": ("list", 6, 180),
+        "current_red_line_hits": ("list", 8, 220),
+        "rejected_operation_records": ("list", 8, 220),
+        "ban_source_explanations": ("list", 8, 220),
+        "non_bypassable_constraints": ("list", 12, 220),
+        "question_driver_refs": ("list", 8, 180),
     },
 }
 
@@ -122,25 +120,18 @@ def _json(value: Any) -> str:
     return json.dumps(value, ensure_ascii=False, sort_keys=True, separators=(",", ":"), default=str)
 
 
-def _text(value: Any, *, max_chars: int, path: str, report: dict[str, Any]) -> str:
-    text = str(value or "").strip()
-    if len(text) > max_chars:
-        report["truncated_fields"].append({"path": path, "from": len(text), "to": max_chars})
-        return text[:max_chars]
-    return text
+def _text(value: Any, *, path: str, report: dict[str, Any]) -> str:
+    return str(value or "").strip()
 
 
-def _list(value: Any, *, max_count: int, max_chars: int, path: str, report: dict[str, Any]) -> list[str]:
+def _list(value: Any, *, path: str, report: dict[str, Any]) -> list[str]:
     if not isinstance(value, list):
         if value not in (None, "", {}, []):
             report["type_mismatches"].append({"path": path, "expected": "list", "actual": type(value).__name__})
         return []
     normalized: list[str] = []
     for index, item in enumerate(value):
-        if len(normalized) >= max_count:
-            report["truncated_fields"].append({"path": path, "from": len(value), "to": max_count})
-            break
-        text = _text(item, max_chars=max_chars, path=f"{path}[{index}]", report=report)
+        text = _text(item, path=f"{path}[{index}]", report=report)
         if text:
             normalized.append(text)
     return normalized
@@ -150,9 +141,9 @@ def _compact_by_spec(value: Any, spec: Any, *, path: str, report: dict[str, Any]
     if isinstance(spec, tuple):
         kind = spec[0]
         if kind == "text":
-            return _text(value, max_chars=int(spec[1]), path=path, report=report)
+            return _text(value, path=path, report=report)
         if kind == "list":
-            return _list(value, max_count=int(spec[1]), max_chars=int(spec[2]), path=path, report=report)
+            return _list(value, path=path, report=report)
         if kind == "bool":
             return bool(value)
         raise ValueError(f"Unsupported q8 prompt field spec kind: {kind}")
@@ -179,26 +170,17 @@ def _compact_by_spec(value: Any, spec: Any, *, path: str, report: dict[str, Any]
 
 
 def _enforce_total_snapshot_budget(snapshot: dict[str, Any], report: dict[str, Any]) -> dict[str, Any]:
-    compact = dict(snapshot)
-    while len(_json(compact)) > _MAX_Q8_CONTEXT_CHARS and compact:
-        removed_key = next((key for key in ("q3", "q1", "q2", "q7") if key in compact), None)
-        if removed_key is None:
-            removed_key = next(iter(compact))
-        compact.pop(removed_key, None)
-        report["budget_dropped_questions"].append(removed_key)
-    return compact
+    return dict(snapshot)
 
 
 def build_q8_prompt_snapshot(q1_q7_snapshot: dict[str, Any]) -> tuple[dict[str, Any], dict[str, Any]]:
     """Build the compact Q8 prompt snapshot using an explicit field-intent map."""
     report: dict[str, Any] = {
-        "max_context_chars": _MAX_Q8_CONTEXT_CHARS,
+        "no_truncation_policy": "Q8 prompt preprocessing does not truncate or drop fields for token budgets.",
         "missing_required_questions": [],
         "dropped_raw_fields": [],
         "dropped_unmapped_fields": [],
-        "truncated_fields": [],
         "type_mismatches": [],
-        "budget_dropped_questions": [],
     }
     raw = q1_q7_snapshot if isinstance(q1_q7_snapshot, dict) else {}
     compact: dict[str, Any] = {}
@@ -229,12 +211,11 @@ def _compact_task_state(persistent_task_state: Any, report: dict[str, Any]) -> A
                     continue
                 compact_item[key_text] = _text(
                     value,
-                    max_chars=_MAX_TASK_STATE_ITEM_CHARS,
                     path=f"{path}.{key_text}",
                     report=report,
                 )
             return compact_item
-        return _text(item, max_chars=_MAX_TASK_STATE_ITEM_CHARS, path=path, report=report)
+        return _text(item, path=path, report=report)
 
     if isinstance(persistent_task_state, dict):
         compact: dict[str, Any] = {}
@@ -242,28 +223,22 @@ def _compact_task_state(persistent_task_state: Any, report: dict[str, Any]) -> A
             if isinstance(value, list):
                 compact[str(key)] = [
                     _compact_task_item(item, f"task_state.{key}[{index}]")
-                    for index, item in enumerate(value[:_MAX_TASK_STATE_ITEMS])
+                    for index, item in enumerate(value)
                 ]
-                if len(value) > _MAX_TASK_STATE_ITEMS:
-                    report["truncated_fields"].append(
-                        {"path": f"task_state.{key}", "from": len(value), "to": _MAX_TASK_STATE_ITEMS}
-                    )
             else:
                 compact[str(key)] = _compact_task_item(value, f"task_state.{key}")
         return compact
     if isinstance(persistent_task_state, list):
-        if len(persistent_task_state) > 24:
-            report["truncated_fields"].append({"path": "task_state", "from": len(persistent_task_state), "to": 24})
         return [
             _compact_task_item(item, f"task_state[{index}]")
-            for index, item in enumerate(persistent_task_state[:24])
+            for index, item in enumerate(persistent_task_state)
         ]
     return []
 
 
 def _compact_functional_objectives(functional_objectives: list[dict[str, Any]], report: dict[str, Any]) -> list[dict[str, Any]]:
     compact: list[dict[str, Any]] = []
-    for index, item in enumerate(functional_objectives[:_MAX_FUNCTIONAL_OBJECTIVES]):
+    for index, item in enumerate(functional_objectives):
         if not isinstance(item, dict):
             report["type_mismatches"].append(
                 {"path": f"functional_objectives[{index}]", "expected": "dict", "actual": type(item).__name__}
@@ -274,16 +249,11 @@ def _compact_functional_objectives(functional_objectives: list[dict[str, Any]], 
             if key in item:
                 cleaned[key] = _text(
                     item.get(key),
-                    max_chars=_MAX_FUNCTIONAL_OBJECTIVE_CHARS,
                     path=f"functional_objectives[{index}].{key}",
                     report=report,
                 )
         if cleaned:
             compact.append(cleaned)
-    if len(functional_objectives) > _MAX_FUNCTIONAL_OBJECTIVES:
-        report["truncated_fields"].append(
-            {"path": "functional_objectives", "from": len(functional_objectives), "to": _MAX_FUNCTIONAL_OBJECTIVES}
-        )
     return compact
 
 
@@ -304,16 +274,11 @@ def build_q8_llm_request(
     compact_task_state = _compact_task_state(persistent_task_state, preprocessing_report)
     compact_functional_objectives = _compact_functional_objectives(functional_objectives, preprocessing_report)
     compact_active_objectives = [
-        _text(item, max_chars=_MAX_ACTIVE_OBJECTIVE_CHARS, path=f"active_objectives[{index}]", report=preprocessing_report)
-        for index, item in enumerate(active_objectives[:_MAX_ACTIVE_OBJECTIVES])
+        _text(item, path=f"active_objectives[{index}]", report=preprocessing_report)
+        for index, item in enumerate(active_objectives)
     ]
-    if len(active_objectives) > _MAX_ACTIVE_OBJECTIVES:
-        preprocessing_report["truncated_fields"].append(
-            {"path": "active_objectives", "from": len(active_objectives), "to": _MAX_ACTIVE_OBJECTIVES}
-        )
     compact_objective_catalog = _text(
         objective_catalog,
-        max_chars=_MAX_OBJECTIVE_CATALOG_CHARS,
         path="objective_catalog",
         report=preprocessing_report,
     )
@@ -358,10 +323,23 @@ def build_q8_llm_request(
             content=_json(compact_priority_baseline),
         ),
         build_prompt_section(
+            key="q5_dynamic_convergence_guard",
+            title="Q5 Dynamic Authorization Convergence Guard",
+            intent="Force Q8 objectives to shrink when Q5 collaboration or authorization is limited.",
+            purpose="Prevent high-permission or cross-brain objectives when Q5 forbids them.",
+            content=(
+                "如果 q1_q7_snapshot.q5.objective_scope 为 `single_brain_only`，"
+                "或 q1_q7_snapshot.q5.collaboration_available 为 false，"
+                "或 q1_q7_snapshot.q5.authorization_limited 为 true，"
+                "则 Q8 的 objective_profile 与 task_queue 必须收缩为单脑可完成目标，"
+                "不得生成跨脑委托、外部 Agent 求助或高权限执行任务。"
+            ),
+        ),
+        build_prompt_section(
             key="preprocessing_report",
             title="Q8 Prompt Preprocessing Report",
-            intent="Expose truncation, missing required upstreams, and dropped raw fields.",
-            purpose="Prevent silent degradation or hidden prompt-input loss.",
+            intent="Expose missing required upstreams and dropped raw/debug/unmapped fields.",
+            purpose="Prevent hidden prompt-input loss while preserving all allowed LLM input without truncation.",
             content=_json(preprocessing_report),
         ),
         build_prompt_section(
@@ -393,6 +371,9 @@ def build_q8_llm_request(
                 "- 不要使用 `constraints_adherence`\n"
                 "- 不要使用 `derived_capabilities`\n"
                 "- 不要把 `task_queue` 输出成数组\n"
+                "- 不要输出 Q9 的 `evaluation_profile`\n"
+                "- 不要输出 Q9 的 `evolution_profile`\n"
+                "- 不要输出 Q9 的 `escalation_profile`\n"
                 "- 不要输出任何解释文字、markdown、代码块"
             ),
         ),
@@ -414,3 +395,61 @@ def build_q8_llm_request(
         "prompt_sections": prompt_sections,
         "model_context": model_context,
     }
+
+
+def build_q8_staged_llm_request(
+    *,
+    system_prompt: str,
+    priority_baseline: dict[str, Any],
+    allowed_tasks: list[dict[str, Any]],
+    blocked_tasks: list[dict[str, Any]],
+    q1_llm_output: Any | None = None,
+    q7_snapshot: Any,
+    normalized_task_state: dict[str, list[dict[str, Any]]],
+    request_timeout_seconds: float,
+    request_scope: str = "internal",
+    q2_functional_plugins: list[str] | None = None,
+    q2_cognitive_plugins: list[str] | None = None,
+    q4_external_capabilities: dict[str, Any] | None = None,
+    q7_redlines: dict[str, Any] | None = None,
+    q1_q7_snapshot: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    if (request_scope or "").strip().lower() == "external":
+        from plugins.nine_questions.q8_what_should_i_do_now.external_tasks.llm_request import (
+            build_q8_external_staged_llm_request,
+        )
+
+        return build_q8_external_staged_llm_request(
+            system_prompt=system_prompt,
+            priority_baseline=priority_baseline,
+            allowed_tasks=allowed_tasks,
+            blocked_tasks=blocked_tasks,
+            q1_llm_output=q1_llm_output,
+            q7_snapshot=q7_snapshot,
+            normalized_task_state=normalized_task_state,
+            request_timeout_seconds=request_timeout_seconds,
+            q2_functional_plugins=q2_functional_plugins,
+            q2_cognitive_plugins=q2_cognitive_plugins,
+            q4_external_capabilities=q4_external_capabilities,
+            q7_redlines=q7_redlines,
+            q1_q7_snapshot=q1_q7_snapshot,
+        )
+
+    from plugins.nine_questions.q8_what_should_i_do_now.internal_tasks.llm_request import (
+        build_q8_internal_staged_llm_request,
+    )
+
+    return build_q8_internal_staged_llm_request(
+        system_prompt=system_prompt,
+        priority_baseline=priority_baseline,
+        allowed_tasks=allowed_tasks,
+        blocked_tasks=blocked_tasks,
+        q1_llm_output=q1_llm_output,
+        q7_snapshot=q7_snapshot,
+        normalized_task_state=normalized_task_state,
+        request_timeout_seconds=request_timeout_seconds,
+        q2_cognitive_plugins=q2_cognitive_plugins,
+        q2_functional_plugins=q2_functional_plugins,
+        q7_redlines=q7_redlines,
+        q1_q7_snapshot=q1_q7_snapshot,
+    )

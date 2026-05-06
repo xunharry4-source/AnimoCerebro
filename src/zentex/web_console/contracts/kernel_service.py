@@ -40,7 +40,7 @@ class SessionSnapshot(BaseModel):
             "example": {
                 "session_id": "sess-123",
                 "state_id": "state-456",
-                "workspace": "/home/user/project",
+                "workspace": "<workspace-path>",
                 "created_at": "2026-04-13T10:30:00Z",
                 "question_drivers": ["q1", "q2"],
             }
@@ -62,6 +62,7 @@ class NineQuestionStateSnapshot(BaseModel):
         description="Question IDs marked as needing recomputation",
     )
     question_snapshots: Dict[str, Dict[str, Any]] = Field(default_factory=dict)
+    question_snapshots_history: Dict[str, List[Dict[str, Any]]] = Field(default_factory=dict)
     last_refresh_reason: Optional[str] = None
     snapshot_version: int = 9  # Legacy field for compatibility
     updated_at: datetime = Field(default_factory=datetime.utcnow)
@@ -167,6 +168,27 @@ class KernelServiceFacade(ABC):
         pass
 
     @abstractmethod
+    def get_system_identity(self) -> dict[str, Any]:
+        """Get the single system role used by Q2 and downstream 9Q processing."""
+        pass
+
+    @abstractmethod
+    def update_system_identity(
+        self,
+        *,
+        role_name: str,
+        mission: str = "",
+        core_values: list[str] | str | None = None,
+    ) -> dict[str, Any]:
+        """Create or replace the single user-configured system role."""
+        pass
+
+    @abstractmethod
+    def reset_system_identity(self) -> dict[str, Any]:
+        """Clear the user-configured system role."""
+        pass
+
+    @abstractmethod
     def get_config(self) -> AppConfig:
         """Get application configuration
         
@@ -198,7 +220,12 @@ class KernelServiceFacade(ABC):
         pass
 
     @abstractmethod
-    def run_single_nine_question(self, question_id: str, max_retries: int = 1) -> Any:
+    def run_single_nine_question(
+        self,
+        question_id: str,
+        max_retries: int = 1,
+        context_overrides: dict[str, Any] | None = None,
+    ) -> Any:
         """Run exactly one nine-question in isolation without forcing downstream rerun."""
         pass
 

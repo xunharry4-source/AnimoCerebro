@@ -29,6 +29,7 @@ import HistoryIcon from "@mui/icons-material/History";
 import PendingIcon from "@mui/icons-material/Pending";
 import CheckCircleIcon from "@mui/icons-material/CheckCircle";
 import ErrorIcon from "@mui/icons-material/Error";
+import DeleteOutlineIcon from "@mui/icons-material/DeleteOutline";
 
 type CliToolDetail = {
   command_name: string;
@@ -43,6 +44,7 @@ type CliToolDetail = {
   requires_cloud_audit: boolean;
   status: string;
   help_doc_url?: string | null;
+  project_doc_url?: string | null;
   project_path?: string | null;
   project_name?: string | null;
   project_description?: string | null;
@@ -123,6 +125,7 @@ export default function CliToolDetailPage() {
   const [history, setHistory] = useState<ExecutionHistoryItem[]>([]);
   const [tasksLoading, setTasksLoading] = useState(false);
   const [historyLoading, setHistoryLoading] = useState(false);
+  const [deletingTool, setDeletingTool] = useState(false);
 
   useEffect(() => {
     if (toolName) {
@@ -192,6 +195,35 @@ export default function CliToolDetailPage() {
     setTabValue(newValue);
   };
 
+  const deleteToolRegistration = async () => {
+    if (!detail) return;
+    if (!window.confirm(t("cli.deleteConfirm", { name: detail.command_name }))) {
+      return;
+    }
+
+    setDeletingTool(true);
+    setError(null);
+    try {
+      const response = await fetch(`/api/web/cli-tools/${encodeURIComponent(detail.command_name)}`, {
+        method: "DELETE",
+      });
+      const payload = await response.json().catch(() => ({}));
+      if (!response.ok) {
+        const detailPayload = payload?.detail;
+        const message =
+          typeof detailPayload === "string"
+            ? detailPayload
+            : detailPayload?.operator_message || detailPayload?.message || t("cli.deleteFailed");
+        throw new Error(message);
+      }
+      navigate("/console/cli-tools");
+    } catch (err: any) {
+      setError(err?.message || t("cli.deleteFailed"));
+    } finally {
+      setDeletingTool(false);
+    }
+  };
+
   const getCreditLevelColor = (level: string) => {
     switch (level) {
       case "excellent":
@@ -259,9 +291,20 @@ export default function CliToolDetailPage() {
 
   return (
     <Box sx={{ p: 3 }}>
-      <Button startIcon={<ArrowBackIcon />} onClick={() => navigate("/console/cli-tools")} sx={{ mb: 2 }}>
-        {t("cli.backToCliList")}
-      </Button>
+      <Stack direction="row" spacing={1} sx={{ mb: 2 }}>
+        <Button startIcon={<ArrowBackIcon />} onClick={() => navigate("/console/cli-tools")}>
+          {t("cli.backToCliList")}
+        </Button>
+        <Button
+          color="error"
+          disabled={deletingTool}
+          startIcon={<DeleteOutlineIcon />}
+          onClick={() => void deleteToolRegistration()}
+          variant="outlined"
+        >
+          {t("cli.delete")}
+        </Button>
+      </Stack>
 
       {/* 工具基本信息卡片 */}
       <Card sx={{ mb: 3 }}>
@@ -331,6 +374,14 @@ export default function CliToolDetailPage() {
                   {t("cli.projectName")}
                 </Typography>
                 <Typography variant="body2">{detail.project_name}</Typography>
+              </Box>
+            )}
+            {detail.project_doc_url && (
+              <Box>
+                <Typography variant="subtitle2" color="text.secondary">
+                  {t("cli.projectDocUrl")}
+                </Typography>
+                <Typography variant="body2" sx={{ wordBreak: "break-all" }}>{detail.project_doc_url}</Typography>
               </Box>
             )}
           </Stack>

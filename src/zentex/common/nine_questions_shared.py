@@ -26,6 +26,92 @@ logger = logging.getLogger(__name__)
 _RUN_PARENT_REGISTRY: dict[int, "PersistentModuleRuns"] = {}
 _QUALIFIED_SNAPSHOT_STATUSES = {"completed", "ready"}
 _UNQUALIFIED_MODULE_STATUSES = {"failed", "missing", "degraded", "partial", "partial_failed", "abnormal", "stopped"}
+_QUESTION_LLM_OUTPUT_KEYS: dict[str, tuple[str, ...]] = {
+    "q1": (
+        "workspace_domain_inference",
+        "q1_scene_model",
+        "q1_uncertainty_profile",
+        "q1_llm_upgrade",
+    ),
+    "q2": (
+        "identity_kernel_snapshot",
+        "identity_kernel",
+        "asset_inventory",
+        "q2_asset_inventory",
+        "q2_internal_tool_asset_inventory",
+        "q2_external_tool_asset_inventory",
+        "unified_asset_inventory",
+        "resource_evaluation",
+        "q2_unified_asset_inventory",
+        "q2_resource_evaluation",
+        "q2_resource_status_humanized",
+    ),
+    "q3": (
+        "identity_kernel_snapshot",
+        "identity_kernel",
+        "Q3InferenceResult",
+        "q3_role_profile",
+        "q3_mission_boundary",
+        "mission_continuity_projection",
+    ),
+    "q4": (
+        "capability_boundary_profile",
+        "permission_profile",
+        "q4_capability_boundary_profile",
+        "q4_permission_profile",
+    ),
+    "q5": (
+        "authorization_boundary",
+        "q5_authorization_boundary",
+        "authorization_boundary_profile",
+        "q5_authorization_boundary_profile",
+        "q5_permission_boundary",
+        "q5_objective_convergence_guard",
+    ),
+    "q6": (
+        "forbidden_zone_profile",
+        "q6_forbidden_zone_profile",
+    ),
+    "q7": (
+        "red_line_assessment",
+        "q7_red_line_assessment",
+        "q7_non_bypassable_constraints",
+        "q7_current_red_line_hits",
+    ),
+    "q8": (
+        "objective_profile",
+        "task_queue",
+        "q8_objective_profile",
+        "q8_task_queue",
+        "q8_external_execution_tasks",
+        "q8_internal_cognitive_tasks",
+    ),
+    "q9": (
+        "current_action_plan",
+        "method_selection",
+        "required_resources",
+        "risk_assessment",
+        "expected_outcome",
+        "alternative_candidates",
+        "question_driver_refs",
+        "action_plan",
+        "q9_action_plan",
+        "evaluation_profile",
+        "evolution_profile",
+        "escalation_profile",
+        "q9_evaluation_profile",
+        "q9_evolution_profile",
+        "q9_escalation_profile",
+        "q9_internal_llm_input",
+        "q9_internal_llm_output",
+        "q9_external_llm_input",
+        "q9_external_llm_output",
+    ),
+}
+_PRESERVE_EMPTY_LLM_OUTPUT_KEYS: dict[str, set[str]] = {
+    "q8": {"q8_external_execution_tasks", "q8_internal_cognitive_tasks"},
+}
+_LLM_OUTPUT_METADATA_KEYS = ("summary", "confidence", "trace_id", "tool_id", "timestamp")
 
 
 def _as_dict(value: Any) -> dict[str, Any]:
@@ -50,8 +136,7 @@ def _coerce_timeout_seconds(*values: object, default: float = 240.0) -> float:
         except (TypeError, ValueError):
             continue
         if timeout > 0:
-            # Keep bounded to avoid unreasonably long provider waits from runtime noise.
-            return max(5.0, min(timeout, float(default)))
+            return max(5.0, timeout)
     return float(default)
 
 
@@ -94,6 +179,8 @@ class LLMServiceModelProviderAdapter:
         prompt: str,
         context: dict[str, Any],
         caller_context: Union[ModelProviderCallerContext, dict[str], Any],
+        max_output_tokens: Optional[int] = None,
+        metadata: Optional[Dict[str, Any]] = None,
     ) -> dict[str, Any]:
         if isinstance(caller_context, dict):
             normalized_caller_context = ModelProviderCallerContext.model_validate(caller_context)
@@ -112,13 +199,33 @@ class LLMServiceModelProviderAdapter:
             self._root_context.get("llm_request_timeout_seconds"),
             default=240.0,
         )
-        max_output_tokens = int(
-            context.get("max_output_tokens")
-            or context.get("llm_max_output_tokens")
-            or self._root_context.get("max_output_tokens")
-            or self._root_context.get("llm_max_output_tokens")
-            or 1024
+        caller_metadata = dict(metadata or {})
+        max_json_repair_attempts = _first_present(
+            caller_metadata,
+            "max_json_repair_attempts",
+            context,
+            "max_json_repair_attempts",
+            context,
+            "llm_max_json_repair_attempts",
+            self._root_context,
+            "max_json_repair_attempts",
+            self._root_context,
+            "llm_max_json_repair_attempts",
         )
+        resolved_max_output_tokens = _first_present(
+            {"max_output_tokens": max_output_tokens},
+            "max_output_tokens",
+            context,
+            "max_output_tokens",
+            context,
+            "llm_max_output_tokens",
+            self._root_context,
+            "max_output_tokens",
+            self._root_context,
+            "llm_max_output_tokens",
+        )
+        if resolved_max_output_tokens is not None:
+            resolved_max_output_tokens = int(resolved_max_output_tokens)
         temperature = float(
             context.get("temperature")
             or context.get("llm_temperature")
@@ -137,12 +244,14 @@ class LLMServiceModelProviderAdapter:
             model_provider=provider_key,
             model=model,
             temperature=temperature,
-            max_output_tokens=max_output_tokens,
+            max_output_tokens=resolved_max_output_tokens,
             metadata={
+                **caller_metadata,
                 "trace_id": normalized_caller_context.trace_id,
                 "question_driver_refs": list(normalized_caller_context.question_driver_refs),
                 # Keep provider-side wall clock below question-level timeout budgets.
                 "request_timeout_seconds": request_timeout_seconds,
+                "max_json_repair_attempts": max_json_repair_attempts,
             },
         )
         self.plugin_id = call.provider_key
@@ -156,6 +265,15 @@ class LLMServiceModelProviderAdapter:
             "total_tokens": call.usage.total_tokens,
         }
         return call.output
+
+
+def _first_present(*pairs: Any) -> Any:
+    for index in range(0, len(pairs), 2):
+        source = pairs[index]
+        key = pairs[index + 1]
+        if isinstance(source, dict) and key in source and source.get(key) is not None:
+            return source.get(key)
+    return None
 
 
 def require_model_provider(context: Dict[str, Any]) -> ModelProviderSpec:
@@ -262,6 +380,282 @@ def _extract_snapshot_diagnosis(snapshot: dict[str, Any]) -> dict[str, Any]:
     return {}
 
 
+def _compact_module_run_for_upstream(run: Any) -> dict[str, Any]:
+    if not isinstance(run, dict):
+        return {}
+    return {
+        key: deepcopy(run.get(key))
+        for key in (
+            "module_id",
+            "status",
+            "error_code",
+            "error_message",
+            "source",
+            "used_fallback",
+        )
+        if run.get(key) not in (None, "", [], {})
+    }
+
+
+def _compact_snapshot_diagnosis_for_upstream(snapshot: dict[str, Any]) -> dict[str, Any]:
+    diagnosis = _extract_snapshot_diagnosis(snapshot)
+    if not diagnosis:
+        return {}
+    compact = {
+        key: deepcopy(diagnosis.get(key))
+        for key in (
+            "authenticity_status",
+            "used_fallback",
+            "snapshot_fallback_used",
+            "upstream_degraded",
+        )
+        if diagnosis.get(key) not in (None, "", [], {})
+    }
+    module_runs = diagnosis.get("module_runs")
+    if isinstance(module_runs, list):
+        compact["module_runs"] = [
+            item
+            for item in (_compact_module_run_for_upstream(run) for run in module_runs)
+            if item
+        ]
+    return compact
+
+
+def _iter_snapshot_payloads_for_llm_output(snapshot: dict[str, Any]) -> list[dict[str, Any]]:
+    payloads: list[dict[str, Any]] = []
+    for key in ("result", "context_updates", "execution_result"):
+        payload = snapshot.get(key)
+        if isinstance(payload, dict):
+            payloads.append(payload)
+            nested_context = payload.get("context_updates")
+            if isinstance(nested_context, dict):
+                payloads.append(nested_context)
+            nested_result = payload.get("result")
+            if isinstance(nested_result, dict):
+                payloads.append(nested_result)
+    return payloads
+
+
+def project_authoritative_question_llm_output(
+    question_id: str,
+    snapshot: dict[str, Any],
+) -> dict[str, Any]:
+    """Return only the latest LLM-derived business output for one question."""
+    qid = str(question_id or snapshot.get("question_id") or "").strip().lower()
+    allowed_keys = set(_QUESTION_LLM_OUTPUT_KEYS.get(qid, ()))
+    preserve_empty_keys = _PRESERVE_EMPTY_LLM_OUTPUT_KEYS.get(qid, set())
+    table_llm_output = snapshot.get("llm_output")
+    projected: dict[str, Any] = {}
+    if isinstance(table_llm_output, dict):
+        projected = {
+            key: deepcopy(value)
+            for key, value in table_llm_output.items()
+            if value not in (None, "", [], {}) or key in preserve_empty_keys
+        }
+    if qid != "q2":
+        for payload in _iter_snapshot_payloads_for_llm_output(snapshot):
+            for key in allowed_keys:
+                value = payload.get(key)
+                if (value not in (None, "", [], {}) or key in preserve_empty_keys) and projected.get(key) in (None, "", [], {}):
+                    projected[key] = deepcopy(value)
+
+    # Normalize canonical aliases expected by downstream prompts/modules.
+    if qid == "q1":
+        domain = projected.get("workspace_domain_inference")
+        if isinstance(domain, dict):
+            try:
+                confidence = float(domain.get("confidence") or 0.5)
+            except (TypeError, ValueError):
+                confidence = 0.5
+            projected.setdefault(
+                "q1_scene_model",
+                {
+                    "primary_domain": domain.get("primary_domain"),
+                    "secondary_domains": domain.get("secondary_domains"),
+                    "suggested_first_step": domain.get("suggested_first_step"),
+                },
+            )
+            projected.setdefault(
+                "q1_uncertainty_profile",
+                {
+                    "risk_sources": domain.get("uncertainties"),
+                    "risk_summary": domain.get("reasoning_summary"),
+                    "uncertainty_intensity": max(0.0, min(1.0, 1.0 - confidence)),
+                },
+            )
+    elif qid == "q2":
+        if projected.get("q2_asset_inventory") in (None, "", [], {}) and projected.get("asset_inventory") not in (None, "", [], {}):
+            projected["q2_asset_inventory"] = projected.get("asset_inventory")
+        if projected.get("q2_unified_asset_inventory") in (None, "", [], {}) and projected.get("unified_asset_inventory") not in (None, "", [], {}):
+            projected["q2_unified_asset_inventory"] = projected.get("unified_asset_inventory")
+        if projected.get("q2_resource_evaluation") in (None, "", [], {}) and projected.get("resource_evaluation") not in (None, "", [], {}):
+            projected["q2_resource_evaluation"] = projected.get("resource_evaluation")
+    elif qid == "q3":
+        q3_result = projected.get("Q3InferenceResult")
+        q3_result = q3_result if isinstance(q3_result, dict) else {}
+        projected.setdefault("q3_role_profile", q3_result.get("RoleProfile"))
+        projected.setdefault("q3_mission_boundary", q3_result.get("MissionContinuityBoundary"))
+    elif qid == "q4":
+        projected.setdefault("q4_capability_boundary_profile", projected.get("capability_boundary_profile"))
+        projected.setdefault("q4_permission_profile", projected.get("permission_profile"))
+    elif qid == "q5":
+        projected.setdefault("q5_authorization_boundary", projected.get("authorization_boundary"))
+        projected.setdefault(
+            "q5_authorization_boundary_profile",
+            projected.get("authorization_boundary_profile") or projected.get("q5_permission_boundary"),
+        )
+        projected.setdefault("q5_permission_boundary", projected.get("q5_authorization_boundary_profile"))
+    elif qid == "q6":
+        projected.setdefault("q6_forbidden_zone_profile", projected.get("forbidden_zone_profile"))
+    elif qid == "q7":
+        projected.setdefault("q7_red_line_assessment", projected.get("red_line_assessment"))
+        assessment = _as_dict(projected.get("q7_red_line_assessment") or projected.get("red_line_assessment"))
+        if assessment:
+            projected.setdefault("q7_current_red_line_hits", assessment.get("current_red_line_hits"))
+            projected.setdefault("q7_rejected_operation_records", assessment.get("rejected_operation_records"))
+            projected.setdefault("q7_ban_source_explanations", assessment.get("ban_source_explanations"))
+            projected.setdefault("q7_non_bypassable_constraints", assessment.get("non_bypassable_constraints"))
+            projected.setdefault("q7_question_driver_refs", assessment.get("question_driver_refs"))
+    elif qid == "q8":
+        projected.setdefault("q8_objective_profile", projected.get("objective_profile"))
+        projected.setdefault("q8_task_queue", projected.get("task_queue"))
+    elif qid == "q9":
+        if "action_plan" not in projected and "current_action_plan" in projected:
+            projected["action_plan"] = {
+                key: projected.get(key)
+                for key in (
+                    "current_action_plan",
+                    "method_selection",
+                    "required_resources",
+                    "risk_assessment",
+                    "expected_outcome",
+                    "alternative_candidates",
+                    "question_driver_refs",
+                )
+                if key in projected
+            }
+        projected.setdefault("q9_action_plan", projected.get("action_plan"))
+        projected.setdefault("q9_evaluation_profile", projected.get("evaluation_profile"))
+        projected.setdefault("q9_evolution_profile", projected.get("evolution_profile"))
+        projected.setdefault("q9_escalation_profile", projected.get("escalation_profile"))
+
+    for key in _LLM_OUTPUT_METADATA_KEYS:
+        value = snapshot.get(key)
+        if value not in (None, "", [], {}):
+            projected[key] = deepcopy(value)
+    diagnosis = _compact_snapshot_diagnosis_for_upstream(snapshot)
+    if diagnosis:
+        projected[f"{qid}_execution_diagnosis"] = diagnosis
+    return {
+        key: value
+        for key, value in projected.items()
+        if value not in (None, "", [], {}) or key in preserve_empty_keys
+    }
+
+
+def build_authoritative_question_llm_snapshot(
+    question_id: str,
+    snapshot: dict[str, Any],
+) -> dict[str, Any]:
+    """Build a scoped upstream snapshot: LLM output plus minimal qualification data."""
+    qid = str(question_id or snapshot.get("question_id") or "").strip().lower()
+    llm_output = project_authoritative_question_llm_output(qid, snapshot)
+    diagnosis = _compact_snapshot_diagnosis_for_upstream(snapshot)
+    context_updates: dict[str, Any] = {}
+    if diagnosis:
+        context_updates[f"{qid}_execution_diagnosis"] = diagnosis
+    scoped_snapshot = {
+        "question_id": qid,
+        "summary": str(snapshot.get("summary") or llm_output.get("summary") or ""),
+        "confidence": snapshot.get("confidence"),
+        "trace_id": snapshot.get("trace_id"),
+        "tool_id": snapshot.get("tool_id"),
+        "timestamp": snapshot.get("timestamp") or snapshot.get("updated_at") or snapshot.get("generated_at"),
+        "result": llm_output,
+        "context_updates": context_updates,
+    }
+    llm_trace_payload = extract_authoritative_question_llm_trace(snapshot)
+    if llm_trace_payload:
+        scoped_snapshot["llm_trace_payload"] = llm_trace_payload
+    return scoped_snapshot
+
+
+def extract_authoritative_question_llm_trace(snapshot: dict[str, Any]) -> dict[str, Any]:
+    """Return the stored LLM trace payload for one question snapshot."""
+    if not isinstance(snapshot, dict):
+        return {}
+    candidates: list[dict[str, Any]] = []
+    direct_trace = snapshot.get("llm_trace_payload")
+    if isinstance(direct_trace, dict) and direct_trace:
+        candidates.append(direct_trace)
+    for key in ("context_updates", "result", "execution_result"):
+        payload = snapshot.get(key)
+        if not isinstance(payload, dict):
+            continue
+        nested_trace = payload.get("llm_trace_payload")
+        if isinstance(nested_trace, dict) and nested_trace:
+            candidates.append(nested_trace)
+    for candidate in candidates:
+        if isinstance(candidate.get("asset_scopes"), list) and candidate.get("asset_scopes"):
+            return deepcopy(candidate)
+    if candidates:
+        return deepcopy(candidates[0])
+    return {}
+
+
+def require_authoritative_question_llm_trace(
+    question_id: str,
+    snapshot: dict[str, Any],
+) -> dict[str, Any]:
+    """Fail closed unless the upstream question has a real persisted LLM trace."""
+    qid = str(question_id or snapshot.get("question_id") or "").strip().lower()
+    trace = extract_authoritative_question_llm_trace(snapshot)
+    if not trace:
+        raise RuntimeError(f"{qid} upstream LLM trace is missing")
+    error_type = str(trace.get("error_type") or "").strip()
+    error_message = str(trace.get("error_message") or trace.get("error") or "").strip()
+    if error_type or error_message:
+        raise RuntimeError(f"{qid} upstream LLM trace failed: {error_type or error_message}")
+
+    invocations = trace.get("invocations")
+    if not isinstance(invocations, list) or not invocations:
+        raise RuntimeError(f"{qid} upstream LLM trace invocations missing")
+
+    material_invocation_found = False
+    for index, invocation in enumerate(invocations):
+        if not isinstance(invocation, dict):
+            raise RuntimeError(f"{qid} upstream LLM trace invocation[{index}] is invalid")
+        invocation_error = str(invocation.get("error_type") or invocation.get("error_message") or invocation.get("error") or "").strip()
+        if invocation_error:
+            continue
+        provider_name = str(invocation.get("provider_name") or invocation.get("provider_plugin_id") or "").strip()
+        prompt = str(invocation.get("prompt") or "").strip()
+        context_payload = invocation.get("context_data") if isinstance(invocation.get("context_data"), dict) else invocation.get("context")
+        raw_response = invocation.get("raw_response") if invocation.get("raw_response") not in (None, "", [], {}) else invocation.get("result")
+        token_usage = invocation.get("token_usage")
+        if (
+            provider_name
+            and prompt
+            and isinstance(context_payload, dict)
+            and context_payload
+            and raw_response not in (None, "", [], {})
+            and isinstance(token_usage, dict)
+        ):
+            material_invocation_found = True
+    if not material_invocation_found:
+        raise RuntimeError(f"{qid} upstream LLM trace has no material request/result invocation")
+
+    if not str(trace.get("provider_name") or trace.get("provider_plugin_id") or "").strip():
+        raise RuntimeError(f"{qid} upstream LLM trace provider missing")
+    if not str(trace.get("prompt") or "").strip():
+        raise RuntimeError(f"{qid} upstream LLM trace prompt missing")
+    if not isinstance(trace.get("context_data"), dict) and not isinstance(trace.get("context"), dict):
+        raise RuntimeError(f"{qid} upstream LLM trace context missing")
+    if trace.get("raw_response") in (None, "", [], {}) and trace.get("result") in (None, "", [], {}):
+        raise RuntimeError(f"{qid} upstream LLM trace result missing")
+    return trace
+
+
 def _normalize_dirty_questions_from_state(context: Dict[str, Any]) -> set[str]:
     state_payload = _as_dict(context.get("nine_question_state"))
     dirty = state_payload.get("dirty_questions")
@@ -329,28 +723,12 @@ def get_authoritative_question_snapshot(
     return snapshot
 
 
-def merge_authoritative_question_payload(snapshot: dict[str, Any]) -> dict[str, Any]:
-    """Merge one stored question snapshot into a standard read model.
-
-    Read order is explicit:
-    1. `result`
-    2. `context_updates`
-    3. `execution_result`
-
-    This is intentionally per-question and replaces the old shared
-    `context_snapshot` contract for Q2-Q9 upstream reads.
-    """
-    merged: dict[str, Any] = {}
-    for key in ("result", "context_updates", "execution_result"):
-        payload = snapshot.get(key)
-        if isinstance(payload, dict):
-            merged.update(payload)
-    merged["summary"] = str(snapshot.get("summary") or "")
-    merged["confidence"] = snapshot.get("confidence")
-    merged["trace_id"] = snapshot.get("trace_id")
-    merged["tool_id"] = snapshot.get("tool_id")
-    merged["timestamp"] = snapshot.get("timestamp")
-    return merged
+def merge_authoritative_question_payload(
+    snapshot: dict[str, Any],
+    question_id: str = "",
+) -> dict[str, Any]:
+    """Return one stored question's latest LLM output as the upstream read model."""
+    return project_authoritative_question_llm_output(question_id, snapshot)
 
 
 def build_authoritative_question_context(
@@ -369,7 +747,7 @@ def build_authoritative_question_context(
         snapshot = _as_dict(snapshot_map.get(question_id))
         if not snapshot:
             continue
-        merged.update(merge_authoritative_question_payload(snapshot))
+        merged.update(merge_authoritative_question_payload(snapshot, question_id))
     return merged
 
 
@@ -380,7 +758,7 @@ def build_authoritative_question_bundle(
     """Return per-question merged payloads from authoritative stored snapshots."""
     snapshot_map = get_question_snapshot_map_from_context(context)
     return {
-        question_id: merge_authoritative_question_payload(_as_dict(snapshot_map.get(question_id)))
+        question_id: merge_authoritative_question_payload(_as_dict(snapshot_map.get(question_id)), question_id)
         for question_id in question_ids
     }
 
@@ -417,6 +795,13 @@ def json_safe_payload(value: Any) -> Any:
     if isinstance(value, dict):
         return {str(key): json_safe_payload(item) for key, item in value.items()}
     return None
+
+
+def log_payload_dump(value: Any) -> str:
+    try:
+        return json.dumps(value, ensure_ascii=False, sort_keys=True, default=str)
+    except Exception:
+        return str(value)
 
 
 def _is_real_service(candidate: Any) -> bool:
@@ -638,11 +1023,12 @@ def start_module_run(
     module_runs.append(run)
     if isinstance(module_runs, PersistentModuleRuns):
         _RUN_PARENT_REGISTRY[id(run)] = module_runs
-    logger.warning(
-        "nineq.module.started question_id=%s module_id=%s source=%s",
+    logger.info(
+        "[NINE QUESTIONS MODULE] START question=%s module=%s source=%s started_at=%s",
         run["question_id"],
         normalized_module_id,
         source,
+        run["started_at"],
     )
     return run
 
@@ -673,15 +1059,21 @@ def finish_module_run(
     run["used_fallback"] = used_fallback
     run["error_code"] = error_code
     run["error_message"] = error_message
-    logger.warning(
-        "nineq.module.finished question_id=%s module_id=%s status=%s duration_ms=%s fallback=%s trace_id=%s error_code=%s",
+    log_fn = logger.info if status in {"completed", "ready", "success"} and not error_code else logger.error
+    log_fn(
+        "[NINE QUESTIONS MODULE] END question=%s module=%s source=%s status=%s started_at=%s finished_at=%s duration_ms=%s fallback=%s trace_id=%s error_code=%s error_message=%s run=%s",
         str(run.get("question_id") or _derive_question_id_from_module(str(run.get("module_id") or ""))),
         str(run.get("module_id") or ""),
+        str(run.get("source") or ""),
         status,
+        str(run.get("started_at") or ""),
+        str(run.get("finished_at") or ""),
         duration_ms,
         used_fallback,
         _extract_run_trace_id(run),
         error_code,
+        error_message,
+        log_payload_dump(run),
     )
     _notify_module_run_parent(run)
     return run
@@ -695,6 +1087,16 @@ def fail_module_run(
     status: str = "failed",
     used_fallback: bool = False,
 ) -> dict[str, Any]:
+    logger.error(
+        "[NINE QUESTIONS MODULE] FAILED question=%s module=%s source=%s error_code=%s error_message=%s run=%s",
+        str(run.get("question_id") or _derive_question_id_from_module(str(run.get("module_id") or ""))),
+        str(run.get("module_id") or ""),
+        str(run.get("source") or ""),
+        error_code,
+        error_message,
+        log_payload_dump(run),
+        stack_info=True,
+    )
     return finish_module_run(
         run,
         status=status,
@@ -1149,6 +1551,14 @@ def record_plugin_attempt(
         "_started_perf": perf_counter(),
     }
     plugin_runs.append(run)
+    logger.info(
+        "[NINE QUESTIONS PLUGIN RUN] START plugin=%s feature=%s expected=%s attempted=%s input=%s",
+        plugin_id,
+        feature_code,
+        expected,
+        attempted,
+        log_payload_dump(run["input_summary"]),
+    )
     return run
 
 
@@ -1169,6 +1579,18 @@ def record_plugin_result(
     run["error_code"] = error_code
     run["error_message"] = error_message
     run["output_summary"] = output_summary or {}
+    log_fn = logger.info if status in {"completed", "done", "success"} and not error_code else logger.error
+    log_fn(
+        "[NINE QUESTIONS PLUGIN RUN] END plugin=%s feature=%s status=%s duration_ms=%s error_code=%s error_message=%s input=%s output=%s",
+        str(run.get("plugin_id") or ""),
+        str(run.get("feature_code") or ""),
+        status,
+        duration_ms,
+        error_code,
+        error_message,
+        log_payload_dump(run.get("input_summary") or {}),
+        log_payload_dump(run.get("output_summary") or {}),
+    )
     return run
 
 
@@ -1340,9 +1762,9 @@ def render_plugin_catalog(plugin_ids: list[str], *, heading: str) -> str:
     return render_human_readable_block(rows, heading=heading)
 
 
-def render_q3_asset_inventory(context: dict[str, Any]) -> str:
-    inventory = context.get("q3_humanized_asset_inventory") or context.get("q3_unified_asset_inventory") or {}
-    return render_human_readable_block(inventory, heading="Q3 资产清单")
+def render_q2_asset_inventory(context: dict[str, Any]) -> str:
+    inventory = context.get("q2_humanized_asset_inventory") or context.get("q2_unified_asset_inventory") or {}
+    return render_human_readable_block(inventory, heading="Q2 资产清单")
 
 
 def render_q4_boundary(context: dict[str, Any]) -> str:
@@ -1393,6 +1815,14 @@ def record_model_invoked(
     source: str,
     payload: Dict[str, Any],
 ):
+    logger.info(
+        "[NINE QUESTIONS MODEL INVOKED] source=%s trace=%s session=%s turn=%s payload=%s",
+        source,
+        trace_id,
+        session_id,
+        turn_id,
+        log_payload_dump(payload),
+    )
     store.write_entry(
         session_id=session_id,
         turn_id=turn_id,
@@ -1413,6 +1843,14 @@ def record_model_completed(
     source: str,
     payload: Dict[str, Any],
 ):
+    logger.info(
+        "[NINE QUESTIONS MODEL COMPLETED] source=%s trace=%s session=%s turn=%s payload=%s",
+        source,
+        trace_id,
+        session_id,
+        turn_id,
+        log_payload_dump(payload),
+    )
     store.write_entry(
         session_id=session_id,
         turn_id=turn_id,
@@ -1433,6 +1871,14 @@ def record_model_failed(
     source: str,
     payload: Dict[str, Any],
 ):
+    logger.error(
+        "[NINE QUESTIONS MODEL FAILED] source=%s trace=%s session=%s turn=%s payload=%s",
+        source,
+        trace_id,
+        session_id,
+        turn_id,
+        log_payload_dump(payload),
+    )
     store.write_entry(
         session_id=session_id,
         turn_id=turn_id,

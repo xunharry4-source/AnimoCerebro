@@ -28,8 +28,8 @@ from plugins.cognitive.failure_cluster.failure_mode_cluster_plugin import (
 )
 from plugins.memory.memory_extractor.memory_extractor_plugin import build_memory_extractor_plugin
 from plugins.nine_questions.q1_where_am_i import build_q1_where_am_i_plugin
-from plugins.nine_questions.q2_who_am_i import build_q2_who_am_i_plugin
-from plugins.nine_questions.q3_what_do_i_have import build_q3_what_do_i_have_plugin
+from plugins.nine_questions.q2_asset_inventory import build_q2_asset_inventory_plugin
+from plugins.nine_questions.q3_role_inference import build_q3_role_inference_plugin
 from plugins.nine_questions.q4_what_can_i_do import build_q4_what_can_i_do_plugin
 from plugins.nine_questions.q5_what_am_i_allowed_to_do import build_q5_what_am_i_allowed_to_do_plugin
 from plugins.nine_questions.q6_what_should_i_not_do import build_q6_what_should_i_not_do_plugin
@@ -133,8 +133,8 @@ __all__ = [
     "build_memory_extractor_plugin",
     "build_project_plan_document_plugin",
     "build_q1_where_am_i_plugin",
-    "build_q2_who_am_i_plugin",
-    "build_q3_what_do_i_have_plugin",
+    "build_q2_asset_inventory_plugin",
+    "build_q3_role_inference_plugin",
     "build_q4_what_can_i_do_plugin",
     "build_q5_what_am_i_allowed_to_do_plugin",
     "build_q6_what_should_i_not_do_plugin",

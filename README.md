@@ -47,7 +47,15 @@ AnimoCerebro is responsible for reasoning, role inference, goal generation, risk
 
 AnimoCerebro 负责推理、角色推断、目标生成、风险评估、记忆积累、委托建议和长期经验交换。它是 AI 实现高级认知和独立行动的核心引擎。
 
-**🎉 Major Version Update (v2.0)**: This project has undergone a significant architectural evolution with enhanced modularity, plugin architecture, and autonomous decision-making capabilities. 
+**🎉 Major Version Update (v2.1.0-alpha)**: This project has undergone a significant architectural evolution with enhanced modularity, plugin architecture, and autonomous decision-making capabilities.
+
+**Latest Update - Nine Questions Refactoring (30% Complete)**:
+- 🔄 **Major Nine Questions Framework Refactoring** in progress
+- ✅ Q1 (Evidence), Q3 (Inventory), Q8 (Planning), Q9 (Action) - Complete
+- 🔄 Q2, Q4-Q7 - In progress or planned
+- 🆕 External Connectors System for third-party integrations
+- 🆕 Enhanced Agent system with protocol documentation
+- 📊 See [Nine Questions Refactoring Progress](docs/NINE_QUESTIONS_REFACTORING_PROGRESS.md) for details 
 
 **New in v2.0**:
 - 🆕 Autonomous Control System (G31A) - Stimulus-driven task management

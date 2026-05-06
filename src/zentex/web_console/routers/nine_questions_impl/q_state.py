@@ -3,7 +3,8 @@ from __future__ import annotations
 
 
 import logging
-from datetime import datetime, timezone
+import asyncio
+import time
 from typing import Any
 
 from fastapi import HTTPException, Request
@@ -14,14 +15,52 @@ from zentex.web_console.dependencies import (
     get_nine_question_state_manager,
     get_session_manager,
 )
+from zentex.kernel.workspace_policy import resolve_q1_workspace_root
 
 logger = logging.getLogger(__name__)
+_SESSION_KERNEL_STEP_TIMEOUT_SECONDS = 15.0
+
+
+async def _run_sync_session_step(label: str, fn: Any) -> Any:
+    started = time.monotonic()
+    logger.info("[nine-questions] session step start step=%s", label)
+    try:
+        result = await asyncio.wait_for(
+            asyncio.to_thread(fn),
+            timeout=_SESSION_KERNEL_STEP_TIMEOUT_SECONDS,
+        )
+    except asyncio.TimeoutError:
+        logger.error(
+            "[nine-questions] session step timeout step=%s timeout=%.1fs elapsed=%.3fs",
+            label,
+            _SESSION_KERNEL_STEP_TIMEOUT_SECONDS,
+            time.monotonic() - started,
+        )
+        raise
+    except Exception:
+        logger.exception(
+            "[nine-questions] session step failed step=%s elapsed=%.3fs",
+            label,
+            time.monotonic() - started,
+        )
+        raise
+    logger.info(
+        "[nine-questions] session step complete step=%s elapsed=%.3fs",
+        label,
+        time.monotonic() - started,
+    )
+    return result
 
 
 def _get_nine_question_service(request: Request) -> NineQuestionService:
+    started = time.monotonic()
+    logger.info("[nine-questions] service resolve start")
+    facade = get_kernel_service_facade(request)
+    state_manager = get_nine_question_state_manager(request)
+    logger.info("[nine-questions] service resolve complete elapsed=%.3fs", time.monotonic() - started)
     return NineQuestionService(
-        facade=get_kernel_service_facade(request),
-        state_manager=get_nine_question_state_manager(request),
+        facade=facade,
+        state_manager=state_manager,
     )
 
 
@@ -36,31 +75,61 @@ async def _persist_kernel_nine_question_state(
 async def _ensure_kernel_backed_session(request: Request, session: Any) -> Any:
     facade = get_kernel_service_facade(request)
     session_mgr = get_session_manager(request)
-    workspace = getattr(session, "workspace", None) or getattr(request.app.state, "default_workspace", "/workspace")
+    started = time.monotonic()
+    logger.info(
+        "[nine-questions] ensure kernel-backed session start web_session_id=%s",
+        getattr(session, "session_id", None),
+    )
+    workspace = getattr(session, "workspace", None) or str(
+        resolve_q1_workspace_root(None, facade.get_workspace_store())
+    )
 
     session_id = getattr(session, "session_id", None)
-    if session_id and facade.get_session_meta(session_id):
+    if session_id and await _run_sync_session_step(
+        "kernel.get_session_meta",
+        lambda: facade.get_session_meta(session_id),
+    ):
         request.app.state.session = session
         request.app.state.active_session = session
+        logger.info(
+            "[nine-questions] ensure kernel-backed session reused web_session_id=%s elapsed=%.3fs",
+            session_id,
+            time.monotonic() - started,
+        )
         return session
 
-    active_kernel_sessions = facade.list_active_sessions()
+    active_kernel_sessions = await _run_sync_session_step(
+        "kernel.list_active_sessions",
+        facade.list_active_sessions,
+    )
     if active_kernel_sessions:
         kernel_session_id = active_kernel_sessions[0]
     else:
-        kernel_session_id = facade.create_kernel_session(user_id="web-console")
+        kernel_session_id = await _run_sync_session_step(
+            "kernel.create_kernel_session",
+            lambda: facade.create_kernel_session(user_id="web-console"),
+        )
 
     try:
+        logger.info("[nine-questions] session manager get_active_session start session_id=%s", kernel_session_id)
         resolved = await session_mgr.get_active_session(kernel_session_id)
     except ValueError:
+        logger.info("[nine-questions] session manager create_session start session_id=%s", kernel_session_id)
         resolved = await session_mgr.create_session(workspace=workspace, session_id=kernel_session_id)
 
     request.app.state.session = resolved
     request.app.state.active_session = resolved
+    logger.info(
+        "[nine-questions] ensure kernel-backed session complete kernel_session_id=%s elapsed=%.3fs",
+        kernel_session_id,
+        time.monotonic() - started,
+    )
     return resolved
 
 
 async def get_or_create_session(request: Request) -> Any:
+    started = time.monotonic()
+    logger.info("[nine-questions] get_or_create_session start")
     session_mgr = get_session_manager(request)
     if not session_mgr:
         raise HTTPException(status_code=503, detail="SessionManager not available")
@@ -70,19 +139,25 @@ async def get_or_create_session(request: Request) -> Any:
         session_id = getattr(session, "session_id", None) if session is not None else None
         if session_id:
             try:
+                logger.info("[nine-questions] existing app session found session_id=%s", session_id)
                 resolved = await session_mgr.get_active_session(session_id)
                 return await _ensure_kernel_backed_session(request, resolved)
             except ValueError:
                 logger.info("Discarding stale web-console session %s for nine-question flow", session_id)
 
+        logger.info("[nine-questions] session manager list_active_sessions start")
         active_sessions = await session_mgr.list_active_sessions()
+        logger.info("[nine-questions] session manager list_active_sessions complete count=%d", len(active_sessions))
         if active_sessions:
             resolved = active_sessions[0]
             return await _ensure_kernel_backed_session(request, resolved)
 
-        workspace = getattr(request.app.state, "default_workspace", "/workspace")
+        workspace = str(resolve_q1_workspace_root(None, get_kernel_service_facade(request).get_workspace_store()))
+        logger.info("[nine-questions] session manager create_session start workspace=%s", workspace)
         session = await session_mgr.create_session(workspace=workspace)
-        return await _ensure_kernel_backed_session(request, session)
+        resolved = await _ensure_kernel_backed_session(request, session)
+        logger.info("[nine-questions] get_or_create_session complete elapsed=%.3fs", time.monotonic() - started)
+        return resolved
     except Exception as e:
         logger.error("Session management error: %s", e, exc_info=True)
         raise HTTPException(status_code=503, detail="Failed to manage session")
@@ -102,23 +177,6 @@ def get_question_snapshot_map(state: Any) -> dict[str, dict[str, Any]]:
         snapshots = state.get("question_snapshots")
         if isinstance(snapshots, dict):
             return {str(key): value for key, value in snapshots.items() if isinstance(value, dict)}
-        responses = state.get("responses")
-        if isinstance(responses, dict):
-            normalized: dict[str, dict[str, Any]] = {}
-            state_timestamp = str(state.get("last_updated_at") or datetime.now(timezone.utc).isoformat())
-            for question_id, response in responses.items():
-                if not isinstance(response, dict):
-                    continue
-                normalized[str(question_id)] = {
-                    "tool_id": f"nine_questions.{question_id}",
-                    "summary": str(response.get("answer") or ""),
-                    "confidence": float(response.get("confidence") or 0.0),
-                    "result": response,
-                    "context_updates": {},
-                    "trace_id": str(response.get("trace_id") or f"{question_id}:no-trace"),
-                    "timestamp": str(response.get("timestamp") or state_timestamp),
-                }
-            return normalized
         return {}
 
     snapshots = getattr(state, "question_snapshots", None)

@@ -9,6 +9,8 @@ request, checks runtime readiness, and returns a candidate plan that can later
 be executed by a real optimization worker.
 """
 
+from pathlib import Path
+
 from zentex.upgrade.llm.models import LLMUpgradeCandidate, LLMUpgradeRequest
 from zentex.upgrade.base_models import SelfUpgradeProposal
 from typing import Any
@@ -65,7 +67,7 @@ def list_prompt_upgrade_contracts() -> list[ModulePromptUpgradeContract]:
         ModulePromptUpgradeContract(
             prompt_id="upgrade.llm.dspy_primitive_generation",
             module_id="upgrade.llm",
-            prompt_file_path="/Users/harry/Documents/git/AnimoCerebro-V2/src/zentex/upgrade/llm/prompt_builders.py",
+            prompt_file_path=str(Path(__file__).resolve().with_name("prompt_builders.py")),
             prompt_builder_name="build_dspy_primitive_generation_request",
             prompt_builder_symbol="zentex.upgrade.llm.prompt_builders.build_dspy_primitive_generation_request",
             target_component="upgrade.llm.dspy_primitive_generation.prompt",
@@ -86,7 +88,7 @@ def list_prompt_upgrade_contracts() -> list[ModulePromptUpgradeContract]:
         ModulePromptUpgradeContract(
             prompt_id="upgrade.llm.optimization_needs",
             module_id="upgrade.llm",
-            prompt_file_path="/Users/harry/Documents/git/AnimoCerebro-V2/src/zentex/upgrade/llm/prompt_builders.py",
+            prompt_file_path=str(Path(__file__).resolve().with_name("prompt_builders.py")),
             prompt_builder_name="build_optimization_needs_request",
             prompt_builder_symbol="zentex.upgrade.llm.prompt_builders.build_optimization_needs_request",
             target_component="upgrade.llm.optimization_needs.prompt",
@@ -106,7 +108,7 @@ def list_prompt_upgrade_contracts() -> list[ModulePromptUpgradeContract]:
         ModulePromptUpgradeContract(
             prompt_id="upgrade.llm.target_identification",
             module_id="upgrade.llm",
-            prompt_file_path="/Users/harry/Documents/git/AnimoCerebro-V2/src/zentex/upgrade/llm/prompt_builders.py",
+            prompt_file_path=str(Path(__file__).resolve().with_name("prompt_builders.py")),
             prompt_builder_name="build_target_identification_request",
             prompt_builder_symbol="zentex.upgrade.llm.prompt_builders.build_target_identification_request",
             target_component="upgrade.llm.target_identification.prompt",

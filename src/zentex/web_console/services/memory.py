@@ -52,6 +52,8 @@ class _ModelDumpLike(Protocol):
 
 
 class _EnhancedMemoryServiceLike(Protocol):
+    def build_overview_snapshot(self) -> dict[str, Any]: ...
+
     def query_managed_records(self, *args: Any, **kwargs: Any) -> list[Any]: ...
 
     def list_managed_records(self, *args: Any, **kwargs: Any) -> list[Any]: ...
@@ -118,25 +120,25 @@ def build_memory_audit_event_item(event: _ModelDumpLike) -> EnhancedMemoryAuditE
 def build_enhanced_memory_overview(
     service: _EnhancedMemoryServiceLike,
 ) -> EnhancedMemoryOverviewPayload:
-    managed = service.list_managed_records(limit=10000)
-    health_snapshot = service.get_health_snapshot()
+    snapshot = service.build_overview_snapshot()
+    health_snapshot = dict(snapshot.get("health_snapshot") or {})
     return EnhancedMemoryOverviewPayload(
-        semantic_count=len(service.list_semantic_records()),
-        procedural_count=len(service.list_procedural_records()),
-        episodic_count=len(service.list_episodic_records()),
-        active_count=sum(1 for item in managed if item.status == "active"),
-        deprecated_count=sum(1 for item in managed if item.status == "deprecated"),
-        archived_count=sum(1 for item in managed if item.status == "archived"),
-        suspect_count=sum(1 for item in managed if item.trust_level == "suspect"),
+        semantic_count=int(snapshot.get("semantic_count", 0)),
+        procedural_count=int(snapshot.get("procedural_count", 0)),
+        episodic_count=int(snapshot.get("episodic_count", 0)),
+        active_count=int(snapshot.get("active_count", 0)),
+        deprecated_count=int(snapshot.get("deprecated_count", 0)),
+        archived_count=int(snapshot.get("archived_count", 0)),
+        suspect_count=int(snapshot.get("suspect_count", 0)),
         health_status=str(health_snapshot.get("health_status", "unknown")),
-        projection_failures=service.list_projection_failures(),
-        initialization_failures=service.list_initialization_failures(),
-        governance_failures=service.list_governance_failures(),
+        projection_failures=list(snapshot.get("projection_failures") or []),
+        initialization_failures=list(snapshot.get("initialization_failures") or []),
+        governance_failures=list(snapshot.get("governance_failures") or []),
         package_imports=int(health_snapshot.get("package_imports", 0)),
         contamination_events=int(health_snapshot.get("contamination_events", 0)),
         backends=[
             MemoryBackendStatusItem.model_validate(item.model_dump())
-            for item in service.get_backend_status()
+            for item in list(snapshot.get("backends") or [])
         ],
     )
 

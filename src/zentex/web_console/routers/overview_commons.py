@@ -55,7 +55,7 @@ async def query_runtime_overview(
     
     # Identify the primary active session
     active_sessions = facade.list_active_sessions()
-    session_id = active_sessions[0] if active_sessions else "web-console"
+    session_id = active_sessions[0] if active_sessions else "zentex-default-session"
 
     try:
         # Build payload using facade and specific services

@@ -12,10 +12,10 @@
 
 当前真实关键入口：
 
-- [service.py](/Users/harry/Documents/git/AnimoCerebro-V2/src/zentex/upgrade/service.py)
-- [execution.py](/Users/harry/Documents/git/AnimoCerebro-V2/src/zentex/upgrade/execution.py)
-- [management.py](/Users/harry/Documents/git/AnimoCerebro-V2/src/zentex/upgrade/management.py)
-- [ledger.py](/Users/harry/Documents/git/AnimoCerebro-V2/src/zentex/upgrade/ledger.py)
+- [service.py](src/zentex/upgrade/service.py)
+- [execution.py](src/zentex/upgrade/execution.py)
+- [management.py](src/zentex/upgrade/management.py)
+- [ledger.py](src/zentex/upgrade/ledger.py)
 
 ## Runtime Model / 当前运行模型
 
@@ -34,7 +34,7 @@
 
 ### 2. Execution / 执行
 
-[execution.py](/Users/harry/Documents/git/AnimoCerebro-V2/src/zentex/upgrade/execution.py) 是当前真实执行边界。
+[execution.py](src/zentex/upgrade/execution.py) 是当前真实执行边界。
 
 它负责：
 
@@ -53,8 +53,8 @@
 
 其中：
 
-- [management.py](/Users/harry/Documents/git/AnimoCerebro-V2/src/zentex/upgrade/management.py) 负责管理状态
-- [ledger.py](/Users/harry/Documents/git/AnimoCerebro-V2/src/zentex/upgrade/ledger.py) 负责审计与记忆账本
+- [management.py](src/zentex/upgrade/management.py) 负责管理状态
+- [ledger.py](src/zentex/upgrade/ledger.py) 负责审计与记忆账本
 
 `UpgradeManagementStore` 现在不是简单 JSON 文件，而是展开字段的 SQLite schema，并且查询和统计已直接走 SQL。
 
@@ -71,8 +71,8 @@
 
 核心文件：
 
-- [llm/runtime.py](/Users/harry/Documents/git/AnimoCerebro-V2/src/zentex/upgrade/llm/runtime.py)
-- [llm/prompt_optimizer.py](/Users/harry/Documents/git/AnimoCerebro-V2/src/zentex/upgrade/llm/prompt_optimizer.py)
+- [llm/runtime.py](src/zentex/upgrade/llm/runtime.py)
+- [llm/prompt_optimizer.py](src/zentex/upgrade/llm/prompt_optimizer.py)
 
 当前执行约束：
 
@@ -98,17 +98,17 @@
 
 当前关键文件：
 
-- [llm/prompt_builders.py](/Users/harry/Documents/git/AnimoCerebro-V2/src/zentex/upgrade/llm/prompt_builders.py)
-- [skills/atomic_planner_llm_prompt.py](/Users/harry/Documents/git/AnimoCerebro-V2/src/zentex/upgrade/skills/atomic_planner_llm_prompt.py)
-- [skills/auto_debugger_llm_prompt.py](/Users/harry/Documents/git/AnimoCerebro-V2/src/zentex/upgrade/skills/auto_debugger_llm_prompt.py)
-- [skills/auto_reviewer_llm_prompt.py](/Users/harry/Documents/git/AnimoCerebro-V2/src/zentex/upgrade/skills/auto_reviewer_llm_prompt.py)
-- [ai_executors_llm_prompt.py](/Users/harry/Documents/git/AnimoCerebro-V2/src/zentex/upgrade/ai_executors_llm_prompt.py)
+- [llm/prompt_builders.py](src/zentex/upgrade/llm/prompt_builders.py)
+- [skills/atomic_planner_llm_prompt.py](src/zentex/upgrade/skills/atomic_planner_llm_prompt.py)
+- [skills/auto_debugger_llm_prompt.py](src/zentex/upgrade/skills/auto_debugger_llm_prompt.py)
+- [skills/auto_reviewer_llm_prompt.py](src/zentex/upgrade/skills/auto_reviewer_llm_prompt.py)
+- [ai_executors_llm_prompt.py](src/zentex/upgrade/ai_executors_llm_prompt.py)
 
 这些 prompt 已 section 化，并由各自 `service.py` 提供升级合同：
 
-- [llm/service.py](/Users/harry/Documents/git/AnimoCerebro-V2/src/zentex/upgrade/llm/service.py)
-- [skills/service.py](/Users/harry/Documents/git/AnimoCerebro-V2/src/zentex/upgrade/skills/service.py)
-- [service.py](/Users/harry/Documents/git/AnimoCerebro-V2/src/zentex/upgrade/service.py)
+- [llm/service.py](src/zentex/upgrade/llm/service.py)
+- [skills/service.py](src/zentex/upgrade/skills/service.py)
+- [service.py](src/zentex/upgrade/service.py)
 
 ## Workflow Integration / 统一任务集成
 
@@ -119,7 +119,7 @@
 
 同步桥接在：
 
-- [tasks/integration/workflow_bridge.py](/Users/harry/Documents/git/AnimoCerebro-V2/src/zentex/tasks/integration/workflow_bridge.py)
+- [tasks/integration/workflow_bridge.py](src/zentex/tasks/integration/workflow_bridge.py)
 
 当前同步内容包括：
 

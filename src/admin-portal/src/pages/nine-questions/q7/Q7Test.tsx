@@ -43,13 +43,11 @@ export const Q7Test: React.FC = () => {
       // 物理接口绑定: GET /api/web/nine-questions/q7
       const question = await fetchNineQuestionDetail(qId);
       setDraftJson(JSON.stringify(question?.context_updates || {
-        resource_bottlenecks: ["CPU THREAD EXHAUSTION", "RATE_LIMIT_REACHED"],
-        capability_limits: ["CANNOT_EXECUTE_HIGH_COMPUTE"],
-        permission_boundaries: ["READ_ONLY_ACCESS"],
-        absolute_red_lines: ["DO_NOT_BYPASS_THROTTLE"],
-        historical_failure_patches: [
-          "2023-10: Tried forcing computation limits down causing an outage. We must use degradation logic."
-        ]
+        identity_kernel_constraints: ["dynamic goals cannot override non-bypassable constraints"],
+        authorization_boundary_constraints: ["READ_ONLY_ACCESS", "requires_human_confirmation=true"],
+        safety_rejection_history: ["G12 rejected force-write operation without confirmation"],
+        procedural_memory_constraints: ["Do not bypass throttle or cloud audit for speed"],
+        non_bypassable_constraints: ["DO_NOT_BYPASS_THROTTLE"],
       }, null, 2));
     } catch (err: any) {
       setErrorObj({ detail: err?.message || "加载 Q7 测试环境失败", error_code: "SANDBOX_SEED_ERROR" });
@@ -109,7 +107,7 @@ export const Q7Test: React.FC = () => {
             fullWidth
             color="warning"
           >
-            {running ? "执行降级预案推演..." : "发起极限情况熔断推断"}
+            {running ? "执行红线评估..." : "发起红线约束推断"}
           </Button>
 
           {errorObj && (
@@ -121,8 +119,8 @@ export const Q7Test: React.FC = () => {
         </Grid>
 
         <Grid size={{ xs: 12, md: 7 }}>
-          <Typography variant="h6" gutterBottom>沙箱降级策略评估结果 (Sandbox Results)</Typography>
-          {!result && !errorObj && <Alert severity="info" variant="outlined">在此模拟网络全断或额度耗尽时的兜底推演...</Alert>}
+          <Typography variant="h6" gutterBottom>沙箱红线评估结果 (Sandbox Results)</Typography>
+          {!result && !errorObj && <Alert severity="info" variant="outlined">在此模拟安全拒绝、授权不足或程序记忆禁令下的红线推断。</Alert>}
           
           {result && (
             <Stack spacing={3}>

@@ -101,7 +101,7 @@ class AutonomousControlLoop:
         ordered = sorted(self._tasks.values(), key=lambda item: item.priority, reverse=True)
         mapping = {
             "q1_where_am_i": "stimulus aggregation",
-            "q3_what_do_i_have": "memory_refs and agent_refs",
+            "q3_role_inference": "memory_refs and agent_refs",
             "q4_what_can_i_do": "feasibility from budget and risk",
             "q8_what_should_i_do_now": [task.task_id for task in ordered],
             "q9_how_should_i_act": "state machine transition with audit",

@@ -7,6 +7,7 @@ from zentex.llm.gateway import (
     LLMTokenUsage,
 )
 from zentex.llm.service import LLMService, get_llm_service
+from zentex.llm.usage_store import LLMUsageEvent, LLMUsageStore
 
 __all__ = [
     "LLMGateway",
@@ -14,6 +15,8 @@ __all__ = [
     "LLMTokenUsage",
     "LLMService",
     "get_llm_service",
+    "LLMUsageEvent",
+    "LLMUsageStore",
     "LLMResponseCache",
     "CacheEntry",
 ]

@@ -32,6 +32,7 @@ import {
   ErrorOutline as FailedIcon,
   PauseCircleOutline as PendingIcon,
   Close as CloseIcon,
+  DeleteOutline as DeleteOutlineIcon,
 } from "@mui/icons-material";
 import { DataGrid, GridColDef } from "@mui/x-data-grid";
 
@@ -85,6 +86,7 @@ const McpServerDetail: React.FC = () => {
   const [error, setError] = useState<string | null>(null);
   const [tabValue, setTabValue] = useState(0);
   const [creditInfoOpen, setCreditInfoOpen] = useState(false);
+  const [deletingServer, setDeletingServer] = useState(false);
 
   useEffect(() => {
     if (server_id) {
@@ -132,75 +134,31 @@ const McpServerDetail: React.FC = () => {
     }
   };
 
-  // 生成模拟的信用分历史数据（用于趋势图）
-  const generateCreditHistory = (): number[] => {
-    if (!data) return [];
-    // 基于当前信用分生成最近7次的模拟历史
-    const currentScore = data.credit_score;
-    const history = [currentScore];
-    for (let i = 1; i < 7; i++) {
-      // 模拟波动：±5分
-      const variation = Math.floor(Math.random() * 11) - 5;
-      const prevScore = history[i - 1];
-      history.push(Math.max(0, Math.min(100, prevScore + variation)));
+  const deleteServerRegistration = async () => {
+    if (!data || !server_id) return;
+    if (!window.confirm(t("mcp.deleteConfirm", { name: data.server_id }))) {
+      return;
     }
-    return history.reverse();
-  };
 
-  // 渲染简单的SVG折线图
-  const renderMiniChart = (scores: number[]) => {
-    if (scores.length === 0) return null;
-    
-    const width = 200;
-    const height = 50;
-    const padding = 5;
-    const maxScore = 100;
-    
-    // 计算坐标点
-    const points = scores.map((score, index) => {
-      const x = padding + (index / (scores.length - 1)) * (width - 2 * padding);
-      const y = height - padding - (score / maxScore) * (height - 2 * padding);
-      return `${x},${y}`;
-    }).join(' ');
-    
-    // 确定线条颜色
-    const avgScore = scores.reduce((a, b) => a + b, 0) / scores.length;
-    const lineColor = avgScore > 90 ? '#4caf50' : avgScore > 70 ? '#ff9800' : '#f44336';
-    
-    return (
-      <svg width={width} height={height} style={{ display: 'block', margin: '0 auto' }}>
-        {/* 背景网格 */}
-        <line x1={padding} y1={height / 2} x2={width - padding} y2={height / 2} 
-              stroke="rgba(255,255,255,0.1)" strokeWidth="1" />
-        
-        {/* 折线 */}
-        <polyline
-          fill="none"
-          stroke={lineColor}
-          strokeWidth="2"
-          points={points}
-          strokeLinecap="round"
-          strokeLinejoin="round"
-        />
-        
-        {/* 数据点 */}
-        {scores.map((score, index) => {
-          const x = padding + (index / (scores.length - 1)) * (width - 2 * padding);
-          const y = height - padding - (score / maxScore) * (height - 2 * padding);
-          return (
-            <circle
-              key={index}
-              cx={x}
-              cy={y}
-              r="3"
-              fill="white"
-              stroke={lineColor}
-              strokeWidth="2"
-            />
-          );
-        })}
-      </svg>
-    );
+    setDeletingServer(true);
+    setError(null);
+    try {
+      const response = await fetch(`/api/web/mcp-servers/${encodeURIComponent(server_id)}`, {
+        method: "DELETE",
+      });
+      const payload = await response.json().catch(() => ({}));
+      if (!response.ok) {
+        const detail = payload?.detail;
+        const message =
+          typeof detail === "string" ? detail : detail?.operator_message || detail?.message || t("mcp.deleteFailed");
+        throw new Error(message);
+      }
+      navigate("/console/mcp-servers");
+    } catch (err: any) {
+      setError(err?.message || t("mcp.deleteFailed"));
+    } finally {
+      setDeletingServer(false);
+    }
   };
 
   const taskColumns: GridColDef[] = [
@@ -264,9 +222,20 @@ const McpServerDetail: React.FC = () => {
               </Typography>
             </Stack>
           </Box>
-          <Button variant="outlined" startIcon={<ArrowBackIcon />} onClick={() => navigate("/console/mcp-servers")}>
-            {t("mcp.backToDashboard")}
-          </Button>
+          <Stack direction="row" spacing={1}>
+            <Button variant="outlined" startIcon={<ArrowBackIcon />} onClick={() => navigate("/console/mcp-servers")}>
+              {t("mcp.backToDashboard")}
+            </Button>
+            <Button
+              color="error"
+              disabled={deletingServer}
+              startIcon={<DeleteOutlineIcon />}
+              onClick={() => void deleteServerRegistration()}
+              variant="outlined"
+            >
+              {t("mcp.deleteServer")}
+            </Button>
+          </Stack>
         </Stack>
 
         <Grid container spacing={3}>
@@ -313,14 +282,6 @@ const McpServerDetail: React.FC = () => {
                       <HelpIcon fontSize="small" />
                     </IconButton>
                   </Stack>
-                  
-                  {/* 信用分趋势图 */}
-                  <Box sx={{ mt: 2, width: '100%' }}>
-                    <Typography variant="caption" sx={{ opacity: 0.8, display: 'block', mb: 1 }}>
-                      {t("mcp.recentRatingTrend")}
-                    </Typography>
-                    {renderMiniChart(generateCreditHistory())}
-                  </Box>
                 </Stack>
                 <Divider sx={{ borderColor: 'rgba(255,255,255,0.1)', my: 2 }} />
                 <Stack spacing={1.5}>

@@ -30,6 +30,7 @@ from zentex.web_console.services.plugins import (
     force_disable_managed_plugin,
     run_managed_plugin_test,
 )
+from .module_log_writer import record_module_management_log
 
 logger = logging.getLogger(__name__)
 
@@ -367,11 +368,23 @@ async def force_enable_plugin(
         )
         
         logger.info(f"Force enabled plugin: {plugin_id}")
-        
-        return build_force_enable_response(
+        response = build_force_enable_response(
             plugin_service=session.plugin_service,
             plugin_id=plugin_id,
         )
+        record_module_management_log(
+            request,
+            source_module="plugin",
+            module_label="插件",
+            action="status_change",
+            action_label="已强制启用",
+            object_id=plugin_id,
+            before_status=f"{plugin_status.lifecycle_status}/{plugin_status.operational_status}",
+            after_status=f"{response.plugin.lifecycle_status}/{response.plugin.operational_status}",
+            reason=payload.audit_reason or "操作员强制启用插件",
+            details={"feature_code": response.plugin.feature_code},
+        )
+        return response
         
     except HTTPException:
         raise
@@ -424,8 +437,20 @@ async def force_disable_plugin(
         
         logger.info(f"Force disabled plugin: {plugin_id}")
         
-        # Return updated status
-        return await _get_plugin_status_item(request, plugin_id)
+        updated = await _get_plugin_status_item(request, plugin_id)
+        record_module_management_log(
+            request,
+            source_module="plugin",
+            module_label="插件",
+            action="status_change",
+            action_label="已强制停用",
+            object_id=plugin_id,
+            before_status=f"{plugin_status.lifecycle_status}/{plugin_status.operational_status}",
+            after_status=f"{updated.lifecycle_status}/{updated.operational_status}",
+            reason="操作员强制停用插件，后续不会继续调度该插件",
+            details={"feature_code": updated.feature_code},
+        )
+        return updated
         
     except HTTPException:
         raise
@@ -481,6 +506,18 @@ async def delete_plugin(
             )
         
         logger.info(f"Deleted plugin: {plugin_id}")
+        record_module_management_log(
+            request,
+            source_module="plugin",
+            module_label="插件",
+            action="delete",
+            action_label="已删除",
+            object_id=plugin_id,
+            before_status=f"{plugin_status.lifecycle_status}/{plugin_status.operational_status}",
+            after_status="deleted",
+            reason="操作员删除插件注册记录",
+            details={"feature_code": plugin_status.feature_code},
+        )
         
         return {
             "status": "deleted",

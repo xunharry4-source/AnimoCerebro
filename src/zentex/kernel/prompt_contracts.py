@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from pathlib import Path
 from typing import Literal
 
 
@@ -61,6 +62,13 @@ def _input(source_question: str, *fields: str) -> QuestionInputContract:
     return QuestionInputContract(source_question=source_question, fields=tuple(fields))
 
 
+_SRC_ROOT = Path(__file__).resolve().parents[2]
+
+
+def _src_file(relative_path: str) -> str:
+    return str(_SRC_ROOT / relative_path)
+
+
 Q1_CONTRACT = QuestionContract(
     question_id="q1",
     purpose="识别当前环境状态与本轮用户意图，提供下游 Q 的事实锚点。",
@@ -80,7 +88,7 @@ Q1_CONTRACT = QuestionContract(
         "不要输出环境哲学分析或自我评论。",
     ),
     prompt_builder_symbol="plugins.nine_questions.q1_where_am_i.llm_prompt.build_q1_llm_request",
-    prompt_file_path="src/plugins/nine_questions/q1_where_am_i/llm_prompt.py",
+    prompt_file_path=_src_file("plugins/nine_questions/q1_where_am_i/llm_prompt.py"),
 )
 
 Q2_CONTRACT = QuestionContract(
@@ -98,26 +106,26 @@ Q2_CONTRACT = QuestionContract(
         "mission_boundary 必须能追溯到 Q1 环境信号。",
         "不得削弱 identity kernel 的不可绕过约束。",
     ),
-    prompt_builder_symbol="plugins.nine_questions.q2_who_am_i.llm_prompt.build_q2_llm_request",
-    prompt_file_path="src/plugins/nine_questions/q2_who_am_i/llm_prompt.py",
+    prompt_builder_symbol="plugins.nine_questions.q2_asset_inventory.llm_prompt.build_q2_llm_request",
+    prompt_file_path=_src_file("plugins/nine_questions/q2_asset_inventory/llm_prompt.py"),
 )
 
 Q3_CONTRACT = QuestionContract(
     question_id="q3",
-    purpose="盘点当前真实可用资产、工具、执行域、Agent 和资源瓶颈。",
+    purpose="盘点当前真实可用资产、工具、执行域、Agent，并为每类资产输出来源、置信度和有效期。",
     inputs=(_input("q1", "primary_domain", "reasoning_summary"), _input("q2", "role_profile", "mission_boundary")),
     outputs=(
-        _field("unified_asset_inventory", "真实可用资产与工具清单。", field_type="structured", drift_smell="捏造资产、权限或 Agent"),
-        _field("resource_evaluation", "资源是否充分、缺失资产与瓶颈。", field_type="structured"),
+        _field("asset_inventory", "严格 AssetInventory：workspace_files、permission_boundaries、long_term_memories、available_tools、connected_agents、reusable_strategy_patches、question_driver_refs。", field_type="structured", drift_smell="捏造资产、权限或 Agent"),
     ),
     max_total_prompt_chars=3200,
     anti_drift_directives=(
         "只盘点真实存在的资产和工具。",
         "禁止把不存在的能力写成可用资源。",
-        "资源不足时必须保留 missing_critical_assets 或 bottleneck_node。",
+        "每类资产必须带 source、confidence、valid_until。",
+        "禁止让 LLM 输出旧的 unified_asset_inventory/resource_evaluation 顶层合约。",
     ),
-    prompt_builder_symbol="plugins.nine_questions.q3_what_do_i_have.llm_prompt.build_q3_llm_request",
-    prompt_file_path="src/plugins/nine_questions/q3_what_do_i_have/llm_prompt.py",
+    prompt_builder_symbol="plugins.nine_questions.q3_role_inference.llm_prompt.build_q3_llm_request",
+    prompt_file_path=_src_file("plugins/nine_questions/q3_role_inference/llm_prompt.py"),
 )
 
 Q4_CONTRACT = QuestionContract(
@@ -135,70 +143,70 @@ Q4_CONTRACT = QuestionContract(
         "actionable_space 必须是当前真实可做动作。",
     ),
     prompt_builder_symbol="plugins.nine_questions.q4_what_can_i_do.llm_prompt.build_q4_llm_request",
-    prompt_file_path="src/plugins/nine_questions/q4_what_can_i_do/llm_prompt.py",
+    prompt_file_path=_src_file("plugins/nine_questions/q4_what_can_i_do/llm_prompt.py"),
 )
 
 Q5_CONTRACT = QuestionContract(
     question_id="q5",
-    purpose="从 Q4 可行动作中推导授权子集、禁止动作和升级要求。",
-    inputs=(_input("q4", "capability_boundary_profile", "permission_profile"),),
+    purpose="从身份内核、Q4 能力和组织/租户/协作政策中推导正式授权边界。",
+    inputs=(_input("q2", "identity_kernel", "role_profile"), _input("q4", "capability_boundary_profile", "permission_profile")),
     outputs=(
-        _field("authorization_boundary_profile", "授权、禁止、条件和升级动作边界。", field_type="structured", drift_smell="输出 Q4 未给出的新动作"),
-        _field("allowed_action_space", "授权动作列表。", required=False, max_items=8, max_chars=180, field_type="list_text"),
-        _field("forbidden_action_space", "未授权或禁止动作列表。", required=False, max_items=8, max_chars=180, field_type="list_text"),
+        _field("authorization_boundary", "严格根对象 AuthorizationBoundary：current_authorization_scope、communication_policy、organizational_boundary、allowed_operations、forbidden_operations。", field_type="structured", drift_smell="输出 Q4 未给出的新动作或绕过组织边界"),
     ),
     max_total_prompt_chars=3000,
     anti_drift_directives=(
-        "Q5 输出必须是 Q4 actionable_space 的子集或限制说明。",
+        "Q5 allowed_operations 必须是 Q4 actionable_space 的子集。",
         "禁止发明 Q4 没有给出的动作。",
-        "需要升级的动作必须显式列入 requires_escalation_actions。",
+        "必须区分物理可做与正式授权允许。",
+        "必须输出跨脑联系策略和组织/租户边界。",
     ),
     prompt_builder_symbol="plugins.nine_questions.q5_what_am_i_allowed_to_do.llm_prompt.build_q5_llm_request",
-    prompt_file_path="src/plugins/nine_questions/q5_what_am_i_allowed_to_do/llm_prompt.py",
+    prompt_file_path=_src_file("plugins/nine_questions/q5_what_am_i_allowed_to_do/llm_prompt.py"),
 )
 
 Q6_CONTRACT = QuestionContract(
     question_id="q6",
-    purpose="识别即使可执行也不应执行的绝对红线、禁止策略和污染风险。",
+    purpose="评估 What if I do it：动作后果、代价、可逆性、缓解要求和停止条件。",
     inputs=(
         _input("q4", "capability_boundary_profile"),
         _input("q5", "authorization_boundary_profile", "forbidden_action_space"),
     ),
     outputs=(
-        _field("forbidden_zone_profile", "绝对红线、性能取舍禁区、禁止策略、污染风险。", field_type="structured", drift_smell="把红线弱化为建议"),
-        _field("absolute_red_lines", "不可绕过红线。", required=False, max_items=10, max_chars=200, field_type="list_text"),
+        _field("ConsequenceAssessment", "评估动作、直接后果、传导后果、严重度和可逆性。", field_type="structured", drift_smell="只输出风险口号而没有具体后果"),
+        _field("CostImpactProfile", "操作成本、安全合规影响、用户信任影响、缓解要求和停止条件。", field_type="structured", drift_smell="遗漏缓解要求或停止条件"),
     ),
     max_total_prompt_chars=3000,
     anti_drift_directives=(
-        "红线必须是硬约束，不得写成偏好建议。",
-        "禁止把 Q6 变成授权审批。",
-        "污染风险必须保留到 contamination_risks。",
+        "Q6 不得重新拥有 Q5 的禁止动作裁剪职责。",
+        "ConsequenceAssessment 必须明确 action_under_review。",
+        "CostImpactProfile 必须包含 mitigation_requirements 和 stop_conditions。",
+        "连续失败时必须提高 consequence_severity 并增强缓解/停止要求。",
     ),
     prompt_builder_symbol="plugins.nine_questions.q6_what_should_i_not_do.llm_prompt.build_q6_llm_request",
-    prompt_file_path="src/plugins/nine_questions/q6_what_should_i_not_do/llm_prompt.py",
+    prompt_file_path=_src_file("plugins/nine_questions/q6_what_should_i_not_do/llm_prompt.py"),
 )
 
 Q7_CONTRACT = QuestionContract(
     question_id="q7",
-    purpose="在 Q5 授权和 Q6 红线内生成安全替代路径、降级策略和协作切换。",
+    purpose="在 Q8 行动目标生成前评估当前红线、拒绝记录、禁令来源和不可绕过约束。",
     inputs=(
-        _input("q3", "resource_evaluation"),
-        _input("q4", "capability_boundary_profile"),
-        _input("q5", "authorization_boundary_profile"),
-        _input("q6", "forbidden_zone_profile", "absolute_red_lines"),
+        _input("q2", "identity_kernel_snapshot", "non_bypassable_constraints"),
+        _input("q5", "authorization_boundary_profile", "forbidden_action_space"),
+        _input("g12_g30", "safety_rejection_history"),
+        _input("g38", "procedural_memory_constraints"),
     ),
     outputs=(
-        _field("alternative_strategy_profile", "备选路径、降级策略、协作切换和探索动作。", field_type="structured", drift_smell="推荐 Q5/Q6 禁止的行动"),
-        _field("fallback_plans", "安全替代计划。", required=False, max_items=8, max_chars=180, field_type="list_text"),
+        _field("red_line_assessment", "RedLineAssessment：当前红线命中、拒绝记录、禁令来源、不可绕过约束和引用来源。", field_type="structured", drift_smell="简化字段或遗漏禁令来源"),
+        _field("non_bypassable_constraints", "不可绕过底线列表。", max_items=16, max_chars=220, field_type="list_text"),
     ),
     max_total_prompt_chars=3200,
     anti_drift_directives=(
-        "备选动作不得违反 Q5 授权和 Q6 红线。",
-        "不要输出主目标优先级，Q8 才做当前任务决策。",
-        "exploratory_actions 必须是低风险信息收集动作。",
+        "必须说明每个 RedLineAssessment 字段含义并输出所有字段。",
+        "不得输出备选动作或主目标优先级。",
+        "non_bypassable_constraints 不能被效率、探索或动态目标覆盖。",
     ),
     prompt_builder_symbol="plugins.nine_questions.q7_what_else_can_i_do.llm_prompt.build_q7_llm_request",
-    prompt_file_path="src/plugins/nine_questions/q7_what_else_can_i_do/llm_prompt.py",
+    prompt_file_path=_src_file("plugins/nine_questions/q7_what_else_can_i_do/llm_prompt.py"),
 )
 
 Q8_CONTRACT = QuestionContract(
@@ -211,7 +219,7 @@ Q8_CONTRACT = QuestionContract(
         _input("q4", "capability_boundary_profile", "permission_profile"),
         _input("q5", "authorization_boundary_profile", "allowed_action_space", "forbidden_action_space"),
         _input("q6", "forbidden_zone_profile", "absolute_red_lines"),
-        _input("q7", "alternative_strategy_profile", "fallback_plans"),
+        _input("q7", "red_line_assessment", "non_bypassable_constraints", "current_red_line_hits"),
     ),
     outputs=(
         _field("objective_profile", "当前使命、主次目标、完成/暂停/升级条件和优先级。", field_type="structured", drift_smell="输出空泛目标而非当前可执行任务"),
@@ -219,17 +227,17 @@ Q8_CONTRACT = QuestionContract(
     ),
     max_total_prompt_chars=4000,
     anti_drift_directives=(
-        "只生成当前应做的任务，不生成姿态或自我反思。",
+        "只生成当前应做的任务，不生成姿态、评估 profile 或自我反思。",
         "所有任务必须服从 Q5 授权和 Q6 红线。",
         "任务必须有可验证结果或明确阻塞原因。",
     ),
     prompt_builder_symbol="plugins.nine_questions.q8_what_should_i_do_now.llm_prompt.build_q8_llm_request",
-    prompt_file_path="src/plugins/nine_questions/q8_what_should_i_do_now/llm_prompt.py",
+    prompt_file_path=_src_file("plugins/nine_questions/q8_what_should_i_do_now/llm_prompt.py"),
 )
 
 Q9_CONTRACT = QuestionContract(
     question_id="q9",
-    purpose="基于 Q1-Q8 选择执行姿态，输出 evaluation/evolution/escalation 三个 profile。",
+    purpose="基于 Q8 目标画像、Q4 已验证能力和 Q5/Q7 边界导出 ActionPlan。",
     inputs=(
         _input("q1", "primary_domain", "uncertainties"),
         _input("q2", "role_profile", "mission_boundary"),
@@ -237,22 +245,27 @@ Q9_CONTRACT = QuestionContract(
         _input("q4", "capability_boundary_profile"),
         _input("q5", "authorization_boundary_profile"),
         _input("q6", "forbidden_zone_profile"),
-        _input("q7", "alternative_strategy_profile"),
+        _input("q7", "red_line_assessment", "non_bypassable_constraints"),
         _input("q8", "objective_profile", "task_queue"),
     ),
     outputs=(
-        _field("evaluation_profile", "评价权重、风险等级和行动节奏。", field_type="structured", drift_smell="退回 Q8 task_queue 或过程解说"),
-        _field("evolution_profile", "允许/禁止的演化方向和验证要求。", field_type="structured"),
-        _field("escalation_profile", "暂停、求助、确认、复盘和回滚条件。", field_type="structured"),
+        _field("current_action_plan", "为了达成 Q8 目标需要执行的具体步骤序列。", field_type="list_text", drift_smell="退回 Q8 task_queue 或过程解说"),
+        _field("method_selection", "说明为什么选择该方法或工具链。", field_type="text"),
+        _field("required_resources", "执行计划必须依赖的已验证插件、Agent 或内部预算。", field_type="list_text"),
+        _field("risk_assessment", "评估执行副作用、安全闸门或云审计拦截风险。", field_type="text"),
+        _field("expected_outcome", "行动成功后的确切物理或认知结果。", field_type="text"),
+        _field("alternative_candidates", "主计划失败或被安全拦截时的降级备选方案。", field_type="list_text"),
+        _field("question_driver_refs", "计划引用的前置 Q1-Q8 依据映射。", field_type="list_text"),
     ),
     max_total_prompt_chars=4200,
     anti_drift_directives=(
-        "Q9 只选择如何行动，不生成新的任务队列。",
-        "必须同时输出 evaluation_profile、evolution_profile、escalation_profile。",
+        "Q9 只选择如何行动，不生成、修改、删除或重排任务队列。",
+        "必须且只能输出 ActionPlan 七字段 JSON。",
+        "所有动作必须限制在 Q4 verified_capabilities 范围内。",
         "不得输出 markdown、解释文字或 Q8 结构。",
     ),
     prompt_builder_symbol="plugins.nine_questions.q9_how_should_i_act.llm_prompt.build_q9_llm_request",
-    prompt_file_path="src/plugins/nine_questions/q9_how_should_i_act/llm_prompt.py",
+    prompt_file_path=_src_file("plugins/nine_questions/q9_how_should_i_act/llm_prompt.py"),
 )
 
 

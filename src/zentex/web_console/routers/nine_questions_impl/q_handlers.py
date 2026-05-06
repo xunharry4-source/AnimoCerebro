@@ -77,17 +77,17 @@ QUESTION_HANDLERS = {
     "q1": {
         "evidence": _extract_q1_preprocessed_evidence,
         "result": _extract_q1_inference_result,
-        "title": "我在哪",
+        "title": "我在那",
     },
     "q2": {
         "evidence": _extract_q2_preprocessed_evidence,
         "result": _extract_q2_inference_result,
-        "title": "我是谁",
+        "title": "我有什么",
     },
     "q3": {
         "evidence": _extract_q3_preprocessed_evidence,
         "result": _extract_q3_inference_result,
-        "title": "我有什么",
+        "title": "我是谁",
     },
     "q4": {
         "evidence": _extract_q4_preprocessed_evidence,

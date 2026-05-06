@@ -15,7 +15,7 @@ interface QuestionIntroInfo {
  */
 const NINE_QUESTIONS_INTRO: Record<string, QuestionIntroInfo> = {
   q1: {
-    title: "我在哪",
+    title: "我在那",
     goals: [
       "环境态势感知 + 工作区领域归类",
       "识别当前所处的物理和逻辑环境",
@@ -36,27 +36,6 @@ const NINE_QUESTIONS_INTRO: Record<string, QuestionIntroInfo> = {
     ],
   },
   q2: {
-    title: "我是谁",
-    goals: [
-      "角色推演 + 身份内核装配",
-      "基于 Q1 的环境态势和底层身份约束推断当前最适合的任务角色",
-    ],
-    expectedData: [
-      "Q1 态势结果（环境领域推断）",
-      "身份内核（元动机/禁令/不可绕过约束）",
-      "主观风险偏好权重",
-      "人工干预回执（如有）",
-    ],
-    outputs: [
-      "角色画像：身份角色（identity_role）",
-      "角色画像：活跃角色（active_role）",
-      "角色画像：任务角色（task_role）",
-      "使命连续性边界：当前使命（current_mission）",
-      "使命连续性边界：优先职责（priority_duties）",
-      "使命连续性边界：连续性边界（continuity_boundaries）",
-    ],
-  },
-  q3: {
     title: "我有什么",
     goals: [
       "统一资产盘点",
@@ -77,15 +56,37 @@ const NINE_QUESTIONS_INTRO: Record<string, QuestionIntroInfo> = {
       "资源评估：推理摘要（reasoning_summary）",
     ],
   },
+  q3: {
+    title: "我是谁",
+    goals: [
+      "角色推演 + 身份内核装配",
+      "基于 Q1 的环境态势、Q2 的资产盘点和底层身份约束推断当前最适合的任务角色",
+    ],
+    expectedData: [
+      "Q1 态势结果（环境领域推断）",
+      "Q2 资产盘点结果（可用工具、权限边界、长期记忆、协作者与策略补丁）",
+      "身份内核（元动机/禁令/不可绕过约束）",
+      "主观风险偏好权重",
+      "人工干预回执（如有）",
+    ],
+    outputs: [
+      "角色画像：身份角色（identity_role）",
+      "角色画像：活跃角色（active_role）",
+      "角色画像：任务角色（task_role）",
+      "使命连续性边界：当前使命（current_mission）",
+      "使命连续性边界：优先职责（priority_duties）",
+      "使命连续性边界：连续性边界（continuity_boundaries）",
+    ],
+  },
   q4: {
     title: "我能做什么",
     goals: [
       "能力边界评估",
-      "基于 Q3 的资产清单和当前权限，评估系统真正具备的行动能力",
+      "基于 Q2 的资产清单、Q3 的角色画像和当前权限，评估系统真正具备的行动能力",
       "严格禁止幻觉声明不存在的能力",
     ],
     expectedData: [
-      "Q3 资产清单（unified_asset_inventory）",
+      "Q2 资产清单（unified_asset_inventory）",
       "活跃执行域（active_execution_domains）",
       "权限边界（permissions）",
       "Q1-Q2 的前置态势",
@@ -97,10 +98,10 @@ const NINE_QUESTIONS_INTRO: Record<string, QuestionIntroInfo> = {
     ],
   },
   q5: {
-    title: "我被允许做什么",
+    title: "我不能干什么",
     goals: [
-      "授权边界判断 + 合规性检查",
-      "在 Q4 的能力范围内进一步筛选出被授权允许执行的操作",
+      "禁止边界判断 + 合规性检查",
+      "在 Q4 的能力范围内进一步筛选出禁止、未授权和需升级审批的操作",
     ],
     expectedData: [
       "Q4 能力边界（capability_boundary_profile）",
@@ -110,50 +111,51 @@ const NINE_QUESTIONS_INTRO: Record<string, QuestionIntroInfo> = {
       "组织边界规则",
     ],
     outputs: [
-      "允许操作空间（allowed_action_space）",
       "禁止操作空间及原因（forbidden_action_space）",
-      "联系和组织边界（contact_and_org_boundaries）",
       "需要升级的操作（requires_escalation_actions）",
+      "联系和组织边界（contact_and_org_boundaries）",
+      "允许操作对照白名单（allowed_action_space）",
     ],
   },
   q6: {
-    title: "我即使能做也不该做什么",
+    title: "如果我做了会怎样 / 代价与后果是什么",
     goals: [
-      "红线和禁区检查",
-      "识别绝对不可触碰的安全边界和性能权衡禁令",
+      "What-if 代价与后果评估",
+      "在行动前推演直接后果、传导后果、严重度、可逆性、缓解要求和停止条件",
     ],
     expectedData: [
       "可行动空间（actionable_space）",
-      "授权边界（authorization_boundaries）",
+      "Q5 禁止边界（cannot_do_boundaries）",
       "不可绕过约束（non_bypassable_constraints）",
-      "历史策略补丁（historical_strategy_patches）",
-      "安全红线规则",
+      "历史失败/策略补丁（historical_strategy_patches）",
+      "风险提示",
     ],
     outputs: [
-      "绝对红线（absolute_red_lines）",
-      "性能权衡禁令（performance_tradeoff_bans）",
-      "禁止策略（prohibited_strategies）",
-      "污染风险（contamination_risks）",
+      "后果评估（ConsequenceAssessment）",
+      "操作成本（operational_costs）",
+      "安全与合规影响（security_compliance_impacts）",
+      "缓解要求与停止条件（mitigation_requirements / stop_conditions）",
     ],
   },
   q7: {
-    title: "我还可以做什么",
+    title: "我的红线与约束是什么",
     goals: [
-      "备选策略生成",
-      "当主路径受阻时提供降级方案、协作切换和探索性行动建议",
+      "红线与约束评估",
+      "在 Q8 生成行动目标前识别不可绕过的身份、授权、安全和程序记忆禁令",
     ],
     expectedData: [
-      "资源瓶颈（resource_bottlenecks）",
-      "能力限制（capability_limits）",
-      "权限边界（permission_boundaries）",
-      "绝对红线（absolute_red_lines）",
-      "历史失败补丁（historical_failure_patches）",
+      "身份内核底线（identity_kernel_constraints）",
+      "授权边界约束（authorization_boundary_constraints）",
+      "安全拒绝记录（safety_rejection_history）",
+      "程序记忆禁令（procedural_memory_constraints）",
+      "不可绕过约束（non_bypassable_constraints）",
     ],
     outputs: [
-      "回退计划（fallback_plans）",
-      "降级策略（degradation_strategies）",
-      "协作切换方案（collaboration_switches）",
-      "探索性行动（exploratory_actions）",
+      "当前红线命中（current_red_line_hits）",
+      "拒绝操作记录（rejected_operation_records）",
+      "禁令来源说明（ban_source_explanations）",
+      "不可绕过约束（non_bypassable_constraints）",
+      "引用来源（question_driver_refs）",
     ],
   },
   q8: {

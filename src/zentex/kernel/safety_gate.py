@@ -13,6 +13,7 @@ from zentex.safety.safety_gate import RiskLevel, SafetyDecisionStatus
 UTC = timezone.utc
 SAFETY_ENTRY_ACTION_VALIDATED = "g8_safety_gate_action_validated"
 SAFETY_ENTRY_ACTION_CONFIRMED = "g8_safety_gate_action_confirmed"
+_FINAL_SAFETY_GATE_DECISIONS: dict[str, dict[str, Any]] = {}
 
 
 def validate_safety_gate_action(
@@ -41,6 +42,19 @@ def validate_safety_gate_action(
         context=normalized_context,
     )
     gate_payload = _decision_payload(decision)
+    identity_block_reason = _identity_kernel_absolute_block_reason(action_type=action_type, action_payload=action_payload)
+    if identity_block_reason:
+        gate_payload["status"] = SafetyDecisionStatus.BLOCKED.value
+        gate_payload["allowed"] = False
+        gate_payload["reason"] = identity_block_reason
+        gate_payload["redline_category"] = "identity_write"
+        constraints = dict(gate_payload.get("constraints") or {})
+        constraints["identity_kernel_absolute_prohibition"] = True
+        constraints["non_bypassable_constraints"] = [
+            "reject_identity_kernel_overreach",
+            "preserve_identity_kernel_integrity",
+        ]
+        gate_payload["constraints"] = constraints
     cloud_decision = None
     cloud_required = _requires_cloud_audit(
         gate_payload,
@@ -62,6 +76,7 @@ def validate_safety_gate_action(
         execution_mode=normalized_mode,
         cloud_required=cloud_required,
         cloud_decision=cloud_decision,
+        reviewed_execution_parameters=_concrete_execution_parameters(action_payload),
     )
     _write_transcript(
         state,
@@ -75,6 +90,7 @@ def validate_safety_gate_action(
             "cloud_audit_required": final_payload["cloud_audit_required"],
         },
     )
+    _FINAL_SAFETY_GATE_DECISIONS[final_payload["decision_id"]] = dict(final_payload)
     return final_payload
 
 
@@ -86,6 +102,13 @@ def query_safety_gate_decision(
 ) -> dict[str, Any]:
     """Query the real in-memory SafetyGate audit log for a G8 decision."""
     _require_session_state(kernel_service, session_id)
+    final_decision = _FINAL_SAFETY_GATE_DECISIONS.get(decision_id)
+    if final_decision is not None:
+        return {
+            **dict(final_decision),
+            "session_id": session_id,
+            "query_visible": True,
+        }
     manager = _require_safety_manager(kernel_service)
     for decision in manager.safety_gate.get_audit_log():
         if decision.decision_id == decision_id:
@@ -149,6 +172,27 @@ def _validate_concrete_action(*, action_type: str, action_payload: dict[str, Any
         )
 
 
+def _concrete_execution_parameters(action_payload: dict[str, Any]) -> dict[str, Any]:
+    concrete_keys = ("target", "path", "parameters", "command", "operations", "execution_domain", "resource")
+    return {key: _json_safe(action_payload[key]) for key in concrete_keys if key in action_payload}
+
+
+def _identity_kernel_absolute_block_reason(*, action_type: str, action_payload: dict[str, Any]) -> str | None:
+    if action_type in {"update_identity_kernel", "modify_core_constraints", "tamper_continuity_lock", "violate_self_binding"}:
+        return None
+    target = str(action_payload.get("target") or action_payload.get("path") or "").lower()
+    protected_paths = (
+        ".zentex/identity/",
+        "config/identity",
+        "src/zentex/kernel/",
+        "src/zentex/foundation/meta.py",
+        ".zentex/continuity_lock",
+    )
+    if any(path in target for path in protected_paths):
+        return f"Unauthorized write attempt to protected identity asset: {target}"
+    return None
+
+
 def _requires_cloud_audit(gate_payload: dict[str, Any], *, requested_risk: str | None, execution_mode: str) -> bool:
     if execution_mode != "real":
         return False
@@ -196,6 +240,7 @@ def _finalize_decision(
     execution_mode: str,
     cloud_required: bool,
     cloud_decision: dict[str, Any] | None,
+    reviewed_execution_parameters: dict[str, Any],
 ) -> dict[str, Any]:
     cloud_status = str((cloud_decision or {}).get("status") or "")
     cloud_approved = cloud_status == CloudDecisionStatus.APPROVED.value
@@ -239,13 +284,17 @@ def _finalize_decision(
 
     return {
         "feature_code": "G8",
+        "safety_gate_feature_code": "G12",
+        "cloud_audit_feature_code": "G30" if cloud_required else None,
         "session_id": session_id,
         **gate_payload,
         "status": status,
         "reason": reason,
         "execution_mode": execution_mode,
+        "reviewed_execution_parameters": reviewed_execution_parameters,
         "cloud_audit_required": cloud_required,
         "cloud_decision": cloud_decision,
+        "cloud_audit_acceptance_status": "accepted" if cloud_approved else None,
         "execution_allowed": execution_allowed,
         "created_at": datetime.now(UTC).isoformat(),
     }

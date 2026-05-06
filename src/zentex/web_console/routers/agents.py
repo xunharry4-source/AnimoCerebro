@@ -53,7 +53,8 @@ from zentex.agents.service import AgentAsset, AgentCoordinationService, AgentReg
 from zentex.agents.bridge import AgentBridgeError
 
 logger = logging.getLogger(__name__)
-from zentex.tasks.service import TaskManagementService, ZentexTask
+from zentex.tasks.models import TaskStatus
+from zentex.tasks import TaskManagementService, ZentexTask
 from zentex.web_console.contracts.agents import (
     AgentConsoleRecord,
     AgentPolicyUpdateRequest,
@@ -79,6 +80,7 @@ from .agents_handlers import (
     handle_cancel_agent_task,
     handle_retry_agent_task,
 )
+from .module_log_writer import record_module_management_log
 
 
 router = APIRouter()
@@ -93,6 +95,55 @@ def _bearer_token(authorization: str | None) -> str:
     return authorization.strip()
 
 
+def _task_context(task_service: Any, task_id: str) -> dict[str, str]:
+    task = task_service.get_task(task_id) if task_id and callable(getattr(task_service, "get_task", None)) else None
+    metadata = getattr(task, "metadata", None)
+    metadata = metadata if isinstance(metadata, dict) else {}
+    return {
+        "trace_id": str(metadata.get("trace_id") or ""),
+        "session_id": str(metadata.get("session_id") or getattr(task, "originator_id", "") or ""),
+        "turn_id": str(metadata.get("turn_id") or metadata.get("session_id") or getattr(task, "originator_id", "") or ""),
+        "task_title": str(getattr(task, "title", "") or ""),
+    }
+
+
+def _record_agent_workflow_event(
+    *,
+    event_type: str,
+    status: str,
+    task_service: Any,
+    task_id: str,
+    fallback_trace_id: str = "",
+    input_summary: dict[str, Any] | None = None,
+    output_summary: dict[str, Any] | None = None,
+    evidence_ref: str = "",
+    error_code: str = "",
+    details: dict[str, Any] | None = None,
+) -> None:
+    from zentex.audit.workflow_events import record_workflow_node_event
+
+    context = _task_context(task_service, task_id)
+    record_workflow_node_event(
+        event_type=event_type,
+        node_id="agent-callback",
+        node_name="Agent Callback",
+        status=status,
+        trace_id=context["trace_id"] or fallback_trace_id,
+        session_id=context["session_id"] or "unknown",
+        turn_id=context["turn_id"] or context["session_id"] or "unknown",
+        task_id=task_id,
+        input_summary=input_summary or {},
+        output_summary=output_summary or {},
+        evidence_ref=evidence_ref,
+        error_code=error_code,
+        source="zentex.web_console.routers.agents",
+        details={
+            "task_title": context["task_title"],
+            **dict(details or {}),
+        },
+    )
+
+
 @router.get("/agents", response_model=List[AgentConsoleRecord])
 def list_agents(
     service: Annotated[AgentCoordinationService, Depends(get_agent_coordination_service)],
@@ -102,6 +153,13 @@ def list_agents(
     return handle_list_agents(service, task_service)
 
 
+@router.get("/agents/statistics")
+def get_agent_asset_statistics(
+    service: Annotated[AgentCoordinationService, Depends(get_agent_coordination_service)],
+) -> Dict[str, Any]:
+    return service.get_agent_asset_statistics()
+
+
 @router.post("/agents/register", response_model=AgentAsset)
 async def register_agent(
     payload: AgentRegistrationRequest,
@@ -109,10 +167,25 @@ async def register_agent(
     request: Request,
 ) -> AgentAsset:
     try:
-        return await service.register_agent(
+        asset = await service.register_agent(
             payload,
             operator_id=request.client.host if request.client else "unknown",
         )
+        record_module_management_log(
+            request,
+            source_module="agent",
+            module_label="Agent",
+            action="register",
+            action_label="已注册",
+            object_id=asset.agent_id,
+            object_label=asset.agent_name or asset.name,
+            before_status=None,
+            after_status=asset.status.value,
+            reason="通过 Agent 管理页注册新 Agent",
+            details={"endpoint": asset.endpoint, "role_tag": asset.role_tag},
+            operator_id=request.client.host if request.client else "unknown",
+        )
+        return asset
     except AgentBridgeError as exc:
         # Unreachable endpoint or protocol error — reject registration with 400.
         raise HTTPException(status_code=400, detail=str(exc)) from exc
@@ -165,11 +238,68 @@ async def evaluate_agent_invocation_policy(
         raise HTTPException(status_code=404, detail=str(exc)) from exc
 
 
+@router.post("/agents/{agent_id}/activate", response_model=AgentAsset)
+async def activate_agent(
+    agent_id: str,
+    request: Request,
+    service: Annotated[AgentCoordinationService, Depends(get_agent_coordination_service)],
+    cli_service: Annotated[Any, Depends(get_cli_service)] = None,
+    mcp_service: Annotated[Any, Depends(get_mcp_service)] = None,
+) -> AgentAsset:
+    try:
+        before = service.manager.get_asset(agent_id)
+        asset = await service.activate_agent(agent_id, cli_service=cli_service, mcp_service=mcp_service)
+        record_module_management_log(
+            request,
+            source_module="agent",
+            module_label="Agent",
+            action="status_change",
+            action_label="已启用",
+            object_id=agent_id,
+            object_label=asset.agent_name or asset.name,
+            before_status=before.status.value if before else None,
+            after_status=asset.status.value,
+            reason="操作员启用 Agent，允许任务调度使用",
+        )
+        return asset
+    except KeyError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    except ValueError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+
+
+@router.post("/agents/{agent_id}/disable", response_model=AgentAsset)
+async def disable_agent(
+    agent_id: str,
+    request: Request,
+    service: Annotated[AgentCoordinationService, Depends(get_agent_coordination_service)],
+) -> AgentAsset:
+    try:
+        before = service.manager.get_asset(agent_id)
+        asset = await service.disable_agent(agent_id)
+        record_module_management_log(
+            request,
+            source_module="agent",
+            module_label="Agent",
+            action="status_change",
+            action_label="已停用",
+            object_id=agent_id,
+            object_label=asset.agent_name or asset.name,
+            before_status=before.status.value if before else None,
+            after_status=asset.status.value,
+            reason="操作员停用 Agent，后续任务不会再调度该 Agent",
+        )
+        return asset
+    except KeyError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+
+
 @router.post("/agents/{agent_id}/dispatch")
 async def dispatch_agent_task(
     agent_id: str,
     payload: AgentDispatchTaskRequest,
     service: Annotated[AgentCoordinationService, Depends(get_agent_coordination_service)],
+    task_service: Annotated[Any, Depends(get_task_service)],
     cli_service: Annotated[Any, Depends(get_cli_service)] = None,
     mcp_service: Annotated[Any, Depends(get_mcp_service)] = None,
 ) -> Dict[str, Any]:
@@ -183,6 +313,57 @@ async def dispatch_agent_task(
             cli_service=cli_service,
             mcp_service=mcp_service,
         )
+        task_exists = (
+            bool(payload.zentex_task_id)
+            and callable(getattr(task_service, "get_task", None))
+            and task_service.get_task(payload.zentex_task_id) is not None
+        )
+        if not response.is_error and payload.zentex_task_id and task_exists:
+            from zentex.tasks.execution.external_result_bridge import mark_external_execution_started
+
+            data = response.data if isinstance(response.data, dict) else {}
+            await mark_external_execution_started(
+                task_service=task_service,
+                task_id=payload.zentex_task_id,
+                trace_id=str(response.trace_id or data.get("trace_id") or ""),
+                executor_type="agent",
+                executor_metadata={
+                    "agent_id": agent_id,
+                    "external_task_ref": data.get("external_task_ref"),
+                    "callback_url": data.get("callback_url"),
+                    "callback_status": data.get("status"),
+                },
+            )
+            _record_agent_workflow_event(
+                event_type="external_invoked",
+                status="running",
+                task_service=task_service,
+                task_id=payload.zentex_task_id,
+                fallback_trace_id=str(response.trace_id or data.get("trace_id") or ""),
+                input_summary={"agent_id": agent_id, "idempotency_key": payload.idempotency_key},
+                output_summary={
+                    "external_task_ref": data.get("external_task_ref"),
+                    "callback_url": data.get("callback_url"),
+                    "callback_status": data.get("status"),
+                },
+                evidence_ref=f"agent_invocation:{data.get('external_task_ref') or ''}",
+                details={"agent_id": agent_id},
+            )
+            _record_agent_workflow_event(
+                event_type="dispatch_started",
+                status="running",
+                task_service=task_service,
+                task_id=payload.zentex_task_id,
+                fallback_trace_id=str(response.trace_id or data.get("trace_id") or ""),
+                input_summary={"agent_id": agent_id, "idempotency_key": payload.idempotency_key},
+                output_summary={
+                    "external_task_ref": data.get("external_task_ref"),
+                    "callback_url": data.get("callback_url"),
+                    "ledger_status": data.get("status"),
+                },
+                evidence_ref=f"agent_invocation:{data.get('external_task_ref') or ''}",
+                details={"agent_id": agent_id},
+            )
         return asdict(response)
     except KeyError as exc:
         raise HTTPException(status_code=404, detail=str(exc)) from exc
@@ -341,21 +522,150 @@ async def receive_agent_callback(
     external_task_ref: str,
     payload: AgentCallbackResultRequest,
     service: Annotated[AgentCoordinationService, Depends(get_agent_coordination_service)],
+    task_service: Annotated[TaskManagementService, Depends(get_task_service)],
     authorization: str | None = Header(default=None),
 ) -> Dict[str, Any]:
     token = payload.callback_token or _bearer_token(authorization)
+    if payload.external_task_ref and payload.external_task_ref != external_task_ref:
+        raise HTTPException(status_code=400, detail="Callback payload external_task_ref does not match URL")
+    prior_record = service.get_invocation_by_external_task_ref(external_task_ref)
+    prior_task_id = str(getattr(prior_record, "zentex_task_id", "") or "")
     if not token:
+        _record_agent_workflow_event(
+            event_type="executor_invocation_finished",
+            status="failed",
+            task_service=task_service,
+            task_id=prior_task_id,
+            fallback_trace_id=str(payload.trace_id or getattr(prior_record, "trace_id", "") or ""),
+            input_summary={"external_task_ref": external_task_ref, "callback_status": payload.status},
+            output_summary={"error": "Missing callback token"},
+            evidence_ref=f"agent_callback:{external_task_ref}",
+            error_code="MISSING_CALLBACK_TOKEN",
+        )
         raise HTTPException(status_code=401, detail="Missing callback token")
+    prior_status = str(getattr(prior_record, "status", "") or "")
     response = await service.receive_callback_result(
         external_task_ref,
         callback_token=token,
         status=payload.status,
+        trace_id=payload.trace_id,
         normalized_result=payload.normalized_result,
         raw_response=payload.raw_response,
     )
     if response.is_error:
+        _record_agent_workflow_event(
+            event_type="executor_invocation_finished",
+            status="failed",
+            task_service=task_service,
+            task_id=prior_task_id,
+            fallback_trace_id=str(payload.trace_id or getattr(prior_record, "trace_id", "") or ""),
+            input_summary={"external_task_ref": external_task_ref, "callback_status": payload.status},
+            output_summary={"error": response.message},
+            evidence_ref=f"agent_callback:{external_task_ref}",
+            error_code=str(response.code or "AGENT_CALLBACK_REJECTED"),
+        )
         status_code = 403 if response.code == "PERMISSION_DENIED" else 400
         raise HTTPException(status_code=status_code, detail=response.message)
+    record = response.data if isinstance(response.data, dict) else {}
+    task_id = str(record.get("zentex_task_id") or "").strip()
+    callback_status = str(record.get("status") or payload.status or "").strip()
+    task_exists = bool(task_id) and callable(getattr(task_service, "get_task", None)) and task_service.get_task(task_id) is not None
+    if task_id and task_exists:
+        task = task_service.get_task(task_id)
+        task_status = str(getattr(getattr(task, "status", None), "value", getattr(task, "status", "")) or "")
+        if (
+            prior_status == "completed"
+            and callback_status == "completed"
+            and task_status == TaskStatus.DONE.value
+            and callable(getattr(task_service, "get_task_outcome", None))
+            and task_service.get_task_outcome(task_id) is not None
+        ):
+            return asdict(response)
+        if callback_status == "completed":
+            from zentex.tasks.execution.external_result_bridge import write_external_execution_result
+
+            await write_external_execution_result(
+                task_service=task_service,
+                task_id=task_id,
+                trace_id=str(response.trace_id or record.get("trace_id") or ""),
+                executor_type="agent",
+                executor_metadata={
+                    "agent_id": record.get("agent_id"),
+                    "external_task_ref": external_task_ref,
+                    "callback_url": record.get("callback_url"),
+                    "callback_status": callback_status,
+                },
+                result_payload={
+                    "status": "completed",
+                    "callback_status": callback_status,
+                    "external_task_ref": external_task_ref,
+                    "trace_id": record.get("trace_id"),
+                    "normalized_result": payload.normalized_result,
+                    "raw_response": payload.raw_response,
+                },
+                succeeded=True,
+            )
+            _record_agent_workflow_event(
+                event_type="node_succeeded",
+                status="succeeded",
+                task_service=task_service,
+                task_id=task_id,
+                fallback_trace_id=str(response.trace_id or record.get("trace_id") or ""),
+                input_summary={"external_task_ref": external_task_ref, "callback_status": callback_status},
+                output_summary={
+                    "normalized_result": payload.normalized_result,
+                    "raw_response": payload.raw_response,
+                    "task_outcome_recorded": True,
+                },
+                evidence_ref=f"agent_callback:{external_task_ref}",
+                details={"agent_id": record.get("agent_id"), "callback_url": record.get("callback_url")},
+            )
+            for event_type in ("executor_invocation_finished", "task_outcome_recorded", "verification_finished"):
+                _record_agent_workflow_event(
+                    event_type=event_type,
+                    status="succeeded",
+                    task_service=task_service,
+                    task_id=task_id,
+                    fallback_trace_id=str(response.trace_id or record.get("trace_id") or ""),
+                    input_summary={"external_task_ref": external_task_ref, "callback_status": callback_status},
+                    output_summary={
+                        "normalized_result": payload.normalized_result,
+                        "raw_response": payload.raw_response,
+                        "task_outcome_recorded": True,
+                    },
+                    evidence_ref=f"agent_callback:{external_task_ref}",
+                    details={"agent_id": record.get("agent_id"), "callback_url": record.get("callback_url")},
+                )
+        elif callback_status in {"failed", "uncertain"}:
+            await task_service.update_task_status(
+                task_id,
+                TaskStatus.FAILED,
+                remarks=f"agent callback returned {callback_status}",
+            )
+            _record_agent_workflow_event(
+                event_type="node_failed",
+                status="failed",
+                task_service=task_service,
+                task_id=task_id,
+                fallback_trace_id=str(response.trace_id or record.get("trace_id") or ""),
+                input_summary={"external_task_ref": external_task_ref, "callback_status": callback_status},
+                output_summary={"normalized_result": payload.normalized_result, "raw_response": payload.raw_response},
+                evidence_ref=f"agent_callback:{external_task_ref}",
+                error_code="AGENT_CALLBACK_NOT_COMPLETED",
+                details={"agent_id": record.get("agent_id"), "callback_url": record.get("callback_url")},
+            )
+            _record_agent_workflow_event(
+                event_type="executor_invocation_finished",
+                status="failed",
+                task_service=task_service,
+                task_id=task_id,
+                fallback_trace_id=str(response.trace_id or record.get("trace_id") or ""),
+                input_summary={"external_task_ref": external_task_ref, "callback_status": callback_status},
+                output_summary={"normalized_result": payload.normalized_result, "raw_response": payload.raw_response},
+                evidence_ref=f"agent_callback:{external_task_ref}",
+                error_code="AGENT_CALLBACK_NOT_COMPLETED",
+                details={"agent_id": record.get("agent_id"), "callback_url": record.get("callback_url")},
+            )
     return asdict(response)
 
 
@@ -394,12 +704,26 @@ async def unregister_agent(
     service: Annotated[AgentCoordinationService, Depends(get_agent_coordination_service)],
     request: Request,
 ) -> Dict[str, bool]:
+    before = service.manager.get_asset(agent_id)
     success = await service.unregister_agent(
         agent_id,
         operator_id=request.client.host if request.client else "unknown",
     )
     if not success:
         raise HTTPException(status_code=404, detail="Agent not found")
+    record_module_management_log(
+        request,
+        source_module="agent",
+        module_label="Agent",
+        action="delete",
+        action_label="已删除",
+        object_id=agent_id,
+        object_label=(before.agent_name or before.name) if before else agent_id,
+        before_status=before.status.value if before else None,
+        after_status="deleted",
+        reason="操作员删除 Agent 注册记录",
+        operator_id=request.client.host if request.client else "unknown",
+    )
     return {"success": True}
 
 
@@ -414,14 +738,30 @@ async def monitor_agents_health(
 async def update_agent_policy(
     agent_id: str,
     payload: AgentPolicyUpdateRequest,
+    request: Request,
     service: Annotated[AgentCoordinationService, Depends(get_agent_coordination_service)],
 ) -> AgentAsset:
     try:
-        return await service.update_policy(
+        before = service.manager.get_asset(agent_id)
+        asset = await service.update_policy(
             agent_id,
             trust_level=payload.trust_level,
             scope=payload.scope,
         )
+        record_module_management_log(
+            request,
+            source_module="agent",
+            module_label="Agent",
+            action="update",
+            action_label="策略已修改",
+            object_id=agent_id,
+            object_label=asset.agent_name or asset.name,
+            before_status=before.trust_level.value if before else None,
+            after_status=asset.trust_level.value,
+            reason="操作员修改 Agent 信任等级或权限范围",
+            details={"scope": payload.scope, "trust_level": payload.trust_level},
+        )
+        return asset
     except KeyError as exc:
         raise HTTPException(status_code=404, detail=str(exc)) from exc
 

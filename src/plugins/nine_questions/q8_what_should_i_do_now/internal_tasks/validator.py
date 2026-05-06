@@ -5,6 +5,17 @@ from typing import Any
 
 EXTERNAL_EXECUTOR_TYPES = {"agent", "cli", "mcp", "external_connector", "connector"}
 EXTERNAL_PREFIXES = ("agent:", "cli:", "mcp:", "external_connector:", "connector:")
+EXTERNAL_SIDE_EFFECT_TOKENS = (
+    "cli:",
+    "mcp:",
+    "agent:",
+    "external_connector:",
+    "network",
+    "http",
+    "write file",
+    "workspace write",
+    "send request",
+)
 
 
 class Q8InternalTaskIsolationError(ValueError):
@@ -34,13 +45,14 @@ def validate_internal_task_plan(plan: dict[str, Any]) -> dict[str, Any]:
                 task.get("reason"),
                 task.get("required_capability"),
                 task.get("tool_id"),
+                task.get("target_id"),
             )
         )
         if (
             task_scope == "external"
             or executor_type in EXTERNAL_EXECUTOR_TYPES
             or target_id.startswith(EXTERNAL_PREFIXES)
-            or any(token in haystack for token in ("cli:", "mcp:", "agent:", "external_connector:"))
+            or any(token in haystack for token in EXTERNAL_SIDE_EFFECT_TOKENS)
         ):
             failures.append(
                 {

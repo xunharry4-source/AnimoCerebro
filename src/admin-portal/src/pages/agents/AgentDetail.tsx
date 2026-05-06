@@ -36,6 +36,9 @@ import {
   Replay as ReplayIcon,
   FilterList as FilterListIcon,
   Search as SearchIcon,
+  PowerSettingsNew as PowerSettingsNewIcon,
+  Block as BlockIcon,
+  DeleteOutline as DeleteOutlineIcon,
 } from '@mui/icons-material';
 
 type AgentStatus = 'idle' | 'active' | 'busy' | 'offline' | 'handshake_failed' | 'audit_failed' | 'invocation_blocked';
@@ -324,6 +327,7 @@ export default function AgentDetail() {
     taskTitle: string;
   }>({ open: false, type: 'cancel', taskId: '', taskTitle: '' });
   const [actionLoading, setActionLoading] = useState(false);
+  const [deletingAgent, setDeletingAgent] = useState(false);
 
   const fetchAgentDetail = async () => {
     if (!agentId) return;
@@ -464,6 +468,47 @@ export default function AgentDetail() {
     }
   };
 
+  const updateAgentActivation = async (action: 'activate' | 'disable') => {
+    if (!agentId) return;
+    try {
+      const res = await fetch(`/api/web/agents/${agentId}/${action}`, { method: 'POST' });
+      const payload = await res.json();
+      if (!res.ok) {
+        throw new Error(payload?.detail || `${action} failed`);
+      }
+      await fetchAgentDetail();
+      await fetchAllTasks();
+    } catch (err) {
+      setError(err instanceof Error ? err.message : `${action} failed`);
+    }
+  };
+
+  const deleteAgentRegistration = async () => {
+    if (!agent || !agentId) return;
+    const displayName = agent.agent_name || agent.name || agent.agent_id;
+    if (!window.confirm(t("agents.deleteConfirm", { name: displayName }))) {
+      return;
+    }
+
+    setDeletingAgent(true);
+    setError(null);
+    try {
+      const res = await fetch(`/api/web/agents/${encodeURIComponent(agentId)}`, { method: 'DELETE' });
+      const payload = await res.json().catch(() => ({}));
+      if (!res.ok) {
+        const detail = payload?.detail;
+        const message =
+          typeof detail === 'string' ? detail : detail?.operator_message || detail?.message || t("agents.deleteFailed");
+        throw new Error(message);
+      }
+      navigate('/console/agents');
+    } catch (err) {
+      setError(err instanceof Error ? err.message : t("agents.deleteFailed"));
+    } finally {
+      setDeletingAgent(false);
+    }
+  };
+
   const clearFilters = () => {
     setAdvancedFilters({
       search: '',
@@ -517,16 +562,33 @@ export default function AgentDetail() {
               </Typography>
             </Box>
           </Stack>
-          <Button
-            startIcon={<RefreshIcon />}
-            onClick={() => {
-              fetchAgentDetail();
-              fetchAllTasks();
-            }}
-            variant="contained"
-          >
-            {t("common.refresh")}
-          </Button>
+          <Stack direction="row" spacing={1}>
+            <Button startIcon={<PowerSettingsNewIcon />} onClick={() => void updateAgentActivation('activate')} variant="outlined">
+              激活
+            </Button>
+            <Button startIcon={<BlockIcon />} onClick={() => void updateAgentActivation('disable')} variant="outlined">
+              关闭
+            </Button>
+            <Button
+              color="error"
+              disabled={deletingAgent}
+              startIcon={<DeleteOutlineIcon />}
+              onClick={() => void deleteAgentRegistration()}
+              variant="outlined"
+            >
+              {t("agents.delete")}
+            </Button>
+            <Button
+              startIcon={<RefreshIcon />}
+              onClick={() => {
+                fetchAgentDetail();
+                fetchAllTasks();
+              }}
+              variant="contained"
+            >
+              {t("common.refresh")}
+            </Button>
+          </Stack>
         </Stack>
 
         {/* Basic Info & Status */}

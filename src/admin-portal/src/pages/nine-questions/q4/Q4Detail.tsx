@@ -17,6 +17,7 @@ import {
   Typography,
 } from "@mui/material";
 import RefreshIcon from "@mui/icons-material/Refresh";
+import { useTranslation } from "react-i18next";
 import { Link as RouterLink } from "react-router-dom";
 
 import {
@@ -42,30 +43,31 @@ import NineQuestionSectionBoundary from "../../../components/NineQuestionSection
 import NineQuestionRawPayloadCard from "../../../components/NineQuestionRawPayloadCard";
 import NineQuestionWorkflowNavButton from "../../../components/NineQuestionWorkflowNavButton";
 import NineQuestionIntegrationStatusCard from "../../../components/NineQuestionIntegrationStatusCard";
+import NineQuestionAnswerTable from "../../../components/NineQuestionAnswerTable";
 import { sanitizeQ4Evidence, sanitizeQ4Inference } from "../detailSafeData";
 
-function resolveErrorGuidance(errMsg: string): { title: string; action: string } {
+function resolveErrorGuidance(errMsg: string, t: (key: string) => string): { title: string; action: string } {
   if (errMsg.includes("No active session") || errMsg.includes("没有活动 session")) {
     return {
-      title: "当前还没有可读取的九问快照",
-      action: "请先运行一次完整的九问推演流程，完成后再回到这个监控页刷新。",
+      title: t("nineQuestions.q4.noActiveSession"),
+      action: t("nineQuestions.q4.actionRunDeduction"),
     };
   }
   if (errMsg.includes("尚无快照记录")) {
     return {
-      title: "Q4 尚未产生能力边界快照",
-      action: "能力边界审计可能由于 Q1-Q3 前置链路失败或尚未触发。请先重新触发完整九问流程。",
+      title: t("nineQuestions.q4.noInferenceResult"),
+      action: t("nineQuestions.q4.actionTriggerFullDeduction"),
     };
   }
   if (errMsg.includes("状态机未挂载") || errMsg.includes("503")) {
     return {
-      title: "后端推演引擎未就绪",
-      action: "NineQuestionState 未挂载。请确认 Zentex Brain Runtime 已完成初始化后再刷新。",
+      title: t("nineQuestions.q4.engineNotReady"),
+      action: t("nineQuestions.q4.checkRuntimeStatus"),
     };
   }
   return {
-    title: "加载 Q4 数据失败",
-    action: "请检查网络、后台服务和 Q4 分区接口状态后刷新重试。",
+    title: t("nineQuestions.q4.loadFailed"),
+    action: t("nineQuestions.q4.retryHint"),
   };
 }
 
@@ -82,7 +84,173 @@ function asList(value: unknown): Record<string, any>[] {
   return value.filter((item): item is Record<string, any> => item !== null && typeof item === "object" && !Array.isArray(item));
 }
 
+function asRecord(value: unknown): Record<string, any> {
+  return value && typeof value === "object" && !Array.isArray(value) ? (value as Record<string, any>) : {};
+}
+
+function hasMaterialValue(value: unknown): boolean {
+  if (Array.isArray(value)) return value.some(hasMaterialValue);
+  if (value && typeof value === "object") {
+    return Object.values(value as Record<string, any>).some(hasMaterialValue);
+  }
+  return value !== undefined && value !== null && value !== "";
+}
+
+function firstMaterialRecord(...values: unknown[]): Record<string, any> {
+  for (const value of values) {
+    const candidate = asRecord(value);
+    if (hasMaterialValue(candidate)) return candidate;
+  }
+  return {};
+}
+
+function firstMaterialValue(...values: unknown[]): unknown {
+  return values.find(hasMaterialValue);
+}
+
+function hasRenderableQ4Evidence(value: unknown): boolean {
+  const payload = asRecord(value);
+  const q1 = asRecord(payload.q1_context);
+  const q2 = asRecord(payload.q2_context);
+  const q3 = asRecord(payload.q3_inventory);
+  const q1Scene = asRecord(q1.scene_model);
+  const q2Inventory = asRecord(q2.asset_inventory);
+  const q2Resource = asRecord(q2.resource_evaluation);
+  const q3Role = asRecord(q3.role_profile);
+  const q3Mission = asRecord(q3.mission_boundary);
+  return [
+    q1Scene.primary_domain,
+    q1Scene.secondary_domains,
+    q2Inventory.cognitive_and_functional_tools,
+    q2Inventory.execution_domains,
+    q2Resource.resource_status,
+    q3Role.active_role,
+    q3Role.identity_role,
+    q3Mission.priority_duties,
+    q3Mission.current_mission,
+    q3.capability_baseline,
+    q3.available_execution_tools,
+  ].some(hasMaterialValue);
+}
+
+function hasMaterialEvidence(value: unknown): boolean {
+  const payload = asRecord(value);
+  return Object.values(payload).some((item) => {
+    if (Array.isArray(item)) return item.length > 0;
+    if (item && typeof item === "object") return Object.keys(item as Record<string, any>).length > 0;
+    return item !== undefined && item !== null && item !== "";
+  });
+}
+
+function buildQ4EvidenceWithRawFallback(rawEvidence: unknown, rawPayload: unknown): Record<string, any> {
+  const evidence = { ...asRecord(rawEvidence) };
+  if (hasRenderableQ4Evidence(evidence)) return evidence;
+
+  const raw = asRecord(rawPayload);
+  const contextUpdates = asRecord(raw.context_updates);
+  const rawResult = asRecord(raw.result);
+  const resultContextUpdates = asRecord(rawResult.context_updates);
+  const traceContext = firstMaterialRecord(
+    asRecord(raw.llm_trace_payload).context_data,
+    asRecord(contextUpdates.llm_trace_payload).context_data,
+    asRecord(rawResult.llm_trace_payload).context_data,
+  );
+  const preprocessed = asRecord(
+    contextUpdates.q4_preprocessed_evidence ||
+      rawResult.q4_preprocessed_evidence ||
+      resultContextUpdates.q4_preprocessed_evidence,
+  );
+  if (hasRenderableQ4Evidence(preprocessed)) {
+    return preprocessed;
+  }
+
+  const capabilityEvidence = asRecord(
+    contextUpdates.q4_capability_evidence ||
+      rawResult.q4_capability_evidence ||
+      resultContextUpdates.q4_capability_evidence,
+  );
+  const assetAndPermissions = asRecord(preprocessed.asset_and_permissions);
+  const capabilityBaseline = firstMaterialRecord(contextUpdates.q4_capability_baseline, rawResult.q4_capability_baseline, traceContext.capability_baseline);
+  const q2UnifiedInventory = firstMaterialRecord(
+    assetAndPermissions.q2_unified_asset_inventory,
+    capabilityEvidence.q2_unified_asset_inventory,
+    contextUpdates.q2_unified_asset_inventory,
+    traceContext.q2_unified_asset_inventory,
+  );
+  const q2AssetInventory = firstMaterialRecord(
+    assetAndPermissions.q2_external_tool_asset_inventory,
+    traceContext.q2_external_tool_asset_inventory,
+    capabilityEvidence.q2_external_tool_asset_inventory,
+    capabilityEvidence.q2_asset_inventory,
+    contextUpdates.q2_external_tool_asset_inventory,
+    contextUpdates.q2_asset_inventory,
+    contextUpdates.asset_inventory,
+  );
+  const q2ResourceEvaluation = firstMaterialRecord(
+    capabilityEvidence.q2_resource_evaluation,
+    contextUpdates.q2_resource_evaluation,
+    traceContext.q2_resource_evaluation,
+  );
+  const q3RoleProfile = firstMaterialRecord(capabilityEvidence.q3_role_profile, contextUpdates.q3_role_profile, traceContext.q3_role_profile);
+  const q3MissionBoundary = firstMaterialRecord(capabilityEvidence.q3_mission_boundary, contextUpdates.q3_mission_boundary, traceContext.q3_mission_boundary);
+  const q1SceneModel = firstMaterialRecord(capabilityEvidence.q1_scene_model, contextUpdates.q1_scene_model, traceContext.q1_scene_model);
+  const q1UncertaintyProfile = firstMaterialRecord(contextUpdates.q1_uncertainty_profile, traceContext.q1_uncertainty_profile);
+
+  return {
+    q1_context: {
+      scene_model: q1SceneModel,
+      uncertainty_profile: q1UncertaintyProfile,
+    },
+    q2_context: {
+      asset_inventory: q2AssetInventory,
+      resource_evaluation: q2ResourceEvaluation,
+    },
+    q3_inventory: {
+      available_cognitive_tools: q2UnifiedInventory.available_cognitive_tools || [],
+      available_execution_tools: q2UnifiedInventory.available_execution_tools || [],
+      connected_agents: Array.isArray(q2UnifiedInventory.connected_agents) ? q2UnifiedInventory.connected_agents : [],
+      activated_strategy_patches: q2UnifiedInventory.activated_strategy_patches || [],
+      accessible_workspace_zones: q2UnifiedInventory.accessible_workspace_zones || [],
+      permission_profile: firstMaterialRecord(contextUpdates.q4_permission_profile, assetAndPermissions.permission_profile, traceContext.permission_profile),
+      active_execution_domains: firstMaterialValue(contextUpdates.q4_active_execution_domains, traceContext.active_execution_domains) || [],
+      capability_baseline: capabilityBaseline,
+      resource_evaluation: q2ResourceEvaluation,
+      role_profile: q3RoleProfile,
+      mission_boundary: q3MissionBoundary,
+    },
+  };
+}
+
+function buildQ4InferenceWithRawFallback(rawInference: unknown, rawPayload: unknown): Record<string, any> | null {
+  const inference = asRecord(rawInference);
+  if (hasMaterialEvidence(inference)) return inference;
+  const raw = asRecord(rawPayload);
+  const contextUpdates = asRecord(raw.context_updates);
+  const rawResult = asRecord(raw.result);
+  const resultContextUpdates = asRecord(rawResult.context_updates);
+  const fallback = asRecord(
+    contextUpdates.q4_capability_boundary_profile ||
+      rawResult.q4_capability_boundary_profile ||
+      rawResult.capability_boundary_profile ||
+      resultContextUpdates.q4_capability_boundary_profile,
+  );
+  return hasMaterialEvidence(fallback) ? fallback : null;
+}
+
+function hasMaterialTracePayload(value: unknown): value is Record<string, any> {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return false;
+  const payload = value as Record<string, any>;
+  if (Array.isArray(payload.invocations) && payload.invocations.some(hasMaterialTracePayload)) return true;
+  return ["provider_name", "model", "prompt", "system_prompt", "context_data", "raw_response", "error_type", "error_message"].some((key) => {
+    const item = payload[key];
+    if (Array.isArray(item)) return item.length > 0;
+    if (item && typeof item === "object") return Object.keys(item).length > 0;
+    return item !== undefined && item !== null && item !== "";
+  });
+}
+
 export default function Q4Detail() {
+  const { t } = useTranslation();
   const qId = "q4";
   const [summary, setSummary] = useState<Record<string, any> | null>(null);
   const [rawPayload, setRawPayload] = useState<Record<string, any> | null>(null);
@@ -112,22 +280,22 @@ export default function Q4Detail() {
       const [summaryResult, evidenceResult, inferenceResult, traceResult, rawResult, modulesResult] = results;
 
       if (summaryResult.status === "fulfilled") setSummary(summaryResult.value);
-      else nextErrors.summary = summaryResult.reason?.message || "加载 Q4 summary 失败";
+      else nextErrors.summary = summaryResult.reason?.message || t("nineQuestions.q4.loadSummaryFailed");
 
       if (evidenceResult.status === "fulfilled") setEvidencePayload(evidenceResult.value);
-      else nextErrors.evidence = evidenceResult.reason?.message || "加载 Q4 evidence 失败";
+      else nextErrors.evidence = evidenceResult.reason?.message || t("nineQuestions.q4.loadEvidenceFailed");
 
       if (inferenceResult.status === "fulfilled") setInferencePayload(inferenceResult.value);
-      else nextErrors.inference = inferenceResult.reason?.message || "加载 Q4 inference 失败";
+      else nextErrors.inference = inferenceResult.reason?.message || t("nineQuestions.q4.loadInferenceFailed");
 
       if (traceResult.status === "fulfilled") setTracePayload(traceResult.value);
-      else nextErrors.trace = traceResult.reason?.message || "加载 Q4 trace 失败";
+      else nextErrors.trace = traceResult.reason?.message || t("nineQuestions.q4.loadTraceFailed");
 
       if (rawResult.status === "fulfilled") setRawPayload(rawResult.value);
-      else nextErrors.raw = rawResult.reason?.message || "加载 Q4 raw 失败";
+      else nextErrors.raw = rawResult.reason?.message || t("nineQuestions.q4.loadRawFailed");
 
       if (modulesResult.status === "fulfilled") setModulesPayload(modulesResult.value);
-      else nextErrors.modules = modulesResult.reason?.message || "加载 Q4 modules 失败";
+      else nextErrors.modules = modulesResult.reason?.message || t("nineQuestions.q4.loadModulesFailed");
 
       setSectionErrors(nextErrors);
 
@@ -136,10 +304,10 @@ export default function Q4Detail() {
         const reasons = [summaryResult, rawResult, modulesResult]
           .map((result) => (result.status === "rejected" ? result.reason?.message : ""))
           .filter(Boolean);
-        throw new Error(reasons.join("；") || "Q4 基础分区全部加载失败，当前无法建立页面上下文。");
+        throw new Error(reasons.join("；") || t("nineQuestions.q4.basePartitionsFailed"));
       }
     } catch (err: any) {
-      setError(err?.message || "加载 Q4 详情失败");
+      setError(err?.message || t("nineQuestions.q4.loadDetailFailed"));
     } finally {
       setLoading(false);
     }
@@ -153,36 +321,45 @@ export default function Q4Detail() {
     return (
       <Box sx={{ display: "flex", alignItems: "center", gap: 2, p: 3 }}>
         <CircularProgress size={24} />
-        <Typography variant="body2" color="text.secondary">正在加载 Q4 能力边界审计数据...</Typography>
+        <Typography variant="body2" color="text.secondary">{t("nineQuestions.q4.loading")}</Typography>
       </Box>
     );
   }
 
   if (error) {
-    const guidance = resolveErrorGuidance(error);
+    const guidance = resolveErrorGuidance(error, t);
     return (
       <Box sx={{ p: 3 }} data-testid="q4-error-boundary">
         <Alert severity="error" sx={{ mb: 2 }}>
           <AlertTitle>{guidance.title}</AlertTitle>
-          <Typography variant="body2"><strong>建议操作：</strong> {guidance.action}</Typography>
+          <Typography variant="body2"><strong>{t("nineQuestions.q4.suggestedAction")}：</strong> {guidance.action}</Typography>
           <Typography variant="body2" sx={{ mt: 1 }}>{error}</Typography>
         </Alert>
-        <Button variant="outlined" startIcon={<RefreshIcon />} onClick={() => void loadDetail()} data-testid="q4-retry-button">重新加载</Button>
+        <Button variant="outlined" startIcon={<RefreshIcon />} onClick={() => void loadDetail()} data-testid="q4-retry-button">{t("common.refresh")}</Button>
       </Box>
     );
   }
 
-  const sanitizedEvidence = sanitizeQ4Evidence(evidencePayload);
-  const sanitizedInference = sanitizeQ4Inference(inferencePayload);
+  const rawEvidence = buildQ4EvidenceWithRawFallback(evidencePayload, rawPayload);
+  const rawInference = buildQ4InferenceWithRawFallback(inferencePayload, rawPayload);
+  const sanitizedEvidence = sanitizeQ4Evidence(rawEvidence);
+  const sanitizedInference = sanitizeQ4Inference(rawInference);
   const evidence = sanitizedEvidence.value as Q4PreprocessedEvidence;
   const inference = sanitizedInference.value as Q4WhatCanIDoInferenceView | null;
   const executionDiagnosis = rawPayload?.context_updates?.q4_execution_diagnosis || null;
   const recoveryPlan = executionDiagnosis?.recovery_plan || null;
-  const hasStructuredSnapshot = Boolean(evidencePayload);
+  const hasStructuredSnapshot = hasMaterialEvidence(rawEvidence);
   const pageStatus = String(summary?.status || modulesPayload?.status?.status || "partial");
-  const showIncompleteAlert = !evidencePayload || !inferencePayload || pageStatus.includes("partial");
+  const showIncompleteAlert = !hasStructuredSnapshot || !inference || pageStatus.includes("partial");
   const detailWarnings = [...sanitizedEvidence.warnings, ...sanitizedInference.warnings];
-  const providerName = String(tracePayload?.provider_name || rawPayload?.llm_trace_payload?.provider_name || "");
+  const materialTracePayload = hasMaterialTracePayload(tracePayload)
+    ? tracePayload
+    : hasMaterialTracePayload(rawPayload?.llm_trace_payload)
+      ? rawPayload?.llm_trace_payload
+      : hasMaterialTracePayload(rawPayload?.context_updates?.llm_trace_payload)
+        ? rawPayload?.context_updates?.llm_trace_payload
+        : null;
+  const providerName = String(materialTracePayload?.provider_name || rawPayload?.llm_trace_payload?.provider_name || "");
   const traceId = String(rawPayload?.trace_id || "");
   const toolId = String(rawPayload?.tool_id || `nine_questions.${qId}`);
   const moduleRuns = asList(modulesPayload?.module_runs || executionDiagnosis?.module_runs);
@@ -193,13 +370,13 @@ export default function Q4Detail() {
     <Box data-testid="q4-detail-root" sx={{ display: "flex", flexDirection: "column", gap: 3 }}>
       <Stack direction="row" justifyContent="space-between" alignItems="center" sx={{ mb: 0 }}>
         <Box>
-          <Typography variant="h4" fontWeight="bold" gutterBottom>{getQuestionDisplayLabel(qId)} 正式审计页</Typography>
-          <Typography variant="body2" color="text.secondary">Capability Boundary & Actionable Space Audit (Independent API GET /nine-questions/q4)</Typography>
+          <Typography variant="h4" fontWeight="bold" gutterBottom>{getQuestionDisplayLabel(qId)} {t("nineQuestions.q4.productionAudit")}</Typography>
+          <Typography variant="body2" color="text.secondary">{t("nineQuestions.q4.subtitle")}</Typography>
         </Box>
         <Stack direction="row" spacing={1}>
           <NineQuestionRerunButton qId={qId} onCompleted={loadDetail} />
           <NineQuestionWorkflowNavButton qId={qId} />
-          <Button component={RouterLink} to="/console/nine-questions/q4/test" variant="contained" color="warning">进入独立沙箱测试</Button>
+          <Button component={RouterLink} to="/console/nine-questions/q4/test" variant="contained" color="warning">{t("nineQuestions.q4.enterSandbox")}</Button>
         </Stack>
       </Stack>
 
@@ -207,27 +384,28 @@ export default function Q4Detail() {
       {executionDiagnosis ? (
         <Alert severity={executionDiagnosis.authenticity_status === "completed" ? "success" : "warning"}>
           <AlertTitle>
-            {executionDiagnosis.authenticity_status === "completed" ? "Q4 真实性状态：已验证完成" : "Q4 真实性状态：降级/部分失败"}
+            {executionDiagnosis.authenticity_status === "completed" ? t("nineQuestions.q4.authCompleted") : t("nineQuestions.q4.authPartial")}
           </AlertTitle>
-          <Typography variant="body2">{String(executionDiagnosis.diagnosis_message || "当前没有诊断说明。")}</Typography>
+          <Typography variant="body2">{String(executionDiagnosis.diagnosis_message || t("nineQuestions.q4.noDiagnosis"))}</Typography>
           <Typography variant="body2" sx={{ mt: 1 }}>
-            {executionDiagnosis.used_fallback ? "本次使用了 fallback，不能视为完整能力边界落地。" : "本次未使用 fallback。"}
+            {executionDiagnosis.used_fallback ? t("nineQuestions.q4.fallbackUsed") : t("nineQuestions.q4.noFallbackUsed")}
           </Typography>
         </Alert>
       ) : null}
       {recoveryPlan ? (
         <Alert severity="info" data-testid="q4-recovery-plan">
-          <AlertTitle>Q4 失败恢复计划</AlertTitle>
+          <AlertTitle>{t("nineQuestions.q4.recoveryPlan")}</AlertTitle>
           <NineQuestionRecoveryActions qId={qId} recoveryPlan={recoveryPlan} onCompleted={loadDetail} />
         </Alert>
       ) : null}
       {showIncompleteAlert ? (
         <Alert severity="info">
-          Q4 当前只拿到了部分分区数据，页面已按可用结果降级展示。
+          {t("nineQuestions.q4.partialData")}
         </Alert>
       ) : null}
+      <NineQuestionAnswerTable questionId={qId} inference={inference} result={rawPayload?.result} />
 
-      <NineQuestionSectionBoundary title="Q4 数据详情">
+      <NineQuestionSectionBoundary title={t("nineQuestions.q4.dataDetails")}>
         {sectionErrors.summary ? <Alert severity="warning" sx={{ mb: 2 }}>{sectionErrors.summary}</Alert> : null}
         {sectionErrors.evidence ? <Alert severity="warning" sx={{ mb: 2 }}>{sectionErrors.evidence}</Alert> : null}
         {sectionErrors.inference ? <Alert severity="warning" sx={{ mb: 2 }}>{sectionErrors.inference}</Alert> : null}
@@ -243,7 +421,7 @@ export default function Q4Detail() {
             {traceId ? <Chip label={`trace: ${traceId}`} variant="outlined" sx={{ fontFamily: "monospace" }} data-testid="q4-trace-chip" /> : null}
           </Stack>
           <Typography variant="body2" sx={{ mb: 2 }}>
-            模块数：{moduleRuns.length} | 插件数：{pluginRuns.length} | 依赖数：{upstreamDependencies.length}
+            {t("nineQuestions.q4.moduleSummary", { modules: moduleRuns.length, plugins: pluginRuns.length, dependencies: upstreamDependencies.length })}
           </Typography>
           <TableContainer>
             <Table size="small">
@@ -271,26 +449,26 @@ export default function Q4Detail() {
 
       {!hasStructuredSnapshot ? (
         <Alert severity="warning">
-          当前没有可用的结构化证据，以下区域保留布局并显示可恢复的空态。
+          {t("nineQuestions.q4.noStructuredEvidenceLayout")}
         </Alert>
       ) : null}
 
-      <NineQuestionSectionBoundary title="Q4 结构化证据">
+      <NineQuestionSectionBoundary title={t("nineQuestions.q4.structuredEvidenceSection")}>
         {sectionErrors.modules ? <Alert severity="warning" sx={{ mb: 2 }}>{sectionErrors.modules}</Alert> : null}
         <Card variant="outlined">
           <CardContent>
             <Typography variant="h6" gutterBottom sx={{ mt: 0, fontWeight: "bold" }}>
-              结构化能力边界证据 (Zentex G31A.Q4)
+              {t("nineQuestions.q4.structuredCapabilityEvidence")}
             </Typography>
             {hasStructuredSnapshot ? (
               <Q4EvidencePanel
                 evidence={evidence}
                 inference={inference}
                 providerName={providerName || null}
-                elapsedMs={Number(tracePayload?.elapsed_ms || rawPayload?.llm_trace_payload?.elapsed_ms || 0)}
+                elapsedMs={Number(materialTracePayload?.elapsed_ms || rawPayload?.llm_trace_payload?.elapsed_ms || 0)}
               />
             ) : (
-              <Alert severity="warning">暂无结构化能力证据。</Alert>
+              <Alert severity="warning">{t("nineQuestions.q4.noStructuredCapabilityEvidence")}</Alert>
             )}
           </CardContent>
         </Card>
@@ -300,7 +478,7 @@ export default function Q4Detail() {
 
       {detailWarnings.length > 0 || !evidencePayload || !inferencePayload ? (
         <NineQuestionRawPayloadCard
-          title="Q4 原始字段诊断"
+          title={t("nineQuestions.q4.rawDiagnostics")}
           warnings={detailWarnings}
           payloads={[
             { label: "summary", value: summary },
@@ -312,9 +490,9 @@ export default function Q4Detail() {
         />
       ) : null}
 
-      <NineQuestionSectionBoundary title="Q4 Trace">
+      <NineQuestionSectionBoundary title={t("nineQuestions.q4.traceSection")}>
         {sectionErrors.trace ? <Alert severity="warning" sx={{ mb: 2 }}>{sectionErrors.trace}</Alert> : null}
-        <LLMTracePanel trace={tracePayload as LLMTracePayloadView} />
+        <LLMTracePanel trace={materialTracePayload as LLMTracePayloadView | null} />
       </NineQuestionSectionBoundary>
     </Box>
   );

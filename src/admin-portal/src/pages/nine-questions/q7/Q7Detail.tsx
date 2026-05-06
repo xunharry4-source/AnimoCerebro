@@ -12,6 +12,7 @@ import {
   Typography,
 } from "@mui/material";
 import RefreshIcon from "@mui/icons-material/Refresh";
+import GavelIcon from "@mui/icons-material/Gavel";
 import { Link as RouterLink } from "react-router-dom";
 
 import {
@@ -37,6 +38,7 @@ import NineQuestionRawPayloadCard from "../../../components/NineQuestionRawPaylo
 import NineQuestionWorkflowNavButton from "../../../components/NineQuestionWorkflowNavButton";
 import NineQuestionRecoveryActions from "../../../components/NineQuestionRecoveryActions";
 import NineQuestionIntegrationStatusCard from "../../../components/NineQuestionIntegrationStatusCard";
+import NineQuestionAnswerTable from "../../../components/NineQuestionAnswerTable";
 import { sanitizeQ7Evidence, sanitizeQ7Inference } from "../detailSafeData";
 
 function resolveErrorGuidance(errMsg: string): { title: string; action: string } {
@@ -62,6 +64,18 @@ function resolveErrorGuidance(errMsg: string): { title: string; action: string }
     title: "加载数据失败",
     action: "请检查网络或确认后台服务状态后刷新重试。",
   };
+}
+
+function hasMaterialTracePayload(value: unknown): value is Record<string, any> {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return false;
+  const payload = value as Record<string, any>;
+  if (Array.isArray(payload.invocations) && payload.invocations.some(hasMaterialTracePayload)) return true;
+  return ["provider_name", "model", "prompt", "system_prompt", "context_data", "raw_response", "error_type", "error_message"].some((key) => {
+    const item = payload[key];
+    if (Array.isArray(item)) return item.length > 0;
+    if (item && typeof item === "object") return Object.keys(item).length > 0;
+    return item !== undefined && item !== null && item !== "";
+  });
 }
 
 export const Q7Detail: React.FC = () => {
@@ -154,16 +168,23 @@ export const Q7Detail: React.FC = () => {
   const sanitizedInference = sanitizeQ7Inference(rawInference);
   const evidence = sanitizedEvidence.value as Q7PreprocessedEvidence;
   const inference = sanitizedInference.value as Q7AlternativeStrategyInferenceView | null;
-  const llmTrace = tracePayload;
+  const llmTrace = hasMaterialTracePayload(tracePayload)
+    ? tracePayload
+    : hasMaterialTracePayload(rawPayload?.llm_trace_payload)
+      ? rawPayload?.llm_trace_payload
+      : hasMaterialTracePayload(rawPayload?.context_updates?.llm_trace_payload)
+        ? rawPayload?.context_updates?.llm_trace_payload
+        : null;
   const hasStructuredSnapshot = Boolean(rawEvidence);
   const detailWarnings = [...sanitizedEvidence.warnings, ...sanitizedInference.warnings];
   const showIncompleteAlert = !rawEvidence || !rawInference;
-  const providerName = String(tracePayload?.provider_name || rawPayload?.llm_trace_payload?.provider_name || "");
+  const providerName = String(llmTrace?.provider_name || rawPayload?.llm_trace_payload?.provider_name || "");
   const traceId = String(rawPayload?.trace_id || "");
   const toolId = String(rawPayload?.tool_id || `nine_questions.${qId}`);
   const pageStatus = String(summary?.status || modulesPayload?.status?.status || "partial");
   const executionDiagnosis = rawPayload?.context_updates?.q7_execution_diagnosis || null;
   const recoveryPlan = executionDiagnosis?.recovery_plan || null;
+  const activeConstraints = inference?.non_bypassable_constraints || [];
 
   return (
     <Box data-testid="q7-detail-root" sx={{ display: "flex", flexDirection: "column", gap: 3 }}>
@@ -173,7 +194,7 @@ export const Q7Detail: React.FC = () => {
             {getQuestionDisplayLabel(qId)} 正式审计页
           </Typography>
           <Typography variant="body2" color="text.secondary">
-            Degradation Strategy & Fallback Planning (Independent API GET /nine-questions/q7)
+            RedLineAssessment & Non-bypassable Constraint Firewall (Independent API GET /nine-questions/q7)
           </Typography>
         </Box>
         <Stack direction="row" spacing={1}>
@@ -213,6 +234,24 @@ export const Q7Detail: React.FC = () => {
           Q7 当前只拿到了部分分区数据，页面已按可用结果降级展示。
         </Alert>
       ) : null}
+      <Alert
+        severity="error"
+        icon={<GavelIcon fontSize="inherit" />}
+        data-testid="q7-production-redline-banner"
+        sx={{ border: "2px solid", borderColor: "error.main" }}
+      >
+        <AlertTitle>当前生效禁令</AlertTitle>
+        {activeConstraints.length > 0 ? (
+          <Stack spacing={0.75}>
+            {activeConstraints.map((item, index) => (
+              <Typography key={`${item}-${index}`} variant="body2">{item}</Typography>
+            ))}
+          </Stack>
+        ) : (
+          <Typography variant="body2">未读取到合格的 Q7 不可绕过约束，Q8 应暂停外部任务生成。</Typography>
+        )}
+      </Alert>
+      <NineQuestionAnswerTable questionId={qId} inference={inference} result={rawPayload?.result} />
 
       <NineQuestionSectionBoundary title="Q7 数据详情">
         {sectionErrors.summary ? <Alert severity="warning" sx={{ mb: 2 }}>{sectionErrors.summary}</Alert> : null}
@@ -247,7 +286,7 @@ export const Q7Detail: React.FC = () => {
           evidence={evidence}
           inference={inference}
           providerName={providerName || null}
-          elapsedMs={tracePayload?.elapsed_ms || rawPayload?.llm_trace_payload?.elapsed_ms || 0}
+          elapsedMs={llmTrace?.elapsed_ms || rawPayload?.llm_trace_payload?.elapsed_ms || 0}
         />
       </NineQuestionSectionBoundary>
 
@@ -269,7 +308,7 @@ export const Q7Detail: React.FC = () => {
 
       <NineQuestionSectionBoundary title="Q7 Trace">
         {sectionErrors.trace ? <Alert severity="warning" sx={{ mb: 2 }}>{sectionErrors.trace}</Alert> : null}
-        <LLMTracePanel trace={llmTrace as LLMTracePayloadView} />
+        <LLMTracePanel trace={llmTrace as LLMTracePayloadView | null} />
       </NineQuestionSectionBoundary>
     </Box>
   );

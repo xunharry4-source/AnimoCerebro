@@ -18,6 +18,10 @@ class NineQuestionStateStore(Protocol):
 
     async def save(self, session_id: str, state: NineQuestionStateSnapshot) -> None: ...
 
+    async def get_question_module_runs(self, session_id: str, question_id: str) -> List[Dict[str, Any]]: ...
+
+    async def get_question_module_outputs(self, session_id: str, question_id: str) -> Dict[str, Any]: ...
+
 
 logger = logging.getLogger(__name__)
 
@@ -47,6 +51,83 @@ class NineQuestionStateManagerImpl(NineQuestionStateManager):
         if self._cache_manager is not None:
             self._cache_manager.set(CacheNamespace.STATE, session_id, state)
         return state
+
+    async def get_state_metadata(self, session_id: str) -> Dict[str, Any]:
+        get_metadata = getattr(self._store, "get_metadata", None)
+        if callable(get_metadata):
+            metadata = await get_metadata(session_id)
+            if isinstance(metadata, dict):
+                return metadata
+        state = await self.get_state(session_id)
+        return {
+            "version": state.version,
+            "revision": state.revision,
+            "dirty_questions": list(state.dirty_questions),
+            "last_refresh_reason": state.last_refresh_reason,
+            "snapshot_version": state.snapshot_version,
+            "updated_at": state.updated_at,
+        }
+
+    async def get_question_snapshot(self, session_id: str, question_id: str) -> Optional[Dict[str, Any]]:
+        snapshots = await self.get_question_snapshots(session_id, [question_id])
+        return snapshots.get(question_id)
+
+    async def get_question_snapshots(self, session_id: str, question_ids: List[str]) -> Dict[str, Dict[str, Any]]:
+        get_snapshots = getattr(self._store, "get_question_snapshots", None)
+        if callable(get_snapshots):
+            snapshots = await get_snapshots(session_id, question_ids)
+            if isinstance(snapshots, dict):
+                return {str(key): value for key, value in snapshots.items() if isinstance(value, dict)}
+        raise RuntimeError("Nine-question snapshots must be read from SQLite question tables")
+
+    async def get_question_summary_rows(self, session_id: str, question_ids: List[str]) -> Dict[str, Dict[str, Any]]:
+        get_rows = getattr(self._store, "get_question_summary_rows", None)
+        if callable(get_rows):
+            rows = await get_rows(session_id, question_ids)
+            if isinstance(rows, dict):
+                return {str(key): value for key, value in rows.items() if isinstance(value, dict)}
+        raise RuntimeError("Nine-question summary rows must be read from SQLite question tables")
+
+    async def append_question_snapshot_history(
+        self,
+        session_id: str,
+        question_id: str,
+        snapshot: Dict[str, Any],
+        *,
+        reason: str = "",
+    ) -> Dict[str, Any]:
+        append_history = getattr(self._store, "append_question_snapshot_history", None)
+        if not callable(append_history):
+            raise RuntimeError("Nine-question snapshot history store is unavailable")
+        entry = await append_history(session_id, question_id, snapshot, reason=reason)
+        return entry if isinstance(entry, dict) else {}
+
+    async def get_question_snapshot_history(
+        self,
+        session_id: str,
+        question_id: str,
+        *,
+        limit: int = 20,
+    ) -> List[Dict[str, Any]]:
+        get_history = getattr(self._store, "get_question_snapshot_history", None)
+        if not callable(get_history):
+            raise RuntimeError("Nine-question snapshot history store is unavailable")
+        history = await get_history(session_id, question_id, limit=limit)
+        return [item for item in history if isinstance(item, dict)] if isinstance(history, list) else []
+
+    async def get_question_module_runs(self, session_id: str, question_id: str) -> List[Dict[str, Any]]:
+        get_runs = getattr(self._store, "get_question_module_runs", None)
+        if not callable(get_runs):
+            return []
+        runs = await get_runs(session_id, question_id)
+        return [item for item in runs if isinstance(item, dict)] if isinstance(runs, list) else []
+
+    async def get_question_module_outputs(self, session_id: str, question_id: str) -> Dict[str, Any]:
+        get_outputs = getattr(self._store, "get_question_module_outputs", None)
+        if not callable(get_outputs):
+            return {}
+        outputs = await get_outputs(session_id, question_id)
+        return {str(key): value for key, value in outputs.items() if isinstance(value, dict)} if isinstance(outputs, dict) else {}
 
     async def get_dirty_questions(self, session_id: str) -> List[str]:
         """Get list of dirty questions"""

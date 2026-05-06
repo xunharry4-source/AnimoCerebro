@@ -54,13 +54,15 @@ class OpenAITool(BaseProviderTool):
         prompt = invocation.prompt
         if invocation.system_prompt:
             prompt = f"{invocation.system_prompt}\n\n{invocation.prompt}"
-        return {
+        payload: Dict[str, Any] = {
             "model": invocation.model,
             "input": prompt,
             "temperature": invocation.temperature,
-            "max_output_tokens": invocation.max_output_tokens,
             "metadata": invocation.metadata,
         }
+        if invocation.max_output_tokens is not None:
+            payload["max_output_tokens"] = invocation.max_output_tokens
+        return payload
 
     def _extract_text(self, payload: Dict[str, Any]) -> str:
         output = payload.get("output", [])

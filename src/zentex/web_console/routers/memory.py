@@ -141,6 +141,9 @@ async def update_record_management(
 
 
 @router.post("/consolidation/trigger")
-async def trigger_consolidation(request: Request) -> dict[str, object]:
+async def trigger_consolidation(
+    request: Request,
+    force_auto_organize: bool = Query(default=False),
+) -> dict[str, object]:
     """Trigger manual memory consolidation cycle."""
-    return await trigger_consolidation_cycle(request)
+    return await trigger_consolidation_cycle(request, force_auto_organize=force_auto_organize)

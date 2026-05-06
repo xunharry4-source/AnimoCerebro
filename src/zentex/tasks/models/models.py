@@ -43,6 +43,9 @@ except ImportError:
         escalation_target: Optional[str] = None
 
 class TaskStatus(str, Enum):
+    SPLIT_REQUIRED = "split_required"
+    ASSIGNMENT_PENDING = "assignment_pending"
+    QUEUED = "queued"
     TODO = "todo"
     IN_PROGRESS = "in_progress"
     BLOCKED = "blocked"
@@ -51,6 +54,7 @@ class TaskStatus(str, Enum):
     DONE = "done"
     FAILED = "failed"
     ARCHIVED = "archived"
+    CANCELLED = "cancelled"
 
 class TaskType(str, Enum):
     COGNITIVE_STEP = "cognitive_step"
@@ -146,7 +150,7 @@ class ZentexTask(BaseModel):
     def update_status(self, new_status: TaskStatus, remarks: Optional[str] = None):
         if new_status == TaskStatus.IN_PROGRESS and not self.started_at:
             self.started_at = datetime.now(timezone.utc)
-        if new_status in [TaskStatus.DONE, TaskStatus.FAILED]:
+        if new_status in [TaskStatus.DONE, TaskStatus.FAILED, TaskStatus.CANCELLED]:
             self.completed_at = datetime.now(timezone.utc)
             self.progress = 1.0 if new_status == TaskStatus.DONE else self.progress
         
@@ -204,6 +208,7 @@ class DecompositionContext(BaseModel):
     # Decomposition hints
     estimated_scope: Optional[str] = Field(default=None, description="Estimated complexity: simple/medium/complex")
     execution_constraints: List[str] = Field(default_factory=list, description="Constraints on execution approach")
+    metadata: Dict[str, Any] = Field(default_factory=dict, description="Additional decomposition context such as Q9 contracts")
     
     @property
     def memory_text(self) -> str:

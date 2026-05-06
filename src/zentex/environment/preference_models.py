@@ -65,7 +65,7 @@ class UserPreference(BaseModel):
     applicable_scope: Dict[str, Any] = Field(
         default_factory=dict,
         description="适用范围，说明该偏好在哪些场景下生效",
-        examples=[{"domains": ["filesystem"], "paths": ["/home/user/custom_dir"]}]
+        examples=[{"domains": ["filesystem"], "paths": ["<custom-dir>"]}]
     )
     can_override_safety_redline: bool = Field(
         default=False,

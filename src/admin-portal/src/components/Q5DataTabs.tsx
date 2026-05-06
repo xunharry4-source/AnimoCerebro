@@ -14,11 +14,11 @@ export default function Q5DataTabs({ evidence, inference }: Q5DataTabsProps) {
   return (
     <Card variant="outlined" sx={{ mb: 3 }}>
       <CardContent>
-        <Typography variant="h6" gutterBottom fontWeight="bold">📊 Q5 实际数据详情</Typography>
+        <Typography variant="h6" gutterBottom fontWeight="bold">Q5 实际数据详情</Typography>
         <Tabs value={activeTab} onChange={handleTabChange} sx={{ mb: 2, borderBottom: 1, borderColor: "divider" }}>
-          <Tab label="🎯 目标达成" />
-          <Tab label="📊 获取数据" />
-          <Tab label="✨ 输出结果" />
+          <Tab label="目标达成" />
+          <Tab label="获取数据" />
+          <Tab label="输出结果" />
         </Tabs>
 
         {activeTab === 0 && (
@@ -30,12 +30,12 @@ export default function Q5DataTabs({ evidence, inference }: Q5DataTabsProps) {
                   <TableCell sx={{ fontWeight: "bold", width: "60%" }}>达成状态</TableCell>
                 </TableRow>
                 <TableRow hover>
-                  <TableCell>授权边界判断</TableCell>
-                  <TableCell><Typography variant="body2" color={inference ? "success.main" : "error.main"}>{inference ? "✅ 已完成判断" : "❌ 未完成"}</Typography></TableCell>
+                  <TableCell>禁止边界判断</TableCell>
+                  <TableCell><Typography variant="body2" color={inference ? "success.main" : "error.main"}>{inference ? "已完成判断" : "未完成"}</Typography></TableCell>
                 </TableRow>
                 <TableRow hover>
                   <TableCell>合规性检查</TableCell>
-                  <TableCell><Typography variant="body2" color={evidence ? "success.main" : "error.main"}>{evidence ? "✅ 已完成检查" : "❌ 未完成"}</Typography></TableCell>
+                  <TableCell><Typography variant="body2" color={evidence ? "success.main" : "error.main"}>{evidence ? "已完成检查" : "未完成"}</Typography></TableCell>
                 </TableRow>
               </TableBody>
             </Table>
@@ -70,8 +70,8 @@ export default function Q5DataTabs({ evidence, inference }: Q5DataTabsProps) {
                 </TableRow>
                 <TableRow hover><TableCell>执行层级</TableCell><TableCell><Typography variant="body2" fontWeight="bold">{inference.execution_tier || "N/A"}</Typography></TableCell></TableRow>
                 <TableRow hover><TableCell>交互范围</TableCell><TableCell><Typography variant="body2">{inference.interaction_scope || "N/A"}</Typography></TableCell></TableRow>
-                <TableRow hover><TableCell>需人工确认</TableCell><TableCell><Typography variant="body2">{inference.requires_human_confirmation ? "✅ 是" : "❌ 否"}</Typography></TableCell></TableRow>
-                <TableRow hover><TableCell>需云审计</TableCell><TableCell><Typography variant="body2">{inference.requires_cloud_audit ? "✅ 是" : "❌ 否"}</Typography></TableCell></TableRow>
+                <TableRow hover><TableCell>需人工确认</TableCell><TableCell><Typography variant="body2">{inference.requires_human_confirmation ? "是" : "否"}</Typography></TableCell></TableRow>
+                <TableRow hover><TableCell>需云审计</TableCell><TableCell><Typography variant="body2">{inference.requires_cloud_audit ? "是" : "否"}</Typography></TableCell></TableRow>
                 <TableRow hover><TableCell>明确禁止操作</TableCell><TableCell><Typography variant="body2">{inference.explicitly_forbidden_actions?.length || 0} 项</Typography></TableCell></TableRow>
                 <TableRow hover><TableCell>合规风险</TableCell><TableCell><Typography variant="body2">{inference.compliance_risks?.length || 0} 项</Typography></TableCell></TableRow>
               </TableBody>

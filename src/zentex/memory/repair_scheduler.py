@@ -4,6 +4,7 @@ from datetime import datetime, timezone
 from threading import Event, Lock, Thread
 from typing import Any, Dict, List, Optional, Union
 
+from zentex.module_logs import record_module_log
 from zentex.common.startup_markers import log_once
 import logging
 
@@ -19,12 +20,14 @@ class MemoryRepairScheduler:
         memory_service: Any,
         interval_seconds: int = 3600,
         enabled: bool = True,
+        module_log_service: Any = None,
     ) -> None:
         self._memory_service = memory_service
         self._interval_seconds = max(60, int(interval_seconds))
         self._enabled = bool(enabled)
         self._stop_event = Event()
         self._thread: Optional[Thread] = None
+        self._module_log_service = module_log_service
         self._state_lock = Lock()
         self._last_cycle_at: Optional[datetime] = None
         self._last_summary: dict[str, Any] = {
@@ -87,9 +90,34 @@ class MemoryRepairScheduler:
         with self._state_lock:
             self._last_cycle_at = started_at
             self._last_summary = summary
+        self._record_cycle_log(summary)
         return summary
 
     def _run_loop(self) -> None:
         while not self._stop_event.is_set():
             self.run_once()
             self._stop_event.wait(self._interval_seconds)
+
+    def _record_cycle_log(self, summary: dict[str, Any]) -> None:
+        status = str(summary.get("status") or "completed")
+        after_status = "failed" if status == "failed" else "completed"
+        reason = (
+            "记忆修复定时任务执行失败，请查看 errors 详情。"
+            if after_status == "failed"
+            else "记忆修复定时任务已完成，已检查退化记录并尝试修复投影与隔离异常块。"
+        )
+        record_module_log(
+            self._module_log_service,
+            source_module="memory",
+            module_label="记忆模块",
+            action="scheduled_repair",
+            action_label="定时修复已执行",
+            object_id="memory-repair-scheduler",
+            object_label="记忆修复调度器",
+            before_status="running",
+            after_status=after_status,
+            reason=reason,
+            details=dict(summary),
+            operator_id="memory-repair-scheduler",
+            status=after_status,
+        )

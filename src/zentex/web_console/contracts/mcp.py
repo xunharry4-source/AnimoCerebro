@@ -41,6 +41,7 @@ class McpServerRegistrationRequest(BaseModel):
     auth_mode: str = Field(default="none", pattern="^(none|bearer|api_key|oauth_pkce)$")
     tool_bindings: List[dict[str, object]] = Field(default_factory=list)
     help_doc_url: Optional[str] = None
+    project_doc_url: Optional[str] = None
     documentation_learning_required: bool = True
 
 class McpToolTestCallRequest(BaseModel):

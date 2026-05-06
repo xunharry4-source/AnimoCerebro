@@ -101,22 +101,27 @@ class QueryService:
         business logic in web_console layer.
         """
         lifecycle_status = self._normalize_lifecycle_status(record.get("lifecycle_status"))
+        operational_status = self._derive_operational_status(record)
         plugin_id = str(record.get("plugin_id") or "").strip()
         is_default = bool(record.get("is_default", False))
+        is_active_enabled = (
+            lifecycle_status == PluginLifecycleStatus.ACTIVE.value
+            and operational_status == "enabled"
+        )
         
         return {
             "plugin_id": plugin_id,
             "category": record.get("category"),
             "version": record.get("version"),
             "lifecycle_status": lifecycle_status,
-            "operational_status": self._derive_operational_status(record),
+            "operational_status": operational_status,
             "behavior_key": record.get("behavior_key"),
             "feature_code": record.get("feature_code", plugin_id),
             "is_instantiated": plugin_id in self._plugin_instances,
             # Permission fields (migrated from web_console to avoid business logic there)
             "is_default": is_default,
-            "can_force_enable": not is_default,
-            "can_force_disable": not is_default and lifecycle_status == PluginLifecycleStatus.ACTIVE.value,
+            "can_force_enable": not is_default and not is_active_enabled,
+            "can_force_disable": not is_default and is_active_enabled,
             "can_delete": not is_default,
             # UI display fields
             "purpose": record.get("purpose", plugin_id),

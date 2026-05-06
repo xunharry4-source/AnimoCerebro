@@ -21,7 +21,11 @@ import {
 } from "@mui/material";
 import { DataGrid, GridColDef } from "@mui/x-data-grid";
 import AddIcon from "@mui/icons-material/Add";
+import PowerSettingsNewIcon from "@mui/icons-material/PowerSettingsNew";
+import BlockIcon from "@mui/icons-material/Block";
+import ArticleIcon from "@mui/icons-material/Article";
 import { Link as RouterLink, useNavigate } from "react-router-dom";
+import { Trash2 } from "lucide-react";
 
 type McpToolItem = {
   tool_name: string;
@@ -43,7 +47,117 @@ type McpServerItem = {
   status: "online" | "offline" | "degraded";
   tool_count: number;
   error_message?: string | null;
+  help_doc_url?: string | null;
+  project_doc_url?: string | null;
   tools: McpToolItem[];
+};
+
+type McpRegistrationExample = {
+  key: string;
+  title: string;
+  summary: string;
+  values: {
+    server_id: string;
+    transport_type: string;
+    command: string;
+    args: string;
+    help_doc_url: string;
+    project_doc_url: string;
+    auth_type: string;
+    env_name: string;
+    header_name: string;
+  };
+};
+
+type McpRegisterFormData = {
+  server_id: string;
+  transport_type: string;
+  command: string;
+  args: string;
+  help_doc_url: string;
+  project_doc_url: string;
+  auth_type: string;
+  credential_id: string;
+  api_key: string;
+  env_name: string;
+  header_name: string;
+  credential_payload_json: string;
+  login_http_url: string;
+  login_http_path: string;
+  login_http_method: string;
+  login_http_body_json: string;
+  access_token_path: string;
+};
+
+const MCP_REGISTRATION_EXAMPLES: McpRegistrationExample[] = [
+  {
+    key: "notion",
+    title: "Notion MCP",
+    summary: "stdio / npx / API Token",
+    values: {
+      server_id: "notion",
+      transport_type: "stdio",
+      command: "npx",
+      args: "-y @notionhq/notion-mcp-server",
+      help_doc_url: "https://github.com/makenotion/notion-mcp-server",
+      project_doc_url: "",
+      auth_type: "api_key",
+      env_name: "NOTION_TOKEN",
+      header_name: "",
+    },
+  },
+  {
+    key: "filesystem",
+    title: "Filesystem MCP",
+    summary: "stdio / npx / local project path",
+    values: {
+      server_id: "filesystem",
+      transport_type: "stdio",
+      command: "npx",
+      args: "-y @modelcontextprotocol/server-filesystem <project-path>",
+      help_doc_url: "https://github.com/modelcontextprotocol/servers/tree/main/src/filesystem",
+      project_doc_url: "",
+      auth_type: "none",
+      env_name: "",
+      header_name: "",
+    },
+  },
+  {
+    key: "github",
+    title: "GitHub MCP",
+    summary: "streamable_http / URL / bearer token",
+    values: {
+      server_id: "github",
+      transport_type: "streamable_http",
+      command: "https://api.githubcopilot.com/mcp/",
+      args: "",
+      help_doc_url: "https://github.com/github/github-mcp-server",
+      project_doc_url: "",
+      auth_type: "api_key",
+      env_name: "",
+      header_name: "Authorization",
+    },
+  },
+];
+
+const INITIAL_MCP_REGISTER_DATA: McpRegisterFormData = {
+  server_id: "",
+  transport_type: "stdio",
+  command: "",
+  args: "",
+  help_doc_url: "",
+  project_doc_url: "",
+  auth_type: "none",
+  credential_id: "",
+  api_key: "",
+  env_name: "",
+  header_name: "",
+  credential_payload_json: "{}",
+  login_http_url: "",
+  login_http_path: "",
+  login_http_method: "POST",
+  login_http_body_json: "{}",
+  access_token_path: "access_token",
 };
 
 function getHealthColor(status: McpServerItem["status"]): "success" | "default" | "warning" {
@@ -61,37 +175,52 @@ import { Locale, mcpServerCopy } from "../../i18n";
 
 export default function McpServerDashboard() {
   const navigate = useNavigate();
-  const { i18n } = useTranslation();
+  const { t, i18n } = useTranslation();
   const locale: Locale = i18n.language?.startsWith("en") ? "en-US" : "zh-CN";
   const copy = mcpServerCopy[locale];
   const [rows, setRows] = useState<McpServerItem[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
+  const [successMessage, setSuccessMessage] = useState<string | null>(null);
   const [selectedServer, setSelectedServer] = useState<McpServerItem | null>(null);
   const [selectedToolName, setSelectedToolName] = useState<string>("");
   const [openRegister, setOpenRegister] = useState(false);
+  const [registering, setRegistering] = useState(false);
+  const [deletingServerId, setDeletingServerId] = useState<string | null>(null);
   const [testResult, setTestResult] = useState<string | null>(null);
-  const [registerData, setRegisterData] = useState({
-    server_id: "",
-    transport_type: "stdio",
-    command: "",
-    args: "",
-    auth_type: "none",
-    credential_id: "",
-    api_key: "",
-    env_name: "",
-    header_name: "",
-    credential_payload_json: "{}",
-    login_http_url: "",
-    login_http_path: "",
-    login_http_method: "POST",
-    login_http_body_json: "{}",
-    access_token_path: "access_token",
-  });
+  const [registerData, setRegisterData] = useState<McpRegisterFormData>(INITIAL_MCP_REGISTER_DATA);
   const [testData, setTestData] = useState({
     tool_name: "",
     arguments_json: "{\"query\":\"runbook\"}",
   });
+  const trimmedServerId = registerData.server_id.trim();
+  const existingServer = trimmedServerId
+    ? rows.find((item) => item.server_id.toLowerCase() === trimmedServerId.toLowerCase())
+    : null;
+  const transportType = registerData.transport_type.trim();
+  const commandOrUrl = registerData.command.trim();
+  const commandLooksLikeShellLine =
+    transportType === "stdio" && /[\s|;&<>$`]/.test(commandOrUrl);
+  const endpointLooksInvalid =
+    ["http", "sse", "streamable_http"].includes(transportType) &&
+    commandOrUrl.length > 0 &&
+    !commandOrUrl.startsWith("http://") &&
+    !commandOrUrl.startsWith("https://");
+
+  const applyRegistrationExample = (example: McpRegistrationExample) => {
+    setRegisterData((current) => ({
+      ...current,
+      ...example.values,
+      api_key: "",
+      credential_id: "",
+      credential_payload_json: "{}",
+      login_http_url: "",
+      login_http_path: "",
+      login_http_method: "POST",
+      login_http_body_json: "{}",
+      access_token_path: "access_token",
+    }));
+  };
 
   useEffect(() => {
     void loadServers();
@@ -115,9 +244,18 @@ export default function McpServerDashboard() {
   };
 
   const handleRegister = async () => {
+    if (registering) return;
+    if (existingServer) {
+      setError(copy.alreadyRegistered.replace("{{name}}", existingServer.server_id));
+      return;
+    }
+    setError(null);
+    setSuccessMessage(null);
+    setRegistering(true);
+    const registeredServerId = registerData.server_id.trim();
     try {
       const authType = registerData.auth_type.trim();
-      const credentialId = registerData.credential_id.trim() || `mcp-${registerData.server_id.trim()}-credential`;
+      const credentialId = registerData.credential_id.trim() || `mcp-${registeredServerId}-credential`;
       let authConfig: Record<string, unknown> | undefined;
       let authCredential: Record<string, unknown> | undefined;
       if (authType !== "none") {
@@ -168,36 +306,47 @@ export default function McpServerDashboard() {
           transport_type: registerData.transport_type,
           command: registerData.command,
           args: registerData.args.split(" ").map((item) => item.trim()).filter(Boolean),
+          ...(registerData.help_doc_url.trim() ? { help_doc_url: registerData.help_doc_url.trim() } : {}),
+          ...(registerData.project_doc_url.trim() ? { project_doc_url: registerData.project_doc_url.trim() } : {}),
           ...(authConfig ? { auth_config: authConfig } : {}),
           ...(authCredential ? { auth_credential: authCredential } : {}),
         }),
       });
       const payload = await response.json();
       if (!response.ok) {
-        throw new Error(payload?.detail || copy.registerFailed);
+        const detail = payload?.detail;
+        const message =
+          typeof detail === "string"
+            ? detail
+            : detail?.operator_message || detail?.message || copy.registerFailed;
+        throw new Error(formatMcpRegistrationError(message));
       }
       setOpenRegister(false);
-      setRegisterData({
-        server_id: "",
-        transport_type: "stdio",
-        command: "",
-        args: "",
-        auth_type: "none",
-        credential_id: "",
-        api_key: "",
-        env_name: "",
-        header_name: "",
-        credential_payload_json: "{}",
-        login_http_url: "",
-        login_http_path: "",
-        login_http_method: "POST",
-        login_http_body_json: "{}",
-        access_token_path: "access_token",
-      });
-      void loadServers();
+      setRegisterData(INITIAL_MCP_REGISTER_DATA);
+      setSuccessMessage(copy.registerSuccess.replace("{{name}}", registeredServerId));
+      await loadServers();
     } catch (err: any) {
+      setSuccessMessage(null);
       setError(err?.message || copy.registerFailed);
+    } finally {
+      setRegistering(false);
     }
+  };
+
+  const formatMcpRegistrationError = (message: string) => {
+    if (message.includes("already registered")) {
+      return copy.registerErrorAlreadyRegistered;
+    }
+    if (message.includes("requires command to be an HTTP endpoint")) {
+      return copy.registerErrorEndpointInvalid;
+    }
+    if (message.includes("is not reachable") || message.includes("health probe failed")) {
+      return copy.registerErrorUnreachable;
+    }
+    if (message.includes("Unsupported MCP protocol_version")) {
+      return copy.registerErrorProtocol;
+    }
+    return message;
   };
 
   const handleTestCall = async () => {
@@ -222,6 +371,47 @@ export default function McpServerDashboard() {
     }
   };
 
+  const updateServerActivation = async (server: McpServerItem, action: "activate" | "disable") => {
+    try {
+      const response = await fetch(`/api/web/mcp-servers/${encodeURIComponent(server.server_id)}/${action}`, {
+        method: "POST",
+      });
+      const payload = await response.json();
+      if (!response.ok) {
+        throw new Error(payload?.detail || `${action} failed`);
+      }
+      setSelectedServer((current) => current && current.server_id === server.server_id ? { ...current, ...payload } : current);
+      await loadServers();
+    } catch (err: any) {
+      setError(err?.message || `${action} failed`);
+    }
+  };
+
+  const deleteServerRegistration = async (server: McpServerItem) => {
+    if (!window.confirm(copy.deleteConfirm.replace("{{name}}", server.server_id))) {
+      return;
+    }
+    setDeletingServerId(server.server_id);
+    setError(null);
+    try {
+      const response = await fetch(`/api/web/mcp-servers/${encodeURIComponent(server.server_id)}`, {
+        method: "DELETE",
+      });
+      const payload = await response.json().catch(() => ({}));
+      if (!response.ok) {
+        const detail = payload?.detail;
+        const message = typeof detail === "string" ? detail : detail?.operator_message || detail?.message || copy.deleteFailed;
+        throw new Error(message);
+      }
+      setSelectedServer((current) => current && current.server_id === server.server_id ? null : current);
+      await loadServers();
+    } catch (err: any) {
+      setError(err?.message || copy.deleteFailed);
+    } finally {
+      setDeletingServerId(null);
+    }
+  };
+
   const columns: GridColDef[] = [
     { field: "server_id", headerName: copy.serverName, flex: 1.1, minWidth: 200 },
     { field: "transport_type", headerName: copy.connectionType, flex: 0.7, minWidth: 120 },
@@ -232,6 +422,40 @@ export default function McpServerDashboard() {
       flex: 0.9,
       minWidth: 160,
       renderCell: (params) => <Chip label={params.value} color={getHealthColor(params.value)} size="small" />,
+    },
+    {
+      field: "actions",
+      headerName: copy.actions,
+      minWidth: 260,
+      sortable: false,
+      renderCell: (params) => (
+        <Stack direction="row" spacing={1}>
+          <Button size="small" startIcon={<PowerSettingsNewIcon />} onClick={(event) => {
+            event.stopPropagation();
+            void updateServerActivation(params.row as McpServerItem, "activate");
+          }}>
+            激活
+          </Button>
+          <Button size="small" startIcon={<BlockIcon />} onClick={(event) => {
+            event.stopPropagation();
+            void updateServerActivation(params.row as McpServerItem, "disable");
+          }}>
+            关闭
+          </Button>
+          <Button
+            size="small"
+            color="error"
+            startIcon={<Trash2 size={16} />}
+            disabled={deletingServerId === (params.row as McpServerItem).server_id}
+            onClick={(event) => {
+              event.stopPropagation();
+              void deleteServerRegistration(params.row as McpServerItem);
+            }}
+          >
+            {copy.deleteServer}
+          </Button>
+        </Stack>
+      ),
     },
   ];
 
@@ -251,18 +475,55 @@ export default function McpServerDashboard() {
             {copy.subtitle}
           </Typography>
         </Box>
-        <Button variant="contained" startIcon={<AddIcon />} onClick={() => setOpenRegister(true)}>
-          {copy.registerServer}
-        </Button>
+        <Stack direction="row" spacing={1}>
+          <Button
+            component={RouterLink}
+            to="/console/module-logs/mcp-servers"
+            variant="outlined"
+            startIcon={<ArticleIcon />}
+          >
+            {t("moduleLogs.view")}
+          </Button>
+          <Button
+            variant="contained"
+            startIcon={<AddIcon />}
+            onClick={() => {
+              setError(null);
+              setSuccessMessage(null);
+              setOpenRegister(true);
+            }}
+          >
+            {copy.registerServer}
+          </Button>
+        </Stack>
       </Stack>
 
       <Alert severity="info" variant="outlined">
         {copy.pageFunctionHelp}
       </Alert>
+      <Alert severity="info" variant="outlined">
+        <Stack spacing={1}>
+          <Typography variant="subtitle2">{copy.functionOverviewTitle}</Typography>
+          <Typography variant="body2">{copy.functionOverviewBody}</Typography>
+          <Stack direction="row" spacing={1} useFlexGap flexWrap="wrap">
+            <Chip size="small" variant="outlined" label={copy.functionRegister} />
+            <Chip size="small" variant="outlined" label={copy.functionDiscoverTools} />
+            <Chip size="small" variant="outlined" label={copy.functionRouteTasks} />
+            <Chip size="small" variant="outlined" label={copy.functionInjectAuth} />
+            <Chip size="small" variant="outlined" label={copy.functionTestCall} />
+            <Chip size="small" variant="outlined" label={copy.functionRuntimeLogs} />
+          </Stack>
+        </Stack>
+      </Alert>
 
       {error ? (
         <Alert severity="error" sx={{ mb: 2 }}>
           {error}
+        </Alert>
+      ) : null}
+      {successMessage ? (
+        <Alert severity="success" sx={{ mb: 2 }} onClose={() => setSuccessMessage(null)}>
+          {successMessage}
         </Alert>
       ) : null}
 
@@ -303,8 +564,30 @@ export default function McpServerDashboard() {
               >
                 进入服务详情页
               </Button>
+              <Stack direction="row" spacing={1} sx={{ mt: 1 }} useFlexGap flexWrap="wrap">
+                <Button size="small" startIcon={<PowerSettingsNewIcon />} onClick={() => void updateServerActivation(selectedServer, "activate")}>
+                  激活
+                </Button>
+                <Button size="small" startIcon={<BlockIcon />} onClick={() => void updateServerActivation(selectedServer, "disable")}>
+                  关闭
+                </Button>
+                <Button
+                  size="small"
+                  color="error"
+                  startIcon={<Trash2 size={16} />}
+                  disabled={deletingServerId === selectedServer.server_id}
+                  onClick={() => void deleteServerRegistration(selectedServer)}
+                >
+                  {copy.deleteServer}
+                </Button>
+              </Stack>
             </Box>
             {selectedServer.error_message ? <Alert severity="warning">{selectedServer.error_message}</Alert> : null}
+            {selectedServer.project_doc_url ? (
+              <Alert severity="info" variant="outlined">
+                {copy.projectDocUrl}: {selectedServer.project_doc_url}
+              </Alert>
+            ) : null}
             <Divider />
             <Typography variant="h6">{copy.toolList}</Typography>
             {selectedServer.tools.map((tool) => (
@@ -399,13 +682,40 @@ export default function McpServerDashboard() {
         ) : null}
       </Drawer>
 
-      <Dialog open={openRegister} onClose={() => setOpenRegister(false)} fullWidth maxWidth="sm">
+      <Dialog open={openRegister} onClose={() => !registering && setOpenRegister(false)} fullWidth maxWidth="sm">
         <DialogTitle>{copy.registerDialogTitle}</DialogTitle>
         <DialogContent dividers>
           <Stack spacing={2} sx={{ mt: 1 }}>
             <Alert severity="info" variant="outlined">
               {copy.registerBasicsHelp}
             </Alert>
+            <Box>
+              <Typography variant="subtitle2" sx={{ mb: 1 }}>
+                {copy.registrationExamplesTitle}
+              </Typography>
+              <Stack direction="row" spacing={1} useFlexGap flexWrap="wrap">
+                {MCP_REGISTRATION_EXAMPLES.map((example) => (
+                  <Button
+                    key={example.key}
+                    size="small"
+                    variant="outlined"
+                    onClick={() => applyRegistrationExample(example)}
+                  >
+                    {example.title}
+                  </Button>
+                ))}
+              </Stack>
+              <Typography variant="caption" color="text.secondary" sx={{ display: "block", mt: 1 }}>
+                {copy.registrationExamplesHelp}
+              </Typography>
+              <Stack spacing={0.5} sx={{ mt: 1 }}>
+                {MCP_REGISTRATION_EXAMPLES.map((example) => (
+                  <Typography key={example.key} variant="caption" color="text.secondary">
+                    {example.title}: {example.summary}
+                  </Typography>
+                ))}
+              </Stack>
+            </Box>
             <TextField
               label={copy.serverId}
               fullWidth
@@ -415,6 +725,11 @@ export default function McpServerDashboard() {
                 setRegisterData({ ...registerData, server_id: e.target.value })
               }
             />
+            {existingServer ? (
+              <Alert severity="warning" variant="outlined">
+                {copy.alreadyRegistered.replace("{{name}}", existingServer.server_id)}
+              </Alert>
+            ) : null}
             <TextField
               label={copy.transport}
               fullWidth
@@ -427,7 +742,14 @@ export default function McpServerDashboard() {
             <TextField
               label={copy.commandUrl}
               fullWidth
-              helperText={copy.commandUrlHelp}
+              error={commandLooksLikeShellLine || endpointLooksInvalid}
+              helperText={
+                commandLooksLikeShellLine
+                  ? copy.commandShellLineError
+                  : endpointLooksInvalid
+                    ? copy.endpointUrlError
+                    : copy.commandUrlHelp
+              }
               value={registerData.command}
               onChange={(e: React.ChangeEvent<HTMLInputElement>) =>
                 setRegisterData({ ...registerData, command: e.target.value })
@@ -440,6 +762,24 @@ export default function McpServerDashboard() {
               value={registerData.args}
               onChange={(e: React.ChangeEvent<HTMLInputElement>) =>
                 setRegisterData({ ...registerData, args: e.target.value })
+              }
+            />
+            <TextField
+              label={copy.helpDocUrl}
+              fullWidth
+              helperText={copy.helpDocUrlHelp}
+              value={registerData.help_doc_url}
+              onChange={(e: React.ChangeEvent<HTMLInputElement>) =>
+                setRegisterData({ ...registerData, help_doc_url: e.target.value })
+              }
+            />
+            <TextField
+              label={copy.projectDocUrl}
+              fullWidth
+              helperText={copy.projectDocUrlHelp}
+              value={registerData.project_doc_url}
+              onChange={(e: React.ChangeEvent<HTMLInputElement>) =>
+                setRegisterData({ ...registerData, project_doc_url: e.target.value })
               }
             />
             <Divider />
@@ -576,20 +916,26 @@ export default function McpServerDashboard() {
           </Stack>
         </DialogContent>
         <DialogActions>
-          <Button onClick={() => setOpenRegister(false)}>{copy.cancel}</Button>
+          <Button onClick={() => setOpenRegister(false)} disabled={registering}>
+            {copy.cancel}
+          </Button>
           <Button
             variant="contained"
             onClick={() => void handleRegister()}
             disabled={
-              !registerData.server_id ||
-              !registerData.command ||
+              registering ||
+              Boolean(existingServer) ||
+              commandLooksLikeShellLine ||
+              endpointLooksInvalid ||
+              !registerData.server_id.trim() ||
+              !registerData.command.trim() ||
               (registerData.auth_type === "api_key" && !registerData.api_key.trim()) ||
               (registerData.auth_type === "login_flow" &&
                 !registerData.login_http_url.trim() &&
                 !registerData.login_http_path.trim())
             }
           >
-            {copy.confirmRegister}
+            {registering ? copy.registering : copy.confirmRegister}
           </Button>
         </DialogActions>
       </Dialog>

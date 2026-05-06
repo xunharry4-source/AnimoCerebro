@@ -7,6 +7,8 @@ from datetime import datetime, timezone
 import json
 import logging
 from pathlib import Path
+import sqlite3
+import time
 from typing import Any, Dict, List, Optional, Union
 
 logger = logging.getLogger(__name__)
@@ -16,11 +18,13 @@ from .query import (
     _build_flat_upstream_context as _query_build_flat_upstream_context,
     build_question_record,
 )
+from zentex.nine_questions.config import load_nine_questions_execute_all_config
 from zentex.common.flow_audit import FlowAudit
 from zentex.kernel.cognition_flow.models import BootstrapStatus, NineQuestionState
 
 # Internal SQLite state manager key — nine-questions are global, not per-session.
 _NQ_STATE_KEY = "nq-baseline"
+_Q2_SNAPSHOT_TABLE = "nine_question_q2_snapshots"
 
 EXPECTED_QUESTION_IDS = tuple(f"q{i}" for i in range(1, 10))
 _QUALIFIED_SNAPSHOT_STATUSES = {"completed", "ready"}
@@ -60,6 +64,34 @@ class NineQuestionService:
     @staticmethod
     def _now_iso() -> str:
         return datetime.now(timezone.utc).isoformat()
+
+    @staticmethod
+    def _bootstrap_status_value(status: Any) -> str:
+        return str(getattr(status, "value", status) or "").strip().lower()
+
+    @classmethod
+    def _question_run_error_summary(cls, state: Any, question_id: str) -> str:
+        if isinstance(state, dict):
+            responses = state.get("responses")
+            response = responses.get(question_id) if isinstance(responses, dict) else None
+            if isinstance(response, dict):
+                error = str(response.get("error") or "").strip()
+                if error:
+                    return error
+            snapshot = cls.get_question_snapshot_map(state).get(question_id)
+            diagnosis = cls._extract_snapshot_diagnosis(snapshot)
+            for module in diagnosis.get("module_runs") or []:
+                if not isinstance(module, dict):
+                    continue
+                error_message = str(module.get("error_message") or "").strip()
+                error_code = str(module.get("error_code") or "").strip()
+                if error_message or error_code:
+                    return ": ".join(item for item in (error_code, error_message) if item)
+            return ""
+
+        responses = getattr(state, "responses", None)
+        response = responses.get(question_id) if isinstance(responses, dict) else None
+        return str(getattr(response, "error", "") or "").strip()
 
     @staticmethod
     def _normalize_schema_version(value: Any) -> int:
@@ -132,6 +164,36 @@ class NineQuestionService:
                 merged[key] = deepcopy(value)
         return merged
 
+    @staticmethod
+    def _prune_q3_snapshot(snapshot: dict[str, Any]) -> dict[str, Any]:
+        pruned = deepcopy(snapshot)
+        pruned.pop("module_runs", None)
+        pruned.pop("module_outputs", None)
+        pruned.pop("llm_trace_payload", None)
+
+        context_updates = pruned.get("context_updates")
+        if isinstance(context_updates, dict):
+            context_updates = deepcopy(context_updates)
+            context_updates.pop("q3_execution_diagnosis", None)
+            context_updates.pop("llm_trace_payload", None)
+            pruned["context_updates"] = context_updates
+
+        result = pruned.get("result")
+        if isinstance(result, dict):
+            result = deepcopy(result)
+            result.pop("context_updates", None)
+            result.pop("llm_trace_payload", None)
+            result.pop("evidence", None)
+            pruned["result"] = result
+
+        llm_output = pruned.get("llm_output")
+        if isinstance(llm_output, dict):
+            llm_output = deepcopy(llm_output)
+            llm_output.pop("q3_execution_diagnosis", None)
+            pruned["llm_output"] = llm_output
+
+        return pruned
+
     @classmethod
     def _append_question_history_version(
         cls,
@@ -141,12 +203,12 @@ class NineQuestionService:
         new_snapshot: dict[str, Any],
         reason: str,
     ) -> dict[str, Any]:
-        """Attach a bounded historical version before replacing a canonical snapshot."""
-        merged = deepcopy(new_snapshot)
-        previous_versions = merged.get("previous_versions")
-        history = deepcopy(previous_versions) if isinstance(previous_versions, list) else []
+        """Return only the latest canonical snapshot.
 
-        archived = deepcopy(current_snapshot)
+        Historical versions are stored in the independent snapshot history
+        table, never embedded in the latest snapshot payload.
+        """
+        merged = deepcopy(new_snapshot)
         for key in (
             "history",
             "histories",
@@ -161,22 +223,37 @@ class NineQuestionService:
             "question_snapshot_history",
             "question_snapshots_history",
         ):
-            archived.pop(key, None)
-
-        if archived:
-            history.append(
-                {
-                    "question_id": str(question_id),
-                    "archived_at": cls._now_iso(),
-                    "reason": reason,
-                    "snapshot": archived,
-                }
-            )
-
-        # Keep history bounded to avoid unbounded state growth while preserving
-        # enough versions for audit and rollback diagnostics.
-        merged["previous_versions"] = history[-20:]
+            merged.pop(key, None)
         return merged
+
+    async def _persist_question_history_version(
+        self,
+        *,
+        question_id: str,
+        current_snapshot: dict[str, Any],
+        reason: str,
+    ) -> dict[str, Any]:
+        if not self.snapshot_has_usable_data(current_snapshot):
+            return {}
+        append_history = getattr(self._state_manager, "append_question_snapshot_history", None)
+        if not callable(append_history):
+            fallback_store = getattr(self._state_manager, "_store", None)
+            append_history = getattr(fallback_store, "append_question_snapshot_history", None)
+        if not callable(append_history):
+            raise RuntimeError("Nine-question snapshot history store is unavailable")
+        entry = await append_history(
+            _NQ_STATE_KEY,
+            question_id,
+            deepcopy(current_snapshot),
+            reason=reason,
+        )
+        return deepcopy(entry) if isinstance(entry, dict) else {}
+
+    @staticmethod
+    def _history_update_payload(question_id: str, history_entry: dict[str, Any]) -> dict[str, Any]:
+        if not isinstance(history_entry, dict) or not history_entry:
+            return {}
+        return {"question_snapshots_history": {str(question_id).strip().lower(): [deepcopy(history_entry)]}}
 
     @staticmethod
     def _serialize_state_payload(state: Any) -> dict[str, Any]:
@@ -381,7 +458,11 @@ class NineQuestionService:
         required = self._required_upstream_questions(qid)
         if not required:
             state = await self.get_state()
-            return self._serialize_state_payload(state)
+            return self._build_scoped_upstream_state_payload(
+                state,
+                question_id=qid,
+                upstream_question_ids=[],
+            )
 
         state = await self.get_state()
         snapshot_map = self.get_question_snapshot_map(state)
@@ -402,7 +483,42 @@ class NineQuestionService:
                 f"{qid}: {', '.join(failures)}"
             )
 
-        return self._serialize_state_payload(state)
+        return self._build_scoped_upstream_state_payload(
+            state,
+            question_id=qid,
+            upstream_question_ids=required,
+        )
+
+    def _build_scoped_upstream_state_payload(
+        self,
+        state: Any,
+        *,
+        question_id: str,
+        upstream_question_ids: list[str],
+    ) -> dict[str, Any]:
+        from zentex.common.nine_questions_shared import build_authoritative_question_llm_snapshot
+
+        source = self._serialize_state_payload(state)
+        snapshot_map = self.get_question_snapshot_map(source)
+        scoped_snapshots = {
+            upstream_q: build_authoritative_question_llm_snapshot(upstream_q, snapshot_map[upstream_q])
+            for upstream_q in upstream_question_ids
+            if isinstance(snapshot_map.get(upstream_q), dict)
+        }
+        return {
+            "session_id": source.get("session_id") or _NQ_STATE_KEY,
+            "bootstrap_status": source.get("bootstrap_status"),
+            "last_updated_at": source.get("last_updated_at") or source.get("updated_at"),
+            "revision": source.get("revision"),
+            "snapshot_version": source.get("snapshot_version"),
+            "dirty_questions": [
+                item
+                for item in self._normalize_dirty_questions(source.get("dirty_questions", []))
+                if item in upstream_question_ids
+            ],
+            "upstream_for_question": question_id,
+            "question_snapshots": scoped_snapshots,
+        }
 
     @classmethod
     def _snapshot_is_healthier(cls, candidate: dict[str, Any], baseline: dict[str, Any]) -> bool:
@@ -529,46 +645,11 @@ class NineQuestionService:
             snapshots = state.get("question_snapshots")
             if isinstance(snapshots, dict):
                 return {str(key): value for key, value in snapshots.items() if isinstance(value, dict)}
-            responses = state.get("responses")
-            if isinstance(responses, dict):
-                normalized: dict[str, dict[str, Any]] = {}
-                for question_id, response in responses.items():
-                    if not isinstance(response, dict):
-                        continue
-                    normalized[str(question_id)] = {
-                        "tool_id": f"nine_questions.{question_id}",
-                        "summary": str(response.get("answer") or ""),
-                        "confidence": float(response.get("confidence") or 0.0),
-                        "result": response,
-                        "context_updates": {},
-                        "trace_id": f"{question_id}:no-trace",
-                    }
-                return normalized
             return {}
 
         snapshots = getattr(state, "question_snapshots", None)
         if isinstance(snapshots, dict):
             return {str(key): value for key, value in snapshots.items() if isinstance(value, dict)}
-        responses = getattr(state, "responses", None)
-        if isinstance(responses, dict):
-            normalized = {}
-            for question_id, response in responses.items():
-                if not hasattr(response, "answer"):
-                    continue
-                normalized[str(question_id)] = {
-                    "tool_id": f"nine_questions.{question_id}",
-                    "summary": str(getattr(response, "answer", "") or ""),
-                    "confidence": float(getattr(response, "confidence", 0.0) or 0.0),
-                    "result": {
-                        "question_id": question_id,
-                        "answer": str(getattr(response, "answer", "") or ""),
-                        "confidence": float(getattr(response, "confidence", 0.0) or 0.0),
-                        "error": str(getattr(response, "error", "") or ""),
-                    },
-                    "context_updates": {},
-                    "trace_id": f"{question_id}:no-trace",
-                }
-            return normalized
         return {}
 
     @classmethod
@@ -625,6 +706,21 @@ class NineQuestionService:
         if isinstance(state, dict):
             return bool(state.get("dirty_questions") or [])
         return bool(getattr(state, "dirty_questions", []) or [])
+
+    @classmethod
+    def _dirty_expected_questions(cls, state: Any) -> list[str]:
+        dirty_questions = (
+            cls._normalize_dirty_questions(state.get("dirty_questions", []))
+            if isinstance(state, dict)
+            else cls._normalize_dirty_questions(getattr(state, "dirty_questions", []))
+        )
+        expected = set(EXPECTED_QUESTION_IDS)
+        return [question_id for question_id in dirty_questions if question_id in expected]
+
+    @classmethod
+    def _dirty_q1_q3_questions(cls, state: Any) -> list[str]:
+        q1_q3 = {"q1", "q2", "q3"}
+        return [question_id for question_id in cls._dirty_expected_questions(state) if question_id in q1_q3]
 
     @classmethod
     def _snapshot_fingerprint(cls, snapshot_map: dict[str, dict[str, Any]]) -> tuple[tuple[str, str, int], ...]:
@@ -904,22 +1000,11 @@ class NineQuestionService:
     # ------------------------------------------------------------------
 
     async def persist_kernel_state(self, state: Any) -> None:
-        """Mirror kernel nine-question results into the persisted state store.
-
-        Uses a MERGE strategy rather than a full overwrite:
-        - For each question, if the incoming snapshot is worse (empty / failed)
-          than what is already persisted, the existing record is kept.
-        - Only execution-diagnosis metadata from the new run is merged in so
-          the UI can reflect that a re-run was attempted.
-
-        This preserves the nine-questions partial-success contract: a failed
-        full-update must never delete previously successful question answers.
-        """
+        """Persist only latest qualified question snapshots to SQLite."""
         snapshot_map = self.get_question_snapshot_map(state)
         if not snapshot_map:
             return
 
-        # Ensure the SQLite row exists; read existing snapshot data for merge.
         try:
             existing_state = await self._state_manager.get_state(_NQ_STATE_KEY)
             existing_snapshot_map = self.get_question_snapshot_map(existing_state)
@@ -927,35 +1012,36 @@ class NineQuestionService:
             existing_snapshot_map = {}
             await self._state_manager.bootstrap_state(_NQ_STATE_KEY)
 
-        # Merge: accept new data only when it is genuinely better.
         merged_snapshot_map: dict[str, Any] = dict(existing_snapshot_map)
+        accepted_question_ids: list[str] = []
+        history_updates: dict[str, list[dict[str, Any]]] = {}
         for question_id, new_snapshot in snapshot_map.items():
-            existing_snapshot = existing_snapshot_map.get(question_id)
-            decision = self._should_accept_new_snapshot(existing_snapshot, new_snapshot)
-            if decision["accept_snapshot"]:
-                if isinstance(existing_snapshot, dict):
-                    merged_snapshot_map[question_id] = self._append_question_history_version(
-                        question_id=question_id,
-                        current_snapshot=existing_snapshot,
-                        new_snapshot=new_snapshot,
-                        reason=str(decision.get("reason") or "new_snapshot_accepted"),
-                    )
-                else:
-                    merged_snapshot_map[question_id] = new_snapshot
-            else:
-                # Keep existing answer; only propagate diagnostic metadata.
-                rejected_merge = self._merge_diagnostic_only(
-                    existing_snapshot,  # type: ignore[arg-type]
-                    new_snapshot,
+            current_snapshot = existing_snapshot_map.get(question_id) or {}
+            qualified_snapshot = self._snapshot_is_intrinsically_qualified(new_snapshot)
+            if not qualified_snapshot:
+                logger.warning(
+                    "[nine-questions] skip unqualified snapshot persist question=%s",
+                    question_id,
                 )
-                if isinstance(existing_snapshot, dict):
-                    rejected_merge = self._append_question_history_version(
-                        question_id=question_id,
-                        current_snapshot=existing_snapshot,
-                        new_snapshot=rejected_merge,
-                        reason=str(decision.get("reason") or "new_snapshot_rejected"),
-                    )
-                merged_snapshot_map[question_id] = rejected_merge
+                continue
+            history_entry = await self._persist_question_history_version(
+                question_id=question_id,
+                current_snapshot=current_snapshot,
+                reason="qualified_snapshot_persisted",
+            )
+            if history_entry:
+                history_updates.setdefault(question_id, []).append(history_entry)
+            merged_snapshot_map[question_id] = self._append_question_history_version(
+                question_id=question_id,
+                current_snapshot=current_snapshot,
+                new_snapshot=new_snapshot,
+                reason="qualified_snapshot_persisted",
+            )
+            accepted_question_ids.append(question_id)
+
+        if not accepted_question_ids:
+            return
+
         merged_snapshot_map = self._normalize_snapshot_map_metadata(
             merged_snapshot_map,
             touch_updated_at=True,
@@ -964,11 +1050,14 @@ class NineQuestionService:
         if isinstance(state, dict):
             snapshot_version = int(state.get("snapshot_version", len(merged_snapshot_map)))
             last_refresh_reason = state.get("last_refresh_reason")
-            dirty_questions = self._normalize_dirty_questions(state.get("dirty_questions"))
+            current_dirty = self._normalize_dirty_questions(state.get("dirty_questions"))
         else:
             snapshot_version = int(getattr(state, "snapshot_version", len(merged_snapshot_map)))
             last_refresh_reason = getattr(state, "last_refresh_reason", None)
-            dirty_questions = self._normalize_dirty_questions(getattr(state, "dirty_questions", []))
+            current_dirty = self._normalize_dirty_questions(getattr(state, "dirty_questions", []))
+
+        accepted_set = set(accepted_question_ids)
+        dirty_questions = [item for item in current_dirty if item not in accepted_set]
 
         await self._state_manager.update_state(
             _NQ_STATE_KEY,
@@ -976,6 +1065,7 @@ class NineQuestionService:
             snapshot_version=snapshot_version,
             last_refresh_reason=last_refresh_reason,
             dirty_questions=dirty_questions,
+            **({"question_snapshots_history": history_updates} if history_updates else {}),
         )
 
     # ------------------------------------------------------------------
@@ -985,39 +1075,326 @@ class NineQuestionService:
     async def get_state(self) -> Any:
         """Return the authoritative nine-question baseline state."""
         try:
-            persisted_state = await self._state_manager.get_state(_NQ_STATE_KEY)
-        except ValueError:
-            persisted_state = None
-
-        # 1. Prefer fresh in-memory kernel state when it is newer or differs from persisted state.
-        live_state = self._facade.get_nine_question_state()
-        if self.live_state_should_replace_persisted(persisted_state, live_state):
-            await self.persist_kernel_state(live_state)
-            return live_state
-
-        # 2. Fall back to ready persisted state.
-        if (
-            persisted_state is not None
-            and self.state_has_complete_question_data(persisted_state)
-            and not self.state_requires_refresh(persisted_state)
-        ):
-            return persisted_state
-
-        # 3. If persisted exists but is incomplete/stale, return it (let UI handle refresh)
-        if persisted_state is not None:
-            return persisted_state
-
-        # 4. No state at all — bootstrap a blank 'not_started' record in memory
-        try:
             return await self._state_manager.get_state(_NQ_STATE_KEY)
         except ValueError:
             return await self._state_manager.bootstrap_state(_NQ_STATE_KEY)
 
+    async def get_state_metadata(self) -> dict[str, Any]:
+        get_metadata = getattr(self._state_manager, "get_state_metadata", None)
+        if callable(get_metadata):
+            metadata = await get_metadata(_NQ_STATE_KEY)
+            if isinstance(metadata, dict):
+                return metadata
+        state = await self.get_state()
+        if isinstance(state, dict):
+            return {
+                "version": state.get("version", 1),
+                "revision": state.get("revision", 0),
+                "dirty_questions": state.get("dirty_questions", []),
+                "last_refresh_reason": state.get("last_refresh_reason"),
+                "snapshot_version": state.get("snapshot_version", 0),
+                "updated_at": state.get("last_updated_at") or state.get("updated_at"),
+            }
+        return {
+            "version": getattr(state, "version", 1),
+            "revision": getattr(state, "revision", 0),
+            "dirty_questions": getattr(state, "dirty_questions", []),
+            "last_refresh_reason": getattr(state, "last_refresh_reason", None),
+            "snapshot_version": getattr(state, "snapshot_version", 0),
+            "updated_at": getattr(state, "updated_at", None),
+        }
+
     async def get_snapshot_map(self) -> dict[str, dict[str, Any]]:
         return self.get_question_snapshot_map(await self.get_state())
 
+    async def get_latest_question_snapshots(self, question_ids: list[str]) -> dict[str, dict[str, Any]]:
+        get_snapshots = getattr(self._state_manager, "get_question_snapshots", None)
+        if callable(get_snapshots):
+            snapshots = await get_snapshots(_NQ_STATE_KEY, question_ids)
+            if isinstance(snapshots, dict):
+                return {str(key): value for key, value in snapshots.items() if isinstance(value, dict)}
+        raise RuntimeError("Nine-question snapshots must be read from SQLite question tables")
+
+    async def get_latest_question_summary_rows(self, question_ids: list[str]) -> dict[str, dict[str, Any]]:
+        get_rows = getattr(self._state_manager, "get_question_summary_rows", None)
+        if callable(get_rows):
+            rows = await get_rows(_NQ_STATE_KEY, question_ids)
+            if isinstance(rows, dict):
+                return {str(key): value for key, value in rows.items() if isinstance(value, dict)}
+
+        snapshots = await self.get_latest_question_snapshots(question_ids)
+        rows: dict[str, dict[str, Any]] = {}
+        for question_id, snapshot in snapshots.items():
+            if not isinstance(snapshot, dict):
+                continue
+            rows[question_id] = {
+                "question_id": question_id,
+                "tool_id": snapshot.get("tool_id"),
+                "summary": snapshot.get("summary"),
+                "confidence": snapshot.get("confidence"),
+                "trace_id": snapshot.get("trace_id"),
+                "timestamp": snapshot.get("timestamp") or snapshot.get("updated_at"),
+                "cache_status": snapshot.get("cache_status"),
+                "provider_name": snapshot.get("provider_name"),
+                "mounted_plugins": deepcopy(snapshot.get("mounted_plugins")) if isinstance(snapshot.get("mounted_plugins"), list) else [],
+            }
+        return rows
+
+    async def query_latest_question_snapshot(self, question_id: str) -> dict[str, Any]:
+        """Query only the current canonical snapshot for one question."""
+        snapshot = await self.get_question_snapshot(question_id)
+        return deepcopy(snapshot) if isinstance(snapshot, dict) else {}
+
+    async def query_question_snapshot_history(
+        self,
+        question_id: str,
+        *,
+        limit: int = 20,
+    ) -> list[dict[str, Any]]:
+        """Query only append-only historical snapshots for one question."""
+        get_history = getattr(self._state_manager, "get_question_snapshot_history", None)
+        if not callable(get_history):
+            raise RuntimeError("Nine-question snapshot history store is unavailable")
+        history = await get_history(_NQ_STATE_KEY, question_id, limit=limit)
+        return [deepcopy(item) for item in history if isinstance(item, dict)] if isinstance(history, list) else []
+
+    @staticmethod
+    def _json_dict(value: Any) -> dict[str, Any]:
+        if isinstance(value, dict):
+            return deepcopy(value)
+        if value in (None, ""):
+            return {}
+        try:
+            loaded = json.loads(value)
+        except (TypeError, json.JSONDecodeError):
+            return {}
+        return loaded if isinstance(loaded, dict) else {}
+
+    def sqlite_db_path(self) -> Path:
+        store = getattr(self._state_manager, "_store", None)
+        db_path = getattr(store, "db_path", None) or getattr(self._state_manager, "db_path", None)
+        if not db_path:
+            raise RuntimeError("Nine-question query API requires SQLite nine-question state store access")
+        return Path(db_path)
+
+    def _q2_sqlite_db_path(self) -> Path:
+        return self.sqlite_db_path()
+
+    def _read_q2_snapshot_table_row_sync(self) -> dict[str, Any]:
+        """Read the Q2 row directly from nine_question_q2_snapshots.
+
+        Q2 query APIs are intentionally table-authoritative. They do not rebuild
+        Q2 from legacy composed evidence/inference logic.
+        """
+        db_path = self._q2_sqlite_db_path()
+        if not db_path.exists():
+            return {}
+        try:
+            with sqlite3.connect(str(db_path)) as conn:
+                conn.row_factory = sqlite3.Row
+                row = conn.execute(
+                    f"""
+                    SELECT llm_output_json, llm_trace_json, updated_at
+                    FROM {_Q2_SNAPSHOT_TABLE}
+                    WHERE session_id = ?
+                    """,
+                    (_NQ_STATE_KEY,),
+                ).fetchone()
+        except sqlite3.OperationalError as exc:
+            if _Q2_SNAPSHOT_TABLE in str(exc) or "no such table" in str(exc):
+                return {}
+            raise
+        if row is None:
+            return {}
+
+        llm_output = self._json_dict(row["llm_output_json"])
+        llm_trace = self._json_dict(row["llm_trace_json"])
+        trace_id = str(
+            llm_trace.get("trace_id")
+            or ""
+        ).strip()
+        timestamp = str(
+            row["updated_at"]
+            or ""
+        ).strip()
+        return {
+            "question_id": "q2",
+            "source_table": _Q2_SNAPSHOT_TABLE,
+            "trace_id": trace_id,
+            "timestamp": timestamp,
+            "llm_output": llm_output,
+            "llm_trace_payload": llm_trace,
+            "updated_at": str(row["updated_at"] or ""),
+        }
+
+    async def _read_q2_snapshot_table_row(self) -> dict[str, Any]:
+        return await asyncio.to_thread(self._read_q2_snapshot_table_row_sync)
+
+    @staticmethod
+    def _q2_first_scoped_trace(trace_payload: dict[str, Any], scope: str) -> dict[str, Any]:
+        if not isinstance(trace_payload, dict):
+            return {}
+
+        trace_key = (
+            "internal_tool_llm_trace_payload"
+            if scope == "internal_tools"
+            else "external_tool_llm_trace_payload"
+        )
+        direct = trace_payload.get(trace_key)
+        if isinstance(direct, dict) and direct:
+            scoped = deepcopy(direct)
+        else:
+            scoped = {}
+            invocations = trace_payload.get("invocations")
+            if isinstance(invocations, list):
+                for item in invocations:
+                    if isinstance(item, dict) and item.get("asset_scope") == scope:
+                        scoped = deepcopy(item)
+                        break
+        if not scoped:
+            return {}
+
+        scoped["asset_scope"] = scope
+        scoped.pop("invocations", None)
+        input_payload = {
+            key: deepcopy(scoped.get(key))
+            for key in (
+                "provider_name",
+                "model",
+                "system_prompt",
+                "prompt",
+                "context_data",
+                "source_module",
+                "invocation_phase",
+                "question_driver_refs",
+            )
+            if scoped.get(key) not in (None, "", [], {})
+        }
+        scoped["input"] = input_payload
+        return scoped
+
+    @staticmethod
+    def _q2_rooted_llm_output(value: Any, root_key: str) -> dict[str, Any]:
+        if not isinstance(value, dict):
+            return {}
+        rooted = value.get(root_key)
+        if isinstance(rooted, dict):
+            return {root_key: deepcopy(rooted)}
+        return {root_key: deepcopy(value)}
+
+    @classmethod
+    def _q2_scoped_llm_output(
+        cls,
+        table_row: dict[str, Any],
+        *,
+        scope: str,
+        root_key: str,
+        inventory_key: str,
+    ) -> dict[str, Any]:
+        llm_output = table_row.get("llm_output")
+        if isinstance(llm_output, dict):
+            rooted = cls._q2_rooted_llm_output(llm_output.get(inventory_key), root_key)
+            if rooted:
+                return rooted
+        return {root_key: {}}
+
+    @staticmethod
+    def _q2_token_usage(value: Any) -> dict[str, int]:
+        value = value if isinstance(value, dict) else {}
+        return {
+            "input_tokens": int(value.get("input_tokens") or 0),
+            "output_tokens": int(value.get("output_tokens") or 0),
+            "total_tokens": int(value.get("total_tokens") or 0),
+        }
+
+    @classmethod
+    def _q2_scoped_llm_exchange(
+        cls,
+        table_row: dict[str, Any],
+        *,
+        scope: str,
+        root_key: str,
+        inventory_key: str,
+    ) -> dict[str, Any]:
+        trace_payload = table_row.get("llm_trace_payload")
+        trace_payload = trace_payload if isinstance(trace_payload, dict) else {}
+        scoped_trace = cls._q2_first_scoped_trace(trace_payload, scope)
+        input_trace = scoped_trace.get("input") if isinstance(scoped_trace.get("input"), dict) else {}
+        token_usage = cls._q2_token_usage(scoped_trace.get("token_usage"))
+        input_llm = {
+            key: deepcopy(value)
+            for key, value in {
+                "system_prompt": scoped_trace.get("system_prompt") or input_trace.get("system_prompt"),
+                "prompt": scoped_trace.get("prompt") or input_trace.get("prompt"),
+                "context_data": scoped_trace.get("context_data") or input_trace.get("context_data"),
+            }.items()
+            if value not in (None, "", [], {})
+        }
+        output_llm = cls._q2_scoped_llm_output(
+            table_row,
+            scope=scope,
+            root_key=root_key,
+            inventory_key=inventory_key,
+        )
+        return {
+            "provider_name": str(scoped_trace.get("provider_name") or input_trace.get("provider_name") or ""),
+            "token_usage": token_usage,
+            "input_llm": input_llm,
+            "output_llm": output_llm,
+        }
+
+    @classmethod
+    def _project_q2_llm_io(cls, table_row: dict[str, Any]) -> dict[str, Any]:
+        if not isinstance(table_row, dict) or not table_row:
+            return {
+                "question_id": "q2",
+                "token_usage": {"input_tokens": 0, "output_tokens": 0, "total_tokens": 0},
+                "internal_tool_llm": {
+                    "provider_name": "",
+                    "token_usage": {"input_tokens": 0, "output_tokens": 0, "total_tokens": 0},
+                    "input_llm": {},
+                    "output_llm": {"InternalAssetInventory": {}},
+                },
+                "external_tool_llm": {
+                    "provider_name": "",
+                    "token_usage": {"input_tokens": 0, "output_tokens": 0, "total_tokens": 0},
+                    "input_llm": {},
+                    "output_llm": {"ExternalAssetInventory": {}},
+                },
+            }
+        internal_exchange = cls._q2_scoped_llm_exchange(
+            table_row,
+            scope="internal_tools",
+            root_key="InternalAssetInventory",
+            inventory_key="q2_internal_tool_asset_inventory",
+        )
+        external_exchange = cls._q2_scoped_llm_exchange(
+            table_row,
+            scope="external_tools",
+            root_key="ExternalAssetInventory",
+            inventory_key="q2_external_tool_asset_inventory",
+        )
+        internal_tokens = cls._q2_token_usage(internal_exchange.get("token_usage"))
+        external_tokens = cls._q2_token_usage(external_exchange.get("token_usage"))
+        return {
+            "question_id": "q2",
+            "token_usage": {
+                "input_tokens": internal_tokens["input_tokens"] + external_tokens["input_tokens"],
+                "output_tokens": internal_tokens["output_tokens"] + external_tokens["output_tokens"],
+                "total_tokens": internal_tokens["total_tokens"] + external_tokens["total_tokens"],
+            },
+            "internal_tool_llm": internal_exchange,
+            "external_tool_llm": external_exchange,
+        }
+
+    async def _get_q2_llm_io_projection(self) -> dict[str, Any]:
+        return self._project_q2_llm_io(await self._read_q2_snapshot_table_row())
+
+    async def get_q2_llm_trace(self) -> dict[str, Any]:
+        return await self._get_q2_llm_io_projection()
+
     async def get_question_snapshot(self, question_id: str) -> dict[str, Any]:
-        return (await self.get_snapshot_map()).get(question_id)
+        return (await self.get_latest_question_snapshots([question_id])).get(question_id)
 
     async def load_authoritative_question_context(self, question_ids: list[str]) -> dict[str, Any]:
         merged: dict[str, Any] = {}
@@ -1036,8 +1413,7 @@ class NineQuestionService:
         return _query_build_flat_upstream_context(upto_question_id, snapshot_map)
 
     async def get_question_record(self, question_id: str) -> dict[str, Any]:
-        await self.get_state()
-        snapshot_map = await self.get_snapshot_map()
+        snapshot_map = await self.get_latest_question_snapshots([question_id])
         snapshot = snapshot_map.get(question_id)
         if not self.snapshot_has_usable_data(snapshot):
             return {"status": {}, "modules": {}, "composed": {}}
@@ -1049,6 +1425,23 @@ class NineQuestionService:
             module_payload_overrides=self._snapshot_module_outputs(snapshot),
             module_run_overrides=self._snapshot_module_runs(snapshot),
         )
+
+    async def get_question_records(self, question_ids: list[str]) -> dict[str, dict[str, Any]]:
+        snapshot_map = await self.get_latest_question_snapshots(question_ids)
+        records: dict[str, dict[str, Any]] = {}
+        for question_id in question_ids:
+            snapshot = snapshot_map.get(question_id)
+            if not self.snapshot_has_usable_data(snapshot):
+                records[question_id] = {"status": {}, "modules": {}, "composed": {}}
+                continue
+            records[question_id] = build_question_record(
+                question_id,
+                snapshot,
+                snapshot_map,
+                module_payload_overrides=self._snapshot_module_outputs(snapshot),
+                module_run_overrides=self._snapshot_module_runs(snapshot),
+            )
+        return records
 
     async def get_question_summary(self, question_id: str) -> dict[str, Any]:
         return (await self.get_question_record(question_id)).get("composed", {}).get("summary", {})
@@ -1065,8 +1458,169 @@ class NineQuestionService:
     async def get_question_raw(self, question_id: str) -> dict[str, Any]:
         return (await self.get_question_record(question_id)).get("composed", {}).get("raw", {})
 
+    async def get_q2_asset_statistics(
+        self,
+        *,
+        cli_service: Any = None,
+        mcp_service: Any = None,
+        agent_service: Any = None,
+        external_connector_service: Any = None,
+    ) -> dict[str, Any]:
+        get_outputs = getattr(self._state_manager, "get_question_module_outputs", None)
+        module_outputs = await get_outputs(_NQ_STATE_KEY, "q2") if callable(get_outputs) else {}
+        module_outputs = module_outputs if isinstance(module_outputs, dict) else {}
+
+        internal_output = module_outputs.get("q2_internal_asset_counts")
+        external_output = module_outputs.get("q2_external_asset_counts")
+        internal_data = self._module_output_data(internal_output)
+        external_data = self._module_output_data(external_output)
+
+        internal_plugin_count = self._non_negative_int(internal_data.get("internal_plugin_count"))
+        cli_count = self._first_available_count(
+            self._count_service_list(cli_service, "list_tools"),
+            external_data.get("cli_count"),
+        )
+        mcp_count = self._first_available_count(
+            self._count_mcp_servers(mcp_service),
+            external_data.get("mcp_count"),
+        )
+        agent_count = self._first_available_count(
+            self._count_agents(agent_service),
+            external_data.get("agent_count"),
+        )
+        external_service_count = self._first_available_count(
+            self._count_external_connectors(external_connector_service),
+            external_data.get("external_service_count"),
+        )
+        source_table = (
+            "runtime_service_registries"
+            if any(service is not None for service in (cli_service, mcp_service, agent_service, external_connector_service))
+            else "nine_question_module_outputs"
+        )
+
+        return {
+            "question_id": "q2",
+            "source_table": source_table,
+            "internal_plugin_count": internal_plugin_count,
+            "cli_count": cli_count,
+            "mcp_count": mcp_count,
+            "agent_count": agent_count,
+            "external_service_count": external_service_count,
+            "total_count": internal_plugin_count + cli_count + mcp_count + agent_count + external_service_count,
+        }
+
+    @staticmethod
+    def _module_output_data(output: Any) -> dict[str, Any]:
+        if not isinstance(output, dict):
+            return {}
+        data = output.get("data")
+        return data if isinstance(data, dict) else {}
+
+    @classmethod
+    def _first_available_count(cls, primary: int | None, fallback: Any) -> int:
+        if primary is not None:
+            return primary
+        return cls._non_negative_int(fallback)
+
+    @staticmethod
+    def _count_service_list(service: Any, method_name: str) -> int | None:
+        if service is None:
+            return None
+        method = getattr(service, method_name, None)
+        if not callable(method):
+            return None
+        try:
+            rows = method()
+        except Exception:
+            logger.exception("[Q2] failed to count runtime service list method=%s", method_name)
+            return None
+        if isinstance(rows, dict):
+            return len(rows)
+        if isinstance(rows, (list, tuple, set)):
+            return len(rows)
+        return None
+
+    @classmethod
+    def _count_mcp_servers(cls, service: Any) -> int | None:
+        if service is None:
+            return None
+        if callable(getattr(service, "list_servers", None)):
+            return cls._count_service_list(service, "list_servers")
+        try:
+            from zentex.mcp.service import resolve_service as resolve_mcp_service
+
+            service = resolve_mcp_service(service)
+        except Exception:
+            logger.exception("[Q2] failed to resolve MCP service for asset statistics")
+        return cls._count_service_list(service, "list_servers")
+
+    @classmethod
+    def _count_external_connectors(cls, service: Any) -> int | None:
+        if service is None:
+            return None
+        if callable(getattr(service, "list_connectors", None)):
+            return cls._count_service_list(service, "list_connectors")
+        try:
+            from zentex.external_connectors.service import resolve_service as resolve_external_connector_service
+
+            service = resolve_external_connector_service(service)
+        except Exception:
+            logger.exception("[Q2] failed to resolve external connector service for asset statistics")
+        return cls._count_service_list(service, "list_connectors")
+
+    @classmethod
+    def _count_agents(cls, service: Any) -> int | None:
+        if service is None:
+            return None
+        manager = getattr(service, "manager", None)
+        manager_count = cls._count_service_list(manager, "list_assets")
+        if manager_count is not None:
+            return manager_count
+        for method_name in ("list_active_agents", "list_agents"):
+            count = cls._count_service_list(service, method_name)
+            if count is not None:
+                return count
+        return None
+
+    @staticmethod
+    def _non_negative_int(value: Any) -> int:
+        try:
+            return max(0, int(value or 0))
+        except (TypeError, ValueError):
+            return 0
+
     async def get_question_modules(self, question_id: str) -> dict[str, Any]:
         record = await self.get_question_record(question_id)
+        get_runs = getattr(self._state_manager, "get_question_module_runs", None)
+        get_outputs = getattr(self._state_manager, "get_question_module_outputs", None)
+        module_runs = await get_runs(_NQ_STATE_KEY, question_id) if callable(get_runs) else []
+        module_outputs = await get_outputs(_NQ_STATE_KEY, question_id) if callable(get_outputs) else {}
+        run_overrides = {
+            str(item.get("module_id")): item
+            for item in module_runs
+            if isinstance(item, dict) and str(item.get("module_id") or "").strip()
+        }
+        output_overrides = {
+            str(module_id): output
+            for module_id, output in module_outputs.items()
+            if isinstance(output, dict)
+        } if isinstance(module_outputs, dict) else {}
+        if run_overrides or output_overrides:
+            snapshot = await self.get_question_snapshot(question_id)
+            snapshot = snapshot if isinstance(snapshot, dict) and self.snapshot_has_usable_data(snapshot) else {
+                "context_updates": {
+                    f"{question_id}_execution_diagnosis": {
+                        "module_runs": list(run_overrides.values()),
+                    }
+                }
+            }
+            record = build_question_record(
+                question_id,
+                snapshot,
+                {question_id: snapshot},
+                module_payload_overrides=output_overrides,
+                module_run_overrides=run_overrides,
+            )
         return {
             "question_id": question_id,
             "status": record.get("status", {}),
@@ -1084,6 +1638,20 @@ class NineQuestionService:
         state = await self.get_state()
         snapshot_map = self.get_question_snapshot_map(state)
         current_snapshot = snapshot_map.get(question_id)
+        if not isinstance(current_snapshot, dict):
+            try:
+                latest_snapshot_map = await self.get_latest_question_snapshots([question_id])
+            except Exception:
+                latest_snapshot_map = {}
+            latest_snapshot = latest_snapshot_map.get(question_id) if isinstance(latest_snapshot_map, dict) else None
+            if isinstance(latest_snapshot, dict):
+                current_snapshot = latest_snapshot
+                snapshot_map[question_id] = deepcopy(latest_snapshot)
+        if question_id == "q3":
+            patch = self._prune_q3_snapshot(patch)
+            if isinstance(current_snapshot, dict):
+                current_snapshot = self._prune_q3_snapshot(current_snapshot)
+                snapshot_map[question_id] = deepcopy(current_snapshot)
         if not isinstance(current_snapshot, dict):
             merged_snapshot = self._append_question_history_version(
                 question_id=question_id,
@@ -1129,11 +1697,17 @@ class NineQuestionService:
             merged_snapshot = self._merge_snapshot_patch(current_snapshot, patch)
         else:
             merged_snapshot = self._merge_diagnostic_only(current_snapshot, patch)
+        history_reason = str(decision.get("reason") or refresh_reason or "question_snapshot_patch")
+        history_entry = await self._persist_question_history_version(
+            question_id=question_id,
+            current_snapshot=current_snapshot,
+            reason=history_reason,
+        )
         merged_snapshot = self._append_question_history_version(
             question_id=question_id,
             current_snapshot=current_snapshot,
             new_snapshot=merged_snapshot,
-            reason=str(decision.get("reason") or refresh_reason or "question_snapshot_patch"),
+            reason=history_reason,
         )
         snapshot_map[question_id] = merged_snapshot
         snapshot_map = self._normalize_snapshot_map_metadata(
@@ -1165,6 +1739,7 @@ class NineQuestionService:
             snapshot_version=snapshot_version,
             dirty_questions=dirty_questions,
             last_refresh_reason=refresh_reason,
+            **self._history_update_payload(question_id, history_entry),
         )
         return merged_snapshot
 
@@ -1174,6 +1749,8 @@ class NineQuestionService:
         module_id: str,
         payload: dict[str, Any],
     ) -> dict[str, Any]:
+        if question_id == "q3":
+            return await self.rebuild_question_record(question_id)
         state = await self.get_state()
         snapshot_map = self.get_question_snapshot_map(state)
         snapshot = deepcopy(snapshot_map.get(question_id) or {})
@@ -1207,6 +1784,8 @@ class NineQuestionService:
         module_id: str,
         payload: dict[str, Any],
     ) -> dict[str, Any]:
+        if question_id == "q3":
+            return await self.rebuild_question_record(question_id)
         state = await self.get_state()
         snapshot_map = self.get_question_snapshot_map(state)
         snapshot = deepcopy(snapshot_map.get(question_id) or {})
@@ -1349,7 +1928,7 @@ class NineQuestionService:
     async def execute_all(
         self,
         *,
-        force: bool = True,
+        force: bool = False,
         timeout_seconds: float = 90.0,
         audit: Optional[FlowAudit] = None,
     ) -> Any:
@@ -1359,27 +1938,111 @@ class NineQuestionService:
         learning) to the same audit_id.  Flow start/end recording is the
         responsibility of the calling layer (web route), not this service.
 
-        persist_kernel_state() is called unconditionally in a finally block so
-        that partial progress is never lost on timeout or exception (P1-Fix-A).
-        The merge-write strategy in persist_kernel_state() ensures a failed run
-        cannot overwrite previously successful answers (P3-Fix-A).
+        Only successful execution paths persist qualified snapshots. Exceptions
+        propagate without a final state flush.
         """
-        try:
-            await asyncio.wait_for(
-                asyncio.to_thread(self._facade.ensure_nine_questions_bootstrap, force=force),
-                timeout=timeout_seconds,
-            )
-        except Exception:
+        started = time.monotonic()
+        config = load_nine_questions_execute_all_config()
+        existing_state = await self.get_state()
+        has_any_data = self.state_has_any_question_data(existing_state)
+        dirty_questions = self._normalize_dirty_questions(
+            existing_state.get("dirty_questions", [])
+            if isinstance(existing_state, dict)
+            else getattr(existing_state, "dirty_questions", [])
+        )
+        logger.info(
+            "[nine-questions] execute_all start force=%s skip_when_q1_q3_unchanged=%s has_any_data=%s dirty_questions=%s timeout=%.1fs",
+            force,
+            config.skip_refresh_when_q1_q3_unchanged,
+            has_any_data,
+            dirty_questions,
+            timeout_seconds,
+        )
+        if not force and config.skip_refresh_when_q1_q3_unchanged and has_any_data:
+            dirty_q1_q3 = self._dirty_q1_q3_questions(existing_state)
+            if not dirty_q1_q3:
+                logger.info(
+                    "[nine-questions] execute_all skip reason=q1_q3_unchanged elapsed=%.3fs",
+                    time.monotonic() - started,
+                )
+                return await self._state_manager.update_state(
+                    _NQ_STATE_KEY,
+                    last_refresh_reason="all_nine_questions_skipped_q1_q3_unchanged",
+                )
+
+            earliest_dirty = min(dirty_q1_q3, key=EXPECTED_QUESTION_IDS.index)
+            start_index = EXPECTED_QUESTION_IDS.index(earliest_dirty)
+            run_questions = EXPECTED_QUESTION_IDS[start_index:]
+            runner = getattr(self._facade, "run_single_nine_question", None)
+
+            if callable(runner):
+                run_question_set = set(run_questions)
+                logger.info(
+                    "[nine-questions] execute_all incremental earliest_dirty=%s run_questions=%s",
+                    earliest_dirty,
+                    run_questions,
+                )
+
+                def _run_incremental_questions() -> None:
+                    for question_id in run_questions:
+                        question_started = time.monotonic()
+                        logger.info("[nine-questions] execute_all incremental start question=%s", question_id)
+                        runner(question_id, max_retries=0)
+                        logger.info(
+                            "[nine-questions] execute_all incremental end question=%s elapsed=%.3fs",
+                            question_id,
+                            time.monotonic() - question_started,
+                        )
+
+                await asyncio.wait_for(
+                    asyncio.to_thread(_run_incremental_questions),
+                    timeout=timeout_seconds,
+                )
+                fresh_kernel_state = self._facade.get_nine_question_state()
+                if fresh_kernel_state is not None:
+                    await self.persist_kernel_state(fresh_kernel_state)
+
+                refreshed_state = await self.get_state()
+                remaining_dirty = [
+                    item
+                    for item in self._normalize_dirty_questions(
+                        refreshed_state.get("dirty_questions", [])
+                        if isinstance(refreshed_state, dict)
+                        else getattr(refreshed_state, "dirty_questions", [])
+                    )
+                    if item not in run_question_set
+                ]
+                updated_state = await self._state_manager.update_state(
+                    _NQ_STATE_KEY,
+                    dirty_questions=remaining_dirty,
+                    last_refresh_reason=f"all_nine_questions_refreshed_q1_q3_changed:{earliest_dirty}",
+                )
+                logger.info(
+                    "[nine-questions] execute_all incremental complete earliest_dirty=%s elapsed=%.3fs",
+                    earliest_dirty,
+                    time.monotonic() - started,
+                )
+                return updated_state
             logger.warning(
-                "execute_all: bootstrap ended with exception; flushing partial kernel state",
-                exc_info=True,
+                "[nine-questions] execute_all incremental runner unavailable; falling back to full bootstrap"
             )
-            raise
-        finally:
-            fresh_kernel_state = self._facade.get_nine_question_state()
-            if fresh_kernel_state is not None:
-                await self.persist_kernel_state(fresh_kernel_state)
-        return await self.get_state()
+            force = True
+
+        logger.info("[nine-questions] execute_all full_bootstrap start force=%s", force)
+        await asyncio.wait_for(
+            asyncio.to_thread(self._facade.ensure_nine_questions_bootstrap, force=force),
+            timeout=timeout_seconds,
+        )
+        fresh_kernel_state = self._facade.get_nine_question_state()
+        if fresh_kernel_state is not None:
+            await self.persist_kernel_state(fresh_kernel_state)
+        state = await self.get_state()
+        logger.info(
+            "[nine-questions] execute_all full_bootstrap complete force=%s elapsed=%.3fs",
+            force,
+            time.monotonic() - started,
+        )
+        return state
 
     async def run_single(
         self,
@@ -1387,38 +2050,81 @@ class NineQuestionService:
         *,
         timeout_seconds: float = 90.0,
         audit: Optional[FlowAudit] = None,
+        runtime_context: Optional[dict[str, Any]] = None,
     ) -> Any:
-        """Run a single question in isolation and persist only the refreshed baseline.
-
-        persist_kernel_state() is called in a finally block so partial module
-        progress is never lost even when execution times out or raises (P1-Fix-A).
-        """
+        """Run a single question in isolation and persist the refreshed baseline."""
+        started = time.monotonic()
+        logger.info("[nine-questions] run_single stage=mark_dirty_start question_id=%s", question_id)
         await self.mark_question_dirty(question_id, reason="single_run_started")
+        logger.info("[nine-questions] run_single stage=mark_dirty_done question_id=%s", question_id)
+        snapshot_map = self.get_question_snapshot_map(await self.get_state())
+        hydrate_kernel_state = getattr(self._facade, "hydrate_nine_question_state_from_snapshots", None)
+        if callable(hydrate_kernel_state):
+            logger.info(
+                "[nine-questions] run_single stage=hydrate_kernel_state_start question_id=%s snapshot_count=%s",
+                question_id,
+                len(snapshot_map),
+            )
+            hydrate_kernel_state(snapshot_map)
+            logger.info("[nine-questions] run_single stage=hydrate_kernel_state_done question_id=%s", question_id)
         runner = getattr(self._facade, "run_single_nine_question", None)
         _run = runner if callable(runner) else self._facade.rerun_nine_questions_from
 
         def _invoke_single() -> Any:
             run_signature = inspect.signature(_run)
             if "max_retries" in run_signature.parameters:
+                if "context_overrides" in run_signature.parameters:
+                    return _run(
+                        question_id,
+                        max_retries=0,
+                        context_overrides=runtime_context or {},
+                    )
                 return _run(question_id, max_retries=0)
+            if "context_overrides" in run_signature.parameters:
+                return _run(question_id, context_overrides=runtime_context or {})
             return _run(question_id)
-        try:
-            await asyncio.wait_for(
-                asyncio.to_thread(_invoke_single),
-                timeout=timeout_seconds,
-            )
-        except Exception:
-            logger.warning(
-                "run_single %s: execution ended with exception; flushing partial kernel state",
-                question_id,
-                exc_info=True,
-            )
-            raise
-        finally:
-            fresh_kernel_state = self._facade.get_nine_question_state()
+        logger.info(
+            "[nine-questions] run_single stage=kernel_invoke_start question_id=%s timeout_seconds=%s runner=%s",
+            question_id,
+            timeout_seconds,
+            getattr(_run, "__name__", type(_run).__name__),
+        )
+        run_status = await asyncio.wait_for(
+            asyncio.to_thread(_invoke_single),
+            timeout=timeout_seconds,
+        )
+        logger.info("[nine-questions] run_single stage=kernel_invoke_done question_id=%s", question_id)
+        fresh_kernel_state = self._facade.get_nine_question_state()
+        run_status_value = self._bootstrap_status_value(run_status)
+        if run_status_value in {BootstrapStatus.failed.value, BootstrapStatus.partial_failed.value}:
             if fresh_kernel_state is not None:
+                logger.info(
+                    "[nine-questions] run_single stage=persist_failed_kernel_state_start question_id=%s status=%s",
+                    question_id,
+                    run_status_value,
+                )
                 await self.persist_kernel_state(fresh_kernel_state)
+                logger.info(
+                    "[nine-questions] run_single stage=persist_failed_kernel_state_done question_id=%s status=%s",
+                    question_id,
+                    run_status_value,
+                )
+            error_summary = self._question_run_error_summary(fresh_kernel_state, question_id)
+            raise RuntimeError(
+                f"{question_id} single run ended with status={run_status_value}; "
+                f"refusing to report success. {error_summary}".strip()
+            )
+        if fresh_kernel_state is not None:
+            logger.info("[nine-questions] run_single stage=persist_kernel_state_start question_id=%s", question_id)
+            await self.persist_kernel_state(fresh_kernel_state)
+            logger.info("[nine-questions] run_single stage=persist_kernel_state_done question_id=%s", question_id)
+        logger.info("[nine-questions] run_single stage=clear_dirty_start question_id=%s", question_id)
         await self.clear_question_dirty(question_id, reason="single_run_completed")
+        logger.info(
+            "[nine-questions] run_single stage=completed question_id=%s elapsed=%.3fs",
+            question_id,
+            time.monotonic() - started,
+        )
         return await self.get_state()
 
     async def rerun_from(
@@ -1430,24 +2136,336 @@ class NineQuestionService:
     ) -> Any:
         """Rerun a specific question and all downstream dependencies.
 
-        persist_kernel_state() is called in a finally block (P1-Fix-A).
+        Exceptions propagate without a final state flush.
         """
         await self.mark_question_dirty(question_id, reason="downstream_rerun_started")
-        try:
-            await asyncio.wait_for(
-                asyncio.to_thread(self._facade.rerun_nine_questions_from, question_id),
-                timeout=timeout_seconds,
-            )
-        except Exception:
-            logger.warning(
-                "rerun_from %s: execution ended with exception; flushing partial kernel state",
-                question_id,
-                exc_info=True,
-            )
-            raise
-        finally:
-            fresh_kernel_state = self._facade.get_nine_question_state()
-            if fresh_kernel_state is not None:
-                await self.persist_kernel_state(fresh_kernel_state)
+        await asyncio.wait_for(
+            asyncio.to_thread(self._facade.rerun_nine_questions_from, question_id),
+            timeout=timeout_seconds,
+        )
+        fresh_kernel_state = self._facade.get_nine_question_state()
+        if fresh_kernel_state is not None:
+            await self.persist_kernel_state(fresh_kernel_state)
         await self.clear_question_dirty(question_id, reason="downstream_rerun_completed")
         return await self.get_state()
+
+
+def sync_q8_tasks_to_task_service(*args: Any, **kwargs: Any) -> Any:
+    from zentex.nine_questions.q8_tasks import sync_q8_tasks_to_task_service as _impl
+
+    return _impl(*args, **kwargs)
+
+
+def sync_q9_tasks_to_task_service(*args: Any, **kwargs: Any) -> Any:
+    from zentex.nine_questions.q9_tasks import sync_q9_tasks_to_task_service as _impl
+
+    return _impl(*args, **kwargs)
+
+
+def derive_posture_baseline(*args: Any, **kwargs: Any) -> dict[str, Any]:
+    from plugins.nine_questions.q9_how_should_i_act.modules import derive_posture_baseline as _impl
+
+    return _impl(*args, **kwargs)
+
+
+def build_q3_capability_inventory(*args: Any, **kwargs: Any) -> dict[str, Any]:
+    from zentex.nine_questions.capability_propagation import build_q3_capability_inventory as _impl
+
+    return _impl(*args, **kwargs)
+
+
+def build_q4_action_mapping(*args: Any, **kwargs: Any) -> dict[str, Any]:
+    from zentex.nine_questions.capability_propagation import build_q4_action_mapping as _impl
+
+    return _impl(*args, **kwargs)
+
+
+def build_q8_replay_integrity_report(*args: Any, **kwargs: Any) -> dict[str, Any]:
+    from zentex.nine_questions.q8_replay_integrity import build_q8_replay_integrity_report as _impl
+
+    return _impl(*args, **kwargs)
+
+
+def verify_turn_to_turn_evolution(*args: Any, **kwargs: Any) -> dict[str, Any]:
+    from zentex.nine_questions.evolution_verification import verify_turn_to_turn_evolution as _impl
+
+    return _impl(*args, **kwargs)
+
+
+def build_turn2_learning_evolution_context(*args: Any, **kwargs: Any) -> dict[str, Any]:
+    from zentex.nine_questions.learning_evolution import build_turn2_learning_evolution_context as _impl
+
+    return _impl(*args, **kwargs)
+
+
+def build_stock_dataset_manifest(workspace: Any) -> dict[str, Any]:
+    import hashlib
+
+    root = Path(workspace).resolve()
+    daily_dir = root / "daily"
+    tickers = sorted(path.stem for path in daily_dir.glob("*.csv") if path.is_file())
+    ticker_set_hash = hashlib.sha256(json.dumps(tickers, sort_keys=True).encode("utf-8")).hexdigest()
+    return {
+        "dataset_family": "stock_multi_ticker",
+        "workspace_path": str(root),
+        "daily_dir": str(daily_dir),
+        "tickers": tickers,
+        "ticker_count": len(tickers),
+        "ticker_set_hash": ticker_set_hash,
+    }
+
+
+def _memory_record_payload(record: Any) -> dict[str, Any]:
+    payload = getattr(record, "payload", None)
+    payload = payload if isinstance(payload, dict) else {}
+    if "actual_outcome" in payload and isinstance(payload["actual_outcome"], dict):
+        return payload["actual_outcome"]
+    content = getattr(record, "content", "")
+    if isinstance(content, str) and content.strip().startswith("{"):
+        try:
+            parsed = json.loads(content)
+            if isinstance(parsed, dict):
+                return parsed
+        except json.JSONDecodeError:
+            pass
+    return payload
+
+
+def _find_latest_stock_manifest_memory(memory_service: Any, *, query: str, trace_id: str | None = None) -> tuple[Any, dict[str, Any]]:
+    candidates: list[Any] = []
+    query_fn = getattr(memory_service, "query_managed_records", None)
+    if callable(query_fn):
+        try:
+            candidates.extend(query_fn(limit=100))
+        except TypeError:
+            candidates.extend(query_fn())
+    recall_fn = getattr(memory_service, "recall", None)
+    if callable(recall_fn):
+        try:
+            candidates.extend(recall_fn(query, limit=100))
+        except TypeError:
+            candidates.extend(recall_fn(query))
+
+    seen: set[str] = set()
+    unique_candidates: list[Any] = []
+    for candidate in candidates:
+        record = getattr(candidate, "record", candidate)
+        memory_id = str(getattr(record, "memory_id", "") or "")
+        if memory_id and memory_id in seen:
+            continue
+        if memory_id:
+            seen.add(memory_id)
+        unique_candidates.append(record)
+
+    for record in reversed(unique_candidates):
+        payload = _memory_record_payload(record)
+        manifest = payload.get("stock_manifest") if isinstance(payload, dict) else None
+        if isinstance(manifest, dict) and manifest.get("ticker_set_hash"):
+            if trace_id and str(getattr(record, "trace_id", "") or "") == trace_id:
+                continue
+            return record, manifest
+    raise ValueError("stock manifest memory not found")
+
+
+def detect_ticker_delta_from_memory(
+    *,
+    memory_service: Any,
+    audit_service: Any,
+    current_manifest: dict[str, Any],
+    session_id: str,
+    trace_id: str,
+    turn_id: str,
+) -> dict[str, Any]:
+    record, previous_manifest = _find_latest_stock_manifest_memory(
+        memory_service,
+        query="stock ticker baseline memory ticker_set_hash",
+        trace_id=trace_id,
+    )
+    previous_tickers = set(previous_manifest.get("tickers") or [])
+    current_tickers = set(current_manifest.get("tickers") or [])
+    missing_tickers = sorted(previous_tickers - current_tickers)
+    added_tickers = sorted(current_tickers - previous_tickers)
+    report = {
+        "status": "succeeded",
+        "session_id": session_id,
+        "trace_id": trace_id,
+        "turn_id": turn_id,
+        "previous_memory_id": getattr(record, "memory_id", ""),
+        "previous_manifest": previous_manifest,
+        "current_manifest": current_manifest,
+        "missing_tickers": missing_tickers,
+        "added_tickers": added_tickers,
+        "delta_detected": bool(missing_tickers or added_tickers),
+    }
+    if audit_service and callable(getattr(audit_service, "record_audit_entry", None)):
+        audit_service.record_audit_entry(
+            trace_id=trace_id,
+            source="zentex.nine_questions.service",
+            event_type="memory_delta_detected",
+            payload=report,
+        )
+    return report
+
+
+def derive_delta_evolution_plan(
+    *,
+    delta_detection: dict[str, Any],
+    audit_service: Any,
+    session_id: str,
+    trace_id: str,
+    turn_id: str,
+) -> dict[str, Any]:
+    missing_tickers = list(delta_detection.get("missing_tickers") or [])
+    q9_profile = {
+        "default_action_rhythm_hint": "steady_incremental",
+        "specific_posture_scope": {
+            "tickers": missing_tickers,
+            "action_rhythm_hint": "cautious_slow",
+            "confirmation_strategy": "confirm_before_commit",
+            "unaffected_tickers": list((delta_detection.get("current_manifest") or {}).get("tickers") or []),
+        },
+    }
+    evolution_report = {
+        "status": "agent_logic_evolved",
+        "strategy": "strategy_self_optimized",
+        "previous_memory_id": delta_detection.get("previous_memory_id"),
+        "missing_tickers": missing_tickers,
+    }
+    plan = {
+        "q1_q7_snapshot": {
+            "q1": {"memory_delta_detection": delta_detection},
+            "q3": {"dataset_family": (delta_detection.get("current_manifest") or {}).get("dataset_family")},
+            "q4": {"action_candidates": ["confirm_missing_ticker_delta", "continue_unaffected_tickers"]},
+            "q6": {"risk_flags": ["ticker_delta_detected"]},
+            "q7": {"alternative_task_paths": ["confirm missing ticker before using evolved strategy"]},
+        },
+        "q9_profile": q9_profile,
+        "evolution_report": evolution_report,
+        "next_tasks": [
+            {
+                "task_id": "memory-delta-learning",
+                "title": "Apply memory delta learning",
+                "metadata": {
+                    "memory_delta_detection": delta_detection,
+                    "affected_tickers": missing_tickers,
+                    "evolution_report": evolution_report,
+                },
+                "success_criteria": ["memory_delta_detection recorded", "agent_logic_evolved"],
+                "expected_outcome": {"memory_delta_detection": delta_detection, "evolution_report": evolution_report},
+            }
+        ],
+        "proactive_actions": [
+            {
+                "task_id": "confirm-memory-delta",
+                "title": "Confirm ticker delta before broad execution",
+                "requires_confirmation": True,
+                "metadata": {"missing_tickers": missing_tickers},
+            }
+        ],
+    }
+    if audit_service and callable(getattr(audit_service, "record_audit_entry", None)):
+        audit_service.record_audit_entry(
+            trace_id=trace_id,
+            source="zentex.nine_questions.service",
+            event_type="memory_delta_plan_derived",
+            payload={"session_id": session_id, "turn_id": turn_id, "plan": plan},
+        )
+    return plan
+
+
+def derive_turn3_evolved_behavior(
+    *,
+    memory_service: Any,
+    audit_service: Any,
+    current_manifest: dict[str, Any],
+    session_id: str,
+    trace_id: str,
+    turn_id: str,
+) -> dict[str, Any]:
+    record, payload = _find_latest_stock_manifest_memory(
+        memory_service,
+        query="memory_delta_detection agent_logic_evolved strategy_self_optimized",
+        trace_id=trace_id,
+    )
+    delta_detection = payload.get("memory_delta_detection") if isinstance(payload, dict) else {}
+    delta_detection = delta_detection if isinstance(delta_detection, dict) else {}
+    missing_tickers = list(delta_detection.get("missing_tickers") or [])
+    q9_profile = {
+        "default_action_rhythm_hint": "steady_incremental",
+        "specific_posture_scope": {
+            "tickers": missing_tickers,
+            "unaffected_tickers": list(current_manifest.get("tickers") or []),
+            "action_rhythm_hint": "cautious_slow",
+            "confirmation_strategy": "confirm_before_commit",
+        },
+    }
+    result = {
+        "status": "succeeded",
+        "session_id": session_id,
+        "trace_id": trace_id,
+        "turn_id": turn_id,
+        "source_evolution_memory_id": getattr(record, "memory_id", ""),
+        "current_manifest": current_manifest,
+        "q9_profile": q9_profile,
+        "q1_q7_snapshot": {
+            "q1": {"current_manifest": current_manifest, "source_evolution_memory_id": getattr(record, "memory_id", "")},
+            "q3": {"memory_stage": "turn3_evolved_behavior"},
+            "q4": {"action_candidates": ["use_evolved_ticker_delta_strategy"]},
+            "q7": {"alternative_task_paths": ["keep unaffected tickers steady"]},
+        },
+        "next_tasks": [
+            {
+                "task_id": "memory-evolved-turn3",
+                "title": "Use evolved memory behavior for unchanged instruction",
+                "metadata": {"source_evolution_memory_id": getattr(record, "memory_id", ""), "q9_profile": q9_profile},
+                "success_criteria": ["source_evolution_memory_id retained", "specific_posture_scope applied"],
+                "expected_outcome": {"source_evolution_memory_id": getattr(record, "memory_id", ""), "q9_profile": q9_profile},
+            }
+        ],
+    }
+    if audit_service and callable(getattr(audit_service, "record_audit_entry", None)):
+        audit_service.record_audit_entry(
+            trace_id=trace_id,
+            source="zentex.nine_questions.service",
+            event_type="turn3_evolved_behavior_derived",
+            payload=result,
+        )
+    return result
+
+    return _impl(*args, **kwargs)
+
+
+def build_mixed_executor_orchestration_plan(*args: Any, **kwargs: Any) -> dict[str, Any]:
+    from zentex.nine_questions.mixed_executor_orchestration import build_mixed_executor_orchestration_plan as _impl
+
+    return _impl(*args, **kwargs)
+
+
+def scan_resource_gaps(*args: Any, **kwargs: Any) -> dict[str, Any]:
+    from zentex.nine_questions.resource_recovery import scan_resource_gaps as _impl
+
+    return _impl(*args, **kwargs)
+
+
+def build_recovery_plan_from_gaps(*args: Any, **kwargs: Any) -> dict[str, Any]:
+    from zentex.nine_questions.resource_recovery import build_recovery_plan_from_gaps as _impl
+
+    return _impl(*args, **kwargs)
+
+
+def record_human_resource_fix(*args: Any, **kwargs: Any) -> dict[str, Any]:
+    from zentex.nine_questions.resource_recovery import record_human_resource_fix as _impl
+
+    return _impl(*args, **kwargs)
+
+
+async def request_human_resource_confirmation(*args: Any, **kwargs: Any) -> Any:
+    from zentex.nine_questions.resource_recovery import request_human_resource_confirmation as _impl
+
+    return await _impl(*args, **kwargs)
+
+
+async def recover_resource_gap_tasks_after_recheck(*args: Any, **kwargs: Any) -> dict[str, Any]:
+    from zentex.nine_questions.resource_recovery import recover_resource_gap_tasks_after_recheck as _impl
+
+    return await _impl(*args, **kwargs)

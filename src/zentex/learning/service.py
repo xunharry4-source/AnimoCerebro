@@ -13,6 +13,7 @@ from uuid import uuid4
 
 from pydantic import BaseModel, ConfigDict, Field
 
+from zentex.module_logs import record_module_log
 from zentex.common.flow_audit import FlowAudit
 from zentex.common.storage_paths import get_storage_paths
 from zentex.learning.budget import ReasoningBudget
@@ -81,7 +82,7 @@ class LearningMaintenanceResult(BaseModel):
 class LearningService:
     """Single public learning service backed by its own canonical store."""
 
-    def __init__(self, storage_root: Optional[Union[str, Path]] = None) -> None:
+    def __init__(self, storage_root: Optional[Union[str, Path]] = None, module_log_service: Any = None) -> None:
         if storage_root is None:
             env_root = os.environ.get("ZENTEX_LEARNING_ROOT")
             if env_root:
@@ -101,12 +102,16 @@ class LearningService:
         self._maintenance_stop = threading.Event()
         self._maintenance_interval_seconds = 3600
         self._last_maintenance_at: Optional[datetime] = None
+        self._module_log_service = module_log_service
         # P3-L3: idempotency guard — hash of the last processed memory_id set
         self._last_maintenance_memory_hash: Optional[str] = None
 
     @property
     def store(self) -> LearningStore:
         return self._store
+
+    def attach_module_log_service(self, module_log_service: Any) -> None:
+        self._module_log_service = module_log_service
 
     def close(self) -> None:
         close = getattr(self._store, "close", None)
@@ -135,7 +140,15 @@ class LearningService:
             dry_run=dry_run,
             load_factor=load_factor,
         )
-        return _to_learning_outcome(result)
+        outcome = _to_learning_outcome(result)
+        self._sync_generated_learning_task(
+            task_id=outcome.trace_id,
+            direction=str(direction.value if isinstance(direction, LearningDirection) else direction),
+            status=outcome.status,
+            trace_id=outcome.trace_id,
+            doc_url=doc_url,
+        )
+        return outcome
 
     def get_status(
         self,
@@ -197,6 +210,64 @@ class LearningService:
                 break
         return result
 
+    def query_q2_strategy_patches_context(
+        self,
+        *,
+        topic: Optional[str] = None,
+        role: Optional[str] = None,
+        risk_level: Optional[str] = None,
+        top_k: int = 8,
+    ) -> Dict[str, Any]:
+        """
+        Return Q2-ready reusable strategy patches through the LearningService boundary.
+
+        This facade is intentionally stricter than history queries: it extracts only
+        structured strategy patch payloads from durable learning records, keeps only
+        patches whose own status is `validated` or `active`, excludes candidate or
+        revoked material, and returns the fields Q2 needs for
+        [Memory_&_Patches_Context]: name, patch_summary, risk_level, and
+        applicable_scenario plus trace metadata for auditability.
+        """
+        limit = max(1, int(top_k or 8))
+        rows = self._store.query_by_session(LEARNING_SESSION_ID, limit=max(limit * 8, limit))
+        patches: List[Dict[str, Any]] = []
+        seen: set[str] = set()
+        for row in rows:
+            for patch in _q2_extract_strategy_patches(row.payload):
+                normalized = _q2_normalize_strategy_patch(patch, row=row)
+                if not normalized:
+                    continue
+                status = str(normalized.get("status") or "").strip().lower()
+                if status not in {"validated", "active"}:
+                    continue
+                if not _q2_strategy_patch_matches(
+                    normalized,
+                    topic=topic,
+                    role=role,
+                    risk_level=risk_level,
+                ):
+                    continue
+                patch_key = str(normalized.get("patch_id") or normalized.get("name") or "").strip()
+                if patch_key in seen:
+                    continue
+                seen.add(patch_key)
+                patches.append(normalized)
+                if len(patches) >= limit:
+                    break
+            if len(patches) >= limit:
+                break
+        return {
+            "source": "zentex.learning.service.LearningService.query_q2_strategy_patches_context",
+            "filters": {
+                "topic": str(topic or "").strip(),
+                "role": str(role or "").strip(),
+                "risk_level": str(risk_level or "").strip(),
+            },
+            "allowed_statuses": ["validated", "active"],
+            "excluded_statuses": ["candidate", "revoked"],
+            "reusable_strategy_patches": patches,
+        }
+
     def list_directions(self) -> list[Dict[str, Any]]:
         return list_available_directions()
 
@@ -249,6 +320,7 @@ class LearningService:
         memory_limit: int = 50,
         reflection_limit: int = 50,
         cleanup_limit: int = 500,
+        force: bool = False,
     ) -> LearningMaintenanceResult:
         from zentex.memory.service import get_service as get_memory_service
         from zentex.reflection.service import get_service as get_reflection_service
@@ -259,7 +331,7 @@ class LearningService:
 
             if callable(getattr(memory_service, "trigger_automatic_consolidation_check", None)):
                 try:
-                    memory_service.trigger_automatic_consolidation_check()
+                    memory_service.trigger_automatic_consolidation_check(force=force, operator=operator)
                 except Exception:
                     logger.warning("Memory consolidation pre-check failed in learning maintenance", exc_info=True)
 
@@ -275,15 +347,23 @@ class LearningService:
                 str(getattr(r, "memory_id", "") or "") for r in memory_records
             )
             batch_hash = _hashlib.sha256(",".join(memory_ids_sorted).encode()).hexdigest()[:16]
-            if self._last_maintenance_memory_hash == batch_hash and memory_records:
+            if not force and self._last_maintenance_memory_hash == batch_hash and memory_records:
                 logger.info(
                     "Learning maintenance skipped — same memory batch as last run (idempotency key=%s)", batch_hash
                 )
                 # Still run cleanup so stale entries don't accumulate indefinitely
                 self._cleanup_low_value_learning_entries(limit=max(50, cleanup_limit))
+                skipped_trace_id = f"learning-maintenance:idempotent-{batch_hash}"
+                self._sync_generated_learning_task(
+                    task_id=skipped_trace_id,
+                    direction="memory_maintenance",
+                    status="skipped",
+                    trace_id=skipped_trace_id,
+                    summary="Skipped: identical memory batch already processed.",
+                )
                 return LearningMaintenanceResult(
                     trigger=trigger,
-                    trace_id=f"learning-maintenance:idempotent-{batch_hash}",
+                    trace_id=skipped_trace_id,
                     used_memory_count=len(memory_records),
                     used_reflection_count=len(reflection_records),
                     deleted_entry_count=0,
@@ -303,6 +383,7 @@ class LearningService:
             detail = {
                 "operator": operator,
                 "maintenance_kind": "memory_aware_cleanup",
+                "force": force,
                 "used_memory_count": len(memory_records),
                 "used_reflection_count": len(reflection_records),
                 "deleted_entry_count": deleted_entry_count,
@@ -347,6 +428,13 @@ class LearningService:
             )
             self._last_maintenance_at = datetime.now(timezone.utc)
             self._last_maintenance_memory_hash = batch_hash  # P3-L3: record processed batch
+            self._sync_generated_learning_task(
+                task_id=trace_id,
+                direction="memory_maintenance",
+                status="completed",
+                trace_id=trace_id,
+                summary=summary,
+            )
 
             return LearningMaintenanceResult(
                 trigger=trigger,
@@ -369,11 +457,29 @@ class LearningService:
         if self._last_maintenance_at is not None:
             elapsed = (now - self._last_maintenance_at).total_seconds()
             if elapsed < effective_interval:
+                self._record_scheduled_maintenance_log(
+                    status="skipped",
+                    action_label="定时维护已跳过",
+                    reason=f"距离上次维护仅 {int(elapsed)} 秒，未达到 {effective_interval} 秒间隔。",
+                    details={
+                        "elapsed_seconds": elapsed,
+                        "interval_seconds": effective_interval,
+                        "last_maintenance_at": self._last_maintenance_at.isoformat(),
+                    },
+                )
                 return None
-        return self.trigger_memory_aware_maintenance(
+        result = self.trigger_memory_aware_maintenance(
             operator=operator,
             trigger="scheduled",
         )
+        self._record_scheduled_maintenance_log(
+            status="completed",
+            action_label="定时维护已执行",
+            reason="学习模块定时维护已完成，已汇总记忆与反思并清理低价值学习记录。",
+            details=result.model_dump(mode="json"),
+            result=result,
+        )
+        return result
 
     def start_background_maintenance(
         self,
@@ -407,6 +513,62 @@ class LearningService:
 
     def stop_background_maintenance(self) -> None:
         self._maintenance_stop.set()
+
+    def _record_scheduled_maintenance_log(
+        self,
+        *,
+        status: str,
+        action_label: str,
+        reason: str,
+        details: dict[str, Any],
+        result: LearningMaintenanceResult | None = None,
+    ) -> None:
+        record_module_log(
+            self._module_log_service,
+            source_module="learning",
+            module_label="学习模块",
+            action="scheduled_maintenance",
+            action_label=action_label,
+            object_id=(result.trace_id if result is not None else "learning-maintenance-scheduler"),
+            object_label="学习记忆感知维护",
+            before_status="running",
+            after_status=status,
+            reason=reason,
+            details=details,
+            operator_id="learning-service-scheduler",
+            status=status,
+        )
+
+    def _sync_generated_learning_task(
+        self,
+        *,
+        task_id: str,
+        direction: str,
+        status: str,
+        trace_id: str,
+        doc_url: Optional[str] = None,
+        summary: Optional[str] = None,
+    ) -> str:
+        if not task_id or not str(task_id).strip():
+            raise RuntimeError("learning generated task_id is required for task-service audit sync")
+        from zentex.tasks.integration.workflow_bridge import WorkflowTaskBridge
+
+        bridge = WorkflowTaskBridge()
+        synced_task_id = bridge.sync_learning_submission(
+            task_id=str(task_id),
+            direction=str(direction or "unknown"),
+            priority="medium",
+            trace_id=str(trace_id or task_id),
+            session_id=LEARNING_SESSION_ID,
+            doc_url=doc_url,
+        )
+        bridge.sync_learning_status(
+            str(task_id),
+            str(status or "unknown"),
+            direction=str(direction or "unknown"),
+            remarks=summary or f"Learning status -> {status}",
+        )
+        return synced_task_id
 
     def _cleanup_low_value_learning_entries(self, *, limit: int) -> int:
         rows = self._store.query_by_session(LEARNING_SESSION_ID, limit=limit)
@@ -575,6 +737,75 @@ def _run_coroutine_sync(coro: Any) -> Any:
     thread = threading.Thread(target=_thread_target, daemon=True)
     thread.start()
     return result_future.result()
+
+
+def _q2_extract_strategy_patches(payload: Dict[str, Any]) -> List[Dict[str, Any]]:
+    candidates: List[Dict[str, Any]] = []
+    payload = dict(payload or {})
+    detail = payload.get("detail") if isinstance(payload.get("detail"), dict) else {}
+    for source in (payload, detail):
+        for key in ("strategy_patch", "patch"):
+            value = source.get(key)
+            if isinstance(value, dict):
+                candidates.append(dict(value))
+        for key in ("strategy_patches", "patches"):
+            value = source.get(key)
+            if isinstance(value, list):
+                candidates.extend(dict(item) for item in value if isinstance(item, dict))
+    return candidates
+
+
+def _q2_text(value: Any) -> str:
+    return str(value or "").strip()
+
+
+def _q2_normalize_strategy_patch(patch: Dict[str, Any], *, row: Any) -> Dict[str, Any]:
+    patch_id = _q2_text(patch.get("patch_id") or patch.get("id"))
+    name = _q2_text(patch.get("name") or patch.get("patch_name") or patch_id)
+    summary = _q2_text(
+        patch.get("patch_summary")
+        or patch.get("summary")
+        or patch.get("recommendation")
+        or patch.get("lesson")
+    )
+    applicable_scenario = _q2_text(
+        patch.get("applicable_scenario")
+        or patch.get("applies_to")
+        or patch.get("target")
+        or patch.get("recommendation")
+    )
+    if not name or not summary:
+        return {}
+    return {
+        "patch_id": patch_id,
+        "name": name,
+        "patch_summary": summary,
+        "risk_level": _q2_text(patch.get("risk_level")),
+        "applicable_scenario": applicable_scenario or summary,
+        "status": _q2_text(patch.get("status")),
+        "source_trace_id": _q2_text(getattr(row, "trace_id", "")),
+        "recorded_at": _q2_text(getattr(row, "timestamp", "")),
+    }
+
+
+def _q2_strategy_patch_matches(
+    patch: Dict[str, Any],
+    *,
+    topic: Optional[str],
+    role: Optional[str],
+    risk_level: Optional[str],
+) -> bool:
+    risk_filter = _q2_text(risk_level).lower()
+    if risk_filter and _q2_text(patch.get("risk_level")).lower() != risk_filter:
+        return False
+    haystack = " ".join(
+        _q2_text(patch.get(key)).lower()
+        for key in ("name", "patch_summary", "applicable_scenario")
+    )
+    for expected in (_q2_text(topic).lower(), _q2_text(role).lower()):
+        if expected and expected not in haystack:
+            return False
+    return True
 
 
 __all__ = [

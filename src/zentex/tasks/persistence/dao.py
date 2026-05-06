@@ -40,6 +40,19 @@ from zentex.tasks.schema import ensure_task_database_schema
 
 logger = logging.getLogger(__name__)
 
+_SOURCE_MODULE_CATEGORY_ALIASES = {
+    "nine_questions": ("nine_questions", "nine_questions.%"),
+    "nine_questions.q8": (
+        "nine_questions.q8",
+        "q8_what_should_i_do_now",
+        "plugins.nine_questions.q8_what_should_i_do_now%",
+    ),
+    "reflection": ("reflection", "reflection.%"),
+    "learning": ("learning", "learning.%"),
+    "upgrade": ("upgrade", "upgrade.%"),
+    "manual": ("manual", "manual.%", "human", "human.%", "web-console", "web-console.%"),
+}
+
 
 class TaskDAO(BaseDAO):
     """Data Access Object for Task entities."""
@@ -124,6 +137,7 @@ class TaskDAO(BaseDAO):
         metadata_filters: Optional[Dict[str, Any]] = None,
         tags: Optional[List[str]] = None,
         overdue_only: bool = False,
+        root_only: bool = False,
         limit: int = 100,
         offset: int = 0
     ) -> List[Dict[str, Any]]:
@@ -141,6 +155,7 @@ class TaskDAO(BaseDAO):
             metadata_filters=metadata_filters,
             tags=tags,
             overdue_only=overdue_only,
+            root_only=root_only,
         )
 
         # Build query with ordering
@@ -172,6 +187,7 @@ class TaskDAO(BaseDAO):
         metadata_filters: Optional[Dict[str, Any]] = None,
         tags: Optional[List[str]] = None,
         overdue_only: bool = False,
+        root_only: bool = False,
     ) -> int:
         """Count tasks with the same database-backed filters used by list_tasks."""
         where_clause, params = self._build_task_filter_clause(
@@ -187,6 +203,7 @@ class TaskDAO(BaseDAO):
             metadata_filters=metadata_filters,
             tags=tags,
             overdue_only=overdue_only,
+            root_only=root_only,
         )
         rows = self.db.execute_query(f"SELECT COUNT(*) AS count FROM tasks WHERE {where_clause}", tuple(params))
         return int(rows[0]["count"]) if rows else 0
@@ -206,6 +223,7 @@ class TaskDAO(BaseDAO):
         metadata_filters: Optional[Dict[str, Any]] = None,
         tags: Optional[List[str]] = None,
         overdue_only: bool = False,
+        root_only: bool = False,
     ) -> tuple[str, list[Any]]:
         conditions = []
         params: list[Any] = []
@@ -231,6 +249,8 @@ class TaskDAO(BaseDAO):
         if parent_task_id:
             conditions.append("parent_task_id = ?")
             params.append(parent_task_id)
+        if root_only:
+            conditions.append("(parent_task_id IS NULL OR parent_task_id = '')")
         if originator_id:
             conditions.append("originator_id = ?")
             params.append(originator_id)
@@ -238,8 +258,25 @@ class TaskDAO(BaseDAO):
             conditions.append("target_id = ?")
             params.append(target_id)
         if source_module:
-            conditions.append("json_extract(metadata, '$.source_module') = ?")
-            params.append(source_module)
+            aliases = _SOURCE_MODULE_CATEGORY_ALIASES.get(source_module)
+            if aliases:
+                alias_conditions: list[str] = []
+                for alias in aliases:
+                    comparator = "LIKE" if "%" in alias else "="
+                    alias_conditions.append(f"json_extract(metadata, '$.source_module') {comparator} ?")
+                    alias_conditions.append(f"json_extract(metadata, '$.parent_source_module') {comparator} ?")
+                    alias_conditions.append(f"json_extract(metadata, '$.source') {comparator} ?")
+                    alias_conditions.append(f"originator_id {comparator} ?")
+                    params.extend([alias, alias, alias, alias])
+                conditions.append(f"({' OR '.join(alias_conditions)})")
+            else:
+                conditions.append(
+                    "("
+                    "json_extract(metadata, '$.source_module') = ? OR "
+                    "json_extract(metadata, '$.parent_source_module') = ?"
+                    ")"
+                )
+                params.extend([source_module, source_module])
         if metadata_filters:
             for key, value in metadata_filters.items():
                 conditions.append("json_extract(metadata, ?) = ?")

@@ -42,7 +42,6 @@ def build_internal_task_context(
             "cognitive_tools": _list(q3.get("available_cognitive_tools")),
             "actionable_space": _list(q4.get("actionable_space")),
             "executable_strategies": _list(q4.get("executable_strategies")),
-            "fallback_plans": _list(q7.get("fallback_plans")),
         },
         "internal_data": {
             "task_state": normalized_task_state,
@@ -53,5 +52,7 @@ def build_internal_task_context(
             "allowed_action_space": _list(q5.get("allowed_action_space")),
             "forbidden_action_space": _list(q5.get("forbidden_action_space")),
             "absolute_red_lines": _list(q6.get("absolute_red_lines")),
+            "q7_current_red_line_hits": _list(q7.get("current_red_line_hits")),
+            "q7_non_bypassable_constraints": _list(q7.get("non_bypassable_constraints")),
         },
     }

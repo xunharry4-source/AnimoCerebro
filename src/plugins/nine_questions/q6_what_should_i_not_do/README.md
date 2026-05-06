@@ -1,7 +1,7 @@
 # nine-question-q6-what-should-i-not-do
 
-- Name: Q6 What Should I Not Do
-- Description: Answer the sixth nine-question prompt about forbidden actions and safety boundaries.
+- Name: Q6 What If I Do It
+- Description: Answer the sixth nine-question prompt about the cost, consequence, reversibility, mitigation, and stop conditions of doing an action.
 
 This plugin is an independent unit.
 Required files:
@@ -20,14 +20,19 @@ Required files:
 
 ## Write Locations
 
-- Functional plugin outputs must first be merged into Q6's redline inputs.
+- Functional plugin outputs must first be merged into Q6's consequence and boundary inputs.
 - Preferred input-side merge targets are:
   - `global_constraints`
   - `redline_hints`
-- If the plugin preserves the derived effect in final outputs, the result must be reflected through:
+- If the plugin preserves the derived forbidden-zone effect for downstream compatibility, the result may also be reflected through:
   - `q6_forbidden_zone_profile`
 
 ## Constraints
 
-- Functional plugin outputs are redline evidence and scene-specific safety hints.
-- Do not create a new top-level Q6 result contract for this feature.
+- Functional plugin outputs are consequence evidence and scene-specific safety hints.
+- Q6 LLM output must use the strict top-level `ConsequenceAssessment` and `CostImpactProfile` contract.
+- Q6 must read upstream Q3/Q4/Q5 from the persisted nine-question SQLite per-question tables through the authoritative LLM output projection. It must not read legacy response blobs, MongoDB snapshots, or non-SQLite compatibility data.
+- Q6 must persist successful question output, LLM output, trace data, context updates, module runs, and module outputs through the split SQLite nine-question tables. These tables must keep schema version and timestamps.
+- Q6 must not use fallback, degradation, compatibility, static baseline replacement, or synthesized redline data when Q4 boundary, Q5 authorization boundary, functional redline execution, global constraints, redline hints, LLM invocation, or LLM output validation fails.
+- On exception, Q6 must raise the error and must not save a Q6 question snapshot. Only module outputs that completed successfully before the exception may be saved.
+- A module retry may save only the module data it actually reran. It must not rewrite Q6 as a fallback/degraded answer and must not fabricate a new LLM output.

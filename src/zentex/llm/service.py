@@ -73,7 +73,7 @@ class LLMService:
         model: Optional[str] = None,
         system_prompt: Optional[str] = None,
         temperature: float = 0.2,
-        max_output_tokens: int = 1024,
+        max_output_tokens: Optional[int] = None,
         metadata: Optional[Dict[str, Any]] = None,
     ) -> Any:
         from zentex.llm.gateway import LLMGatewayCall
@@ -259,8 +259,33 @@ class LLMService:
             "total_input_tokens": raw_stats["total_input_tokens"],
             "total_output_tokens": raw_stats["total_output_tokens"],
             "total_tokens": raw_stats["total_tokens"],
-            "providers": providers_list
+            "providers": providers_list,
+            "models": raw_stats.get("models", {}),
+            "provider_models": raw_stats.get("provider_models", {}),
+            "db_path": raw_stats.get("db_path"),
         }
+
+    def list_usage_events(
+        self,
+        *,
+        limit: int = 100,
+        provider_key: Optional[str] = None,
+        model: Optional[str] = None,
+        source_module: Optional[str] = None,
+    ) -> list[dict[str, Any]]:
+        """Return recent durable LLM usage events for audit and grouping workflows."""
+        store = getattr(self._gateway, "_usage_store", None)
+        if store is None:
+            return []
+        return [
+            event.to_dict()
+            for event in store.list_usage_events(
+                limit=limit,
+                provider_key=provider_key,
+                model=model,
+                source_module=source_module,
+            )
+        ]
 
     def _resolve_active_provider(self) -> Optional[object]:
         default_key = str(self._gateway._default_provider_key or "").strip()

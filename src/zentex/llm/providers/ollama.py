@@ -147,7 +147,7 @@ class OllamaTool(BaseProviderTool):
         requested_timeout = invocation.metadata.get("request_timeout_seconds")
         if requested_timeout is not None:
             try:
-                timeout_seconds = max(1.0, min(timeout_seconds, float(requested_timeout)))
+                timeout_seconds = max(1.0, float(requested_timeout))
             except Exception:
                 logger.exception(
                     "OllamaTool: invalid request_timeout_seconds=%r; using default timeout %.1fs",
@@ -242,9 +242,10 @@ class OllamaTool(BaseProviderTool):
             "stream": False,
             "options": {
                 "temperature": invocation.temperature,
-                "num_predict": invocation.max_output_tokens,
             },
         }
+        if invocation.max_output_tokens is not None:
+            payload["options"]["num_predict"] = invocation.max_output_tokens
         # Only enforce JSON mode when the caller explicitly opted in via metadata.
         # Unconditionally setting format="json" causes Ollama to reject responses
         # from models that output natural language (e.g. reasoning steps), and

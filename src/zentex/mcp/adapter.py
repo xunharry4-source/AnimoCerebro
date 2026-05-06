@@ -627,6 +627,8 @@ class McpAdapterPlugin(FunctionalPluginSpec):
                 protocol_version=config.protocol_version,
                 scope=list(config.scope),
                 auth_mode=config.auth_mode,
+                help_doc_url=config.help_doc_url,
+                project_doc_url=config.project_doc_url,
             )
             self._server_states[config.server_id] = state
             self._write_registration_rejection_audit(
@@ -653,6 +655,8 @@ class McpAdapterPlugin(FunctionalPluginSpec):
                 protocol_version=config.protocol_version,
                 scope=list(config.scope),
                 auth_mode=config.auth_mode,
+                help_doc_url=config.help_doc_url,
+                project_doc_url=config.project_doc_url,
             )
             self._server_states[config.server_id] = state
             return state
@@ -677,6 +681,8 @@ class McpAdapterPlugin(FunctionalPluginSpec):
             protocol_version=config.protocol_version,
             scope=list(config.scope),
             auth_mode=config.auth_mode,
+            help_doc_url=config.help_doc_url,
+            project_doc_url=config.project_doc_url,
         )
         self._server_states[config.server_id] = state
         return state

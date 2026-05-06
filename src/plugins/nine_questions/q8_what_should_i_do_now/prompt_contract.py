@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from pathlib import Path
+
 from zentex.common.nine_questions_prompts import (
     NineQuestionPromptUpgradeContract,
     build_section_policy,
@@ -9,7 +11,7 @@ from zentex.common.nine_questions_prompts import (
 def get_prompt_upgrade_contract() -> NineQuestionPromptUpgradeContract:
     return NineQuestionPromptUpgradeContract(
         question_id="q8",
-        prompt_file_path="/Users/harry/Documents/git/AnimoCerebro-V2/src/plugins/nine_questions/q8_what_should_i_do_now/llm_prompt.py",
+        prompt_file_path=str(Path(__file__).resolve().with_name("llm_prompt.py")),
         prompt_builder_name="build_q8_llm_request",
         prompt_builder_symbol="plugins.nine_questions.q8_what_should_i_do_now.llm_prompt.build_q8_llm_request",
         target_component="nine-question.q8.prompt",

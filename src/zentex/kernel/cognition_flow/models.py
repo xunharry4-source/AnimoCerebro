@@ -95,14 +95,14 @@ DEFAULT_NINE_QUESTIONS: list[NineQuestion] = [
     NineQuestion(
         question_id="q2",
         plugin_id=NINE_QUESTION_Q2,
-        text="角色、身份、使命边界识别",
+        text="资产、工具、执行域盘点",
         family=FeatureFamily.cognition,
         priority=2,
     ),
     NineQuestion(
         question_id="q3",
         plugin_id=NINE_QUESTION_Q3,
-        text="资产、工具、执行域盘点",
+        text="角色、身份、使命边界识别",
         family=FeatureFamily.execution,
         priority=3,
     ),

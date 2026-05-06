@@ -5,10 +5,12 @@
 """
 
 import asyncio
+import hashlib
 import logging
 import re
 from abc import ABC, abstractmethod
 from datetime import datetime
+from pathlib import Path
 from typing import Any, Dict
 
 from zentex.tasks.models import ZentexTask
@@ -16,6 +18,8 @@ from zentex.tasks.verification.models import SingleVerifierResult, VerificationS
 from zentex.tasks.verification.llm_prompt import build_llm_evaluation_prompt
 
 logger = logging.getLogger(__name__)
+
+_MISSING = object()
 
 
 class BaseVerifier(ABC):
@@ -350,6 +354,9 @@ class RuleBasedVerifier(BaseVerifier):
     - pattern_match: 正则表达式匹配
     - value_range: 数值范围检查
     - enum_value: 枚举值检查
+    - file_exists: 真实物理证据文件存在检查
+    - non_empty_file: 真实物理证据文件非空检查
+    - file_contains: 真实物理证据文件内容包含检查
     
     配置示例：
     {
@@ -444,6 +451,12 @@ class RuleBasedVerifier(BaseVerifier):
                 return self._check_value_range(rule, result)
             elif rule_type == "enum_value":
                 return self._check_enum_value(rule, result)
+            elif rule_type == "file_exists":
+                return self._check_file_exists(rule, result, require_non_empty=False)
+            elif rule_type == "non_empty_file":
+                return self._check_file_exists(rule, result, require_non_empty=True)
+            elif rule_type == "file_contains":
+                return self._check_file_contains(rule, result)
             else:
                 return {
                     "rule": rule,
@@ -458,7 +471,8 @@ class RuleBasedVerifier(BaseVerifier):
     ) -> Dict[str, Any]:
         """检查必填字段"""
         field = rule.get("field")
-        passed = field in result and result[field] is not None
+        value = self._get_field_value(result, field)
+        passed = value is not _MISSING and value is not None
         return {
             "rule": rule,
             "passed": passed,
@@ -471,7 +485,7 @@ class RuleBasedVerifier(BaseVerifier):
         """检查最小长度"""
         field = rule.get("field")
         min_len = rule.get("min_length", 0)
-        value = result.get(field, "")
+        value = self._get_field_value(result, field, default="")
         passed = len(str(value)) >= min_len
         return {
             "rule": rule,
@@ -485,7 +499,7 @@ class RuleBasedVerifier(BaseVerifier):
         """检查最大长度"""
         field = rule.get("field")
         max_len = rule.get("max_length", 0)
-        value = result.get(field, "")
+        value = self._get_field_value(result, field, default="")
         passed = len(str(value)) <= max_len
         return {
             "rule": rule,
@@ -499,7 +513,7 @@ class RuleBasedVerifier(BaseVerifier):
         """检查正则匹配"""
         field = rule.get("field")
         pattern = rule.get("pattern")
-        value = str(result.get(field, ""))
+        value = str(self._get_field_value(result, field, default=""))
         passed = bool(re.match(pattern, value))
         return {
             "rule": rule,
@@ -514,7 +528,7 @@ class RuleBasedVerifier(BaseVerifier):
         field = rule.get("field")
         min_val = rule.get("min", float("-inf"))
         max_val = rule.get("max", float("inf"))
-        value = result.get(field, 0)
+        value = self._get_field_value(result, field, default=0)
 
         try:
             value = float(value)
@@ -537,13 +551,146 @@ class RuleBasedVerifier(BaseVerifier):
         """检查枚举值"""
         field = rule.get("field")
         allowed_values = rule.get("allowed_values", [])
-        value = result.get(field)
+        value = self._get_field_value(result, field)
         passed = value in allowed_values
         return {
             "rule": rule,
             "passed": passed,
             "message": f"字段 '{field}' 值 '{value}' {'是' if passed else '不是'} 允许值之一 {allowed_values}",
         }
+
+    def _check_file_exists(
+        self,
+        rule: Dict[str, Any],
+        result: Dict[str, Any],
+        *,
+        require_non_empty: bool,
+    ) -> Dict[str, Any]:
+        path_result = self._resolve_file_path(rule, result)
+        if not path_result["passed"]:
+            return path_result
+        file_path = Path(path_result["path"])
+        if not file_path.exists():
+            return {
+                "rule": rule,
+                "passed": False,
+                "path": str(file_path),
+                "error_code": "EVIDENCE_FILE_MISSING",
+                "message": f"物理证据文件不存在: {file_path}",
+            }
+        if not file_path.is_file():
+            return {
+                "rule": rule,
+                "passed": False,
+                "path": str(file_path),
+                "error_code": "EVIDENCE_NOT_FILE",
+                "message": f"物理证据路径不是文件: {file_path}",
+            }
+        size = file_path.stat().st_size
+        if require_non_empty and size <= 0:
+            return {
+                "rule": rule,
+                "passed": False,
+                "path": str(file_path),
+                "size_bytes": size,
+                "error_code": "EVIDENCE_FILE_EMPTY",
+                "message": f"物理证据文件为空: {file_path}",
+            }
+        return {
+            "rule": rule,
+            "passed": True,
+            "path": str(file_path),
+            "size_bytes": size,
+            "sha256": self._file_sha256(file_path),
+            "message": f"物理证据文件{'存在且非空' if require_non_empty else '存在'}: {file_path}",
+        }
+
+    def _check_file_contains(
+        self, rule: Dict[str, Any], result: Dict[str, Any]
+    ) -> Dict[str, Any]:
+        exists_result = self._check_file_exists(rule, result, require_non_empty=True)
+        if not exists_result["passed"]:
+            return exists_result
+        expected = (
+            rule.get("contains")
+            or rule.get("expected_text")
+            or rule.get("expected_substring")
+        )
+        if expected is None or str(expected) == "":
+            return {
+                "rule": rule,
+                "passed": False,
+                "path": exists_result.get("path"),
+                "error_code": "EVIDENCE_EXPECTED_TEXT_MISSING",
+                "message": "file_contains 规则缺少 contains/expected_text/expected_substring",
+            }
+        file_path = Path(str(exists_result["path"]))
+        encoding = str(rule.get("encoding") or "utf-8")
+        content = file_path.read_text(encoding=encoding)
+        passed = str(expected) in content
+        return {
+            "rule": rule,
+            "passed": passed,
+            "path": str(file_path),
+            "size_bytes": exists_result.get("size_bytes"),
+            "sha256": exists_result.get("sha256"),
+            "expected_text": str(expected),
+            "actual_preview": content[:500],
+            "error_code": "" if passed else "EVIDENCE_TEXT_MISMATCH",
+            "message": f"物理证据文件内容{'包含' if passed else '不包含'}期望文本",
+        }
+
+    def _resolve_file_path(
+        self, rule: Dict[str, Any], result: Dict[str, Any]
+    ) -> Dict[str, Any]:
+        explicit_path = rule.get("path") or rule.get("file_path")
+        path_field = rule.get("path_field") or rule.get("field")
+        raw_path = explicit_path
+        if not raw_path and path_field:
+            raw_path = self._get_field_value(result, path_field)
+        if raw_path is _MISSING or raw_path in (None, ""):
+            return {
+                "rule": rule,
+                "passed": False,
+                "field": path_field,
+                "error_code": "EVIDENCE_PATH_MISSING",
+                "message": "物理证据路径缺失",
+            }
+        return {"rule": rule, "passed": True, "path": str(Path(str(raw_path)).expanduser())}
+
+    def _get_field_value(
+        self,
+        result: Dict[str, Any],
+        field: Any,
+        *,
+        default: Any = _MISSING,
+    ) -> Any:
+        if not field:
+            return default
+        field_name = str(field)
+        if isinstance(result, dict) and field_name in result:
+            return result[field_name]
+        value: Any = result
+        normalized = field_name
+        if normalized.startswith("$."):
+            normalized = normalized[2:]
+        elif normalized.startswith("$"):
+            normalized = normalized[1:].lstrip(".")
+        if not normalized:
+            return value
+        for token in normalized.split("."):
+            if isinstance(value, dict) and token in value:
+                value = value[token]
+            else:
+                return default
+        return value
+
+    def _file_sha256(self, file_path: Path) -> str:
+        hasher = hashlib.sha256()
+        with file_path.open("rb") as handle:
+            for chunk in iter(lambda: handle.read(1024 * 1024), b""):
+                hasher.update(chunk)
+        return hasher.hexdigest()
 
 
 class LogAuditVerifier(BaseVerifier):

@@ -16,6 +16,7 @@ from uuid import uuid4
 
 from pydantic import BaseModel, ConfigDict, Field
 
+from zentex.module_logs import record_module_log
 from zentex.common.flow_audit import FlowAudit
 from zentex.common.database import DatabaseConnection, LRUCache
 from zentex.reflection.errors import ReflectionGenerationError
@@ -59,6 +60,7 @@ class ReflectionService:
         use_llm: bool = True,
         max_cache_size: int = 1000,
         db_path: Optional[Union[str, Path]] = None,
+        module_log_service: Any = None,
     ) -> None:
         """初始化服务"""
         self.persistence = None
@@ -96,6 +98,7 @@ class ReflectionService:
         self._maintenance_stop = threading.Event()
         self._maintenance_interval_seconds = 3600
         self._last_maintenance_at: Optional[datetime] = None
+        self._module_log_service = module_log_service
         
         logger.info(f"ReflectionService initialized (max_cache={max_cache_size})")
 
@@ -106,6 +109,9 @@ class ReflectionService:
         close = getattr(db, "close", None)
         if callable(close):
             close()
+
+    def attach_module_log_service(self, module_log_service: Any) -> None:
+        self._module_log_service = module_log_service
 
     def _build_reflection_dao(
         self,
@@ -155,7 +161,8 @@ class ReflectionService:
             raise ReflectionGenerationError(f"Generation phase failed: {e}") from e
             
         # Phase 2: Persistence (Mandatory for Integrity)
-        self._dao.save_reflection(reflection)
+        if not self._dao.save_reflection(reflection):
+            raise RuntimeError(f"Failed to persist reflection: {reflection.reflection_id}")
         
         # Bounded Cache Logic
         if len(self._reflection_cache) >= self._max_cache_size:
@@ -239,7 +246,8 @@ class ReflectionService:
                 "question_id": effective_context.get("question_id"),
             },
         )
-        self._dao.save_reflection(record)
+        if not self._dao.save_reflection(record):
+            raise RuntimeError(f"Failed to persist reflection: {record.reflection_id}")
         self._reflection_cache[record.reflection_id] = record
         return record
     
@@ -285,6 +293,20 @@ class ReflectionService:
         """列出反思记录"""
         return self._dao.query_reflections(filters or {})
 
+    def count_reflections(self, filters: Optional[Dict[str, Any]] = None) -> int:
+        """Count persisted reflection records with strict database filtering."""
+        return self._dao.count_reflections(filters or {})
+
+    def query_reflections_page(
+        self,
+        filters: Optional[Dict[str, Any]] = None,
+        *,
+        limit: int = 50,
+        offset: int = 0,
+    ) -> List[ReflectionRecord]:
+        """Query persisted reflection records using SQL LIMIT/OFFSET."""
+        return self._dao.query_reflections_page(filters or {}, limit=limit, offset=offset)
+
     def list_overall_records(
         self,
         *,
@@ -307,7 +329,8 @@ class ReflectionService:
             if hasattr(reflection, key):
                 setattr(reflection, key, value)
         
-        self._dao.save_reflection(reflection)
+        if not self._dao.save_reflection(reflection):
+            raise RuntimeError(f"Failed to persist reflection update: {reflection.reflection_id}")
         
         self._reflection_cache[reflection_id] = reflection
         return reflection
@@ -337,7 +360,8 @@ class ReflectionService:
         reflection.governance_status = GovernanceStatus.VERIFIED
         reflection.verified_by = verified_by
         
-        self._dao.save_reflection(reflection)
+        if not self._dao.save_reflection(reflection):
+            raise RuntimeError(f"Failed to persist reflection verification: {reflection.reflection_id}")
         
         return reflection
     
@@ -347,7 +371,8 @@ class ReflectionService:
         reflection.governance_status = GovernanceStatus.SUSPECT
         reflection.suspect_reason = reason
         
-        self._dao.save_reflection(reflection)
+        if not self._dao.save_reflection(reflection):
+            raise RuntimeError(f"Failed to persist suspect reflection: {reflection.reflection_id}")
         
         return reflection
     
@@ -356,7 +381,8 @@ class ReflectionService:
         reflection = self.get_reflection(reflection_id)
         reflection.governance_status = GovernanceStatus.ARCHIVED
         
-        self._dao.save_reflection(reflection)
+        if not self._dao.save_reflection(reflection):
+            raise RuntimeError(f"Failed to persist archived reflection: {reflection.reflection_id}")
         
         return reflection
     
@@ -378,6 +404,7 @@ class ReflectionService:
         trigger: ReflectionTrigger = ReflectionTrigger.MANUAL,
         memory_limit: int = 50,
         reflection_limit: int = 500,
+        force: bool = False,
     ) -> ReflectionMaintenanceResult:
         from zentex.memory.service import get_service as get_memory_service
 
@@ -385,7 +412,7 @@ class ReflectionService:
             memory_service = get_memory_service()
             if callable(getattr(memory_service, "trigger_automatic_consolidation_check", None)):
                 try:
-                    memory_service.trigger_automatic_consolidation_check()
+                    memory_service.trigger_automatic_consolidation_check(force=force, operator=operator)
                 except Exception:
                     logger.warning("Memory consolidation pre-check failed for reflection maintenance", exc_info=True)
 
@@ -435,6 +462,7 @@ class ReflectionService:
                 context={
                     "operator": operator,
                     "maintenance_kind": "memory_aware_cleanup",
+                    "force": force,
                     "used_memory_count": len(memory_records),
                     "top_tags": memory_snapshot["top_tags"],
                     "layer_distribution": memory_snapshot["layer_distribution"],
@@ -463,10 +491,12 @@ class ReflectionService:
                 metadata={
                     "source": "memory_aware_maintenance",
                     "operator": operator,
+                    "force": force,
                     "cleanup_deleted_count": deleted_reflection_count,
                 },
             )
-            self._dao.save_reflection(reflection)
+            if not self._dao.save_reflection(reflection):
+                raise RuntimeError(f"Failed to persist maintenance reflection: {reflection.reflection_id}")
             self._reflection_cache[reflection.reflection_id] = reflection
             self._last_maintenance_at = now
 
@@ -491,11 +521,29 @@ class ReflectionService:
         if self._last_maintenance_at is not None:
             elapsed = (now - self._last_maintenance_at).total_seconds()
             if elapsed < effective_interval:
+                self._record_scheduled_maintenance_log(
+                    status="skipped",
+                    action_label="定时维护已跳过",
+                    reason=f"距离上次维护仅 {int(elapsed)} 秒，未达到 {effective_interval} 秒间隔。",
+                    details={
+                        "elapsed_seconds": elapsed,
+                        "interval_seconds": effective_interval,
+                        "last_maintenance_at": self._last_maintenance_at.isoformat(),
+                    },
+                )
                 return None
-        return self.trigger_memory_aware_maintenance(
+        result = self.trigger_memory_aware_maintenance(
             operator=operator,
             trigger=ReflectionTrigger.SCHEDULED,
         )
+        self._record_scheduled_maintenance_log(
+            status="completed",
+            action_label="定时维护已执行",
+            reason="反思模块定时维护已完成，已生成记忆感知反思并清理低价值反思记录。",
+            details=result.model_dump(mode="json"),
+            result=result,
+        )
+        return result
 
     def start_background_maintenance(
         self,
@@ -529,6 +577,31 @@ class ReflectionService:
 
     def stop_background_maintenance(self) -> None:
         self._maintenance_stop.set()
+
+    def _record_scheduled_maintenance_log(
+        self,
+        *,
+        status: str,
+        action_label: str,
+        reason: str,
+        details: dict[str, Any],
+        result: ReflectionMaintenanceResult | None = None,
+    ) -> None:
+        record_module_log(
+            self._module_log_service,
+            source_module="reflection",
+            module_label="反思模块",
+            action="scheduled_maintenance",
+            action_label=action_label,
+            object_id=(result.trace_id if result is not None else "reflection-maintenance-scheduler"),
+            object_label="记忆感知反思维护",
+            before_status="running",
+            after_status=status,
+            reason=reason,
+            details=details,
+            operator_id="reflection-service-scheduler",
+            status=status,
+        )
 
     def _cleanup_low_value_reflections(self, *, limit: int) -> int:
         """Delete low-value reflection records across ALL sources.

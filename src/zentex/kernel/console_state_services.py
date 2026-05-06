@@ -4,6 +4,7 @@ from dataclasses import dataclass
 from typing import Any
 
 from zentex.common.storage_paths import get_storage_paths
+from zentex.kernel.system_identity_store import SystemIdentityStore
 from zentex.kernel.workspace_store import WorkspaceStore
 from zentex.web_console.cache_manager import WebConsoleCacheManager
 from zentex.web_console.internal.event_bus_impl import InProcessEventBus
@@ -20,6 +21,7 @@ class ConsoleStateServices:
     event_bus: Any
     cache_manager: Any
     workspace_store: Any
+    system_identity_store: Any
 
 
 def build_console_state_services(*, cache_ttl_seconds: int) -> ConsoleStateServices:
@@ -42,4 +44,5 @@ def build_console_state_services(*, cache_ttl_seconds: int) -> ConsoleStateServi
         event_bus=event_bus,
         cache_manager=cache_manager,
         workspace_store=WorkspaceStore(storage_paths.workspace_db),
+        system_identity_store=SystemIdentityStore(storage_paths.core_db),
     )

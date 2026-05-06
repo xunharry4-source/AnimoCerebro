@@ -39,7 +39,6 @@ export default function WorkspacesPage() {
     updateWorkspace,
     deleteWorkspace,
     setDefaultWorkspace,
-    selectWorkspace,
   } = useWorkspaces();
 
   const [isDialogOpen, setIsDialogOpen] = useState(false);
@@ -49,8 +48,6 @@ export default function WorkspacesPage() {
     path: "",
     description: "",
     is_default: false,
-    role: "",
-    role_description: "",
     forbidden_actions: "",
     task_goals: "",
   });
@@ -58,6 +55,11 @@ export default function WorkspacesPage() {
   const [newTaskGoal, setNewTaskGoal] = useState("");
   const [submitError, setSubmitError] = useState<string | null>(null);
   const [submitting, setSubmitting] = useState(false);
+
+  const normalizeOptional = (value: string | undefined): string | undefined => {
+    const trimmed = value?.trim();
+    return trimmed ? trimmed : undefined;
+  };
 
   useEffect(() => {
     fetchWorkspaces();
@@ -71,8 +73,6 @@ export default function WorkspacesPage() {
         path: workspace.path,
         description: workspace.description || "",
         is_default: workspace.is_default || false,
-        role: workspace.role || "",
-        role_description: workspace.role_description || "",
         forbidden_actions: workspace.forbidden_actions || "",
         task_goals: workspace.task_goals || "",
       });
@@ -90,8 +90,6 @@ export default function WorkspacesPage() {
         path: "",
         description: "",
         is_default: false,
-        role: "",
-        role_description: "",
         forbidden_actions: "",
         task_goals: "",
       });
@@ -113,6 +111,8 @@ export default function WorkspacesPage() {
     try {
       const submitData = {
         ...formData,
+        forbidden_actions: normalizeOptional(formData.forbidden_actions),
+        description: normalizeOptional(formData.description),
         task_goals: taskGoals.length > 0 ? JSON.stringify(taskGoals) : undefined,
       };
       if (editingWorkspace?.id) {
@@ -168,6 +168,9 @@ export default function WorkspacesPage() {
             <Typography variant="body2" color="textSecondary">
               {t("workspaces.subtitle")}
             </Typography>
+            <Typography variant="caption" color="textSecondary" display="block">
+              {t("workspaces.permissionHelp")}
+            </Typography>
           </Box>
           <Button
             variant="contained"
@@ -198,7 +201,6 @@ export default function WorkspacesPage() {
                   <TableCell>{t("workspaces.name")}</TableCell>
                   <TableCell>{t("workspaces.path")}</TableCell>
                   <TableCell>{t("workspaces.description")}</TableCell>
-                  <TableCell>{t("workspaces.role")}</TableCell>
                   <TableCell align="center">{t("workspaces.makesDefault")}</TableCell>
                   <TableCell align="right">{t("common.actions")}</TableCell>
                 </TableRow>
@@ -225,13 +227,6 @@ export default function WorkspacesPage() {
                     </TableCell>
                     <TableCell sx={{ maxWidth: 200, overflow: "hidden", textOverflow: "ellipsis" }}>
                       {workspace.description || "-"}
-                    </TableCell>
-                    <TableCell sx={{ maxWidth: 200, overflow: "hidden", textOverflow: "ellipsis" }}>
-                      {workspace.role ? (
-                        <Chip label={workspace.role} size="small" color="primary" />
-                      ) : (
-                        <Typography variant="body2" color="textSecondary">-</Typography>
-                      )}
                     </TableCell>
                     <TableCell align="center">
                       <IconButton
@@ -288,7 +283,8 @@ export default function WorkspacesPage() {
               onChange={(e) => setFormData({ ...formData, path: e.target.value })}
               fullWidth
               disabled={submitting}
-              placeholder="/home/user/projects/project-name"
+              placeholder="<workspace-path>"
+              helperText={t("workspaces.pathHelp")}
             />
             <TextField
               label={t("workspaces.description")}
@@ -298,24 +294,6 @@ export default function WorkspacesPage() {
               multiline
               rows={3}
               disabled={submitting}
-            />
-            <TextField
-              label={t("workspaces.role")}
-              value={formData.role}
-              onChange={(e) => setFormData({ ...formData, role: e.target.value })}
-              fullWidth
-              disabled={submitting}
-              placeholder="e.g., Backend Developer, DevOps Engineer"
-            />
-            <TextField
-              label={t("workspaces.roleDescription")}
-              value={formData.role_description}
-              onChange={(e) => setFormData({ ...formData, role_description: e.target.value })}
-              fullWidth
-              multiline
-              rows={4}
-              disabled={submitting}
-              placeholder="Describe the responsibilities, expertise, and goals for this role in this workspace..."
             />
             <TextField
               label={t("workspaces.forbiddenActions")}

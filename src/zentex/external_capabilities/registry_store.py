@@ -31,6 +31,13 @@ _SENSITIVE_KEY_TOKENS = (
     "secret",
     "token",
 )
+_SAFE_REFERENCE_KEYS = {
+    "credential_id",
+    "credential_ref",
+    "credential_type",
+    "owner_id",
+    "owner_type",
+}
 
 
 def _utc_now() -> str:
@@ -41,7 +48,10 @@ def _redact(value: Any) -> Any:
     if isinstance(value, dict):
         redacted: dict[str, Any] = {}
         for key, item in value.items():
-            if any(token in str(key).lower() for token in _SENSITIVE_KEY_TOKENS):
+            normalized_key = str(key).lower()
+            if normalized_key not in _SAFE_REFERENCE_KEYS and any(
+                token in normalized_key for token in _SENSITIVE_KEY_TOKENS
+            ):
                 redacted[str(key)] = "[REDACTED]"
             else:
                 redacted[str(key)] = _redact(item)

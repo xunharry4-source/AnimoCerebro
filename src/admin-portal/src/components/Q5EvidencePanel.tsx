@@ -65,6 +65,10 @@ export const Q5EvidencePanel: React.FC<Q5EvidencePanelProps> = ({
   const contactPolicy = evidence.contact_policy ?? [];
   const tenantBoundaries = evidence.tenant_boundaries ?? [];
   const trustEntries = Object.entries(evidence.agent_trust_status || {});
+  const allowedActions = inference?.allowed_actions ?? [];
+  const canonicalForbiddenActions = inference?.forbidden_actions ?? [];
+  const contactPolicies = inference?.contact_policies ?? [];
+  const questionDriverRefs = inference?.question_driver_refs ?? [];
   const forbiddenActions = inference?.explicitly_forbidden_actions ?? [];
   const complianceRisks = inference?.compliance_risks ?? [];
   const allowedTargets = inference?.allowed_delegation_targets ?? [];
@@ -88,6 +92,72 @@ export const Q5EvidencePanel: React.FC<Q5EvidencePanelProps> = ({
       )}
 
       <Grid container spacing={3}>
+        <Grid size={{ xs: 12 }}>
+          <Card variant="outlined">
+            <CardContent>
+              <Typography variant="h6" gutterBottom sx={{ fontWeight: "bold" }}>
+                AuthorizationBoundary
+              </Typography>
+              {inference ? (
+                <Stack spacing={2}>
+                  <Alert severity="info" data-testid="q5-authorization-boundary">
+                    <Typography variant="subtitle2" sx={{ fontWeight: "bold" }}>当前授权范围</Typography>
+                    <Typography variant="body2">{inference.current_authorization_scope || "N/A"}</Typography>
+                    <Typography variant="subtitle2" sx={{ mt: 1, fontWeight: "bold" }}>组织/租户边界</Typography>
+                    <Typography variant="body2">{inference.organizational_boundaries || "N/A"}</Typography>
+                  </Alert>
+                  <Box>
+                    <Typography variant="subtitle2" gutterBottom>正式允许动作</Typography>
+                    <Stack direction="row" spacing={1} useFlexGap flexWrap="wrap">
+                      {allowedActions.map((item) => (
+                        <Chip key={item} label={item} color="success" variant="outlined" />
+                      ))}
+                      {allowedActions.length === 0 ? (
+                        <Typography variant="caption" color="text.secondary">当前没有明确授权动作。</Typography>
+                      ) : null}
+                    </Stack>
+                  </Box>
+                  <Alert severity="error" data-testid="q5-canonical-forbidden-actions">
+                    <Typography variant="subtitle2" sx={{ fontWeight: "bold" }}>授权禁止动作</Typography>
+                    <List dense sx={{ py: 0.5 }}>
+                      {canonicalForbiddenActions.map((item) => (
+                        <ListItem key={item} disableGutters sx={{ py: 0.25 }}>
+                          <ListItemText primary={item} />
+                        </ListItem>
+                      ))}
+                      {canonicalForbiddenActions.length === 0 ? (
+                        <ListItem disableGutters sx={{ py: 0.25 }}>
+                          <ListItemText primary="当前没有额外禁止动作。" />
+                        </ListItem>
+                      ) : null}
+                    </List>
+                  </Alert>
+                  {contactPolicies.length > 0 ? (
+                    <Box>
+                      <Typography variant="subtitle2" gutterBottom>跨脑/外部协作策略</Typography>
+                      <List dense sx={{ py: 0 }}>
+                        {contactPolicies.map((item) => (
+                          <ListItem key={item} disableGutters sx={{ py: 0.25 }}>
+                            <ListItemText primary={item} />
+                          </ListItem>
+                        ))}
+                      </List>
+                    </Box>
+                  ) : null}
+                  {questionDriverRefs.length > 0 ? (
+                    <Stack direction="row" spacing={1} useFlexGap flexWrap="wrap">
+                      {questionDriverRefs.map((item) => (
+                        <Chip key={item} label={item} size="small" variant="outlined" />
+                      ))}
+                    </Stack>
+                  ) : null}
+                </Stack>
+              ) : (
+                <Alert severity="info">{t("nineQuestions.waitingComplianceInference")}</Alert>
+              )}
+            </CardContent>
+          </Card>
+        </Grid>
         <Grid size={{ xs: 12 }}>
           <Card variant="outlined">
             <CardContent>

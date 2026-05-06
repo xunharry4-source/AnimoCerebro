@@ -7,8 +7,10 @@ import os
 import secrets
 import subprocess
 import threading
+import tomllib
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
+from pathlib import Path
 from typing import Any
 
 import httpx
@@ -21,6 +23,15 @@ from zentex.foundation.contracts.service_response import ServiceErrorCode
 
 
 UTC = timezone.utc
+_PROJECT_ROOT = Path(__file__).resolve().parents[3]
+_SECURITY_CONFIG_PATHS = (
+    Path("config/security.local.toml"),
+    Path("config/security.toml"),
+    _PROJECT_ROOT / "config/security.local.toml",
+    _PROJECT_ROOT / "config/security.toml",
+)
+_DOTENV_PATH = Path(".env")
+_PROJECT_DOTENV_PATH = _PROJECT_ROOT / ".env"
 _SENSITIVE_KEY_TOKENS = {
     "authorization",
     "cookie",
@@ -35,6 +46,51 @@ _SENSITIVE_KEY_TOKENS = {
     "secret",
     "token",
 }
+
+
+def _load_dotenv_values(path: Path = _DOTENV_PATH) -> dict[str, str]:
+    if not path.exists():
+        return {}
+    values: dict[str, str] = {}
+    for raw_line in path.read_text(encoding="utf-8").splitlines():
+        line = raw_line.strip()
+        if not line or line.startswith("#") or "=" not in line:
+            continue
+        key, value = line.split("=", 1)
+        key = key.strip()
+        value = value.strip()
+        if value and len(value) >= 2 and value[0] == value[-1] and value[0] in {"'", '"'}:
+            value = value[1:-1]
+        if key:
+            values[key] = value
+    return values
+
+
+def _read_credential_vault_master_key_from_config() -> str | None:
+    seen_paths: set[Path] = set()
+    for path in _SECURITY_CONFIG_PATHS:
+        resolved_path = path.resolve()
+        if resolved_path in seen_paths:
+            continue
+        seen_paths.add(resolved_path)
+        if not path.exists():
+            continue
+        with path.open("rb") as handle:
+            payload = tomllib.load(handle)
+        section = payload.get("credential_vault")
+        if not isinstance(section, dict):
+            continue
+        value = str(section.get("master_key") or "").strip()
+        if value and value.lower() not in {"changeme", "placeholder", "your-master-key"}:
+            return value
+    dotenv_values = {
+        **_load_dotenv_values(_PROJECT_DOTENV_PATH),
+        **_load_dotenv_values(_DOTENV_PATH),
+    }
+    dotenv_value = dotenv_values.get("CREDENTIAL_VAULT_MASTER_KEY", "").strip()
+    if dotenv_value and dotenv_value.lower() not in {"changeme", "placeholder", "your-master-key"}:
+        return dotenv_value
+    return None
 
 
 class AgentAuthError(Exception):
@@ -112,13 +168,13 @@ class _AuthTarget:
 
 
 class AgentCredentialVault:
-    """SQLite-backed encrypted credential vault for external Agent auth."""
+    """SQLite-backed encrypted credential vault for external capability auth."""
 
     FORMAT = "zentex_agent_credential_v1"
 
     def __init__(self, db: DatabaseConnection, *, master_key: str | None = None) -> None:
         self.db = db
-        self._master_key = master_key or os.environ.get("ZENTEX_AGENT_AUTH_MASTER_KEY")
+        self._master_key = master_key or _read_credential_vault_master_key_from_config()
         self._lock = threading.Lock()
         self.ensure_schema()
 
@@ -344,7 +400,8 @@ class AgentCredentialVault:
     def _require_key(self) -> None:
         if not self._master_key:
             raise AgentAuthError(
-                "Agent credential vault is not configured: missing ZENTEX_AGENT_AUTH_MASTER_KEY",
+                "Credential vault is not configured: set [credential_vault].master_key "
+                "in config/security.local.toml or CREDENTIAL_VAULT_MASTER_KEY in .env",
                 code=ServiceErrorCode.DEPENDENCY_UNAVAILABLE,
             )
 

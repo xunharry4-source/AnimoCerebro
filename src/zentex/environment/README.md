@@ -258,9 +258,9 @@ Compares values from two sources and detects conflicts.
 
 比较两个来源的值并检测冲突。
 
-See the [service.py](file:///Users/shadow/Documents/git/AnimoCerebro/src/zentex/environment/service.py) file for complete API documentation.
+See the [service.py](src/zentex/environment/service.py) file for complete API documentation.
 
-完整 API 文档请参阅 [service.py](file:///Users/shadow/Documents/git/AnimoCerebro/src/zentex/environment/service.py) 文件。
+完整 API 文档请参阅 [service.py](src/zentex/environment/service.py) 文件。
 
 ## Design Principles / 设计原则
 
@@ -487,9 +487,9 @@ def test_signal_sanitization():
 
 ## Related Documentation / 相关文档
 
-- [Product Specification - G8 Environment Awareness](file:///Users/shadow/Documents/git/AnimoCerebro/Zentex_产品功能文档/03_运行时主链.md)
-- [Implementation Plan](file:///Users/shadow/Documents/git/AnimoCerebro/Zentex_产品功能文档/10_实施计划.md)
-- [Plugin Development Guide](file:///Users/shadow/Documents/git/AnimoCerebro/src/plugins/sensory/DEVELOPMENT_GUIDE.md)
+- [Product Specification - G8 Environment Awareness](Zentex_产品功能文档/03_运行时主链.md)
+- [Implementation Plan](Zentex_产品功能文档/10_实施计划.md)
+- [Plugin Development Guide](src/plugins/sensory/DEVELOPMENT_GUIDE.md)
 
 ## License / 许可证
 

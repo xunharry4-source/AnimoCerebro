@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import inspect
 import logging
 import threading
 from typing import Any, Dict, List, Optional, Union
@@ -9,8 +10,8 @@ from zentex.supervision.integration import (
     SupervisedTaskManager,
     create_supervised_task_manager,
 )
-from zentex.tasks.models import TaskPriority, TaskStatus, TaskType
-from zentex.tasks.service import TaskManagementService, get_service as get_task_service
+from zentex.tasks.models import TaskPriority, TaskScope, TaskStatus, TaskType
+from zentex.tasks import TaskManagementService, get_service as get_task_service
 
 
 logger = logging.getLogger(__name__)
@@ -41,21 +42,33 @@ class WorkflowTaskBridge:
         session_id: Optional[str] = None,
         template_id: Optional[str] = None,
     ) -> str:
+        idempotency_key = f"reflection:{task_id}"
         task = self._ensure_task(
-            idempotency_key=f"reflection:{task_id}",
-            title=f"Reflection: {subject}",
+            idempotency_key=idempotency_key,
+            title=f"Reflection audit: {subject}",
             task_type=TaskType.COGNITIVE_STEP,
+            task_scope=TaskScope.INTERNAL,
+            status=TaskStatus.WAITING_CONFIRMATION,
             originator_id="reflection.async_service",
+            target_id="audit:reflection",
             priority=self._map_priority(priority),
             remarks=f"Reflection task {task_id} ({reflection_type})",
             tags=["reflection", reflection_type],
             metadata={
+                **self._generated_task_metadata(
+                    source_module="reflection",
+                    source_task_id=task_id,
+                    idempotency_key=idempotency_key,
+                ),
                 "source_module": "reflection",
                 "source_task_id": task_id,
                 "reflection_type": reflection_type,
                 "trace_id": trace_id,
                 "session_id": session_id,
                 "template_id": template_id,
+                "executor_type": "audit",
+                "target_id": "audit:reflection",
+                "worker_dispatch_enabled": False,
             },
         )
         return task.task_id
@@ -69,18 +82,29 @@ class WorkflowTaskBridge:
         reflection_type: Optional[str] = None,
         remarks: Optional[str] = None,
     ) -> str:
+        idempotency_key = f"reflection:{task_id}"
         task = self._ensure_task(
-            idempotency_key=f"reflection:{task_id}",
-            title=f"Reflection: {subject or task_id}",
+            idempotency_key=idempotency_key,
+            title=f"Reflection audit: {subject or task_id}",
             task_type=TaskType.COGNITIVE_STEP,
+            task_scope=TaskScope.INTERNAL,
             originator_id="reflection.async_service",
+            target_id="audit:reflection",
             priority=TaskPriority.MEDIUM,
             remarks=remarks or f"Reflection task {task_id}",
             tags=["reflection", str(reflection_type or "unknown")],
             metadata={
+                **self._generated_task_metadata(
+                    source_module="reflection",
+                    source_task_id=task_id,
+                    idempotency_key=idempotency_key,
+                ),
                 "source_module": "reflection",
                 "source_task_id": task_id,
                 "reflection_type": reflection_type,
+                "executor_type": "audit",
+                "target_id": "audit:reflection",
+                "worker_dispatch_enabled": False,
             },
         )
         self._transition_task(
@@ -95,6 +119,95 @@ class WorkflowTaskBridge:
                 "workflow_kind": "reflection",
             },
             remarks=remarks or f"Reflection status -> {status}",
+        )
+        return task.task_id
+
+    def sync_learning_submission(
+        self,
+        *,
+        task_id: str,
+        direction: str,
+        priority: Any = TaskPriority.MEDIUM,
+        trace_id: Optional[str] = None,
+        session_id: Optional[str] = None,
+        doc_url: Optional[str] = None,
+    ) -> str:
+        idempotency_key = f"learning:{task_id}"
+        task = self._ensure_task(
+            idempotency_key=idempotency_key,
+            title=f"Learning audit: {direction} ({str(task_id)[:12]})",
+            task_type=TaskType.COGNITIVE_STEP,
+            task_scope=TaskScope.INTERNAL,
+            status=TaskStatus.WAITING_CONFIRMATION,
+            originator_id="learning.service",
+            target_id="audit:learning",
+            priority=self._map_priority(priority),
+            remarks=f"Learning task {task_id} ({direction})",
+            tags=["learning", str(direction or "unknown")],
+            metadata={
+                **self._generated_task_metadata(
+                    source_module="learning",
+                    source_task_id=task_id,
+                    idempotency_key=idempotency_key,
+                ),
+                "source_module": "learning",
+                "source_task_id": task_id,
+                "learning_direction": direction,
+                "trace_id": trace_id,
+                "session_id": session_id,
+                "doc_url": doc_url,
+                "executor_type": "audit",
+                "target_id": "audit:learning",
+                "worker_dispatch_enabled": False,
+            },
+        )
+        return task.task_id
+
+    def sync_learning_status(
+        self,
+        task_id: str,
+        status: str,
+        *,
+        direction: Optional[str] = None,
+        remarks: Optional[str] = None,
+    ) -> str:
+        idempotency_key = f"learning:{task_id}"
+        task = self._ensure_task(
+            idempotency_key=idempotency_key,
+            title=f"Learning audit: {direction or task_id} ({str(task_id)[:12]})",
+            task_type=TaskType.COGNITIVE_STEP,
+            task_scope=TaskScope.INTERNAL,
+            originator_id="learning.service",
+            target_id="audit:learning",
+            priority=TaskPriority.MEDIUM,
+            remarks=remarks or f"Learning task {task_id}",
+            tags=["learning", str(direction or "unknown")],
+            metadata={
+                **self._generated_task_metadata(
+                    source_module="learning",
+                    source_task_id=task_id,
+                    idempotency_key=idempotency_key,
+                ),
+                "source_module": "learning",
+                "source_task_id": task_id,
+                "learning_direction": direction,
+                "executor_type": "audit",
+                "target_id": "audit:learning",
+                "worker_dispatch_enabled": False,
+            },
+        )
+        self._transition_task(
+            task.task_id,
+            self._map_learning_status(status),
+            remarks or f"Learning status -> {status}",
+        )
+        self._update_task_tracking(
+            task.task_id,
+            {
+                "workflow_status": str(status),
+                "workflow_kind": "learning",
+            },
+            remarks=remarks or f"Learning status -> {status}",
         )
         return task.task_id
 
@@ -156,8 +269,27 @@ class WorkflowTaskBridge:
     def list_reflection_tasks(self) -> list[Any]:
         return self._task_service.list_tasks(source_module="reflection")
 
+    def list_learning_tasks(self) -> list[Any]:
+        return self._task_service.list_tasks(source_module="learning")
+
     def list_upgrade_tasks(self) -> list[Any]:
         return self._task_service.list_tasks(source_module="upgrade")
+
+    @staticmethod
+    def _generated_task_metadata(
+        *,
+        source_module: str,
+        source_task_id: str,
+        idempotency_key: str,
+    ) -> dict[str, str]:
+        return {
+            "source": source_module,
+            "generated_task_source": source_module,
+            "generated_task_id": str(source_task_id),
+            "generated_task_uid": idempotency_key,
+            f"{source_module}_generated_task_id": str(source_task_id),
+            f"{source_module}_generated_task_uid": idempotency_key,
+        }
 
     def _ensure_task(self, **payload: Any):
         return self._run_coroutine(self._supervised_manager.create_and_supervise_task(payload))
@@ -168,22 +300,32 @@ class WorkflowTaskBridge:
             return
         try:
             if task.status == TaskStatus.TODO and target_status == TaskStatus.DONE:
-                self._task_service.update_task_status(task_id, TaskStatus.IN_PROGRESS, remarks="Auto-start for workflow bridge")
-            self._task_service.update_task_status(task_id, target_status, remarks=remarks)
+                self._run_maybe_awaitable(
+                    self._task_service.update_task_status(
+                        task_id,
+                        TaskStatus.IN_PROGRESS,
+                        remarks="Auto-start for workflow bridge",
+                    )
+                )
+            self._run_maybe_awaitable(
+                self._task_service.update_task_status(task_id, target_status, remarks=remarks)
+            )
         except Exception as exc:
-            logger.warning("workflow bridge failed to update task %s: %s", task_id, exc)
+            raise RuntimeError(f"workflow bridge failed to update task {task_id}: {exc}") from exc
 
     def _update_task_tracking(
         self, task_id: str, metadata_updates: dict[str, Any], *, remarks: Optional[str] = None
     ) -> None:
         try:
-            self._task_service.update_task_metadata(
-                task_id,
-                metadata_updates,
-                remarks=remarks,
+            self._run_maybe_awaitable(
+                self._task_service.update_task_metadata(
+                    task_id,
+                    metadata_updates,
+                    remarks=remarks,
+                )
             )
         except Exception as exc:
-            logger.warning("workflow bridge failed to update task metadata %s: %s", task_id, exc)
+            raise RuntimeError(f"workflow bridge failed to update task metadata {task_id}: {exc}") from exc
 
     def _update_supervision_record(
         self,
@@ -226,6 +368,11 @@ class WorkflowTaskBridge:
             raise error["value"]
         return result["value"]
 
+    def _run_maybe_awaitable(self, value: Any) -> Any:
+        if inspect.isawaitable(value):
+            return self._run_coroutine(value)
+        return value
+
     def _map_priority(self, priority: Any) -> TaskPriority:
         raw = str(getattr(priority, "value", priority)).lower()
         if raw in {"0", "critical"}:
@@ -245,7 +392,21 @@ class WorkflowTaskBridge:
         if normalized in {"failed", "error"}:
             return TaskStatus.FAILED
         if normalized in {"cancelled", "canceled"}:
-            return TaskStatus.ARCHIVED
+            return TaskStatus.CANCELLED
+        return TaskStatus.TODO
+
+    def _map_learning_status(self, status: str) -> TaskStatus:
+        normalized = str(status).strip().lower()
+        if normalized in {"running", "in_progress"}:
+            return TaskStatus.IN_PROGRESS
+        if normalized in {"completed", "done", "learned", "dry_run", "skipped"}:
+            return TaskStatus.DONE
+        if normalized in {"budget_hold"}:
+            return TaskStatus.BLOCKED
+        if normalized in {"failed", "error", "aborted", "unknown_direction"}:
+            return TaskStatus.FAILED
+        if normalized in {"cancelled", "canceled"}:
+            return TaskStatus.CANCELLED
         return TaskStatus.TODO
 
     def _map_upgrade_status(self, status: str) -> TaskStatus:
@@ -267,5 +428,5 @@ class WorkflowTaskBridge:
         if normalized == "failed":
             return TaskStatus.FAILED
         if normalized in {"cancelled", "cleaned_up"}:
-            return TaskStatus.ARCHIVED
+            return TaskStatus.CANCELLED
         return TaskStatus.TODO

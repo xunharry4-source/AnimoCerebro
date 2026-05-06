@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from pathlib import Path
+
 from zentex.common.prompt_upgrade_contract import ModulePromptUpgradeContract, build_section_policy
 
 
@@ -8,7 +10,7 @@ def list_prompt_upgrade_contracts() -> list[ModulePromptUpgradeContract]:
         ModulePromptUpgradeContract(
             prompt_id="memory.consolidation.summary",
             module_id="memory.consolidation",
-            prompt_file_path="/Users/harry/Documents/git/AnimoCerebro-V2/src/zentex/memory/consolidation/llm_prompt.py",
+            prompt_file_path=str(Path(__file__).resolve().with_name("llm_prompt.py")),
             prompt_builder_name="build_consolidation_summary_prompt",
             prompt_builder_symbol="zentex.memory.consolidation.llm_prompt.build_consolidation_summary_prompt",
             target_component="memory.consolidation.summary.prompt",

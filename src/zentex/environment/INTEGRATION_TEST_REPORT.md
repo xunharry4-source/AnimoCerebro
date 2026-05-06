@@ -28,7 +28,7 @@ The Environment Awareness Module has been tested through **direct API calls** si
 
 ### Test Command / 测试命令
 ```bash
-cd /Users/shadow/Documents/git/AnimoCerebro
+cd <repo-root>
 .venv/bin/python tests/environment/test_api_validation.py
 ```
 

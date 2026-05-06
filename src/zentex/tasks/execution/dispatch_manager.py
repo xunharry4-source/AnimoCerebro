@@ -24,6 +24,7 @@ class TaskDispatchManager:
         cli_service: Any = None,
         mcp_service: Any = None,
         external_connector_service: Any = None,
+        agent_service: Any = None,
     ):
         # Initialize the physical execution stack
         self._executor = InternalPluginExecutor(plugin_layer)
@@ -35,6 +36,7 @@ class TaskDispatchManager:
         self._cli_service = cli_service
         self._mcp_service = mcp_service
         self._external_connector_service = external_connector_service
+        self._agent_service = agent_service
         
         # Load posture from shared state
         self._posture_store = SharedStateStore("q9_posture")
@@ -50,6 +52,7 @@ class TaskDispatchManager:
         cli_service: Any = None,
         mcp_service: Any = None,
         external_connector_service: Any = None,
+        agent_service: Any = None,
     ) -> None:
         if task_service is not None:
             self._task_service = task_service
@@ -59,17 +62,26 @@ class TaskDispatchManager:
             self._mcp_service = mcp_service
         if external_connector_service is not None:
             self._external_connector_service = external_connector_service
+        if agent_service is not None:
+            self._agent_service = agent_service
         
     def get_worker(self, task_dao: Any) -> TaskExecutionWorker:
         """Instantiate a worker with current cognitive constraints."""
         posture = self._get_current_posture()
         is_conservative = posture.get("conservative_mode_triggered", False)
         rhythm = posture.get("action_rhythm_hint", "steady_incremental")
+        requires_confirmation = bool(
+            posture.get("approval_gate")
+            or posture.get("operator_approval_required")
+            or rhythm == "confirm_before_commit"
+        )
         
         # Adjust worker config based on Q9 posture
         config = WorkerConfig(
             batch_size=1 if is_conservative or rhythm == "confirm_before_commit" else 5,
             max_attempts=3,
+            require_approval=requires_confirmation,
+            conservative_mode=bool(is_conservative),
         )
         
         return TaskExecutionWorker(
@@ -80,6 +92,7 @@ class TaskDispatchManager:
             cli_service=self._cli_service,
             mcp_service=self._mcp_service,
             external_connector_service=self._external_connector_service,
+            agent_service=self._agent_service,
             config=config
         )
 

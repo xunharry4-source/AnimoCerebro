@@ -14,11 +14,11 @@
 
 关键文件：
 
-- [service.py](/Users/harry/Documents/git/AnimoCerebro-V2/src/zentex/reflection/service.py)
-- [async_service.py](/Users/harry/Documents/git/AnimoCerebro-V2/src/zentex/reflection/async_service.py)
-- [llm_generator.py](/Users/harry/Documents/git/AnimoCerebro-V2/src/zentex/reflection/llm_generator.py)
-- [prompt_upgrade_registry.py](/Users/harry/Documents/git/AnimoCerebro-V2/src/zentex/reflection/prompt_upgrade_registry.py)
-- [nine_question_effectiveness.py](/Users/harry/Documents/git/AnimoCerebro-V2/src/zentex/reflection/nine_question_effectiveness.py)
+- [service.py](src/zentex/reflection/service.py)
+- [async_service.py](src/zentex/reflection/async_service.py)
+- [llm_generator.py](src/zentex/reflection/llm_generator.py)
+- [prompt_upgrade_registry.py](src/zentex/reflection/prompt_upgrade_registry.py)
+- [nine_question_effectiveness.py](src/zentex/reflection/nine_question_effectiveness.py)
 
 ## Current Runtime Structure / 当前运行结构
 
@@ -38,7 +38,7 @@
 
 ### 2. Async Reflection / 异步反思
 
-[async_service.py](/Users/harry/Documents/git/AnimoCerebro-V2/src/zentex/reflection/async_service.py) 是当前异步执行主入口。
+[async_service.py](src/zentex/reflection/async_service.py) 是当前异步执行主入口。
 
 它负责：
 
@@ -56,17 +56,17 @@
 
 桥接点是：
 
-- [tasks/integration/workflow_bridge.py](/Users/harry/Documents/git/AnimoCerebro-V2/src/zentex/tasks/integration/workflow_bridge.py)
+- [tasks/integration/workflow_bridge.py](src/zentex/tasks/integration/workflow_bridge.py)
 
 ## LLM Prompt Layer / LLM 提问层
 
 反思模块的 LLM 提问统一在：
 
-- [llm_prompt.py](/Users/harry/Documents/git/AnimoCerebro-V2/src/zentex/reflection/llm_prompt.py)
+- [llm_prompt.py](src/zentex/reflection/llm_prompt.py)
 
 执行编排在：
 
-- [llm_generator.py](/Users/harry/Documents/git/AnimoCerebro-V2/src/zentex/reflection/llm_generator.py)
+- [llm_generator.py](src/zentex/reflection/llm_generator.py)
 
 约束如下：
 
@@ -80,7 +80,7 @@
 
 ### 1. Unified Prompt Contract Registry / 统一 prompt 合同注册表
 
-[prompt_upgrade_registry.py](/Users/harry/Documents/git/AnimoCerebro-V2/src/zentex/reflection/prompt_upgrade_registry.py) 现在统一发现两类合同：
+[prompt_upgrade_registry.py](src/zentex/reflection/prompt_upgrade_registry.py) 现在统一发现两类合同：
 
 - 9 问 prompt 合同
 - 非 9 问模块 prompt 合同
@@ -95,7 +95,7 @@
 
 ### 2. Nine Question Effectiveness / 9 问有效性反思
 
-[nine_question_effectiveness.py](/Users/harry/Documents/git/AnimoCerebro-V2/src/zentex/reflection/nine_question_effectiveness.py) 现在不再只依赖 9 问专用入口，而是走统一 registry 取 prompt upgrade contract。
+[nine_question_effectiveness.py](src/zentex/reflection/nine_question_effectiveness.py) 现在不再只依赖 9 问专用入口，而是走统一 registry 取 prompt upgrade contract。
 
 这意味着：
 

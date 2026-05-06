@@ -36,6 +36,14 @@ class StartupSnapshotBuilder:
         plugins = self._bridge.get_registered_plugins() or []
         identity = self._system_identity = self._bridge.get_system_identity() or {}
         capabilities = self._bridge.get_capability_directory() or []
+        get_self_model = getattr(self._bridge, "get_self_model_snapshot", None)
+        self_model = get_self_model(session_id) if callable(get_self_model) else {}
+        self_model = self_model if isinstance(self_model, dict) else {}
+        living_self_model = (
+            self_model.get("living_self_model")
+            if isinstance(self_model.get("living_self_model"), dict)
+            else self_model
+        )
 
         snapshot = {
             "session_id": session_id,
@@ -43,6 +51,8 @@ class StartupSnapshotBuilder:
             "plugins": plugins,
             "identity": identity,
             "capabilities": capabilities,
+            "self_model": self_model,
+            "living_self_model": living_self_model,
             "built_at": datetime.now(UTC).isoformat(),
         }
         

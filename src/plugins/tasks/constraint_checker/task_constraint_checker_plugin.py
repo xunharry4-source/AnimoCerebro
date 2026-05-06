@@ -9,7 +9,7 @@ from zentex.plugins.contracts import (
     PluginHealthStatus,
     PluginLifecycleStatus,
 )
-from zentex.tasks.service import task_plugin_check_constraints
+from zentex.tasks import task_plugin_check_constraints
 
 
 _RISK_ORDER = {"low": 1, "medium": 2, "high": 3, "critical": 4}

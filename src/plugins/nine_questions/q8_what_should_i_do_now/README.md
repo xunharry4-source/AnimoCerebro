@@ -34,3 +34,9 @@ Required files:
 
 - Functional plugin outputs must influence prioritization, not bypass Q1-Q7 constraints.
 - Do not create a separate top-level Q8 output branch for this feature.
+- Q8 must read the authoritative Q1-Q7 LLM outputs from the SQLite nine-question snapshot tables before synthesis.
+- Q8 requires Q1-Q7 upstream snapshots to be completed. Any incomplete upstream is a hard error.
+- Q8 must persist only its own successful module outputs into the SQLite module-output tables.
+- Q8 must persist the LLM decision projection and task persistence outputs as separate module records; do not combine them into a single table-shaped blob.
+- Every persisted Q8 table row is versioned and timestamped by the shared SQLite nine-question store.
+- Q8 must not return substitute or legacy responses. Exceptions propagate and failed exception payloads are not saved.

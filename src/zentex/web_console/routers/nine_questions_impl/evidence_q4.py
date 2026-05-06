@@ -32,50 +32,54 @@ def _extract_q4_preprocessed_evidence(context_payload: object) -> Optional[Q4Pre
         else {},
     }
     q2_context = {
-        "role_profile": context_payload.get("q2_role_profile") if isinstance(context_payload.get("q2_role_profile"), dict) else {},
-        "mission_boundary": context_payload.get("q2_mission_boundary")
-        if isinstance(context_payload.get("q2_mission_boundary"), dict)
+        "asset_inventory": context_payload.get("q2_asset_inventory") if isinstance(context_payload.get("q2_asset_inventory"), dict) else {},
+        "resource_evaluation": context_payload.get("q2_resource_evaluation")
+        if isinstance(context_payload.get("q2_resource_evaluation"), dict)
         else {},
     }
+    q3_context = {
+        "role_profile": context_payload.get("q3_role_profile") if isinstance(context_payload.get("q3_role_profile"), dict) else {},
+        "mission_boundary": context_payload.get("q3_mission_boundary")
+        if isinstance(context_payload.get("q3_mission_boundary"), dict)
+        else {},
+    }
+    q2_unified_inventory = context_payload.get("q2_unified_asset_inventory")
+    q2_unified_inventory = q2_unified_inventory if isinstance(q2_unified_inventory, dict) else {}
     q3_inventory = {
         "available_cognitive_tools": _coerce_string_list(
-            (context_payload.get("q3_unified_asset_inventory") or {}).get("available_cognitive_tools")
-            if isinstance(context_payload.get("q3_unified_asset_inventory"), dict)
-            else None
+            q2_unified_inventory.get("available_cognitive_tools")
         ),
         "available_execution_tools": _coerce_string_list(
-            (context_payload.get("q3_unified_asset_inventory") or {}).get("available_execution_tools")
-            if isinstance(context_payload.get("q3_unified_asset_inventory"), dict)
-            else None
+            q2_unified_inventory.get("available_execution_tools")
         ),
         "connected_agents": (
-            (context_payload.get("q3_unified_asset_inventory") or {}).get("connected_agents")
-            if isinstance((context_payload.get("q3_unified_asset_inventory") or {}).get("connected_agents"), list)
+            q2_unified_inventory.get("connected_agents")
+            if isinstance(q2_unified_inventory.get("connected_agents"), list)
             else []
         ),
         "activated_strategy_patches": _coerce_string_list(
-            (context_payload.get("q3_unified_asset_inventory") or {}).get("activated_strategy_patches")
-            if isinstance(context_payload.get("q3_unified_asset_inventory"), dict)
-            else None
+            q2_unified_inventory.get("activated_strategy_patches")
         ),
         "accessible_workspace_zones": _coerce_string_list(
-            (context_payload.get("q3_unified_asset_inventory") or {}).get("accessible_workspace_zones")
-            if isinstance(context_payload.get("q3_unified_asset_inventory"), dict)
-            else None
+            q2_unified_inventory.get("accessible_workspace_zones")
         ),
         "permission_profile": permission_profile,
         "active_execution_domains": active_execution_domains,
         "capability_baseline": capability_baseline,
-        "resource_evaluation": context_payload.get("q3_resource_evaluation")
-        if isinstance(context_payload.get("q3_resource_evaluation"), dict)
+        "resource_evaluation": context_payload.get("q2_resource_evaluation")
+        if isinstance(context_payload.get("q2_resource_evaluation"), dict)
         else {},
+        "role_profile": q3_context["role_profile"],
+        "mission_boundary": q3_context["mission_boundary"],
     }
     if not any(
         (
             q1_context["scene_model"],
             q1_context["uncertainty_profile"],
-            q2_context["role_profile"],
-            q2_context["mission_boundary"],
+            q2_context["asset_inventory"],
+            q2_context["resource_evaluation"],
+            q3_context["role_profile"],
+            q3_context["mission_boundary"],
             q3_inventory["available_cognitive_tools"],
             q3_inventory["available_execution_tools"],
             q3_inventory["connected_agents"],
@@ -110,5 +114,4 @@ def _extract_q4_inference_result(result_payload: object) -> Optional[Q4WhatCanID
         actionable_space=_coerce_string_list(payload.get("actionable_space")),
         executable_strategies=_coerce_string_list(payload.get("executable_strategies")),
     )
-
 

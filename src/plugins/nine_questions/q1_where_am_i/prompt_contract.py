@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from pathlib import Path
+
 from zentex.common.nine_questions_prompts import (
     NineQuestionPromptUpgradeContract,
     build_section_policy,
@@ -9,7 +11,7 @@ from zentex.common.nine_questions_prompts import (
 def get_prompt_upgrade_contract() -> NineQuestionPromptUpgradeContract:
     return NineQuestionPromptUpgradeContract(
         question_id="q1",
-        prompt_file_path="/Users/harry/Documents/git/AnimoCerebro-V2/src/plugins/nine_questions/q1_where_am_i/llm_prompt.py",
+        prompt_file_path=str(Path(__file__).resolve().with_name("llm_prompt.py")),
         prompt_builder_name="build_q1_llm_request",
         prompt_builder_symbol="plugins.nine_questions.q1_where_am_i.llm_prompt.build_q1_llm_request",
         target_component="nine-question.q1.prompt",
@@ -26,51 +28,33 @@ def get_prompt_upgrade_contract() -> NineQuestionPromptUpgradeContract:
             "must not remove uncertainty reporting",
         ],
         editable_prompt_sections=[
-            "output_contract",
-            "evidence_summary",
-            "local_stats",
-            "uncertainty_hints",
+            "input_evidence",
+            "output_constraint",
         ],
-        immutable_prompt_sections=["role"],
+        immutable_prompt_sections=["system_instruction"],
         section_change_policy=[
             build_section_policy(
-                section_key="role",
+                section_key="system_instruction",
                 mutable=False,
                 intent="Preserve the question identity as workspace-domain inference.",
                 purpose="Prevent the optimizer from changing Q1 into another question.",
                 forbidden_operations=["rewrite question purpose", "remove strict json requirement"],
             ),
             build_section_policy(
-                section_key="output_contract",
+                section_key="input_evidence",
                 mutable=True,
-                intent="Define the exact Q1 schema.",
-                purpose="Allow stricter schema wording without changing output meaning.",
-                allowed_operations=["tighten schema wording", "clarify required keys"],
-                forbidden_operations=["remove required keys", "change top-level meaning"],
-            ),
-            build_section_policy(
-                section_key="evidence_summary",
-                mutable=True,
-                intent="Summarize the main evidence for domain inference.",
-                purpose="Allow better compression of evidence context.",
+                intent="Provide preprocessed physical host, workspace structure, and content sampling evidence.",
+                purpose="Allow better compression of real local evidence without inventing context.",
                 allowed_operations=["compress evidence", "reorder evidence emphasis"],
                 forbidden_operations=["invent evidence", "introduce non-local evidence"],
             ),
             build_section_policy(
-                section_key="local_stats",
+                section_key="output_constraint",
                 mutable=True,
-                intent="Provide structural workspace facts.",
-                purpose="Allow better highlighting of domain-relevant stats.",
-                allowed_operations=["compress stats", "highlight domain cues"],
-                forbidden_operations=["invent stats"],
-            ),
-            build_section_policy(
-                section_key="uncertainty_hints",
-                mutable=True,
-                intent="Preserve uncertainty reporting.",
-                purpose="Allow better calibration language without suppressing uncertainty.",
-                allowed_operations=["clarify uncertainty wording", "compress ambiguity cues"],
-                forbidden_operations=["remove uncertainty", "force certainty"],
+                intent="Define the exact Q1 WorkspaceDomainInference schema.",
+                purpose="Allow stricter schema wording without changing output meaning.",
+                allowed_operations=["tighten schema wording", "clarify required keys", "add explicit validation bullets"],
+                forbidden_operations=["remove required keys", "add non-schema keys", "change top-level meaning"],
             ),
         ],
         validation_commands=[

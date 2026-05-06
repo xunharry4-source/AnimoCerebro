@@ -17,12 +17,12 @@ from zentex.kernel.cognition_flow.models import (
 
 UTC = timezone.utc
 QUESTION_SUMMARY_KEYS = {
-    "q1": "我在哪",
-    "q2": "我是谁",
-    "q3": "我有什么",
+    "q1": "我在那",
+    "q2": "我有什么",
+    "q3": "我是谁",
     "q4": "我能做什么",
-    "q5": "我被允许做什么",
-    "q6": "我即使能做也不该做什么",
+    "q5": "我不能干什么",
+    "q6": "如果我做了会怎样 / 代价与后果是什么",
     "q7": "我还可以做什么",
     "q8": "我现在应该做什么",
     "q9": "我应该如何行动",
@@ -135,7 +135,9 @@ class NineQuestionStateManager:
         # Deep merge specific payloads
         self._deep_merge_dicts(target.result_payload, source.result_payload)
         self._deep_merge_dicts(target.context_updates, source.context_updates)
+        self._deep_merge_dicts(target.execution_context, source.execution_context)
         self._deep_merge_dicts(target.execution_result, source.execution_result)
+        self._deep_merge_dicts(target.llm_trace_payload, source.llm_trace_payload)
         
         # Update metadata
         target.is_partial = False  # The resulting merged response is considered "Current"
@@ -234,6 +236,7 @@ class NineQuestionStateManager:
                     "summary": r.answer,
                     "confidence": r.confidence,
                     "result": _isolate_question_payload(qid, r.result_payload) if r.result_payload else responses_dict[qid],
+                    "llm_output": _safe_deepcopy(r.result_payload.get("llm_output")) if isinstance(r.result_payload, dict) and isinstance(r.result_payload.get("llm_output"), dict) else {},
                     "context_updates": _isolate_question_payload(qid, r.context_updates) if r.context_updates else {},
                     "execution_context": _safe_deepcopy(r.execution_context) if r.execution_context else {},
                     "execution_result": _safe_deepcopy(r.execution_result) if r.execution_result else {},

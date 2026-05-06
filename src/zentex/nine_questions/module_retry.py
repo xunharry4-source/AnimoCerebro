@@ -4,18 +4,17 @@ from copy import deepcopy
 from typing import Any
 
 from fastapi import HTTPException
-from plugins.nine_questions.q2_who_am_i.modules import (
-    Q2IdentityInputError,
-    build_q2_identity_input_context,
+from plugins.nine_questions.q2_asset_inventory.llm_output_table import (
+    load_external_llm_output_from_table as load_q2_external_llm_output_from_table,
+    load_internal_llm_output_from_table as load_q2_internal_llm_output_from_table,
 )
-from plugins.nine_questions.q3_what_do_i_have.modules import build_q3_runtime_inventory_context
+from plugins.nine_questions.q3_role_inference.modules import build_q3_runtime_inventory_context
 from plugins.nine_questions.q4_what_can_i_do.modules import (
     derive_capability_baseline,
     derive_permission_profile,
     normalize_functional_capabilities,
 )
 from plugins.nine_questions.q5_what_am_i_allowed_to_do.modules import (
-    derive_agent_trust_status,
     derive_authorization_baseline,
 )
 from plugins.nine_questions.q6_what_should_i_not_do.modules import (
@@ -23,15 +22,13 @@ from plugins.nine_questions.q6_what_should_i_not_do.modules import (
     normalize_redline_inputs,
 )
 from plugins.nine_questions.q7_what_else_can_i_do.modules import (
-    build_q7_baseline_modules,
-    derive_alternative_strategy_baseline,
-    normalize_functional_alternatives,
+    derive_red_line_assessment_baseline,
 )
 from plugins.nine_questions.q9_how_should_i_act.modules import (
     normalize_q8_profile,
     normalize_snapshot_dict,
 )
-from zentex.common.plugin_ids import NINE_QUESTION_Q2, NINE_QUESTION_Q4, NINE_QUESTION_Q6
+from zentex.common.plugin_ids import NINE_QUESTION_Q4, NINE_QUESTION_Q6
 
 
 def merge_q_module_recovery_actions(question_id: str, actions: list[dict[str, Any]]) -> list[dict[str, Any]]:
@@ -40,18 +37,7 @@ def merge_q_module_recovery_actions(question_id: str, actions: list[dict[str, An
         if isinstance(action, dict) and str(action.get("action_id") or "").strip():
             merged[str(action["action_id"])] = deepcopy(action)
 
-    if question_id == "q2":
-        merged["q2-refresh-identity-inputs"] = {
-            "action_id": "q2-refresh-identity-inputs",
-            "label": "刷新 Q2 身份输入链",
-            "kind": "partial_retry",
-            "executable": True,
-            "scope": "module",
-            "target": "q2_functional_identity_chain",
-            "reason": "仅刷新 Q2 的 Q1 依赖、identity kernel、functional identity inputs；不重跑 LLM。",
-            "path": "/api/web/nine-questions/q2/modules/q2_functional_identity_chain/retry",
-        }
-    elif question_id == "q3":
+    if question_id == "q3":
         merged["q3-refresh-runtime-inventory"] = {
             "action_id": "q3-refresh-runtime-inventory",
             "label": "刷新 Q3 运行态盘点模块",
@@ -96,15 +82,15 @@ def merge_q_module_recovery_actions(question_id: str, actions: list[dict[str, An
             "path": "/api/web/nine-questions/q6/modules/q6_redline_hint_chain/retry",
         }
     elif question_id == "q7":
-        merged["q7-refresh-functional-alternatives"] = {
-            "action_id": "q7-refresh-functional-alternatives",
-            "label": "刷新备选策略插件输入",
+        merged["q7-refresh-redline-baseline"] = {
+            "action_id": "q7-refresh-redline-baseline",
+            "label": "刷新 Q7 红线证据",
             "kind": "partial_retry",
             "executable": True,
             "scope": "module",
-            "target": "q7_functional_alternative_chain",
-            "reason": "仅刷新 Q7 functional alternative inputs 与基线，不重跑 LLM。",
-            "path": "/api/web/nine-questions/q7/modules/q7_functional_alternative_chain/retry",
+            "target": "q7_red_line_baseline_projection",
+            "reason": "仅刷新 IdentityKernel、Q5、安全拒绝历史和程序记忆证据，不重跑 LLM。",
+            "path": "/api/web/nine-questions/q7/modules/q7_red_line_baseline_projection/retry",
         }
     elif question_id == "q9":
         merged["q9-refresh-posture-inputs"] = {
@@ -173,122 +159,26 @@ def build_q9_question_snapshot(dependency_context: dict[str, Any]) -> dict[str, 
         or dependency_context.get("q8_objective_and_queue")
         or {}
     )
+    q2_internal_output = load_q2_internal_llm_output_from_table(
+        db_path=dependency_context.get("nine_question_state_db_path")
+    )
+    q2_external_output = load_q2_external_llm_output_from_table(
+        db_path=dependency_context.get("nine_question_state_db_path")
+    )
     return {
         "q1": dependency_context.get("workspace_domain_inference") or {},
-        "q2": dependency_context.get("q2_role_profile") or {},
-        "q3": dependency_context.get("q3_resource_evaluation") or dependency_context.get("resource_evaluation") or {},
+        "q2": {
+            "q2_internal_tool_asset_inventory": q2_internal_output,
+            "q2_external_tool_asset_inventory": q2_external_output,
+        },
+        "q3": dependency_context.get("q3_role_profile") or {},
         "q4": dependency_context.get("q4_capability_boundary_profile") or {},
         "q5": dependency_context.get("q5_authorization_boundary_profile") or dependency_context.get("q5_permission_boundary") or {},
         "q6": dependency_context.get("q6_forbidden_zone_profile") or {},
-        "q7": dependency_context.get("q7_alternative_strategy_profile") or {},
+        "q7": dependency_context.get("q7_red_line_assessment") or dependency_context.get("red_line_assessment") or {},
         "q8": normalize_q8_profile(q8_raw),
         "summaries": dependency_context.get("nine_questions") or {},
     }
-
-
-async def retry_q2_identity_input_module(
-    *,
-    service: Any,
-    snapshot_map: dict[str, dict[str, Any]],
-    module_id: str,
-    dependency_context: dict[str, Any],
-    plugin_service: Any,
-    functional_executor: Any,
-) -> str:
-    snapshot = snapshot_map.get("q2")
-    if not isinstance(snapshot, dict):
-        raise HTTPException(status_code=404, detail="Q2 snapshot missing; cannot retry identity input module")
-
-    context_updates = deepcopy(snapshot.get("context_updates") if isinstance(snapshot.get("context_updates"), dict) else {})
-    functional_context = {
-        **dependency_context,
-        **context_updates,
-        "trace_id": str(snapshot.get("trace_id") or "q2:module-retry"),
-        "session_id": "nq-baseline",
-    }
-    try:
-        identity_context = build_q2_identity_input_context(
-            functional_context,
-            plugin_id=NINE_QUESTION_Q2,
-            plugin_service=plugin_service,
-            functional_executor=functional_executor,
-            trace_id=str(snapshot.get("trace_id") or "q2:module-retry"),
-            originator_id="nq-baseline",
-            caller_plugin_id=NINE_QUESTION_Q2,
-        )
-    except Q2IdentityInputError as exc:
-        raise HTTPException(
-            status_code=503,
-            detail={
-                "error": "q2_functional_identity_chain_failed",
-                "message": str(exc),
-                "module_runs": exc.module_runs,
-            },
-        ) from exc
-
-    context_updates.update(identity_context["context_updates"])
-    workspace_domain_inference = identity_context["workspace_domain_inference"]
-    identity_kernel = identity_context["identity_kernel"]
-    plugin_runs = identity_context["plugin_runs"]
-
-    existing_diagnosis = deepcopy(context_updates.get("q2_execution_diagnosis") or {})
-    module_runs = existing_diagnosis.get("module_runs")
-    module_runs = module_runs if isinstance(module_runs, list) else []
-    module_runs = upsert_module_run(
-        module_runs,
-        module_id="q2_q1_dependency_validation",
-        status="completed" if workspace_domain_inference else "degraded",
-        error_code="" if workspace_domain_inference else "q1_context_missing",
-        error_message="" if workspace_domain_inference else "Q1 context missing.",
-        data={"workspace_domain_inference": workspace_domain_inference, "q1_scene_model": identity_context["q1_scene_model"]},
-    )
-    module_runs = upsert_module_run(
-        module_runs,
-        module_id="q2_identity_kernel_validation",
-        status="completed" if identity_kernel else "degraded",
-        error_code="" if identity_kernel else "identity_kernel_missing",
-        error_message="" if identity_kernel else "Identity kernel missing.",
-        data={"identity_kernel_snapshot": identity_kernel},
-    )
-    module_runs = upsert_module_run(
-        module_runs,
-        module_id="q2_functional_identity_chain",
-        status="completed" if plugin_service is not None else "missing",
-        error_code="" if plugin_service is not None else "plugin_service_missing",
-        error_message="" if plugin_service is not None else "Functional identity chain not started.",
-        data={"functional_identity_inputs": identity_context["functional_inputs"], "plugin_runs": plugin_runs},
-    )
-    module_runs = upsert_module_run(
-        module_runs,
-        module_id="q2_role_reasoning_projection",
-        status="degraded",
-        error_code="role_reasoning_not_rerun",
-        error_message="Q2 identity inputs were refreshed without rerunning LLM role reasoning.",
-    )
-    existing_diagnosis.update(
-        {
-            "authenticity_status": "degraded",
-            "diagnosis_code": "identity_inputs_refreshed",
-            "diagnosis_message": "Q2 identity input modules were refreshed. Role reasoning remains the last committed projection until Q2 is rerun.",
-            "used_fallback": True,
-            "upstream_degraded": not bool(workspace_domain_inference),
-            "module_runs": module_runs,
-            "plugin_runs": plugin_runs,
-            "recovery_plan": {
-                **deepcopy(existing_diagnosis.get("recovery_plan") or {}),
-                "actions": merge_q_module_recovery_actions("q2", list((existing_diagnosis.get("recovery_plan") or {}).get("actions") or [])),
-            },
-        }
-    )
-    context_updates["q2_execution_diagnosis"] = existing_diagnosis
-
-    await service.persist_question_snapshot_patch(
-        "q2",
-        {"context_updates": context_updates},
-        refresh_reason=f"question_module_retry:q2:{module_id}",
-    )
-    return f"single_nine_question_module_retried:q2:{module_id}"
-
 
 async def retry_q3_runtime_inventory_module(
     *,
@@ -318,9 +208,11 @@ async def retry_q3_runtime_inventory_module(
     existing_diagnosis = deepcopy(context_updates.get("q3_execution_diagnosis") or {})
     module_runs = existing_diagnosis.get("module_runs")
     module_runs = module_runs if isinstance(module_runs, list) else []
+    refreshed_runs: list[dict[str, Any]] = []
     for run in inventory_context["module_runs"]:
         if not isinstance(run, dict):
             continue
+        refreshed_runs.append(run)
         module_runs = upsert_module_run(
             module_runs,
             module_id=str(run.get("module_id") or ""),
@@ -329,13 +221,18 @@ async def retry_q3_runtime_inventory_module(
             error_message=str(run.get("error_message") or ""),
             data=run.get("data") if isinstance(run.get("data"), dict) else None,
         )
+    incomplete_runs = [
+        run
+        for run in refreshed_runs
+        if str(run.get("status") or "").lower() not in {"completed", "ready"}
+    ]
+    if incomplete_runs:
+        raise HTTPException(status_code=409, detail="Q3 runtime inventory module retry cannot save incomplete module outputs")
     existing_diagnosis.update(
         {
-            "authenticity_status": "degraded",
+            "authenticity_status": "completed",
             "diagnosis_code": "runtime_inventory_refreshed",
-            "diagnosis_message": "Q3 runtime inventory modules were refreshed. Resource inference remains the last committed projection until Q3 is rerun.",
-            "used_fallback": True,
-            "upstream_degraded": False,
+            "diagnosis_message": "Q3 runtime inventory modules were refreshed from real module outputs. Resource inference remains the last committed LLM output until Q3 is rerun.",
             "module_runs": module_runs,
             "recovery_plan": {
                 **deepcopy(existing_diagnosis.get("recovery_plan") or {}),
@@ -386,37 +283,51 @@ async def retry_q9_posture_input_module(
         or dependency_context.get("budget")
     )
 
+    if not question_snapshot.get("q8"):
+        raise HTTPException(status_code=409, detail="Q9 posture input module retry requires completed Q8 SQLite LLM output")
+    if not self_model:
+        raise HTTPException(status_code=409, detail="Q9 posture input module retry requires real self-model input")
+    if not reasoning_budget:
+        raise HTTPException(status_code=409, detail="Q9 posture input module retry requires real reasoning budget input")
+    if plugin_service is None:
+        raise HTTPException(status_code=409, detail="Q9 posture input module retry requires plugin_service")
+
     plugin_runs: list[dict[str, Any]] = []
     functional_postures_raw: list[dict[str, Any]] = []
-    if plugin_service is not None:
-        raw_inputs = functional_executor(
-            plugin_service,
-            "nine_questions.q9",
-            default_parameters={"decision_trace": dict(functional_context)},
-            trace_id=str(snapshot.get("trace_id") or "q9:module-retry"),
-            originator_id="nq-baseline",
-            caller_plugin_id="nine_questions.q9",
+    raw_inputs = functional_executor(
+        plugin_service,
+        "nine_questions.q9",
+        default_parameters={"decision_trace": dict(functional_context)},
+        trace_id=str(snapshot.get("trace_id") or "q9:module-retry"),
+        originator_id="nq-baseline",
+        caller_plugin_id="nine_questions.q9",
+    )
+    for item in raw_inputs:
+        if not isinstance(item, dict):
+            raise HTTPException(status_code=409, detail="Q9 posture input module retry received invalid plugin output")
+        done = item.get("status") == "done"
+        plugin_runs.append(
+            {
+                "plugin_id": str(item.get("plugin_id") or "unknown_plugin"),
+                "feature_code": str(item.get("feature_code") or "nine_questions.q9"),
+                "expected": True,
+                "attempted": True,
+                "status": "completed" if done else "failed",
+                "error_code": "" if done else "posture_plugin_failed",
+                "error_message": "" if done else str(item.get("error") or "posture plugin failed"),
+                "duration_ms": 0,
+                "input_summary": {},
+                "output_summary": item.get("result") if isinstance(item.get("result"), dict) else {},
+            }
         )
-        for item in raw_inputs:
-            if not isinstance(item, dict):
-                continue
-            done = item.get("status") == "done"
-            plugin_runs.append(
-                {
-                    "plugin_id": str(item.get("plugin_id") or "unknown_plugin"),
-                    "feature_code": str(item.get("feature_code") or "nine_questions.q9"),
-                    "expected": True,
-                    "attempted": True,
-                    "status": "completed" if done else "failed",
-                    "error_code": "" if done else "posture_plugin_failed",
-                    "error_message": "" if done else str(item.get("error") or "posture plugin failed"),
-                    "duration_ms": 0,
-                    "input_summary": {},
-                    "output_summary": item.get("result") if isinstance(item.get("result"), dict) else {},
-                }
+        if not done:
+            raise HTTPException(
+                status_code=409,
+                detail=f"Q9 posture input module retry cannot save failed functional posture outputs: {item}",
             )
-            if done:
-                functional_postures_raw.append({"plugin_id": item.get("plugin_id"), "result": item.get("result")})
+        functional_postures_raw.append({"plugin_id": item.get("plugin_id"), "result": item.get("result")})
+    if not plugin_runs:
+        raise HTTPException(status_code=409, detail="Q9 posture input module retry requires successful posture plugin outputs")
 
     normalized_functional_postures = normalize_functional_postures_fn(functional_postures_raw)
     posture_baseline = derive_posture_baseline_fn(
@@ -431,58 +342,46 @@ async def retry_q9_posture_input_module(
     context_updates["q9_posture_baseline"] = posture_baseline
     context_updates["q9_functional_postures"] = normalized_functional_postures
 
-    has_q8_basis = bool(question_snapshot.get("q8"))
-    has_self_model = bool(self_model)
-    has_reasoning_budget = bool(reasoning_budget)
     existing_diagnosis = deepcopy(context_updates.get("q9_execution_diagnosis") or {})
     module_runs = existing_diagnosis.get("module_runs")
     module_runs = module_runs if isinstance(module_runs, list) else []
     module_runs = upsert_module_run(
         module_runs,
         module_id="q9_q1_q8_validation",
-        status="completed" if has_q8_basis else "missing",
-        error_code="" if has_q8_basis else "q8_basis_missing",
-        error_message="" if has_q8_basis else "Q8 objective basis is missing.",
+        status="completed",
+        error_code="",
+        error_message="",
         data={"q1_q8_snapshot": question_snapshot},
     )
     module_runs = upsert_module_run(
         module_runs,
         module_id="q9_self_model_source_validation",
-        status="completed" if has_self_model else "degraded",
-        error_code="" if has_self_model else "self_model_missing",
-        error_message="" if has_self_model else "Self-model is missing or snapshot-only.",
+        status="completed",
+        error_code="",
+        error_message="",
         data=self_model,
     )
     module_runs = upsert_module_run(
         module_runs,
         module_id="q9_reasoning_budget_source_validation",
-        status="completed" if has_reasoning_budget else "degraded",
-        error_code="" if has_reasoning_budget else "reasoning_budget_missing",
-        error_message="" if has_reasoning_budget else "Reasoning budget is missing or default-only.",
+        status="completed",
+        error_code="",
+        error_message="",
         data=reasoning_budget,
     )
     module_runs = upsert_module_run(
         module_runs,
         module_id="q9_functional_posture_chain",
-        status="completed" if plugin_runs else "missing",
-        error_code="" if plugin_runs else "functional_posture_missing",
-        error_message="" if plugin_runs else "No posture plugins executed.",
+        status="completed",
+        error_code="",
+        error_message="",
         data={"functional_postures": normalized_functional_postures, "plugin_runs": plugin_runs},
-    )
-    module_runs = upsert_module_run(
-        module_runs,
-        module_id="q9_posture_control_projection",
-        status="degraded",
-        error_code="posture_projection_not_rerun",
-        error_message="Q9 posture inputs were refreshed without rerunning LLM posture projection.",
     )
     existing_diagnosis.update(
         {
-            "authenticity_status": "degraded",
+            "authenticity_status": "completed",
             "diagnosis_code": "posture_inputs_refreshed",
-            "diagnosis_message": "Q9 posture input modules were refreshed. Posture projection remains the last committed result until Q9 is rerun.",
-            "used_fallback": True,
-            "upstream_degraded": not has_q8_basis,
+            "diagnosis_message": "Q9 posture input modules were refreshed from real module outputs; LLM posture projection was not rewritten.",
             "module_runs": module_runs,
             "plugin_runs": plugin_runs,
             "recovery_plan": {
@@ -515,47 +414,49 @@ async def retry_q4_capability_input_module(
         raise HTTPException(status_code=404, detail="Q4 snapshot missing; cannot retry capability input module")
 
     context_updates = deepcopy(snapshot.get("context_updates") if isinstance(snapshot.get("context_updates"), dict) else {})
-    q3_inventory = functional_context.get("q3_unified_asset_inventory") or {}
-    q3_inventory = q3_inventory if isinstance(q3_inventory, dict) else {}
-    exec_domains = list(q3_inventory.get("available_execution_tools", []) or [])
+    q2_inventory = functional_context.get("q2_unified_asset_inventory") or {}
+    q2_inventory = q2_inventory if isinstance(q2_inventory, dict) else {}
+    exec_domains = list(q2_inventory.get("available_execution_tools", []) or [])
 
     plugin_runs: list[dict[str, Any]] = []
     functional_capabilities: list[dict[str, Any]] = []
-    if plugin_service is not None:
-        raw_inputs = functional_executor(
-            plugin_service,
-            NINE_QUESTION_Q4,
-            default_parameters={"context": dict(functional_context)},
-            trace_id=str(snapshot.get("trace_id") or "q4:module-retry"),
-            originator_id="nq-baseline",
-            caller_plugin_id=NINE_QUESTION_Q4,
+    if plugin_service is None:
+        raise HTTPException(status_code=409, detail="Q4 capability input module retry requires plugin_service")
+    raw_inputs = functional_executor(
+        plugin_service,
+        NINE_QUESTION_Q4,
+        default_parameters={"context": dict(functional_context)},
+        trace_id=str(snapshot.get("trace_id") or "q4:module-retry"),
+        originator_id="nq-baseline",
+        caller_plugin_id=NINE_QUESTION_Q4,
+    )
+    for item in raw_inputs:
+        plugin_runs.append(
+            {
+                "plugin_id": str(item.get("plugin_id") or "unknown_plugin"),
+                "feature_code": str(item.get("feature_code") or NINE_QUESTION_Q4),
+                "expected": True,
+                "attempted": True,
+                "status": "completed" if item.get("status") == "done" else "failed",
+                "error_code": "" if item.get("status") == "done" else "capability_plugin_failed",
+                "error_message": "" if item.get("status") == "done" else str(item.get("error") or "capability plugin failed"),
+                "duration_ms": 0,
+                "input_summary": {},
+                "output_summary": item.get("result") if isinstance(item.get("result"), dict) else {},
+            }
         )
-        for item in raw_inputs:
-            plugin_runs.append(
-                {
-                    "plugin_id": str(item.get("plugin_id") or "unknown_plugin"),
-                    "feature_code": str(item.get("feature_code") or NINE_QUESTION_Q4),
-                    "expected": True,
-                    "attempted": True,
-                    "status": "completed" if item.get("status") == "done" else "failed",
-                    "error_code": "" if item.get("status") == "done" else "capability_plugin_failed",
-                    "error_message": "" if item.get("status") == "done" else str(item.get("error") or "capability plugin failed"),
-                    "duration_ms": 0,
-                    "input_summary": {},
-                    "output_summary": item.get("result") if isinstance(item.get("result"), dict) else {},
-                }
-            )
-            if item.get("status") == "done":
-                functional_capabilities.append(item)
-                plugin_id = str(item.get("plugin_id") or "").strip()
-                if plugin_id:
-                    exec_domains.append(plugin_id)
+        if item.get("status") != "done":
+            raise HTTPException(status_code=409, detail="Q4 capability input module retry cannot save failed functional capability outputs")
+        functional_capabilities.append(item)
+        plugin_id = str(item.get("plugin_id") or "").strip()
+        if plugin_id:
+            exec_domains.append(plugin_id)
     exec_domains = list(dict.fromkeys(exec_domains))
     normalized_functional_capabilities = normalize_functional_capabilities(functional_capabilities)
-    permission_profile = derive_permission_profile(functional_context, q3_inventory)
+    permission_profile = derive_permission_profile(functional_context, q2_inventory)
     capability_baseline = derive_capability_baseline(
         functional_context,
-        q3_inventory,
+        q2_inventory,
         exec_domains,
         permission_profile,
         normalized_functional_capabilities,
@@ -568,37 +469,37 @@ async def retry_q4_capability_input_module(
     existing_diagnosis = deepcopy(context_updates.get("q4_execution_diagnosis") or {})
     module_runs = existing_diagnosis.get("module_runs")
     module_runs = module_runs if isinstance(module_runs, list) else []
+    if not q2_inventory or not permission_profile or not exec_domains:
+        raise HTTPException(status_code=409, detail="Q4 capability input module retry cannot save incomplete capability evidence")
     module_runs = upsert_module_run(
         module_runs,
         module_id="q4_inventory_validation",
-        status="completed" if q3_inventory else "missing",
-        error_code="" if q3_inventory else "q3_inventory_missing",
-        error_message="" if q3_inventory else "Q3 inventory is missing.",
-        data={"q3_unified_asset_inventory": q3_inventory},
+        status="completed",
+        error_code="",
+        error_message="",
+        data={"q2_unified_asset_inventory": q2_inventory},
     )
     module_runs = upsert_module_run(
         module_runs,
         module_id="q4_permission_validation",
-        status="completed" if permission_profile else "missing",
-        error_code="" if permission_profile else "permission_profile_missing",
-        error_message="" if permission_profile else "Permission profile is not available.",
+        status="completed",
+        error_code="",
+        error_message="",
         data=permission_profile if isinstance(permission_profile, dict) else {},
     )
     module_runs = upsert_module_run(
         module_runs,
         module_id="q4_execution_capability_verification",
-        status="completed" if exec_domains else "degraded",
-        error_code="" if exec_domains else "execution_domains_missing",
-        error_message="" if exec_domains else "No validated execution domains are available.",
+        status="completed",
+        error_code="",
+        error_message="",
         data={"active_execution_domains": exec_domains, "functional_capabilities": normalized_functional_capabilities},
     )
     existing_diagnosis.update(
         {
-            "authenticity_status": "degraded",
+            "authenticity_status": "completed",
             "diagnosis_code": "capability_inputs_refreshed",
-            "diagnosis_message": "Q4 capability input modules were refreshed. Actionability projection remains the last committed result until Q4 is rerun.",
-            "used_fallback": True,
-            "upstream_degraded": not bool(q3_inventory),
+            "diagnosis_message": "Q4 capability input modules were refreshed from real inputs. Actionability projection remains the last committed LLM output until Q4 is rerun.",
             "module_runs": module_runs,
             "plugin_runs": plugin_runs,
             "recovery_plan": {
@@ -650,58 +551,48 @@ async def retry_q5_policy_module(
         normalized_functional_inputs,
     )
     context_updates["q5_authorization_baseline"] = authorization_baseline
-    context_updates["q5_agent_trust_status"] = authorization_baseline.get("agent_trust_status", {}) or derive_agent_trust_status(merged_snapshot_context)
+    context_updates["q5_agent_trust_status"] = authorization_baseline.get("agent_trust_status", {})
 
     tenant_scope = context_updates.get("tenant_scope")
     contact_policy = context_updates.get("contact_policy")
     agent_trust_policy = context_updates.get("agent_trust_policy")
+    validated_policy_sources = sum(
+        1
+        for payload in (tenant_scope, contact_policy, agent_trust_policy)
+        if payload not in (None, {}, [], "")
+    )
+    if not (q4_profile and validated_policy_sources >= 3):
+        raise HTTPException(status_code=409, detail="Q5 policy module retry cannot save incomplete authorization evidence")
+
     existing_diagnosis = deepcopy(context_updates.get("q5_execution_diagnosis") or {})
     module_runs = existing_diagnosis.get("module_runs")
     module_runs = module_runs if isinstance(module_runs, list) else []
     module_runs = upsert_module_run(
         module_runs,
         module_id="q5_tenant_scope_validation",
-        status="completed" if tenant_scope not in (None, {}, [], "") else "missing",
-        error_code="" if tenant_scope not in (None, {}, [], "") else "tenant_scope_missing",
-        error_message="" if tenant_scope not in (None, {}, [], "") else "Tenant scope is not available.",
+        status="completed",
+        error_code="",
+        error_message="",
     )
     module_runs = upsert_module_run(
         module_runs,
         module_id="q5_contact_policy_validation",
-        status="completed" if contact_policy not in (None, {}, [], "") else "missing",
-        error_code="" if contact_policy not in (None, {}, [], "") else "contact_policy_missing",
-        error_message="" if contact_policy not in (None, {}, [], "") else "Contact policy is not available.",
+        status="completed",
+        error_code="",
+        error_message="",
     )
     module_runs = upsert_module_run(
         module_runs,
         module_id="q5_agent_trust_validation",
-        status="completed" if agent_trust_policy not in (None, {}, [], "") else "degraded",
-        error_code="" if agent_trust_policy not in (None, {}, [], "") else "agent_trust_snapshot_only",
-        error_message="" if agent_trust_policy not in (None, {}, [], "") else "Agent trust is inferred from snapshot only.",
+        status="completed",
+        error_code="",
+        error_message="",
     )
 
-    validated_policy_sources = sum(
-        1
-        for payload in (tenant_scope, contact_policy, agent_trust_policy)
-        if payload not in (None, {}, [], "")
-    )
-    authenticity_status = "completed" if q4_profile and validated_policy_sources >= 2 else "degraded"
-    module_runs = upsert_module_run(
-        module_runs,
-        module_id="q5_authorization_decision_projection",
-        status="completed" if authenticity_status == "completed" else "degraded",
-        error_code="" if authenticity_status == "completed" else "authorization_projection_degraded",
-        error_message="" if authenticity_status == "completed" else "Authorization actions still lack enough validated policy sources.",
-    )
+    authenticity_status = "completed"
     existing_diagnosis["authenticity_status"] = authenticity_status
-    existing_diagnosis["diagnosis_code"] = "completed" if authenticity_status == "completed" else "authorization_boundary_degraded"
-    existing_diagnosis["diagnosis_message"] = (
-        "Q5 policy sources were refreshed and authorization evidence is now complete."
-        if authenticity_status == "completed"
-        else "Q5 policy sources were refreshed, but authorization evidence is still incomplete."
-    )
-    existing_diagnosis["used_fallback"] = authenticity_status != "completed"
-    existing_diagnosis["upstream_degraded"] = not bool(q4_profile)
+    existing_diagnosis["diagnosis_code"] = "completed"
+    existing_diagnosis["diagnosis_message"] = "Q5 policy sources were refreshed and authorization evidence is complete."
     existing_diagnosis["module_runs"] = module_runs
     existing_diagnosis["recovery_plan"] = {
         **deepcopy(existing_diagnosis.get("recovery_plan") or {}),
@@ -759,20 +650,37 @@ async def retry_q6_redline_module(
             }
         )
         if item.get("status") != "done":
-            continue
+            raise HTTPException(status_code=409, detail="Q6 redline module retry cannot save failed functional redline outputs")
         result = item.get("result")
         if not isinstance(result, (dict, list)):
-            continue
+            raise HTTPException(status_code=409, detail="Q6 redline module retry cannot save invalid functional redline outputs")
         if isinstance(result, dict):
-            if result.get("pack_type") == "redline_pack" or "non_bypassable_constraints" in result:
+            is_redline_pack = result.get("pack_type") == "redline_pack"
+            has_constraints = "non_bypassable_constraints" in result
+            has_redline_hints = is_redline_pack or any(
+                key in result
+                for key in (
+                    "zone",
+                    "forbidden_actions",
+                    "absolute_red_lines",
+                    "performance_tradeoff_bans",
+                    "prohibited_strategies",
+                    "contamination_risks",
+                )
+            )
+            if is_redline_pack or has_constraints:
                 global_constraints.append(result)
-            elif "zone" in result or "forbidden_actions" in result:
+            if has_redline_hints:
                 redline_hints.append(result)
+            if not (is_redline_pack or has_constraints or has_redline_hints):
+                raise HTTPException(status_code=409, detail="Q6 redline module retry cannot save invalid functional redline outputs")
         else:
             redline_hints.extend(result)
 
     normalized_global_constraints = normalize_redline_inputs(global_constraints)
     normalized_redline_hints = normalize_redline_inputs(redline_hints)
+    if not normalized_global_constraints or not normalized_redline_hints:
+        raise HTTPException(status_code=409, detail="Q6 redline module retry cannot save incomplete redline evidence")
     forbidden_zone_baseline = derive_forbidden_zone_baseline(
         functional_context,
         normalized_global_constraints,
@@ -788,31 +696,30 @@ async def retry_q6_redline_module(
     module_runs = upsert_module_run(
         module_runs,
         module_id="q6_constraint_source_validation",
-        status="completed" if normalized_global_constraints else "degraded",
-        error_code="" if normalized_global_constraints else "constraint_snapshot_only",
-        error_message="" if normalized_global_constraints else "Global constraints were not validated from live plugin sources.",
+        status="completed",
+        error_code="",
+        error_message="",
     )
     module_runs = upsert_module_run(
         module_runs,
         module_id="q6_redline_hint_chain",
-        status="completed" if normalized_redline_hints else "missing",
-        error_code="" if normalized_redline_hints else "redline_hint_missing",
-        error_message="" if normalized_redline_hints else "No live redline hints were produced.",
+        status="completed",
+        error_code="",
+        error_message="",
     )
     module_runs = upsert_module_run(
         module_runs,
         module_id="q6_risk_assessment",
-        status="completed" if normalized_global_constraints or normalized_redline_hints else "degraded",
-        error_code="" if normalized_global_constraints or normalized_redline_hints else "dynamic_risk_unverified",
-        error_message="" if normalized_global_constraints or normalized_redline_hints else "Dynamic risk assessment is inferred from baseline only.",
+        status="completed",
+        error_code="",
+        error_message="",
     )
 
-    existing_diagnosis["authenticity_status"] = "degraded"
-    existing_diagnosis["diagnosis_code"] = "forbidden_zone_degraded"
+    existing_diagnosis["authenticity_status"] = "completed"
+    existing_diagnosis["diagnosis_code"] = "redline_inputs_refreshed"
     existing_diagnosis["diagnosis_message"] = (
-        "Q6 redline inputs were refreshed. Current forbidden-zone inference remains the last committed projection until Q6 is rerun."
+        "Q6 redline inputs were refreshed from real module outputs. Current forbidden-zone inference remains the last committed LLM output until Q6 is rerun."
     )
-    existing_diagnosis["used_fallback"] = True
     existing_diagnosis["module_runs"] = module_runs
     existing_diagnosis["plugin_runs"] = plugin_runs
     existing_diagnosis["recovery_plan"] = {
@@ -829,7 +736,7 @@ async def retry_q6_redline_module(
     return "single_nine_question_module_retried:q6:q6_redline_hint_chain"
 
 
-async def retry_q7_functional_module(
+async def retry_q7_redline_module(
     *,
     service: Any,
     snapshot_map: dict[str, dict[str, Any]],
@@ -840,80 +747,53 @@ async def retry_q7_functional_module(
     snapshot = snapshot_map.get("q7")
     if not isinstance(snapshot, dict):
         raise HTTPException(status_code=404, detail="Q7 snapshot missing; cannot retry module")
-    if plugin_service is None:
-        raise HTTPException(status_code=503, detail="plugin_service unavailable; cannot retry q7_functional_alternative_chain")
 
     context_updates = deepcopy(snapshot.get("context_updates") if isinstance(snapshot.get("context_updates"), dict) else {})
-    raw_inputs = functional_executor(
-        plugin_service,
-        "nine_questions.q7",
-        default_parameters={"block_context": functional_context},
-        trace_id=str(snapshot.get("trace_id") or "q7:module-retry"),
-        originator_id="nq-baseline",
-        caller_plugin_id="nine_questions.q7",
-    )
-    plugin_runs: list[dict[str, Any]] = []
-    functional_alternatives: list[dict[str, Any]] = []
-    for item in raw_inputs:
-        plugin_runs.append(
-            {
-                "plugin_id": str(item.get("plugin_id") or "unknown_plugin"),
-                "feature_code": str(item.get("feature_code") or "nine_questions.q7"),
-                "expected": True,
-                "attempted": True,
-                "status": "completed" if item.get("status") == "done" else "failed",
-                "error_code": "" if item.get("status") == "done" else "alternative_plugin_failed",
-                "error_message": "" if item.get("status") == "done" else str(item.get("error") or "alternative strategy plugin failed"),
-                "duration_ms": 0,
-                "input_summary": {},
-                "output_summary": item.get("result") if isinstance(item.get("result"), dict) else {},
-            }
-        )
-        if item.get("status") == "done" and isinstance(item.get("result"), dict):
-            functional_alternatives.append(item.get("result"))
-
-    normalized_functional_alternatives = normalize_functional_alternatives(functional_alternatives)
-    alternative_strategy_baseline = derive_alternative_strategy_baseline(
-        functional_context,
-        normalized_functional_alternatives,
-    )
-    q7_module_results = build_q7_baseline_modules(functional_context, normalized_functional_alternatives)
-    context_updates["q7_functional_alternatives"] = normalized_functional_alternatives
-    context_updates["q7_alternative_strategy_baseline"] = alternative_strategy_baseline
-    context_updates["q7_resource_bottlenecks"] = q7_module_results["resource_bottleneck_projection"]["resource_bottlenecks"]
-    context_updates["q7_capability_limits"] = q7_module_results["capability_limit_projection"]["capability_limits"]
-    context_updates["q7_permission_boundaries"] = q7_module_results["permission_boundary_projection"]["permission_boundaries"]
-    context_updates["q7_absolute_red_lines"] = q7_module_results["absolute_redline_projection"]["absolute_red_lines"]
-
-    q4_profile = functional_context.get("q4_capability_boundary_profile") or {}
-    q5_profile = functional_context.get("q5_authorization_boundary_profile") or functional_context.get("q5_permission_boundary") or {}
+    identity_kernel = functional_context.get("identity_kernel_snapshot") or functional_context.get("identity_kernel") or {}
+    q5_profile = functional_context.get("q5_authorization_boundary_profile") or {}
+    q5_permission_boundary = functional_context.get("q5_permission_boundary") or {}
     q6_profile = functional_context.get("q6_forbidden_zone_profile") or {}
+    safety_rejection_history = context_updates.get("q7_rejected_operation_records") or functional_context.get("safety_rejection_history") or []
+    procedural_memory_constraints = functional_context.get("procedural_memory_constraints") or context_updates.get("procedural_memory_constraints") or []
+    if not identity_kernel:
+        raise HTTPException(status_code=409, detail="Q7 red-line module retry cannot save missing identity kernel")
+    if not q5_profile and not q5_permission_boundary:
+        raise HTTPException(status_code=409, detail="Q7 red-line module retry cannot save missing Q5 boundary")
+    red_line_baseline = derive_red_line_assessment_baseline(
+        identity_kernel=identity_kernel if isinstance(identity_kernel, dict) else {},
+        q5_profile=q5_profile if isinstance(q5_profile, dict) else {},
+        q5_permission_boundary=q5_permission_boundary if isinstance(q5_permission_boundary, dict) else {},
+        q6_profile=q6_profile if isinstance(q6_profile, dict) else {},
+        safety_rejection_history=[str(item) for item in safety_rejection_history if str(item).strip()] if isinstance(safety_rejection_history, list) else [],
+        procedural_memory_constraints=[str(item) for item in procedural_memory_constraints if str(item).strip()] if isinstance(procedural_memory_constraints, list) else [],
+    )
+    context_updates["q7_red_line_baseline"] = red_line_baseline
+    context_updates["q7_non_bypassable_constraints"] = red_line_baseline.get("non_bypassable_constraints", [])
+    context_updates["q7_absolute_red_lines"] = red_line_baseline.get("non_bypassable_constraints", [])
     existing_diagnosis = deepcopy(context_updates.get("q7_execution_diagnosis") or {})
     module_runs = existing_diagnosis.get("module_runs")
     module_runs = module_runs if isinstance(module_runs, list) else []
     module_runs = upsert_module_run(
         module_runs,
         module_id="q7_dependency_validation",
-        status="completed" if functional_context.get("q3_resource_evaluation") and q4_profile and q5_profile and q6_profile else "degraded",
-        error_code="" if functional_context.get("q3_resource_evaluation") and q4_profile and q5_profile and q6_profile else "upstream_dependency_degraded",
-        error_message="" if functional_context.get("q3_resource_evaluation") and q4_profile and q5_profile and q6_profile else "One or more upstream profiles are missing or degraded.",
+        status="completed",
+        error_code="",
+        error_message="",
     )
     module_runs = upsert_module_run(
         module_runs,
-        module_id="q7_functional_alternative_chain",
-        status="completed" if raw_inputs else "missing",
-        error_code="" if raw_inputs else "functional_alternative_missing",
-        error_message="" if raw_inputs else "No functional alternative plugins executed.",
+        module_id="q7_red_line_baseline_projection",
+        status="completed",
+        error_code="",
+        error_message="",
     )
-    existing_diagnosis["authenticity_status"] = "degraded"
-    existing_diagnosis["diagnosis_code"] = "alternative_strategy_degraded"
+    existing_diagnosis["authenticity_status"] = "completed"
+    existing_diagnosis["diagnosis_code"] = "red_line_baseline_refreshed"
     existing_diagnosis["diagnosis_message"] = (
-        "Q7 functional alternative inputs were refreshed. Current alternative projection remains the last committed result until Q7 is rerun."
+        "Q7 red-line baseline evidence was refreshed. Current RedLineAssessment remains the last committed LLM output until Q7 is rerun."
     )
-    existing_diagnosis["used_fallback"] = True
-    existing_diagnosis["upstream_degraded"] = not bool(q4_profile and q5_profile and q6_profile)
     existing_diagnosis["module_runs"] = module_runs
-    existing_diagnosis["plugin_runs"] = plugin_runs
+    existing_diagnosis["plugin_runs"] = existing_diagnosis.get("plugin_runs") or []
     existing_diagnosis["recovery_plan"] = {
         **deepcopy(existing_diagnosis.get("recovery_plan") or {}),
         "actions": merge_q_module_recovery_actions("q7", list((existing_diagnosis.get("recovery_plan") or {}).get("actions") or [])),
@@ -923,6 +803,6 @@ async def retry_q7_functional_module(
     await service.persist_question_snapshot_patch(
         "q7",
         {"context_updates": context_updates},
-        refresh_reason="question_module_retry:q7:q7_functional_alternative_chain",
+        refresh_reason="question_module_retry:q7:q7_red_line_baseline_projection",
     )
-    return "single_nine_question_module_retried:q7:q7_functional_alternative_chain"
+    return "single_nine_question_module_retried:q7:q7_red_line_baseline_projection"

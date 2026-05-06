@@ -19,6 +19,7 @@ class CliToolRegistrationConfig(BaseModel):
     description: str = Field(min_length=1)
     read_only_flag: bool = True
     help_doc_url: Optional[str] = None
+    project_doc_url: Optional[str] = None
     project_path: Optional[str] = None
     project_name: Optional[str] = None
     project_description: Optional[str] = None
@@ -46,6 +47,7 @@ class CliToolRuntimeState(BaseModel):
     requires_cloud_audit: bool = False
     status: Literal["active", "degraded", "revoked", "stopped"] = "active"
     help_doc_url: Optional[str] = None
+    project_doc_url: Optional[str] = None
     project_path: Optional[str] = None
     project_name: Optional[str] = None
     project_description: Optional[str] = None
@@ -65,7 +67,7 @@ class ToolUsageProfile(BaseModel):
     source_type: Literal["cli", "mcp"]
     source_refs: List[str] = Field(default_factory=list)
     degraded: bool = False
-    learning_status: Literal["learned", "degraded"] = "learned"
+    learning_status: Literal["learned", "degraded", "simulated_learned"] = "learned"
 
 class CliInvocationResult(BaseModel):
     model_config = ConfigDict(extra="forbid", frozen=True)

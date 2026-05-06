@@ -7,7 +7,7 @@ direct access to runtime.nine_question_state and runtime.nine_question_router.
 
 
 from abc import ABC, abstractmethod
-from typing import List
+from typing import Any, Dict, List, Optional
 
 from .kernel_service import NineQuestionStateSnapshot
 
@@ -49,6 +49,27 @@ class NineQuestionStateManager(ABC):
             List of question IDs (e.g., ["q3", "q5"])
         """
         pass
+
+    async def append_question_snapshot_history(
+        self,
+        session_id: str,
+        question_id: str,
+        snapshot: Dict[str, Any],
+        *,
+        reason: str = "",
+    ) -> Dict[str, Any]:
+        """Append a previous question snapshot to the independent history store."""
+        raise NotImplementedError
+
+    async def get_question_snapshot_history(
+        self,
+        session_id: str,
+        question_id: str,
+        *,
+        limit: int = 20,
+    ) -> List[Dict[str, Any]]:
+        """Query historical question snapshots without reading the latest state."""
+        raise NotImplementedError
 
     @abstractmethod
     async def get_last_refresh_reason(self, session_id: str) -> Optional[str]:

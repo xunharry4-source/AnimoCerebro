@@ -110,9 +110,16 @@ QUESTION_MODULE_IDS: dict[str, list[str]] = {
         "authorization_boundary_projection",
         "non_bypassable_constraints_projection",
         "historical_strategy_patch_projection",
-        "redline_inference",
-        "tradeoff_ban_inference",
-        "contamination_inference",
+        "q6_consequence_projection",
+        "consequence_assessment_inference",
+        "cost_impact_inference",
+        "mitigation_requirement_inference",
+        "q6_evolution_projection",
+        "capability_gap_inference",
+        "recommended_expansion_inference",
+        "evolution_profile_inference",
+        "validation_requirement_inference",
+        "q6_forbidden_projection",
     ],
     "q7": [
         "resource_bottleneck_projection",
@@ -164,6 +171,25 @@ def _merge_missing_fields(target: dict[str, Any], source: dict[str, Any]) -> dic
     return merged
 
 
+def _has_q2_asset_inventory_rows(value: Any) -> bool:
+    inventory = _as_dict(value)
+    return any(isinstance(item, list) and len(item) > 0 for item in inventory.values())
+
+
+def _merge_q2_asset_projection(primary: dict[str, Any], fallback: dict[str, Any]) -> dict[str, Any]:
+    if not fallback:
+        return primary
+    merged = deepcopy(primary)
+    if not _has_q2_asset_inventory_rows(merged.get("asset_inventory")) and _has_q2_asset_inventory_rows(
+        fallback.get("asset_inventory")
+    ):
+        merged["asset_inventory"] = deepcopy(fallback["asset_inventory"])
+    for key in ("workspace_permission", "tools_agents", "memory_strategy", "sufficiency_assessment"):
+        if merged.get(key) in (None, "", [], {}) and fallback.get(key) not in (None, "", [], {}):
+            merged[key] = deepcopy(fallback[key])
+    return merged
+
+
 def _question_number(question_id: str) -> Optional[int]:
     if not isinstance(question_id, str) or not question_id.startswith("q"):
         return None
@@ -178,6 +204,25 @@ def _merge_snapshot_payload(snapshot: dict[str, Any]) -> dict[str, Any]:
         if payload:
             merged.update(payload)
     return merged
+
+
+def _merge_llm_trace_payload(primary: Any, fallback: Any) -> dict[str, Any]:
+    merged = _as_dict(primary)
+    fallback_payload = _as_dict(fallback)
+    if not fallback_payload:
+        return merged
+    if not merged:
+        return deepcopy(fallback_payload)
+    for key, value in fallback_payload.items():
+        if merged.get(key) in (None, "", [], {}) and value not in (None, "", [], {}):
+            merged[key] = deepcopy(value)
+    return merged
+
+
+def _unwrap_q7_red_line_assessment(payload: Any) -> dict[str, Any]:
+    assessment = _as_dict(payload)
+    wrapped = assessment.get("RedLineAssessment")
+    return _as_dict(wrapped) if isinstance(wrapped, dict) else assessment
 
 
 def _module_payload_data(module_payload: Any) -> dict[str, Any]:
@@ -208,22 +253,11 @@ def _inject_module_outputs_into_projection(
             merged_result[key] = deepcopy(value)
 
     if question_id == "q2":
-        dep = _module_payload_data(module_payloads.get("q2_q1_dependency_validation"))
-        if dep:
-            for key in ("workspace_domain_inference", "q1_scene_model", "q1_uncertainty_profile"):
-                _set_context(key, dep.get(key))
-        identity = _module_payload_data(module_payloads.get("q2_identity_kernel_validation"))
-        _set_context("identity_kernel_snapshot", identity.get("identity_kernel") or identity)
-        functional = _module_payload_data(module_payloads.get("q2_functional_identity_chain"))
-        _set_context("q2_functional_identity_inputs", functional.get("functional_inputs") or functional)
-        role = _module_payload_data(module_payloads.get("q2_role_reasoning_projection"))
-        for key in ("role_profile", "mission_boundary"):
-            _set_result(key, role.get(key))
-        _set_context("q2_role_profile", role.get("role_profile"))
-        _set_context("q2_mission_boundary", role.get("mission_boundary"))
-        _set_context("q2_risk_preference", role.get("risk_preference"))
-    elif question_id == "q3":
-        inventory = _as_dict(merged_context.get("q3_unified_asset_inventory"))
+        asset_inventory = _as_dict(merged_context.get("q2_asset_inventory") or merged_result.get("asset_inventory"))
+        if asset_inventory:
+            _set_result("asset_inventory", asset_inventory)
+            _set_context("q2_asset_inventory", asset_inventory)
+        inventory = _as_dict(merged_context.get("q2_unified_asset_inventory"))
         workspace = _module_payload_data(module_payloads.get("workspace_permission_inventory"))
         if workspace:
             if isinstance(workspace.get("accessible_workspace_zones"), list):
@@ -250,13 +284,28 @@ def _inject_module_outputs_into_projection(
         if memory:
             inventory.update(deepcopy(memory))
             _set_context("memory_and_strategy", memory)
-        _set_context("q3_unified_asset_inventory", inventory)
-        sufficiency = _module_payload_data(module_payloads.get("resource_sufficiency_inference"))
+        _set_context("q2_unified_asset_inventory", inventory)
+        sufficiency = _module_payload_data(module_payloads.get("q2_resource_sufficiency_inference"))
         _set_result("resource_evaluation", sufficiency)
-        _set_context("q3_resource_evaluation", sufficiency)
+        _set_context("q2_resource_evaluation", sufficiency)
+    elif question_id == "q3":
+        q1_dep = _module_payload_data(module_payloads.get("q3_q1_dependency_validation"))
+        if q1_dep:
+            _set_context("q1_environment_inference", q1_dep.get("workspace_domain_inference") or q1_dep)
+            _set_context("q1_llm_trace_payload", q1_dep.get("q1_llm_trace_payload"))
+        q2_dep = _module_payload_data(module_payloads.get("q3_q2_asset_dependency_validation"))
+        if q2_dep:
+            _set_context("q2_asset_inventory", q2_dep.get("q2_asset_inventory"))
+            _set_context("q2_resource_evaluation", q2_dep.get("q2_resource_evaluation"))
+            _set_context("q2_llm_trace_payload", q2_dep.get("q2_llm_trace_payload"))
+        role = _module_payload_data(module_payloads.get("q3_role_reasoning_projection"))
+        q3_result = role.get("Q3InferenceResult") if isinstance(role.get("Q3InferenceResult"), dict) else {}
+        _set_result("Q3InferenceResult", q3_result)
+        _set_context("q3_role_profile", q3_result.get("RoleProfile"))
+        _set_context("q3_mission_boundary", q3_result.get("MissionContinuityBoundary"))
     elif question_id == "q4":
         inventory = _module_payload_data(module_payloads.get("q4_inventory_validation"))
-        for key in ("q1_scene_model", "q1_uncertainty_profile", "q2_role_profile", "q2_mission_boundary", "q3_unified_asset_inventory", "q3_resource_evaluation"):
+        for key in ("q1_scene_model", "q1_uncertainty_profile", "q2_unified_asset_inventory", "q2_resource_evaluation", "q3_role_profile", "q3_mission_boundary"):
             _set_context(key, inventory.get(key))
         permission = _module_payload_data(module_payloads.get("q4_permission_validation"))
         _set_context("q4_permission_profile", permission.get("q4_permission_profile") or permission)
@@ -279,10 +328,13 @@ def _inject_module_outputs_into_projection(
         trust = _module_payload_data(module_payloads.get("q5_agent_trust_validation"))
         _set_context("q5_agent_trust_status", trust.get("q5_agent_trust_status") or trust.get("agent_trust_status") or trust)
         decision = _module_payload_data(module_payloads.get("q5_authorization_decision_projection"))
+        _set_result("authorization_boundary", decision.get("authorization_boundary"))
         _set_result("authorization_boundary_profile", decision.get("authorization_boundary_profile") or decision)
         _set_result("permission_boundary", decision.get("permission_boundary"))
+        _set_context("q5_authorization_boundary", decision.get("authorization_boundary"))
         _set_context("q5_authorization_boundary_profile", decision.get("authorization_boundary_profile") or decision)
         _set_context("q5_permission_boundary", decision.get("permission_boundary"))
+        _set_context("q5_objective_convergence_guard", decision.get("q5_objective_convergence_guard"))
     elif question_id == "q6":
         q4_boundary = _module_payload_data(module_payloads.get("q6_q4_boundary_validation"))
         _set_context("q4_capability_boundary_profile", q4_boundary.get("q4_capability_boundary_profile") or q4_boundary)
@@ -297,6 +349,26 @@ def _inject_module_outputs_into_projection(
         baseline = _module_payload_data(module_payloads.get("q6_risk_assessment"))
         _set_context("q6_forbidden_zone_baseline", baseline.get("q6_forbidden_zone_baseline") or baseline)
         forbidden = (
+            _module_payload_data(module_payloads.get("q6_consequence_projection"))
+            or _module_payload_data(module_payloads.get("q6_evolution_projection"))
+            or _module_payload_data(module_payloads.get("evolution_profile_inference"))
+            or _module_payload_data(module_payloads.get("capability_gap_inference"))
+            or _module_payload_data(module_payloads.get("recommended_expansion_inference"))
+            or _module_payload_data(module_payloads.get("validation_requirement_inference"))
+        )
+        if forbidden:
+            consequence_assessment = None
+            cost_impact_profile = None
+            if isinstance(forbidden, dict):
+                consequence_assessment = forbidden.get("ConsequenceAssessment") or forbidden.get("consequence_assessment")
+                cost_impact_profile = forbidden.get("CostImpactProfile") or forbidden.get("cost_impact_profile")
+            if consequence_assessment:
+                _set_result("ConsequenceAssessment", consequence_assessment)
+                _set_context("q6_consequence_assessment", consequence_assessment)
+            if cost_impact_profile:
+                _set_result("CostImpactProfile", cost_impact_profile)
+                _set_context("q6_cost_impact_profile", cost_impact_profile)
+        forbidden = (
             _module_payload_data(module_payloads.get("q6_forbidden_zone_projection"))
             or _module_payload_data(module_payloads.get("q6_forbidden_projection"))
         )
@@ -305,28 +377,34 @@ def _inject_module_outputs_into_projection(
     elif question_id == "q7":
         deps = _module_payload_data(module_payloads.get("q7_dependency_validation"))
         for key in (
-            "q3_resource_evaluation",
-            "q4_capability_boundary_profile",
+            "identity_kernel_snapshot",
             "q5_authorization_boundary_profile",
             "q5_permission_boundary",
+            "q6_consequence_profile",
             "q6_forbidden_zone_profile",
-            "q7_resource_bottlenecks",
-            "q7_capability_limits",
-            "q7_permission_boundaries",
-            "q7_absolute_red_lines",
-            "q7_historical_failure_patches",
+            "safety_rejection_history",
+            "procedural_memory_constraints",
+            "q7_red_line_baseline",
         ):
             _set_context(key, deps.get(key))
-        baseline = _module_payload_data(module_payloads.get("q7_fallback_baseline_projection"))
-        _set_context("q7_alternative_strategy_baseline", baseline)
-        functional = _module_payload_data(module_payloads.get("q7_functional_alternative_chain"))
-        _set_context("q7_functional_alternatives", functional)
-        strategy = (
-            _module_payload_data(module_payloads.get("q7_alternative_strategy_projection"))
+        baseline = _module_payload_data(module_payloads.get("q7_red_line_baseline_projection"))
+        _set_context("q7_red_line_baseline", baseline)
+        assessment = (
+            _module_payload_data(module_payloads.get("q7_red_line_assessment_projection"))
             or _module_payload_data(module_payloads.get("q7_alternative_projection"))
         )
-        _set_result("alternative_strategy_profile", strategy)
-        _set_context("q7_alternative_strategy_profile", strategy)
+        assessment_body = _unwrap_q7_red_line_assessment(assessment)
+        _set_result("red_line_assessment", assessment)
+        _set_context("q7_red_line_assessment", assessment)
+        _set_context("q7_current_redline_hits", assessment_body.get("current_redline_hits"))
+        _set_context("q7_current_red_line_hits", assessment_body.get("current_red_line_hits") or assessment_body.get("current_redline_hits"))
+        _set_context("q7_rejected_operations_log", assessment_body.get("rejected_operations_log"))
+        _set_context("q7_rejected_operation_records", assessment_body.get("rejected_operation_records") or assessment_body.get("rejected_operations_log"))
+        _set_context("q7_constraint_sources_explanation", assessment_body.get("constraint_sources_explanation"))
+        _set_context("q7_ban_source_explanations", assessment_body.get("ban_source_explanations") or assessment_body.get("constraint_sources_explanation"))
+        _set_context("q7_non_bypassable_constraints", assessment_body.get("non_bypassable_constraints"))
+        _set_context("q7_question_driver_refs", assessment_body.get("question_driver_refs"))
+        _set_context("q7_absolute_red_lines", assessment_body.get("non_bypassable_constraints"))
     elif question_id == "q8":
         snapshot = _module_payload_data(module_payloads.get("q8_snapshot_validation"))
         _set_context("q8_q1_q7_snapshot", snapshot.get("q8_q1_q7_snapshot") or snapshot)
@@ -341,6 +419,20 @@ def _inject_module_outputs_into_projection(
         _set_result("task_queue", decision.get("task_queue"))
         if decision:
             _set_result("q8_objective_and_queue", decision)
+        internal_generation = _module_payload_data(module_payloads.get("q8_internal_task_generation"))
+        internal_llm_output = _as_dict(internal_generation.get("q8_internal_llm_output"))
+        if internal_llm_output:
+            _set_result("q8_internal_llm_output", internal_llm_output)
+            _set_context("q8_internal_llm_output", internal_llm_output)
+            _set_result("q8_internal_cognitive_tasks", internal_llm_output.get("internal_cognitive_tasks"))
+            _set_context("q8_internal_cognitive_tasks", internal_llm_output.get("internal_cognitive_tasks"))
+        external_generation = _module_payload_data(module_payloads.get("q8_external_task_generation"))
+        external_llm_output = _as_dict(external_generation.get("q8_external_llm_output"))
+        if external_llm_output:
+            _set_result("q8_external_llm_output", external_llm_output)
+            _set_context("q8_external_llm_output", external_llm_output)
+            _set_result("q8_external_execution_tasks", external_llm_output.get("external_execution_tasks"))
+            _set_context("q8_external_execution_tasks", external_llm_output.get("external_execution_tasks"))
     elif question_id == "q9":
         snapshot = _module_payload_data(module_payloads.get("q9_q1_q8_validation"))
         _set_context("q9_q1_q8_snapshot", snapshot.get("q9_q1_q8_snapshot") or snapshot)
@@ -353,6 +445,9 @@ def _inject_module_outputs_into_projection(
         posture = _module_payload_data(module_payloads.get("q9_posture_control_projection"))
         if posture:
             _set_result("q9_action_posture_profile", posture)
+            action_plan = posture.get("action_plan") if isinstance(posture.get("action_plan"), dict) else posture
+            _set_result("action_plan", action_plan)
+            _set_result("q9_action_plan", posture.get("q9_action_plan") or action_plan)
             for key in ("evaluation_profile", "evolution_profile", "escalation_profile"):
                 _set_result(key, posture.get(key))
 
@@ -407,9 +502,10 @@ def _build_question_dependency_snapshot(
             if isinstance(uncertainty, dict) and uncertainty:
                 value["q1_uncertainty_profile"] = deepcopy(uncertainty)
         elif question_id == "q2":
-            value = context_updates.get("q2_role_profile") or result_payload.get("role_profile") or {}
+            value = context_updates.get("q2_asset_inventory") or result_payload.get("asset_inventory") or {}
         elif question_id == "q3":
-            value = context_updates.get("q3_resource_evaluation") or result_payload.get("resource_evaluation") or {}
+            q3_result = result_payload.get("Q3InferenceResult") if isinstance(result_payload.get("Q3InferenceResult"), dict) else {}
+            value = context_updates.get("q3_role_profile") or q3_result.get("RoleProfile") or {}
         elif question_id == "q4":
             value = context_updates.get("q4_capability_boundary_profile") or result_payload.get("capability_boundary_profile") or {}
         elif question_id == "q5":
@@ -420,15 +516,30 @@ def _build_question_dependency_snapshot(
                 or {}
             )
         elif question_id == "q6":
-            value = context_updates.get("q6_forbidden_zone_profile") or result_payload.get("forbidden_zone_profile") or {}
+            value = (
+                context_updates.get("q6_cost_impact_profile")
+                or result_payload.get("CostImpactProfile")
+                or result_payload.get("cost_impact_profile")
+                or context_updates.get("q6_consequence_assessment")
+                or result_payload.get("ConsequenceAssessment")
+                or result_payload.get("consequence_assessment")
+                or context_updates.get("q6_forbidden_zone_profile")
+                or result_payload.get("forbidden_zone_profile")
+                or {}
+            )
         elif question_id == "q7":
             value = {}
-            profile = context_updates.get("q7_alternative_strategy_profile") or result_payload.get("alternative_strategy_profile")
+            profile = (
+                context_updates.get("q7_red_line_assessment")
+                or context_updates.get("red_line_assessment")
+                or result_payload.get("red_line_assessment")
+            )
             if isinstance(profile, dict) and profile:
                 value.update(deepcopy(profile))
-            capability_limits = context_updates.get("q7_capability_limits")
-            if capability_limits not in (None, "", [], {}):
-                value["capability_limits"] = deepcopy(capability_limits)
+            profile_body = _unwrap_q7_red_line_assessment(profile)
+            constraints = context_updates.get("q7_non_bypassable_constraints") or profile_body.get("non_bypassable_constraints")
+            if constraints not in (None, "", [], {}):
+                value["non_bypassable_constraints"] = deepcopy(constraints)
         elif question_id == "q8":
             value = context_updates.get("q8_objective_profile") or result_payload.get("objective_profile") or {}
         else:
@@ -501,40 +612,46 @@ def _derive_q5_actionable_space(context_updates: dict[str, Any]) -> list[str]:
 
 
 def _derive_q7_projection_fields(context_updates: dict[str, Any]) -> dict[str, Any]:
-    q3_eval = _as_dict(context_updates.get("q3_resource_evaluation"))
-    q4_profile = _as_dict(context_updates.get("q4_capability_boundary_profile"))
     q5_profile = _as_dict(context_updates.get("q5_authorization_boundary_profile"))
-    q5_permission_boundary = _as_dict(context_updates.get("q5_permission_boundary"))
-    q6_profile = _as_dict(context_updates.get("q6_forbidden_zone_profile"))
-    q7_module_results = _as_dict(context_updates.get("q7_module_results"))
-
-    historical_projection = _as_dict(q7_module_results.get("historical_failure_patch_projection"))
-    permission_boundaries = (
-        _coerce_string_list(context_updates.get("q7_permission_boundaries"))
-        + _coerce_string_list(q5_profile.get("allowed_action_space"))
-        + _coerce_string_list(q5_profile.get("allowed_actions"))
-        + _coerce_string_list(q5_permission_boundary.get("authorized_actions"))
-        + _coerce_string_list(q5_permission_boundary.get("conditional_actions"))
-        + _coerce_string_list(q5_permission_boundary.get("unauthorized_actions"))
-    )
-    seen: set[str] = set()
+    q7_assessment = _unwrap_q7_red_line_assessment(context_updates.get("q7_red_line_assessment") or context_updates.get("red_line_assessment"))
+    q7_baseline = _as_dict(context_updates.get("q7_red_line_baseline"))
 
     return {
-        "q7_resource_bottlenecks": _coerce_meaningful_string_list(
-            context_updates.get("q7_resource_bottlenecks"),
-            q3_eval.get("missing_critical_assets"),
-            q3_eval.get("bottleneck_node"),
+        "q7_current_red_line_hits": _coerce_string_list(
+            context_updates.get("q7_current_red_line_hits")
+            or context_updates.get("q7_current_redline_hits")
+            or q7_assessment.get("current_red_line_hits")
+            or q7_assessment.get("current_redline_hits")
         ),
-        "q7_capability_limits": _coerce_string_list(
-            context_updates.get("q7_capability_limits") or q4_profile.get("capability_upper_limits")
+        "q7_rejected_operation_records": _coerce_string_list(
+            context_updates.get("q7_rejected_operation_records")
+            or context_updates.get("q7_rejected_operations_log")
+            or q7_assessment.get("rejected_operation_records")
+            or q7_assessment.get("rejected_operations_log")
+            or q7_baseline.get("safety_rejection_history")
         ),
-        "q7_permission_boundaries": [item for item in permission_boundaries if item and not (item in seen or seen.add(item))],
+        "q7_ban_source_explanations": _coerce_string_list(
+            context_updates.get("q7_ban_source_explanations")
+            or context_updates.get("q7_constraint_sources_explanation")
+            or q7_assessment.get("ban_source_explanations")
+            or q7_assessment.get("constraint_sources_explanation")
+            or q7_baseline.get("ban_source_explanations")
+        ),
+        "q7_non_bypassable_constraints": _coerce_string_list(
+            context_updates.get("q7_non_bypassable_constraints")
+            or q7_assessment.get("non_bypassable_constraints")
+            or q7_baseline.get("non_bypassable_constraints")
+        ),
+        "q7_question_driver_refs": _coerce_string_list(
+            context_updates.get("q7_question_driver_refs")
+            or q7_assessment.get("question_driver_refs")
+            or q7_baseline.get("question_driver_refs")
+        ),
         "q7_absolute_red_lines": _coerce_string_list(
-            context_updates.get("q7_absolute_red_lines") or q6_profile.get("absolute_red_lines")
-        ),
-        "q7_historical_failure_patches": _coerce_string_list(
-            context_updates.get("q7_historical_failure_patches")
-            or historical_projection.get("historical_failure_patches")
+            context_updates.get("q7_absolute_red_lines")
+            or q7_assessment.get("non_bypassable_constraints")
+            or q7_baseline.get("non_bypassable_constraints")
+            or q5_profile.get("forbidden_action_space")
         ),
     }
 
@@ -689,7 +806,7 @@ def _build_q1_source_summary(
     else:
         domain_inference_source = "missing"
 
-    snapshot_fallback_used = diagnosis.get("snapshot_fallback_used", True)
+    snapshot_fallback_used = diagnosis.get("snapshot_fallback_used", False)
     overall_authenticity = diagnosis.get("overall_authenticity", "unknown")
     functional_chain_status = diagnosis.get("functional_chain_status", "unavailable")
     environment_service_status = diagnosis.get("environment_service_status", "unavailable")
@@ -698,11 +815,6 @@ def _build_q1_source_summary(
     if error_message:
         display_origin_explanation = (
             "当前页面只展示本次仍可确认的 Q1 证据；未沿用旧结果，本次推断结论不可用。"
-        )
-    elif snapshot_fallback_used:
-        display_origin_explanation = (
-            "⚠ 本次 Q1 使用快照回退（非真实环境链），推理结论为降级结果。"
-            f"（功能插件链状态：{functional_chain_status}；环境服务状态：{environment_service_status}）"
         )
     else:
         display_origin_explanation = "本次 Q1 来自真实环境链推理。"
@@ -717,6 +829,9 @@ def _build_q1_source_summary(
         "overall_authenticity": overall_authenticity,
         "functional_chain_status": functional_chain_status,
         "environment_service_status": environment_service_status,
+        "workspace_root": producer_status.get("workspace_root", "unknown"),
+        "workspace_access_policy": producer_status.get("workspace_access_policy", "unknown"),
+        "allowed_workspace_roots": producer_status.get("allowed_workspace_roots", []),
         "structure_source": producer_status.get("structure_source", "unknown"),
         "samples_source": producer_status.get("samples_source", "unknown"),
         "display_origin_explanation": display_origin_explanation,
@@ -755,8 +870,31 @@ def _build_q2_source_summary(
 
 
 def _safe_extract_evidence(question_id: str, context_updates: dict[str, Any], snapshot: dict[str, Any]) -> dict[str, Any]:
+    if question_id == "q3":
+        handler = QUESTION_EXTRACTORS.get(question_id)
+        if handler:
+            q3_context = deepcopy(context_updates)
+            llm_trace_payload = _as_dict(snapshot.get("llm_trace_payload"))
+            context_llm_trace_payload = _as_dict(context_updates.get("llm_trace_payload"))
+            if llm_trace_payload and q3_context.get("llm_trace_payload") in (None, "", [], {}):
+                q3_context["llm_trace_payload"] = llm_trace_payload
+            elif context_llm_trace_payload:
+                q3_context["llm_trace_payload"] = context_llm_trace_payload
+            try:
+                evidence = _as_dict(handler["evidence"](q3_context))
+                if evidence:
+                    return evidence
+            except Exception:
+                logger.exception("Failed to extract Q3 preprocessed evidence from role-scoped context")
     direct = _as_dict(snapshot.get("preprocessed_evidence"))
     if direct:
+        if question_id == "q2" and not _has_q2_asset_inventory_rows(direct.get("asset_inventory")):
+            handler = QUESTION_EXTRACTORS.get(question_id)
+            if handler:
+                try:
+                    return _merge_q2_asset_projection(direct, _as_dict(handler["evidence"](context_updates)))
+                except Exception:
+                    logger.exception("Failed to backfill Q2 preprocessed evidence from context updates")
         return direct
     handler = QUESTION_EXTRACTORS.get(question_id)
     if not handler:
@@ -769,8 +907,29 @@ def _safe_extract_evidence(question_id: str, context_updates: dict[str, Any], sn
 
 
 def _safe_extract_inference(question_id: str, result_payload: dict[str, Any], context_updates: dict[str, Any], snapshot: dict[str, Any]) -> dict[str, Any]:
+    if question_id == "q3":
+        handler = QUESTION_EXTRACTORS.get(question_id)
+        if handler:
+            current_payload = deepcopy(result_payload)
+            current_payload["context_updates"] = deepcopy(context_updates)
+            try:
+                inference = _as_dict(handler["result"](current_payload))
+                if inference:
+                    return inference
+                inference = _as_dict(handler["result"](context_updates))
+                if inference:
+                    return inference
+            except Exception:
+                logger.exception("Failed to extract current Q3 inference result")
     direct = _as_dict(snapshot.get("inference_result"))
     if direct:
+        if question_id == "q2" and not _has_q2_asset_inventory_rows(direct.get("asset_inventory")):
+            handler = QUESTION_EXTRACTORS.get(question_id)
+            if handler:
+                try:
+                    return _merge_q2_asset_projection(direct, _as_dict(handler["result"](context_updates)))
+                except Exception:
+                    logger.exception("Failed to backfill Q2 inference result from context updates")
         return direct
     execution_result = _as_dict(snapshot.get("execution_result"))
     if question_id == "q1" and execution_result and _has_q1_inference_payload(execution_result):
@@ -890,12 +1049,11 @@ def _split_modules(
         )
         _state_write_data = {
             "overall_authenticity": diagnosis.get("overall_authenticity"),
-            "snapshot_fallback_used": diagnosis.get("snapshot_fallback_used", True),
+            "snapshot_fallback_used": diagnosis.get("snapshot_fallback_used", False),
             "producer_status": diagnosis.get("producer_status", {}),
         }
         _state_write_status = (
-            "degraded" if diagnosis.get("snapshot_fallback_used", True) and diagnosis
-            else "ready" if diagnosis
+            "ready" if diagnosis
             else "missing"
         )
 
@@ -910,7 +1068,7 @@ def _split_modules(
                     "status": _chain_status,
                     "error": diagnosis.get("functional_chain_error"),
                     "plugin_runs": diagnosis.get("plugin_runs", []),
-                    "snapshot_fallback_used": diagnosis.get("snapshot_fallback_used", True),
+                    "snapshot_fallback_used": diagnosis.get("snapshot_fallback_used", False),
                 },
                 timestamp=timestamp,
                 status=_chain_module_status,
@@ -1011,25 +1169,45 @@ def _split_modules(
             },
         }
     elif question_id == "q6":
+        consequence_raw = inference.get("ConsequenceAssessment") or inference.get("consequence_assessment")
+        cost_raw = inference.get("CostImpactProfile") or inference.get("cost_impact_profile")
+        consequence = consequence_raw if isinstance(consequence_raw, dict) else {}
+        cost_profile = cost_raw if isinstance(cost_raw, dict) else {}
         mapping = {
             "authorization_boundary_projection": {"authorization_boundaries": evidence.get("authorization_boundaries", [])},
             "non_bypassable_constraints_projection": {"non_bypassable_constraints": evidence.get("non_bypassable_constraints", [])},
             "historical_strategy_patch_projection": {"historical_strategy_patches": evidence.get("historical_strategy_patches", [])},
-            "redline_inference": {"absolute_red_lines": inference.get("absolute_red_lines", [])},
-            "tradeoff_ban_inference": {"performance_tradeoff_bans": inference.get("performance_tradeoff_bans", [])},
-            "contamination_inference": {"contamination_risks": inference.get("contamination_risks", [])},
+            "consequence_assessment_inference": {
+                "action_under_review": consequence.get("action_under_review"),
+                "immediate_consequences": consequence.get("immediate_consequences", []),
+                "downstream_consequences": consequence.get("downstream_consequences", []),
+                "consequence_severity": consequence.get("consequence_severity"),
+                "reversibility": consequence.get("reversibility"),
+            },
+            "cost_impact_inference": {
+                "CostImpactProfile": cost_profile,
+            },
+            "mitigation_requirement_inference": {
+                "mitigation_requirements": cost_profile.get("mitigation_requirements", []),
+                "stop_conditions": cost_profile.get("stop_conditions", []),
+            },
         }
     elif question_id == "q7":
         mapping = {
-            "resource_bottleneck_projection": {"resource_bottlenecks": evidence.get("resource_bottlenecks", [])},
-            "capability_limit_projection": {"capability_limits": evidence.get("capability_limits", [])},
-            "permission_boundary_projection": {"permission_boundaries": evidence.get("permission_boundaries", [])},
-            "absolute_redline_projection": {"absolute_red_lines": evidence.get("absolute_red_lines", [])},
-            "historical_failure_patch_projection": {"historical_failure_patches": evidence.get("historical_failure_patches", [])},
-            "fallback_plan_inference": {"fallback_plans": inference.get("fallback_plans", [])},
-            "degradation_strategy_inference": {"degradation_strategies": inference.get("degradation_strategies", [])},
-            "collaboration_switch_inference": {"collaboration_switches": inference.get("collaboration_switches", [])},
-            "exploratory_action_inference": {"exploratory_actions": inference.get("exploratory_actions", [])},
+            "red_line_baseline_projection": {
+                "identity_kernel_constraints": evidence.get("identity_kernel_constraints", []),
+                "authorization_boundary_constraints": evidence.get("authorization_boundary_constraints", []),
+                "safety_rejection_history": evidence.get("safety_rejection_history", []),
+                "procedural_memory_constraints": evidence.get("procedural_memory_constraints", []),
+                "non_bypassable_constraints": evidence.get("non_bypassable_constraints", []),
+            },
+            "red_line_assessment_inference": {
+                "current_red_line_hits": inference.get("current_red_line_hits", []),
+                "rejected_operation_records": inference.get("rejected_operation_records", []),
+                "ban_source_explanations": inference.get("ban_source_explanations", []),
+                "non_bypassable_constraints": inference.get("non_bypassable_constraints", []),
+                "question_driver_refs": inference.get("question_driver_refs", []),
+            },
         }
     elif question_id == "q8":
         runtime_state = evidence.get("runtime_state", {})
@@ -1095,7 +1273,10 @@ def build_question_record(
         result_payload,
         module_payload_overrides,
     )
-    llm_trace_payload = snapshot.get("llm_trace_payload")
+    llm_trace_payload = _merge_llm_trace_payload(
+        snapshot.get("llm_trace_payload"),
+        context_updates.get("llm_trace_payload"),
+    )
     execution_result = _as_dict(snapshot.get("execution_result"))
     evidence = _safe_extract_evidence(question_id, context_updates, snapshot)
     inference = _safe_extract_inference(question_id, result_payload, context_updates, snapshot)
@@ -1135,15 +1316,6 @@ def build_question_record(
             if isinstance(payload, dict):
                 modules[module_id] = deepcopy(payload)
     trace_payload = _as_dict(llm_trace_payload)
-    if not trace_payload:
-        fallback_trace_id = str(snapshot.get("trace_id") or "").strip()
-        if fallback_trace_id:
-            trace_payload = {
-                "trace_id": fallback_trace_id,
-                "question_id": question_id,
-                "source": "snapshot_trace_id",
-                "timestamp": timestamp,
-            }
     module_statuses = {module_id: payload.get("status", "missing") for module_id, payload in modules.items()}
     execution_authenticity = (
         str(execution_diagnosis.get("authenticity_status") or "").strip().lower()
@@ -1166,7 +1338,7 @@ def build_question_record(
     elif execution_diagnosis:
         overall_status = str(execution_diagnosis.get("authenticity_status") or "partial")
     elif question_id == "q1":
-        snapshot_fallback_used = (q1_diagnosis or {}).get("snapshot_fallback_used", True)
+        snapshot_fallback_used = (q1_diagnosis or {}).get("snapshot_fallback_used", False)
         if snapshot_fallback_used and ready_count > 0:
             overall_status = "degraded"
         elif ready_count == len(modules):
@@ -1235,7 +1407,7 @@ def build_question_record(
                 "context_updates": context_updates,
                 "execution_context": _as_dict(snapshot.get("execution_context")),
                 "execution_result": execution_result,
-                "llm_trace_payload": _as_dict(llm_trace_payload),
+                "llm_trace_payload": trace_payload,
             },
         },
     }

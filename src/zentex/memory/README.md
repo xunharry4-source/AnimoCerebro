@@ -515,22 +515,22 @@ python -m pytest tests/memory/ --cov=zentex.memory --cov-report=html
 
 ## Configuration / 配置
 
-### Environment Variables
+### `.env` Configuration
 
-```bash
+```dotenv
 # Vector search configuration
-export MEMORY_VECTOR_SEARCH_MOCK=false  # Set to true for testing without model downloads
-export MEMORY_VECTOR_MODEL_NAME="sentence-transformers/all-MiniLM-L6-v2"
+MEMORY_VECTOR_SEARCH_MOCK=false  # Set to true for testing without model downloads
+MEMORY_VECTOR_MODEL_NAME="sentence-transformers/all-MiniLM-L6-v2"
 
 # Encryption
-export MEMORY_ENCRYPTION_ENABLED=true
-export MEMORY_ENCRYPTION_KEY_SOURCE="env"  # env | vault | file
-export MEMORY_AES_KEY="your-32-byte-key-here"
+MEMORY_ENCRYPTION_ENABLED=true
+MEMORY_ENCRYPTION_KEY_SOURCE="file"  # vault | file
+MEMORY_AES_KEY_FILE="config/memory.key"
 
 # Storage paths
-export MEMORY_DATA_DIR="./data"
-export MEMORY_INDEX_PATH="./data/memory_index.db"
-export MEMORY_VECTOR_INDEX_DIR="./data/vector_index"
+MEMORY_DATA_DIR="./data"
+MEMORY_INDEX_PATH="./data/memory_index.db"
+MEMORY_VECTOR_INDEX_DIR="./data/vector_index"
 ```
 
 ### Future: YAML Configuration

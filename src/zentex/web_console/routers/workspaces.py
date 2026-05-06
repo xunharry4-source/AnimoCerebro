@@ -51,6 +51,12 @@ def _validate_path(path: str) -> None:
         # Check if readable
         if not os.access(p, os.R_OK):
             raise ValueError(f"Path is not readable: {path}")
+        try:
+            next(p.iterdir(), None)
+        except StopIteration:
+            pass
+        except PermissionError as exc:
+            raise ValueError(f"Path is not readable: {path}") from exc
         
         # Reject system paths
         forbidden_prefixes = [
@@ -120,9 +126,9 @@ def create_workspace(
     store: Annotated[WorkspaceStore, Depends(get_workspace_store)]
 ) -> WorkspaceActionResponse:
     """
-    Create a new workspace.
+    Create a new workspace mapped to a local readable directory.
     
-    创建新工作区。
+    创建新工作区；工作区对应本地目录，添加前必须至少具备读权限。
     """
     try:
         # Validate path

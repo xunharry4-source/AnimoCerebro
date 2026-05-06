@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from dataclasses import field
 from typing import Any, Dict, List
 
 from plugins.nine_questions.q1_where_am_i.utils import estimate_token_count, one_line
@@ -19,6 +20,7 @@ class LocalCompressionBudget:
     max_evidence_tokens: int = 900
     max_stats_tokens: int = 600
     max_uncertainty_tokens: int = 400
+    max_sample_payload_items: int = 6
 
     def compress(
         self,
@@ -31,6 +33,8 @@ class LocalCompressionBudget:
         evidence_lines: List[str] = []
         stats_lines: List[str] = []
         uncertainty_lines: List[str] = []
+        sample_details: List[str] = []
+        sample_payload: list[dict[str, Any]] = []
 
         hierarchy = structure.get("directory_hierarchy_summary")
         if hierarchy is not None:
@@ -51,6 +55,19 @@ class LocalCompressionBudget:
                 evidence_lines.append(
                     f"- sample:{path} | {one_line(headline, 140)} | {one_line(snippet, 180)}"
                 )
+                sample_details.append(
+                    f"- file={path} | title={one_line(headline, 120)} | snippet={one_line(snippet, 260)}"
+                )
+                if len(sample_payload) < self.max_sample_payload_items:
+                    sample_payload.append(
+                        {
+                            "path": path,
+                            "title": str(headline).strip(),
+                            "snippet": one_line(snippet, 260),
+                            "line_count": int(item.get("line_count") or item.get("lines") or 0) or 0,
+                            "byte_size": int(item.get("byte_count") or item.get("size") or 0) or 0,
+                        }
+                    )
 
         anomalies = samples.get("log_anomaly_snippets") or samples.get("anomalies") or []
         if isinstance(anomalies, list) and anomalies:
@@ -95,11 +112,14 @@ class LocalCompressionBudget:
 
         analysis_summary = self._cap_lines(evidence_lines, self.max_evidence_tokens)
         sample_summary = self._cap_lines(evidence_lines, self.max_evidence_tokens // 2)
+        sample_detail_summary = self._cap_lines(sample_details, self.max_evidence_tokens)
         schema_summary = self._cap_lines(stats_lines, self.max_stats_tokens)
         uncertainty_summary = self._cap_lines(uncertainty_lines, self.max_uncertainty_tokens)
         return {
             "analysis_summary": analysis_summary,
             "sample_summary": sample_summary,
+            "sample_details": sample_detail_summary,
+            "sample_payload": sample_payload,
             "schema_summary": schema_summary,
             "uncertainty_summary": uncertainty_summary,
         }
@@ -116,4 +136,3 @@ class LocalCompressionBudget:
             selected.append(line)
             total += tokens
         return "\n".join(selected)
-

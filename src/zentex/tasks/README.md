@@ -11,10 +11,15 @@
 
 当前真实核心实现：
 
-- [service.py](/Users/harry/Documents/git/AnimoCerebro-V2/src/zentex/tasks/service.py)
-- [__init__.py](/Users/harry/Documents/git/AnimoCerebro-V2/src/zentex/tasks/__init__.py)
-- [core/interface.py](/Users/harry/Documents/git/AnimoCerebro-V2/src/zentex/tasks/core/interface.py)
-- [integration/workflow_bridge.py](/Users/harry/Documents/git/AnimoCerebro-V2/src/zentex/tasks/integration/workflow_bridge.py)
+- [management/task_management_service.py](management/task_management_service.py)
+- [service.py](service.py) 仅保留稳定导出接口，不允许新增业务逻辑
+- [__init__.py](__init__.py)
+- [core/interface.py](core/interface.py)
+- [integration/workflow_bridge.py](integration/workflow_bridge.py)
+
+维护者目录与文件职责索引：
+
+- [TECHNICAL_DOCUMENTATION.md](TECHNICAL_DOCUMENTATION.md)
 
 ## Current Entry Points / 当前入口
 
@@ -34,7 +39,7 @@
 
 ### 1. Task Lifecycle / 任务生命周期
 
-任务状态模型定义在 [models/models.py](/Users/harry/Documents/git/AnimoCerebro-V2/src/zentex/tasks/models/models.py)：
+任务状态模型定义在 [models/models.py](models/models.py)：
 
 - `TODO`
 - `IN_PROGRESS`
@@ -45,7 +50,7 @@
 - `FAILED`
 - `ARCHIVED`
 
-状态流转由 [service.py](/Users/harry/Documents/git/AnimoCerebro-V2/src/zentex/tasks/service.py:462) 强校验，不允许非法跳转。
+状态流转由 [management/task_management_service.py](management/task_management_service.py) 强校验，不允许非法跳转。
 
 ### 2. Query and Filtering / 查询与过滤
 
@@ -69,7 +74,7 @@
 
 ### 3. Workflow Integration / 工作流集成
 
-[integration/workflow_bridge.py](/Users/harry/Documents/git/AnimoCerebro-V2/src/zentex/tasks/integration/workflow_bridge.py) 负责把外部工作流同步成标准任务。
+[integration/workflow_bridge.py](integration/workflow_bridge.py) 负责把外部工作流同步成标准任务。
 
 当前已接入：
 
@@ -87,7 +92,7 @@
 
 ### 4. Metadata Tracking / 元数据跟踪
 
-[service.py](/Users/harry/Documents/git/AnimoCerebro-V2/src/zentex/tasks/service.py) 已提供 `update_task_metadata()`，用于在不改变状态机语义的前提下，持续写入工作流阶段数据。
+[management/task_management_service.py](management/task_management_service.py) 已提供 `update_task_metadata()`，用于在不改变状态机语义的前提下，持续写入工作流阶段数据。
 
 这一步是后续控制台展示 `reflection / upgrade` 阶段细节的基础。
 
@@ -97,9 +102,9 @@
 
 当前关键文件：
 
-- [core/simple_llm_prompt.py](/Users/harry/Documents/git/AnimoCerebro-V2/src/zentex/tasks/core/simple_llm_prompt.py)
-- [core/semantic_kernel_llm_prompt.py](/Users/harry/Documents/git/AnimoCerebro-V2/src/zentex/tasks/core/semantic_kernel_llm_prompt.py)
-- [verification/llm_prompt.py](/Users/harry/Documents/git/AnimoCerebro-V2/src/zentex/tasks/verification/llm_prompt.py)
+- [core/simple_llm_prompt.py](core/simple_llm_prompt.py)
+- [core/semantic_kernel_llm_prompt.py](core/semantic_kernel_llm_prompt.py)
+- [verification/llm_prompt.py](verification/llm_prompt.py)
 
 这些 builder 已统一支持 section 化输出：
 
@@ -120,10 +125,10 @@
 
 任务模块的 prompt 升级合同不再散落在各文件中，而是按模块 service 暴露：
 
-- [core/service.py](/Users/harry/Documents/git/AnimoCerebro-V2/src/zentex/tasks/core/service.py)
-- [verification/service.py](/Users/harry/Documents/git/AnimoCerebro-V2/src/zentex/tasks/verification/service.py)
+- [core/service.py](core/service.py)
+- [verification/service.py](verification/service.py)
 
-合同使用 [common/prompt_upgrade_contract.py](/Users/harry/Documents/git/AnimoCerebro-V2/src/zentex/common/prompt_upgrade_contract.py)，明确声明：
+合同使用 [common/prompt_upgrade_contract.py](../common/prompt_upgrade_contract.py)，明确声明：
 
 - `immutable_intent`
 - `editable_prompt_sections`

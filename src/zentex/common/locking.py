@@ -4,6 +4,7 @@ import os
 import fcntl
 import time
 import logging
+import tempfile
 from uuid import uuid4
 from abc import ABC, abstractmethod
 from typing import Optional, Any, Dict, List, Union
@@ -133,8 +134,9 @@ class DiskCacheDistributedLock(AbstractDistributedLock):
         if self.cache.get(self.lock_key) == self.identifier:
             self.cache.delete(self.lock_key)
 
-def get_lock_for_resource(resource_id: str, lock_dir: str = "/tmp/zentex_locks") -> AbstractDistributedLock:
+def get_lock_for_resource(resource_id: str, lock_dir: str | None = None) -> AbstractDistributedLock:
     """Factory to get the appropriate lock implementation."""
+    lock_dir = lock_dir or os.path.join(tempfile.gettempdir(), "zentex_locks")
     cluster_mode = os.environ.get("ZENTEX_CLUSTER_MODE", "false").lower() == "true"
     
     if cluster_mode:

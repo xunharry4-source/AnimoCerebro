@@ -22,6 +22,8 @@ import {
 } from "@mui/material";
 import { useTranslation } from "react-i18next";
 import { Link as RouterLink } from "react-router-dom";
+import ArticleIcon from "@mui/icons-material/Article";
+import { Play } from "lucide-react";
 import { extractApiErrorMessage, readResponseBody } from "../../api/httpError";
 
 type AgendaStatus = "open" | "watching" | "blocked" | "review_now" | "overdue" | "expired";
@@ -154,6 +156,20 @@ type MemoryRepairAllPayload = {
   items: MemoryRepairTicketItem[];
 };
 
+type MemoryForceAutoOrganizePayload = {
+  status: string;
+  mode: string;
+  cycle_id: string;
+  lease_id: string;
+  idempotency_key: string;
+  snapshot_version: number;
+  queued_cycle?: {
+    status?: string;
+    trigger_reason?: string;
+    input_refs?: string[];
+  };
+};
+
 type EnhancedMemoryRecordsPayload = {
   layer: string;
   limit: number;
@@ -281,10 +297,12 @@ export default function MemoryReasoning() {
   const [searchLoading, setSearchLoading] = useState(false);
   const [actionLoading, setActionLoading] = useState(false);
   const [repairLoading, setRepairLoading] = useState(false);
+  const [autoOrganizeLoading, setAutoOrganizeLoading] = useState(false);
+  const [recentAutoOrganize, setRecentAutoOrganize] = useState<MemoryForceAutoOrganizePayload | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [apiErrors, setApiErrors] = useState<string[]>([]);
 
-  const loadRecords = async (recordIdToReload?: string) => {
+  const loadRecords = async (recordIdToReload?: string): Promise<string[]> => {
     const params = new URLSearchParams({
       layer,
       limit: "30",
@@ -296,43 +314,39 @@ export default function MemoryReasoning() {
       params.set("trust_level", trustFilter);
     }
     
-    // Load each API independently to allow partial failures
-    let agendaPayload: AgendaResponse | null = null;
-    let overviewPayload: EnhancedMemoryOverview | null = null;
-    let recordsPayload: EnhancedMemoryRecordsPayload | null = null;
-    let repairStatusPayload: MemoryRepairSchedulerStatusPayload | null = null;
     const errors: string[] = [];
-    
-    try {
-      agendaPayload = await readJson<AgendaResponse>("/api/web/cognitive-agenda");
-    } catch (e) {
-      const errorMsg = e instanceof Error ? e.message : String(e);
-      errors.push(`cognitive-agenda: ${errorMsg}`);
-      console.warn("Failed to load cognitive agenda:", e);
-    }
-    
-    try {
-      overviewPayload = await readJson<EnhancedMemoryOverview>("/api/web/memory/overview");
-    } catch (e) {
-      const errorMsg = e instanceof Error ? e.message : String(e);
-      errors.push(`memory/overview: ${errorMsg}`);
-      console.warn("Failed to load memory overview:", e);
-    }
-    
-    try {
-      recordsPayload = await readJson<EnhancedMemoryRecordsPayload>(`/api/web/memory/records?${params.toString()}`);
-    } catch (e) {
-      const errorMsg = e instanceof Error ? e.message : String(e);
-      errors.push(`memory/records: ${errorMsg}`);
-      console.warn("Failed to load memory records:", e);
+
+    const [agendaResult, overviewResult, recordsResult, repairStatusResult] = await Promise.allSettled([
+      readJson<AgendaResponse>("/api/web/cognitive-agenda"),
+      readJson<EnhancedMemoryOverview>("/api/web/memory/overview"),
+      readJson<EnhancedMemoryRecordsPayload>(`/api/web/memory/records?${params.toString()}`),
+      readJson<MemoryRepairSchedulerStatusPayload>("/api/web/memory/repair/status"),
+    ]);
+
+    const captureError = (label: string, reason: unknown) => {
+      const errorMsg = reason instanceof Error ? reason.message : String(reason);
+      errors.push(`${label}: ${errorMsg}`);
+      console.warn(`Failed to load ${label}:`, reason);
+    };
+
+    const agendaPayload = agendaResult.status === "fulfilled" ? agendaResult.value : null;
+    if (agendaResult.status === "rejected") {
+      captureError("cognitive-agenda", agendaResult.reason);
     }
 
-    try {
-      repairStatusPayload = await readJson<MemoryRepairSchedulerStatusPayload>("/api/web/memory/repair/status");
-    } catch (e) {
-      const errorMsg = e instanceof Error ? e.message : String(e);
-      errors.push(`memory/repair/status: ${errorMsg}`);
-      console.warn("Failed to load memory repair status:", e);
+    const overviewPayload = overviewResult.status === "fulfilled" ? overviewResult.value : null;
+    if (overviewResult.status === "rejected") {
+      captureError("memory/overview", overviewResult.reason);
+    }
+
+    const recordsPayload = recordsResult.status === "fulfilled" ? recordsResult.value : null;
+    if (recordsResult.status === "rejected") {
+      captureError("memory/records", recordsResult.reason);
+    }
+
+    const repairStatusPayload = repairStatusResult.status === "fulfilled" ? repairStatusResult.value : null;
+    if (repairStatusResult.status === "rejected") {
+      captureError("memory/repair/status", repairStatusResult.reason);
     }
     
     // Track API errors for debugging
@@ -351,7 +365,7 @@ export default function MemoryReasoning() {
       setRepairSchedulerStatus(repairStatusPayload);
     }
     
-    const reloadId = recordIdToReload ?? selectedRecord?.memory_id ?? recordsPayload?.items[0]?.memory_id ?? null;
+    const reloadId = recordIdToReload ?? selectedRecord?.memory_id ?? null;
     if (reloadId) {
       try {
         await loadDetail(reloadId);
@@ -363,6 +377,7 @@ export default function MemoryReasoning() {
       setSelectedAudit([]);
       setSelectedDiagnostics(null);
     }
+    return errors;
   };
 
   const loadPage = async () => {
@@ -370,11 +385,11 @@ export default function MemoryReasoning() {
     setError(null);
     setApiErrors([]);
     try {
-      await loadRecords();
+      const errors = await loadRecords();
       // Check if ALL API calls failed (not just empty data)
       // Empty data is valid - it means the system is working but has no records yet
-      if (apiErrors.length >= 3) {
-        setError(t("memory.errors.allApisFailed", { details: apiErrors.join("\n") }));
+      if (errors.length >= 4) {
+        setError(t("memory.errors.allApisFailed", { details: errors.join("\n") }));
       }
     } catch (e) {
       console.error("Unexpected error loading page:", e);
@@ -522,6 +537,23 @@ export default function MemoryReasoning() {
     }
   };
 
+  const handleForceAutoOrganize = async () => {
+    setAutoOrganizeLoading(true);
+    setError(null);
+    try {
+      const payload = await postJson<MemoryForceAutoOrganizePayload>(
+        "/api/web/memory/consolidation/trigger?force_auto_organize=true",
+        {},
+      );
+      setRecentAutoOrganize(payload);
+      await loadRecords(selectedRecord?.memory_id ?? undefined);
+    } catch (e) {
+      setError(e instanceof Error ? e.message : t("memory.errors.forceAutoOrganizeFailed"));
+    } finally {
+      setAutoOrganizeLoading(false);
+    }
+  };
+
   const applyQuickFilter = (preset: "all" | "repair_queue" | "degraded_only" | "legacy_only") => {
     if (preset === "all") {
       setHealthFilter("all");
@@ -555,9 +587,19 @@ export default function MemoryReasoning() {
             {t("memory.subtitle")}
           </Typography>
         </Box>
-        <Button variant="contained" onClick={() => void loadPage()}>
-          {t("common.refresh")}
-        </Button>
+        <Stack direction="row" spacing={1}>
+          <Button
+            component={RouterLink}
+            to="/console/module-logs/memory"
+            variant="outlined"
+            startIcon={<ArticleIcon />}
+          >
+            {t("moduleLogs.view")}
+          </Button>
+          <Button variant="contained" onClick={() => void loadPage()}>
+            {t("common.refresh")}
+          </Button>
+        </Stack>
       </Stack>
 
       {/* API Error Warnings */}
@@ -644,7 +686,25 @@ export default function MemoryReasoning() {
                   <Button size="small" variant="outlined" onClick={() => void handleRepairAll()} disabled={repairLoading}>
                     {repairLoading ? t("common.processing") : t("memory.actions.repairAll")}
                   </Button>
+                  <Button
+                    size="small"
+                    variant="contained"
+                    startIcon={<Play size={16} />}
+                    onClick={() => void handleForceAutoOrganize()}
+                    disabled={autoOrganizeLoading}
+                  >
+                    {autoOrganizeLoading ? t("common.processing") : t("memory.actions.forceAutoOrganize")}
+                  </Button>
                 </Stack>
+                {recentAutoOrganize ? (
+                  <Alert severity="success" sx={{ mb: 1.5 }}>
+                    <Stack direction="row" spacing={1} useFlexGap flexWrap="wrap">
+                      <Chip size="small" label={t("memory.chips.cycle", { value: recentAutoOrganize.cycle_id })} variant="outlined" />
+                      <Chip size="small" label={t("memory.chips.status", { value: recentAutoOrganize.queued_cycle?.status ?? recentAutoOrganize.status })} color="success" variant="outlined" />
+                      <Chip size="small" label={t("memory.chips.refs", { value: recentAutoOrganize.queued_cycle?.input_refs?.length ?? 0 })} variant="outlined" />
+                    </Stack>
+                  </Alert>
+                ) : null}
                 {recentRepairAll ? (
                   <Paper variant="outlined" sx={{ p: 1.5, mb: 1.5 }}>
                     <Stack spacing={1.25}>

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import logging
+from time import perf_counter
 from typing import Any
 from uuid import uuid4
 
@@ -8,26 +9,34 @@ from pydantic import BaseModel, ConfigDict, Field
 
 from zentex.common.plugin_ids import NINE_QUESTION_Q7
 from zentex.plugins.models import PluginLifecycleStatus
-from zentex.plugins.service import execute_enabled_cognitive_plugin_functionals
-
 from zentex.common.cognitive_result import CognitiveToolResult
+from plugins.nine_questions.q3_role_inference.llm_output_table import (
+    load_llm_output_from_table as load_q3_llm_output_from_table,
+)
+from plugins.nine_questions.q5_what_am_i_allowed_to_do.llm_output_table import (
+    load_llm_output_from_table as load_q5_llm_output_from_table,
+)
+from plugins.nine_questions.q6_what_should_i_not_do.llm_output_table import (
+    load_llm_output_from_table as load_q6_llm_output_from_table,
+)
 from plugins.nine_questions.q7_what_else_can_i_do.llm_prompt import build_q7_llm_request
-from plugins.nine_questions.q7_what_else_can_i_do.modules import (
-    build_q7_baseline_modules,
-    derive_alternative_strategy_baseline,
-    merge_with_strategy_baseline,
-    normalize_functional_alternatives,
+from plugins.nine_questions.q7_what_else_can_i_do.internal import (
+    derive_red_line_assessment_baseline,
+    extract_current_intent_context as extract_q7_current_intent_context,
+    extract_identity_kernel as extract_q7_identity_kernel,
+    extract_procedural_memory_constraints as extract_q7_procedural_memory_constraints,
+)
+from plugins.nine_questions.q7_what_else_can_i_do.external import (
+    extract_safety_rejection_history as extract_q7_safety_rejection_history,
 )
 from plugins.nine_questions.q7_what_else_can_i_do.models import Q7InferenceResult
 from zentex.common.nine_questions_shared import (
-    build_nine_question_partial_failure,
     bind_module_runs,
     fail_module_run,
     finish_module_run,
     start_module_run,
     run_audit_integration,
     run_learning_integration,
-    load_authoritative_question_context_from_storage,
     run_memory_integration,
     run_reflection_integration,
     build_caller_context,
@@ -39,9 +48,7 @@ from zentex.common.nine_questions_shared import (
     record_model_failed,
     record_model_invoked,
     render_human_readable_block,
-    render_q4_boundary,
     render_q5_boundary,
-    render_q6_redlines,
     require_model_provider,
     require_transcript_store,
     safe_provider_plugin_id,
@@ -50,79 +57,177 @@ from zentex.common.nine_questions_shared import (
 logger = logging.getLogger(__name__)
 
 
-def _normalize_text_set(values: list[Any]) -> set[str]:
-    normalized: set[str] = set()
-    for item in values:
-        text = str(item or "").strip().lower()
-        if text:
-            normalized.add(text)
-    return normalized
+QUESTION_REF = "我的红线与约束是什么"
+_Q7_MAX_LLM_ATTEMPTS = 3
 
 
-def _classify_fallback_plans(
-    fallback_plans: list[str],
-    *,
-    q4_profile: dict[str, Any],
-    q5_profile: dict[str, Any],
-    q6_profile: dict[str, Any],
-) -> tuple[list[str], list[str], list[dict[str, str]]]:
-    actionable_space = _normalize_text_set(list(q4_profile.get("actionable_space") or []))
-    capability_limits = _normalize_text_set(list(q4_profile.get("capability_upper_limits") or []))
-
-    forbidden_actions = []
-    for item in list(q5_profile.get("forbidden_action_space") or []):
+def _coerce_text_list(value: Any, *, limit: int = 20) -> list[str]:
+    if isinstance(value, list):
+        raw_items = value
+    elif isinstance(value, tuple):
+        raw_items = list(value)
+    elif value in (None, "", {}, []):
+        raw_items = []
+    else:
+        raw_items = [value]
+    normalized: list[str] = []
+    for item in raw_items:
         if isinstance(item, dict):
-            action = str(item.get("action") or "").strip()
-            if action:
-                forbidden_actions.append(action)
-    forbidden_actions.extend(list(q5_profile.get("unauthorized_actions") or []))
-    forbidden_actions.extend(list(q5_profile.get("conditional_actions") or []))
-    forbidden_set = _normalize_text_set(forbidden_actions)
+            text = "；".join(
+                f"{key}: {val}"
+                for key, val in item.items()
+                if val not in (None, "", [], {})
+            )
+        else:
+            text = str(item or "")
+        text = text.strip()
+        if text:
+            normalized.append(text)
+        if len(normalized) >= limit:
+            break
+    return list(dict.fromkeys(normalized))
 
-    redline_set = _normalize_text_set(list(q6_profile.get("absolute_red_lines") or []))
-    redline_set.update(_normalize_text_set(list(q6_profile.get("prohibited_strategies") or [])))
 
-    validated: list[str] = []
-    unverified: list[str] = []
-    rejected: list[dict[str, str]] = []
+def _extract_identity_kernel(context: dict[str, Any], upstream_context: dict[str, Any]) -> dict[str, Any]:
+    for key in (
+        "identity_kernel_snapshot",
+        "identity_kernel",
+        "q3_identity_kernel_snapshot",
+        "q3_identity_kernel",
+        "q2_identity_kernel_snapshot",
+        "q2_identity_kernel",
+    ):
+        identity = upstream_context.get(key)
+        if isinstance(identity, dict) and identity:
+            return identity
+    q3_role_profile = upstream_context.get("q3_role_profile")
+    if isinstance(q3_role_profile, dict):
+        identity = q3_role_profile.get("identity_kernel_snapshot") or q3_role_profile.get("identity_kernel")
+        if isinstance(identity, dict) and identity:
+            return identity
+    state_identity = context.get("identity_kernel_snapshot") or context.get("identity_kernel")
+    if isinstance(state_identity, dict) and state_identity:
+        return state_identity
+    store = context.get("system_identity_store")
+    get_identity = getattr(store, "get_identity", None)
+    if callable(get_identity):
+        payload = get_identity()
+        if isinstance(payload, dict):
+            snapshot = payload.get("identity_kernel_snapshot")
+            if isinstance(snapshot, dict) and snapshot:
+                return snapshot
+            return payload
+    return {}
 
-    for raw in fallback_plans:
-        plan = str(raw or "").strip()
-        if not plan:
-            continue
-        lowered = plan.lower()
 
-        rejection_reason = ""
-        for blocked in forbidden_set:
-            if blocked and blocked in lowered:
-                rejection_reason = f"violates_q5_forbidden:{blocked}"
-                break
-        if not rejection_reason:
-            for blocked in redline_set:
-                if blocked and blocked in lowered:
-                    rejection_reason = f"violates_q6_redline:{blocked}"
+def _extract_safety_rejection_history(context: dict[str, Any], upstream_context: dict[str, Any]) -> list[str]:
+    candidates: list[Any] = []
+    for key in (
+        "rejected_operation_records",
+        "safety_rejection_history",
+        "safety_gate_rejections",
+        "safety_gate_audit_log",
+        "cloud_audit_rejections",
+        "cloud_audit_decisions",
+        "g12_safety_gate_history",
+        "g30_cloud_audit_history",
+    ):
+        candidates.extend(_coerce_text_list(context.get(key), limit=30))
+        candidates.extend(_coerce_text_list(upstream_context.get(key), limit=30))
+    return list(dict.fromkeys(item for item in candidates if item))[:30]
+
+
+def _extract_current_intent_context(context: dict[str, Any]) -> dict[str, Any]:
+    keys = (
+        "current_intent_context",
+        "current_user_intent",
+        "user_intent",
+        "objective",
+        "current_objective",
+        "task_request",
+        "question_text",
+        "current_goal",
+    )
+    intent: dict[str, Any] = {}
+    for key in keys:
+        value = context.get(key)
+        if value not in (None, "", [], {}):
+            intent[key] = value
+    parameters = context.get("parameters")
+    if isinstance(parameters, dict):
+        for key in ("question_text", "current_intent_context", "user_intent", "task_request"):
+            value = parameters.get(key)
+            if value not in (None, "", [], {}):
+                intent[f"parameters.{key}"] = value
+    return intent
+
+
+def _extract_procedural_memory_constraints(context: dict[str, Any]) -> list[str]:
+    constraints = _coerce_text_list(
+        context.get("procedural_memory_constraints") or context.get("g38_procedural_constraints"),
+        limit=20,
+    )
+    memory_service = context.get("memory_service")
+    list_procedural_records = getattr(memory_service, "list_procedural_records", None)
+    if callable(list_procedural_records):
+        try:
+            for record in list_procedural_records()[:40]:
+                tags = [str(item).lower() for item in (getattr(record, "tags", []) or [])]
+                text = str(
+                    getattr(record, "summary", "")
+                    or getattr(record, "content", "")
+                    or getattr(record, "title", "")
+                    or ""
+                ).strip()
+                payload = getattr(record, "payload", {}) or {}
+                payload_text = " ".join(str(value) for value in payload.values() if value not in (None, "", [], {}))
+                combined = f"{text} {payload_text}".lower()
+                if any(token in combined for token in ("constraint", "redline", "red line", "禁止", "红线", "不可绕过")) or "procedural" in tags:
+                    constraints.append(text or payload_text)
+                if len(constraints) >= 20:
                     break
-        if not rejection_reason:
-            for blocked in capability_limits:
-                if blocked and blocked in lowered:
-                    rejection_reason = f"hits_q4_capability_limit:{blocked}"
-                    break
+        except Exception:
+            logger.exception("Q7 procedural memory constraint extraction failed")
+    return list(dict.fromkeys(item for item in constraints if str(item).strip()))[:20]
 
-        if rejection_reason:
-            rejected.append({"plan": plan, "reason": rejection_reason})
-            continue
 
-        if len(lowered) < 8:
-            unverified.append(plan)
-            continue
-        if actionable_space and any(token in lowered for token in actionable_space):
-            validated.append(plan)
-            continue
-        validated.append(plan)
-
-    return validated, unverified, rejected
-
-QUESTION_REF = "我还可以做什么"
+def _build_q7_trace_payload(
+    *,
+    request_id: str,
+    decision_id: str,
+    provider_name: str,
+    model_name: Any,
+    system_prompt: str,
+    prompt: str,
+    caller_context: Any,
+    model_context: dict[str, Any],
+    raw_response: dict[str, Any],
+    result: dict[str, Any],
+    token_usage: dict[str, Any],
+    elapsed_ms: int,
+    invocations: list[dict[str, Any]],
+) -> dict[str, Any]:
+    return {
+        "request_id": request_id,
+        "decision_id": decision_id,
+        "provider_name": provider_name,
+        "model": model_name,
+        "system_prompt": system_prompt,
+        "prompt": prompt,
+        "source_module": caller_context.source_module,
+        "invocation_phase": caller_context.invocation_phase,
+        "question_driver_refs": caller_context.question_driver_refs,
+        "context_data": model_context,
+        "result": result,
+        "raw_response": raw_response,
+        "token_usage": {
+            "input_tokens": int(token_usage.get("input_tokens") or 0),
+            "output_tokens": int(token_usage.get("output_tokens") or 0),
+            "total_tokens": int(token_usage.get("total_tokens") or 0),
+        },
+        "elapsed_ms": elapsed_ms,
+        "invocations": invocations,
+    }
 
 
 class WhatElseCanIDoPlugin(BaseModel):
@@ -131,9 +236,9 @@ class WhatElseCanIDoPlugin(BaseModel):
     plugin_id: str = NINE_QUESTION_Q7
     version: str = "1.0.0"
     feature_code: str = "nine_questions.q7"
-    display_name: str = "Q7: What else can I do?"
-    description: str = "Generate fallback strategies and substitute actions."
-    behavior_key: str = "q7_alternative_strategy"
+    display_name: str = "Q7: What are my red lines and constraints?"
+    description: str = "Assess non-bypassable red lines and active constraints before Q8 tasking."
+    behavior_key: str = "q7_red_line_assessment"
     lifecycle_status: str = PluginLifecycleStatus.ACTIVE.value
     health_status: str = "healthy"
     operational_status: str = "enabled"
@@ -144,219 +249,130 @@ class WhatElseCanIDoPlugin(BaseModel):
         provider = require_model_provider(context)
         transcript_store = require_transcript_store(context)
         q7_module_runs = bind_module_runs(context, "q7")
-        upstream_context = load_authoritative_question_context_from_storage(context, ["q3", "q4", "q5", "q6"])
+        upstream_context = {
+            **load_q3_llm_output_from_table(db_path=context.get("nine_question_state_db_path")),
+            **load_q5_llm_output_from_table(db_path=context.get("nine_question_state_db_path")),
+            **load_q6_llm_output_from_table(db_path=context.get("nine_question_state_db_path")),
+        }
 
-        # 1. 从 authoritative question_snapshots 提取 Q3-Q6 数据
-        q4_profile = upstream_context.get("q4_capability_boundary_profile") or {}
-        q5_profile = upstream_context.get("q5_authorization_boundary_profile") or upstream_context.get("q5_permission_boundary") or {}
-        q6_profile = upstream_context.get("q6_forbidden_zone_profile") or {}
-        q3_eval = upstream_context.get("q3_resource_evaluation") or {}
+        identity_kernel = extract_q7_identity_kernel(context, upstream_context)
+        q3_mission_boundary = upstream_context.get("q3_mission_boundary") or {}
+        q5_profile = upstream_context.get("q5_authorization_boundary_profile") or {}
+        q5_permission_boundary = upstream_context.get("q5_permission_boundary") or {}
+        q6_profile = (
+            upstream_context.get("q6_consequence_inference")
+            or upstream_context.get("q6_cost_impact_profile")
+            or upstream_context.get("q6_consequence_assessment")
+            or upstream_context.get("q6_forbidden_zone_profile")
+            or {}
+        )
+        safety_rejection_history = extract_q7_safety_rejection_history(context, upstream_context)
+        procedural_memory_constraints = extract_q7_procedural_memory_constraints(context)
+        current_intent_context = extract_q7_current_intent_context(context)
+        if not identity_kernel:
+            raise RuntimeError("q7_identity_kernel_missing")
+        if not isinstance(q3_mission_boundary, dict) or not q3_mission_boundary:
+            raise RuntimeError("q7_q3_mission_boundary_missing")
+        if not q5_profile and not q5_permission_boundary:
+            raise RuntimeError("q7_q5_authorization_boundary_missing")
+
         dependency_validation_run = start_module_run(
             q7_module_runs,
             "q7_dependency_validation",
             source="plugins.nine_questions.q7",
         )
-        finish_module_run(
-            dependency_validation_run,
-            status="completed" if q3_eval and q4_profile and q5_profile and q6_profile else "degraded",
-            error_code="" if q3_eval and q4_profile and q5_profile and q6_profile else "upstream_dependency_degraded",
-            error_message="" if q3_eval and q4_profile and q5_profile and q6_profile else "One or more upstream profiles are missing or degraded.",
+        finish_module_run(dependency_validation_run)
+
+        red_line_baseline = derive_red_line_assessment_baseline(
+            identity_kernel=identity_kernel if isinstance(identity_kernel, dict) else {},
+            q3_mission_boundary=q3_mission_boundary if isinstance(q3_mission_boundary, dict) else {},
+            q5_profile=q5_profile if isinstance(q5_profile, dict) else {},
+            q5_permission_boundary=q5_permission_boundary if isinstance(q5_permission_boundary, dict) else {},
+            q6_profile=q6_profile if isinstance(q6_profile, dict) else {},
+            safety_rejection_history=safety_rejection_history,
+            procedural_memory_constraints=procedural_memory_constraints,
         )
         persist_question_module_output(
             context,
             question_id="q7",
             module_id="q7_dependency_validation",
             payload={
-                "q3_resource_evaluation": q3_eval,
-                "q4_capability_boundary_profile": q4_profile,
+                "identity_kernel_snapshot": identity_kernel,
+                "q3_mission_boundary": q3_mission_boundary,
                 "q5_authorization_boundary_profile": q5_profile,
-                "q6_forbidden_zone_profile": q6_profile,
+                "q5_permission_boundary": q5_permission_boundary,
+                "q6_consequence_profile": q6_profile,
+                "safety_rejection_history": safety_rejection_history,
+                "procedural_memory_constraints": procedural_memory_constraints,
+                "q7_red_line_baseline": red_line_baseline,
             },
             status=str(dependency_validation_run.get("status") or "completed"),
             output_kind="evidence",
         )
 
-        # 2. 执行 functional plugins（保留原有逻辑）
-        plugin_service = context.get("plugin_service")
-        raw_inputs: list[dict[str, Any]] = []
-        functional_alternatives: list[dict[str, Any]] = []
-        plugin_runs: list[dict[str, Any]] = []
-        functional_chain_run = start_module_run(
+        red_line_baseline_run = start_module_run(
             q7_module_runs,
-            "q7_functional_alternative_chain",
+            "q7_red_line_baseline_projection",
             source="plugins.nine_questions.q7",
         )
-        if plugin_service is not None:
-            try:
-                raw_inputs = execute_enabled_cognitive_plugin_functionals(
-                    plugin_service,
-                    self.plugin_id,
-                    default_parameters={"block_context": dict(context)},
-                    trace_id=str(context.get("trace_id") or "q7"),
-                    originator_id=str(context.get("session_id") or "unknown-session"),
-                    caller_plugin_id=self.plugin_id,
-                )
-                for item in raw_inputs:
-                    plugin_runs.append(
-                        {
-                            "plugin_id": str(item.get("plugin_id") or "unknown_plugin"),
-                            "feature_code": str(item.get("feature_code") or self.feature_code),
-                            "expected": True,
-                            "attempted": True,
-                            "status": "completed" if item.get("status") == "done" else "failed",
-                            "error_code": "" if item.get("status") == "done" else "alternative_plugin_failed",
-                            "error_message": "" if item.get("status") == "done" else str(item.get("error") or "alternative strategy plugin failed"),
-                            "duration_ms": 0,
-                            "input_summary": {},
-                            "output_summary": item.get("result") if isinstance(item.get("result"), dict) else {},
-                        }
-                    )
-                functional_alternatives = [
-                    item.get("result")
-                    for item in raw_inputs
-                    if item.get("status") == "done" and item.get("result")
-                ]
-                finish_module_run(
-                    functional_chain_run,
-                    status="completed" if raw_inputs else "ready",
-                    error_code="",
-                    error_message=(
-                        ""
-                        if raw_inputs
-                        else "No functional alternative plugins executed; proceeding with upstream-only baseline alternatives."
-                    ),
-                )
-            except Exception as exc:
-                # 严禁吞掉 functional chain 异常然后继续产出“看似正常”的 Q7 结果。
-                # 这会把后台真实故障伪装成普通降级，严重破坏系统稳定性与审计可信度。
-                logger.exception("Q7 functional alternative chain failed")
-                fail_module_run(
-                    functional_chain_run,
-                    error_code="q7_functional_alternative_chain_failed",
-                    error_message=str(exc),
-                )
-                return build_nine_question_partial_failure(
-                    context=context,
-                    tool_id=self.plugin_id,
-                    question_id="q7",
-                    question_ref=QUESTION_REF,
-                    error_code="q7_functional_alternative_chain_failed",
-                    error_message=str(exc),
-                    diagnosis_key="q7_execution_diagnosis",
-                    module_runs=list(q7_module_runs),
-                    plugin_runs=plugin_runs,
-                    upstream_dependencies=[
-                        {"dependency_id": "q4", "required": True, "status": "completed" if q4_profile else "missing"},
-                        {"dependency_id": "q5", "required": True, "status": "completed" if q5_profile else "missing"},
-                        {"dependency_id": "q6", "required": True, "status": "completed" if q6_profile else "missing"},
-                    ],
-                    context_updates={},
-                    required_modules=["q7_functional_alternative_chain"],
-                )
-        else:
-            finish_module_run(
-                functional_chain_run,
-                status="missing",
-                error_code="plugin_service_missing",
-                error_message="Functional alternative chain not started.",
-            )
-        normalized_functional_alternatives = normalize_functional_alternatives(functional_alternatives)
+        finish_module_run(red_line_baseline_run, status="completed")
         persist_question_module_output(
             context,
             question_id="q7",
-            module_id="q7_functional_alternative_chain",
-            payload={"q7_functional_alternatives": normalized_functional_alternatives},
-            status=str(functional_chain_run.get("status") or "completed"),
-            output_kind="evidence",
-        )
-        alternative_strategy_baseline = derive_alternative_strategy_baseline(
-            upstream_context,
-            normalized_functional_alternatives,
-        )
-        q7_module_results = build_q7_baseline_modules(upstream_context, normalized_functional_alternatives)
-        fallback_baseline_run = start_module_run(
-            q7_module_runs,
-            "q7_fallback_baseline_projection",
-            source="plugins.nine_questions.q7",
-        )
-        finish_module_run(fallback_baseline_run, status="completed")
-        persist_question_module_output(
-            context,
-            question_id="q7",
-            module_id="q7_fallback_baseline_projection",
-            payload=alternative_strategy_baseline,
-            status=str(fallback_baseline_run.get("status") or "completed"),
+            module_id="q7_red_line_baseline_projection",
+            payload=red_line_baseline,
+            status=str(red_line_baseline_run.get("status") or "completed"),
             output_kind="evidence",
         )
 
         llm_request = build_q7_llm_request(
-            rendered_q4_boundary=render_q4_boundary(upstream_context),
+            rendered_q3_mission_boundaries=render_human_readable_block(q3_mission_boundary, heading="Q3 使命与连续性边界（Q3_Mission_Boundaries）"),
+            rendered_identity_kernel=render_human_readable_block(identity_kernel, heading="身份边界底线（Identity_Boundary）"),
             rendered_q5_boundary=render_q5_boundary(upstream_context),
-            rendered_q6_redlines=render_q6_redlines(upstream_context),
-            rendered_q3_resource_state=render_human_readable_block(q3_eval, heading="Q3 资源状态"),
-            rendered_functional_alternatives=render_human_readable_block(normalized_functional_alternatives, heading="插件建议备选策略"),
-            rendered_strategy_baseline=render_human_readable_block(alternative_strategy_baseline, heading="备选策略基线"),
-            q4_capability_boundary=q4_profile,
-            q5_authorization_boundary=q5_profile,
-            q6_forbidden_zone=q6_profile,
-            q3_resource_evaluation=q3_eval,
-            functional_alternatives=normalized_functional_alternatives,
-            alternative_strategy_baseline=alternative_strategy_baseline,
+            rendered_safety_rejections=render_human_readable_block(safety_rejection_history or ["未发现近期正式拒绝记录"], heading="近期安全与审计拦截历史（Safety_Audit_Records）"),
+            rendered_current_intent_context=render_human_readable_block(current_intent_context or {"status": "未发现显式当前意图上下文"}, heading="当前意图上下文（Current_Intent_Context）"),
+            rendered_red_line_baseline=render_human_readable_block(red_line_baseline, heading="Q7 红线预处理基线"),
+            q3_mission_boundaries=q3_mission_boundary if isinstance(q3_mission_boundary, dict) else {},
+            identity_kernel=identity_kernel if isinstance(identity_kernel, dict) else {},
+            q5_authorization_boundary={
+                "q5_authorization_boundary_profile": q5_profile,
+                "q5_permission_boundary": q5_permission_boundary,
+            },
+            safety_rejection_history=safety_rejection_history,
+            current_intent_context=current_intent_context,
+            red_line_baseline=red_line_baseline,
         )
         system_prompt = llm_request["system_prompt"]
         prompt = llm_request["prompt"]
 
-        # 5. 构建追踪元数据
-        trace_id = str(context.get("trace_id") or f"q7-alternatives:{uuid4().hex}")
+        trace_id = str(context.get("trace_id") or f"q7-redline:{uuid4().hex}")
         session_id = str(context.get("session_id") or "unknown-session")
         turn_id = str(context.get("turn_id") or "unknown-turn")
         request_id = str(uuid4())
-        decision_id = str(context.get("decision_id") or f"{turn_id}:q7_alternatives")
+        decision_id = str(context.get("decision_id") or f"{turn_id}:q7_red_line_assessment")
 
         caller_context = build_caller_context(
             source_module="q7_what_else_can_i_do_plugin",
-            invocation_phase="nine_question_q7_alternatives",
+            invocation_phase="nine_question_q7_red_line_assessment",
             question_ref=QUESTION_REF,
             decision_id=decision_id,
             trace_id=trace_id,
         )
 
         model_context = llm_request["model_context"]
-
-        # 6. 审计日志：触发
-        record_model_invoked(
-            transcript_store,
-            session_id=session_id,
-            turn_id=turn_id,
-            trace_id=trace_id,
-            source="plugins.nine_questions.q7_what_else_can_i_do",
-            payload={
-                "request_id": request_id,
-                "decision_id": decision_id,
-                "question_ref": QUESTION_REF,
-                "provider_plugin_id": safe_provider_plugin_id(provider),
-                "caller_context": caller_context.model_dump(mode="json"),
-                "prompt": prompt,
-            },
-        )
-        alternative_projection_run = start_module_run(
+        red_line_projection_run = start_module_run(
             q7_module_runs,
-            "q7_alternative_projection",
+            "q7_red_line_assessment_projection",
             source="plugins.nine_questions.q7",
         )
 
-        # 7. LLM 调用（Fail-Closed）
-        try:
-            raw = provider.generate_json(
-                prompt=f"{system_prompt}\n\n{prompt}",
-                context=model_context,
-                caller_context=caller_context,
-            )
-        except Exception as exc:
-            # 严禁吞掉 Q7 LLM 调用异常并只返回 partial_failed。
-            # 这里必须保留异常堆栈，否则后台替代策略推理故障会被隐藏成普通失败。
-            logger.exception("Q7 LLM invocation failed")
-            record_model_failed(
+        inference: Q7InferenceResult | None = None
+        raw: dict[str, Any] = {}
+        validation_errors: list[str] = []
+        invocation_traces: list[dict[str, Any]] = []
+        elapsed_ms = 0
+        for attempt in range(1, _Q7_MAX_LLM_ATTEMPTS + 1):
+            record_model_invoked(
                 transcript_store,
                 session_id=session_id,
                 turn_id=turn_id,
@@ -366,85 +382,153 @@ class WhatElseCanIDoPlugin(BaseModel):
                     "request_id": request_id,
                     "decision_id": decision_id,
                     "question_ref": QUESTION_REF,
-                    "error_type": exc.__class__.__name__,
-                    "error_message": str(exc),
+                    "provider_plugin_id": safe_provider_plugin_id(provider),
+                    "caller_context": caller_context.model_dump(mode="json"),
+                    "attempt": attempt,
+                    "system_prompt": system_prompt,
+                    "prompt": prompt,
+                    "context": model_context,
                 },
             )
-            fail_module_run(
-                alternative_projection_run,
-                error_code="q7_llm_invocation_failed",
-                error_message=str(exc),
-            )
-            return build_nine_question_partial_failure(
-                context=context,
-                tool_id=self.plugin_id,
-                question_id="q7",
-                question_ref=QUESTION_REF,
-                error_code="q7_llm_invocation_failed",
-                error_message=str(exc),
-                diagnosis_key="q7_execution_diagnosis",
-                module_runs=list(q7_module_runs),
-                plugin_runs=plugin_runs,
-                upstream_dependencies=[],
-                context_updates={
-                    "q7_functional_alternatives": normalized_functional_alternatives,
-                    "q7_alternative_strategy_baseline": alternative_strategy_baseline,
-                },
-                required_modules=["q7_alternative_projection"],
-            )
+            try:
+                started = perf_counter()
+                raw = provider.generate_json(
+                    prompt=f"{system_prompt}\n\n{prompt}",
+                    context=model_context,
+                    caller_context=caller_context,
+                )
+                elapsed_ms += int((perf_counter() - started) * 1000)
+                inference = Q7InferenceResult.model_validate(raw)
+                raw_response_payload = json_safe_payload(getattr(provider, "last_raw_response", None))
+                if not isinstance(raw_response_payload, dict):
+                    raw_response_payload = json_safe_payload(raw) if isinstance(raw, dict) else {}
+                token_usage_payload = json_safe_payload(getattr(provider, "last_token_usage", None))
+                token_usage_payload = token_usage_payload if isinstance(token_usage_payload, dict) else {}
+                invocation_traces.append(
+                    {
+                        "attempt": attempt,
+                        "status": "validated",
+                        "raw_response": raw_response_payload,
+                        "token_usage": token_usage_payload,
+                    }
+                )
+                break
+            except Exception as exc:
+                validation_errors.append(f"attempt_{attempt}:{exc.__class__.__name__}:{exc}")
+                raw_response_payload = json_safe_payload(getattr(provider, "last_raw_response", None))
+                if not isinstance(raw_response_payload, dict):
+                    raw_response_payload = json_safe_payload(raw) if isinstance(raw, dict) else {}
+                invocation_traces.append(
+                    {
+                        "attempt": attempt,
+                        "status": "invalid",
+                        "error_type": exc.__class__.__name__,
+                        "error_message": str(exc),
+                        "raw_response": raw_response_payload,
+                    }
+                )
+                record_model_failed(
+                    transcript_store,
+                    session_id=session_id,
+                    turn_id=turn_id,
+                    trace_id=trace_id,
+                    source="plugins.nine_questions.q7_what_else_can_i_do",
+                    payload={
+                        "request_id": request_id,
+                        "decision_id": decision_id,
+                        "question_ref": QUESTION_REF,
+                        "caller_context": caller_context.model_dump(mode="json"),
+                        "attempt": attempt,
+                        "error_type": exc.__class__.__name__,
+                        "error_message": str(exc),
+                    },
+                )
+                if attempt >= _Q7_MAX_LLM_ATTEMPTS:
+                    logger.exception("Q7 RedLineAssessment validation failed after retries")
 
-        # 8. Pydantic 验证
-        try:
-            inference = Q7InferenceResult.model_validate(raw)
-        except Exception as exc:
-            # 严禁吞掉 Q7 输出校验异常并假装只是常规失败。
-            # 校验失败必须留下异常日志，避免功能假实现继续污染后续链路。
-            logger.exception("Q7 output validation failed")
+        if inference is None:
             fail_module_run(
-                alternative_projection_run,
-                error_code="q7_output_validation_failed",
-                error_message=str(exc),
+                red_line_projection_run,
+                error_code="q7_red_line_assessment_validation_failed",
+                error_message="; ".join(validation_errors),
             )
-            return build_nine_question_partial_failure(
-                context=context,
-                tool_id=self.plugin_id,
-                question_id="q7",
-                question_ref=QUESTION_REF,
-                error_code="q7_output_validation_failed",
-                error_message=str(exc),
-                diagnosis_key="q7_execution_diagnosis",
-                module_runs=list(q7_module_runs),
-                plugin_runs=plugin_runs,
-                upstream_dependencies=[],
-                context_updates={
-                    "q7_functional_alternatives": normalized_functional_alternatives,
-                    "q7_alternative_strategy_baseline": alternative_strategy_baseline,
-                },
-                required_modules=["q7_alternative_projection"],
+            raise RuntimeError("q7_red_line_assessment_validation_failed")
+
+        assessment = inference.RedLineAssessment
+        assessment_payload = assessment.model_dump(mode="json")
+        deterministic_constraints = red_line_baseline.get("non_bypassable_constraints", [])
+        if deterministic_constraints:
+            merged_constraints = list(
+                dict.fromkeys(
+                    _coerce_text_list(assessment_payload.get("non_bypassable_constraints"), limit=100)
+                    + _coerce_text_list(deterministic_constraints, limit=100)
+                )
             )
-        inferred_profile = inference.alternative_strategy_profile
-        profile = inferred_profile.model_copy(
-            update={
-                "fallback_plans": merge_with_strategy_baseline(
-                    inferred_profile.fallback_plans,
-                    alternative_strategy_baseline.get("fallback_plans", []),
-                ),
-                "degradation_strategies": merge_with_strategy_baseline(
-                    inferred_profile.degradation_strategies,
-                    alternative_strategy_baseline.get("degradation_strategies", []),
-                ),
-                "collaboration_switches": merge_with_strategy_baseline(
-                    inferred_profile.collaboration_switches,
-                    alternative_strategy_baseline.get("collaboration_switches", []),
-                ),
-                "exploratory_actions": merge_with_strategy_baseline(
-                    inferred_profile.exploratory_actions,
-                    alternative_strategy_baseline.get("exploratory_actions", []),
-                ),
-            }
+            assessment_payload["non_bypassable_constraints"] = merged_constraints
+        deterministic_rejections = red_line_baseline.get("safety_rejection_history", [])
+        if deterministic_rejections:
+            assessment_payload["rejected_operations_log"] = list(
+                dict.fromkeys(
+                    _coerce_text_list(assessment_payload.get("rejected_operations_log"), limit=100)
+                    + _coerce_text_list(deterministic_rejections, limit=100)
+                )
+            )
+        if not assessment_payload.get("constraint_sources_explanation"):
+            assessment_payload["constraint_sources_explanation"] = (
+                "当前禁令源于身份边界的底层不可绕过约束、Q5 授权黑名单与安全拦截记录。"
+            )
+        compatibility_payload = {
+            "current_red_line_hits": assessment_payload["current_redline_hits"],
+            "rejected_operation_records": assessment_payload["rejected_operations_log"],
+            "ban_source_explanations": [assessment_payload["constraint_sources_explanation"]],
+            "non_bypassable_constraints": assessment_payload["non_bypassable_constraints"],
+            "question_driver_refs": red_line_baseline.get("question_driver_refs") or [
+                "Identity_Boundary",
+                "Q5_Authorization",
+                "Safety_Audit_Records",
+                "Current_Intent_Context",
+            ],
+        }
+        root_assessment_payload = {"RedLineAssessment": assessment_payload}
+
+        finish_module_run(red_line_projection_run, status="completed")
+        persist_question_module_output(
+            context,
+            question_id="q7",
+            module_id="q7_red_line_assessment_projection",
+            payload=root_assessment_payload,
+            status=str(red_line_projection_run.get("status") or "completed"),
+            output_kind="inference",
         )
 
-        # 9. 审计日志：完成
+        raw_response_payload = json_safe_payload(getattr(provider, "last_raw_response", None))
+        if not isinstance(raw_response_payload, dict):
+            raw_response_payload = json_safe_payload(raw) if isinstance(raw, dict) else {}
+        token_usage_payload = json_safe_payload(getattr(provider, "last_token_usage", None))
+        token_usage_payload = token_usage_payload if isinstance(token_usage_payload, dict) else {}
+        model_name = json_safe_payload(
+            getattr(provider, "last_model_name", None)
+            or context.get("llm_model")
+            or context.get("model")
+            or context.get("model_name")
+        )
+        provider_name = safe_provider_plugin_id(provider) or str(context.get("model_provider") or "").strip()
+        llm_trace_payload = _build_q7_trace_payload(
+            request_id=request_id,
+            decision_id=decision_id,
+            provider_name=provider_name,
+            model_name=model_name,
+            system_prompt=system_prompt,
+            prompt=prompt,
+            caller_context=caller_context,
+            model_context=model_context,
+            raw_response=raw_response_payload,
+            result=root_assessment_payload,
+            token_usage=token_usage_payload,
+            elapsed_ms=elapsed_ms,
+            invocations=invocation_traces,
+        )
+
         record_model_completed(
             transcript_store,
             session_id=session_id,
@@ -455,73 +539,51 @@ class WhatElseCanIDoPlugin(BaseModel):
                 "request_id": request_id,
                 "decision_id": decision_id,
                 "question_ref": QUESTION_REF,
-                "result": inference.model_dump(mode="json"),
+                "caller_context": caller_context.model_dump(mode="json"),
+                "result": root_assessment_payload,
+                "raw_response": raw_response_payload,
+                "token_usage": token_usage_payload,
+                "model": model_name,
+                "elapsed_ms": elapsed_ms,
+                "llm_trace_payload": llm_trace_payload,
             },
         )
 
-        # 10. 返回 CognitiveToolResult
         summary = (
-            f"fallbacks={len(profile.fallback_plans)}; "
-            f"degradations={len(profile.degradation_strategies)}; "
-            f"collaborations={len(profile.collaboration_switches)}"
+            f"red_line_hits={len(assessment_payload['current_redline_hits'])}; "
+            f"rejections={len(assessment_payload['rejected_operations_log'])}; "
+            f"non_bypassable={len(assessment_payload['non_bypassable_constraints'])}"
         )
-        validated_fallbacks, unverified_fallbacks, rejected_fallbacks = _classify_fallback_plans(
-            list(profile.fallback_plans or []),
-            q4_profile=q4_profile,
-            q5_profile=q5_profile if isinstance(q5_profile, dict) else {},
-            q6_profile=q6_profile if isinstance(q6_profile, dict) else {},
-        )
-        feasibility_validation_run = start_module_run(
-            q7_module_runs,
-            "q7_feasibility_validation",
-            source="plugins.nine_questions.q7",
-        )
-        finish_module_run(
-            feasibility_validation_run,
-            status="completed" if validated_fallbacks else "degraded",
-            error_code="" if validated_fallbacks else "feasibility_validation_unverified",
-            error_message=(
-                ""
-                if validated_fallbacks
-                else "No fallback plan passed Q4/Q5/Q6 feasibility validation."
-            ),
-        )
-        authenticity_status = (
-            "completed"
-            if plugin_service is not None and q4_profile and q5_profile and q6_profile and len(validated_fallbacks) > 0
-            else "degraded"
-        )
-        finish_module_run(alternative_projection_run, status="completed")
         q7_execution_diagnosis = {
-            "authenticity_status": authenticity_status,
-            "diagnosis_code": "alternative_strategy_degraded" if authenticity_status != "completed" else "completed",
-            "diagnosis_message": (
-                "Q7 generated alternative strategies, but feasibility validation is still incomplete; suggestions remain unverified."
-                if authenticity_status != "completed"
-                else "Q7 completed with validated alternative strategies."
-            ),
-            "used_fallback": authenticity_status != "completed",
-            "upstream_degraded": not bool(q4_profile and q5_profile and q6_profile),
+            "authenticity_status": "completed",
+            "diagnosis_code": "red_line_assessment_completed",
+            "diagnosis_message": "Q7 completed with validated RedLineAssessment.",
             "module_runs": list(q7_module_runs),
-            "plugin_runs": plugin_runs,
+            "plugin_runs": [],
             "upstream_dependencies": [
                 {
-                    "dependency_id": "q4",
+                    "dependency_id": "q2_identity_kernel",
                     "required": True,
-                    "status": "completed" if q4_profile else "missing",
-                    "message": "Q4 capability boundary constrains Q7 alternatives.",
+                    "status": "completed" if identity_kernel else "missing",
+                    "message": "Identity boundary provides bottom non-bypassable constraints.",
                 },
                 {
                     "dependency_id": "q5",
                     "required": True,
-                    "status": "completed" if q5_profile else "missing",
-                    "message": "Q5 authorization boundary constrains Q7 alternatives.",
+                    "status": "completed" if q5_profile or q5_permission_boundary else "missing",
+                    "message": "Q5 authorization boundary constrains Q7 red lines.",
                 },
                 {
-                    "dependency_id": "q6",
-                    "required": True,
-                    "status": "completed" if q6_profile else "missing",
-                    "message": "Q6 forbidden-zone boundary constrains Q7 alternatives.",
+                    "dependency_id": "g12_g30",
+                    "required": False,
+                    "status": "completed" if safety_rejection_history else "empty",
+                    "message": "Safety gate and audit rejected-operation history.",
+                },
+                {
+                    "dependency_id": "g38",
+                    "required": False,
+                    "status": "completed" if procedural_memory_constraints else "empty",
+                    "message": "Procedural memory active constraints.",
                 },
             ],
             "recovery_plan": build_recovery_plan(
@@ -538,119 +600,95 @@ class WhatElseCanIDoPlugin(BaseModel):
                         executable=True,
                         scope="question_downstream",
                         target="q7",
-                        reason="重新执行替代策略推导。",
+                        reason="重新执行红线与约束评估。",
                         path="/api/web/nine-questions/q7/run",
                     ),
                     build_recovery_action(
-                        "q7-rerun-upstream-q4-q6",
-                        label="先重跑 Q4-Q6 再重跑 Q7",
-                        kind="partial_retry",
-                        executable=True,
-                        scope="upstream_chain",
-                        target="q4,q5,q6->q7",
-                        reason="Q7 依赖能力、授权和红线边界。",
-                        path="/api/web/nine-questions/q4/run",
-                    ),
-                    build_recovery_action(
-                        "q7-refresh-functional-alternatives",
-                        label="刷新备选策略插件输入",
+                        "q7-refresh-redline-baseline",
+                        label="刷新 Q7 红线证据",
                         kind="partial_retry",
                         executable=True,
                         scope="module",
-                        target="q7_functional_alternative_chain",
-                        reason="仅刷新 Q7 functional alternative inputs 与基线，不重跑 LLM。",
-                        path="/api/web/nine-questions/q7/modules/q7_functional_alternative_chain/retry",
-                    ),
-                    build_recovery_action(
-                        "q7-validate-fallbacks",
-                        label="对 fallback 做可行性验证",
-                        kind="partial_replace",
-                        executable=False,
-                        scope="feasibility_validation",
-                        target="validated_fallbacks",
-                        reason="真实可行性验证器尚未落地，当前只输出未验证建议。",
+                        target="q7_red_line_baseline_projection",
+                        reason="重新读取身份边界、Q5、安全拦截历史和程序记忆。",
+                        path="/api/web/nine-questions/q7/modules/q7_red_line_baseline_projection/retry",
                     ),
                 ],
             ),
             "projection_summary": {
-                "validated_fallbacks": validated_fallbacks,
-                "unverified_fallbacks": unverified_fallbacks,
-                "rejected_fallbacks": rejected_fallbacks,
-            },
+                "current_redline_hits": assessment_payload["current_redline_hits"],
+                "rejected_operations_log": assessment_payload["rejected_operations_log"],
+                "non_bypassable_constraints": assessment_payload["non_bypassable_constraints"],
+            }
         }
-        persist_question_module_output(
-            context,
-            question_id="q7",
-            module_id="q7_alternative_projection",
-            payload=profile.model_dump(mode="json"),
-            status=str(alternative_projection_run.get("status") or "completed"),
-            output_kind="inference",
-        )
         q7_module_runs = q7_execution_diagnosis.get("module_runs")
         q7_module_runs = q7_module_runs if isinstance(q7_module_runs, list) else []
-        q7_payload = profile.model_dump(mode="json")
+        q7_payload = assessment_payload
         run_audit_integration(
             context,
             question_id="q7",
             module_runs=q7_module_runs,
-            summary="Q7 备选策略链审计已记录。",
+            summary="Q7 红线与约束评估审计已记录。",
             payload={
-                "q7_alternative_strategy_profile": q7_payload,
-                "q7_resource_bottlenecks": q7_module_results["resource_bottleneck_projection"]["resource_bottlenecks"],
-                "q7_capability_limits": q7_module_results["capability_limit_projection"]["capability_limits"],
-                "q7_permission_boundaries": q7_module_results["permission_boundary_projection"]["permission_boundaries"],
-                "q7_absolute_red_lines": q7_module_results["absolute_redline_projection"]["absolute_red_lines"],
+                "q7_red_line_assessment": root_assessment_payload,
+                "q7_red_line_assessment_compat": compatibility_payload,
+                "q7_red_line_baseline": red_line_baseline,
+                "llm_trace_payload": llm_trace_payload,
             },
         )
         run_memory_integration(
             context,
             question_id="q7",
             module_runs=q7_module_runs,
-            title="Q7 Alternative Strategy",
-            summary="Q7 替代策略与失败补丁已写入记忆。",
+            title="Q7 Red Line Assessment",
+            summary="Q7 红线与不可绕过约束已写入记忆。",
             layer="episodic",
-            payload=q7_payload,
-            tags=["nine-questions", "q7", "alternative-strategy"],
+            payload=root_assessment_payload,
+            tags=["nine-questions", "q7", "red-line-assessment"],
         )
         run_reflection_integration(
             context,
             question_id="q7",
             module_runs=q7_module_runs,
-            subject="Q7 fallback strategy",
-            summary="Q7 fallback 有效性反思已记录。",
+            subject="Q7 red-line firewall",
+            summary="Q7 红线防火墙有效性反思已记录。",
             reflection_type="strategy_reflection",
-            payload={
-                "q7_alternative_strategy_profile": q7_payload,
-                "q7_historical_failure_patches": q7_module_results["historical_failure_patch_projection"]["historical_failure_patches"],
-            },
+            payload={"q7_red_line_assessment": root_assessment_payload},
         )
         run_learning_integration(
             context,
             question_id="q7",
             module_runs=q7_module_runs,
-            learning_kind="alternative_strategy",
-            summary="Q7 替代策略学习记录已登记。",
-            payload=q7_payload,
+            learning_kind="red_line_assessment",
+            summary="Q7 红线约束学习记录已登记。",
+            payload=root_assessment_payload,
         )
         q7_execution_diagnosis["module_runs"] = q7_module_runs
 
         return CognitiveToolResult(
             tool_id=self.plugin_id,
             summary=summary,
-            proposals=[{"kind": "alternative_strategy_profile", **profile.model_dump(mode="json")}],
+            proposals=[{"kind": "red_line_assessment", **root_assessment_payload}],
             context_updates={
                 "nine_questions": {QUESTION_REF: summary},
-                "q7_module_results": q7_module_results,
-                "q7_alternative_strategy_profile": profile.model_dump(mode="json"),
-                "q7_functional_alternatives": normalized_functional_alternatives,
-                "q7_alternative_strategy_baseline": alternative_strategy_baseline,
-                "q7_resource_bottlenecks": q7_module_results["resource_bottleneck_projection"]["resource_bottlenecks"],
-                "q7_capability_limits": q7_module_results["capability_limit_projection"]["capability_limits"],
-                "q7_permission_boundaries": q7_module_results["permission_boundary_projection"]["permission_boundaries"],
-                "q7_absolute_red_lines": q7_module_results["absolute_redline_projection"]["absolute_red_lines"],
-                "q7_historical_failure_patches": q7_module_results["historical_failure_patch_projection"]["historical_failure_patches"],
+                "RedLineAssessment": assessment_payload,
+                "red_line_assessment": root_assessment_payload,
+                "q7_red_line_assessment": root_assessment_payload,
+                "q7_red_line_assessment_compat": compatibility_payload,
+                "q7_red_line_baseline": red_line_baseline,
+                "q7_current_redline_hits": assessment_payload["current_redline_hits"],
+                "q7_current_red_line_hits": compatibility_payload["current_red_line_hits"],
+                "q7_rejected_operations_log": assessment_payload["rejected_operations_log"],
+                "q7_rejected_operation_records": compatibility_payload["rejected_operation_records"],
+                "q7_constraint_sources_explanation": assessment_payload["constraint_sources_explanation"],
+                "q7_ban_source_explanations": compatibility_payload["ban_source_explanations"],
+                "q7_non_bypassable_constraints": assessment_payload["non_bypassable_constraints"],
+                "q7_question_driver_refs": compatibility_payload["question_driver_refs"],
+                "q7_absolute_red_lines": assessment_payload["non_bypassable_constraints"],
                 "q7_execution_diagnosis": q7_execution_diagnosis,
+                "llm_trace_payload": llm_trace_payload,
             },
+            llm_trace_payload=llm_trace_payload,
             confidence=0.7,
         )
 

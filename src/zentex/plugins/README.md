@@ -297,8 +297,8 @@ CANDIDATE ──────┐
 
 ```
 nine-question-q1-where-am-i
-nine-question-q2-who-am-i
-nine-question-q3-what-do-i-have
+nine-question-q2-asset-inventory
+nine-question-q3-who-am-i
 nine-question-q4-what-can-i-do
 nine-question-q5-what-am-i-allowed-to-do
 nine-question-q6-what-should-i-not-do
@@ -854,7 +854,7 @@ async def call_cognitive_plugin():
         plugin_id=rows[0]["plugin_id"],
         task_id="task-001",
         parameters={
-            "workspace_path": "/home/user/project",
+            "workspace_path": "<workspace-path>",
             "environment": "development"
         },
         trace_id="trace-q1-001",
@@ -879,7 +879,7 @@ from zentex.plugins.service import query_cognitive_plugin_functionals_by_operati
 class Q3WhatDoIHavePlugin:
     def __init__(self, plugin_service):
         self.plugin_service = plugin_service
-        self.plugin_id = "nine-question-q3-what-do-i-have"
+        self.plugin_id = "nine-question-q3-who-am-i"
 
     async def run_tool(self, context):
         # 查询当前认知插件下启用中的功能插件

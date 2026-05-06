@@ -40,15 +40,15 @@ def contains_write_like_action(action: str) -> bool:
     return any(re.search(rf"\b{re.escape(marker)}\b", lowered) for marker in write_markers)
 
 
-def derive_permission_profile(snapshot: dict[str, Any], q3_inventory: dict[str, Any]) -> dict[str, Any]:
+def derive_permission_profile(snapshot: dict[str, Any], q2_inventory: dict[str, Any]) -> dict[str, Any]:
     permissions = snapshot.get("permissions")
     permissions = permissions if isinstance(permissions, dict) else {}
     workspace_permissions = snapshot.get("workspaces_and_permissions")
     workspace_permissions = workspace_permissions if isinstance(workspace_permissions, dict) else {}
-    q3_permissions = q3_inventory.get("permissions")
-    q3_permissions = q3_permissions if isinstance(q3_permissions, dict) else {}
+    q2_permissions = q2_inventory.get("permissions")
+    q2_permissions = q2_permissions if isinstance(q2_permissions, dict) else {}
 
-    mode = normalize_text(q3_permissions.get("mode") or permissions.get("mode")) or "unknown"
+    mode = normalize_text(q2_permissions.get("mode") or permissions.get("mode")) or "unknown"
     tenant_permissions = coerce_string_list(
         workspace_permissions.get("tenant_permissions") or permissions.get("tenant_scope")
     )
@@ -58,7 +58,7 @@ def derive_permission_profile(snapshot: dict[str, Any], q3_inventory: dict[str, 
         or permissions.get("brain_scope")
     )
     workspace_zones = coerce_string_list(
-        (q3_inventory.get("accessible_workspace_zones") if isinstance(q3_inventory, dict) else None)
+        (q2_inventory.get("accessible_workspace_zones") if isinstance(q2_inventory, dict) else None)
         or workspace_permissions.get("available_workspaces")
         or permissions.get("accessible_workspace_zones")
     )
@@ -88,18 +88,18 @@ def normalize_functional_capabilities(functional_capabilities: list[dict[str, An
 
 def derive_capability_baseline(
     snapshot: dict[str, Any],
-    q3_inventory: dict[str, Any],
+    q2_inventory: dict[str, Any],
     exec_domains: list[str],
     permission_profile: dict[str, Any],
     functional_capabilities: list[dict[str, Any]],
 ) -> dict[str, list[str]]:
-    resource_evaluation = snapshot.get("q3_resource_evaluation")
+    resource_evaluation = snapshot.get("q2_resource_evaluation")
     resource_evaluation = resource_evaluation if isinstance(resource_evaluation, dict) else {}
-    cognitive_tools = coerce_string_list(q3_inventory.get("available_cognitive_tools"))
-    connected_agents = q3_inventory.get("connected_agents")
+    cognitive_tools = coerce_string_list(q2_inventory.get("available_cognitive_tools"))
+    connected_agents = q2_inventory.get("connected_agents")
     connected_agents = connected_agents if isinstance(connected_agents, list) else []
     workspace_zones = coerce_string_list(permission_profile.get("accessible_workspace_zones"))
-    strategy_patches = coerce_string_list(q3_inventory.get("activated_strategy_patches"))
+    strategy_patches = coerce_string_list(q2_inventory.get("activated_strategy_patches"))
 
     capability_upper_limits: list[str] = []
     actionable_space: list[str] = []
@@ -138,8 +138,6 @@ def derive_capability_baseline(
     resource_status = normalize_text(resource_evaluation.get("resource_status"))
     if resource_status == "critically_lacking":
         executable_strategies.append("resource recovery before execution")
-    elif resource_status == "degraded":
-        executable_strategies.append("conservative degraded-mode execution")
 
     if permission_profile.get("is_read_only"):
         capability_upper_limits.append("perform read-only inspection")

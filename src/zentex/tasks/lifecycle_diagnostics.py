@@ -15,12 +15,34 @@ UTC = timezone.utc
 
 
 ALLOWED_TRANSITIONS: dict[str, set[str]] = {
+    TaskStatus.SPLIT_REQUIRED.value: {
+        TaskStatus.ASSIGNMENT_PENDING.value,
+        TaskStatus.DONE.value,
+        TaskStatus.BLOCKED.value,
+        TaskStatus.FAILED.value,
+        TaskStatus.CANCELLED.value,
+    },
+    TaskStatus.ASSIGNMENT_PENDING.value: {
+        TaskStatus.QUEUED.value,
+        TaskStatus.BLOCKED.value,
+        TaskStatus.FAILED.value,
+        TaskStatus.CANCELLED.value,
+    },
+    TaskStatus.QUEUED.value: {
+        TaskStatus.IN_PROGRESS.value,
+        TaskStatus.BLOCKED.value,
+        TaskStatus.FAILED.value,
+        TaskStatus.SUSPENDED.value,
+        TaskStatus.ARCHIVED.value,
+        TaskStatus.CANCELLED.value,
+    },
     TaskStatus.TODO.value: {
         TaskStatus.IN_PROGRESS.value,
         TaskStatus.BLOCKED.value,
         TaskStatus.FAILED.value,
         TaskStatus.SUSPENDED.value,
         TaskStatus.ARCHIVED.value,
+        TaskStatus.CANCELLED.value,
     },
     TaskStatus.IN_PROGRESS.value: {
         TaskStatus.TODO.value,
@@ -29,6 +51,7 @@ ALLOWED_TRANSITIONS: dict[str, set[str]] = {
         TaskStatus.DONE.value,
         TaskStatus.FAILED.value,
         TaskStatus.SUSPENDED.value,
+        TaskStatus.CANCELLED.value,
     },
     TaskStatus.BLOCKED.value: {
         TaskStatus.TODO.value,
@@ -36,12 +59,15 @@ ALLOWED_TRANSITIONS: dict[str, set[str]] = {
         TaskStatus.FAILED.value,
         TaskStatus.SUSPENDED.value,
         TaskStatus.ARCHIVED.value,
+        TaskStatus.CANCELLED.value,
     },
     TaskStatus.WAITING_CONFIRMATION.value: {
         TaskStatus.IN_PROGRESS.value,
+        TaskStatus.BLOCKED.value,
         TaskStatus.DONE.value,
         TaskStatus.FAILED.value,
         TaskStatus.SUSPENDED.value,
+        TaskStatus.CANCELLED.value,
     },
     TaskStatus.SUSPENDED.value: {
         TaskStatus.TODO.value,
@@ -49,10 +75,12 @@ ALLOWED_TRANSITIONS: dict[str, set[str]] = {
         TaskStatus.BLOCKED.value,
         TaskStatus.FAILED.value,
         TaskStatus.ARCHIVED.value,
+        TaskStatus.CANCELLED.value,
     },
     TaskStatus.DONE.value: {TaskStatus.ARCHIVED.value},
     TaskStatus.FAILED.value: {TaskStatus.TODO.value},
     TaskStatus.ARCHIVED.value: set(),
+    TaskStatus.CANCELLED.value: set(),
 }
 
 
@@ -155,6 +183,11 @@ def build_task_fault_injection_report(report: TaskLifecycleDiagnosticReport) -> 
             "name": "dependency_cycle_detector_ran",
             "passed": "dependency_cycle_detection" in report.checks,
             "details": {"cycle_issues": _issues_of_type(report, "dependency_cycle")},
+        },
+        {
+            "name": "idempotency_collision_detector_ran",
+            "passed": "idempotent_replay_detection" in report.checks,
+            "details": {"idempotency_issues": _issues_of_type(report, "duplicate_idempotency_key")},
         },
         {
             "name": "recovery_and_audit_detectors_ran",

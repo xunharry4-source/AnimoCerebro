@@ -26,11 +26,9 @@ class WorkspaceConfig(BaseModel):
 
     id: Optional[int] = Field(None, description="Database ID")
     name: str = Field(..., min_length=1, max_length=255, description="Workspace display name / 工作区显示名")
-    path: str = Field(..., min_length=1, description="Absolute path to workspace root / 工作区根目录的绝对路径")
+    path: str = Field(..., min_length=1, description="Absolute readable local directory path for this workspace / 此工作区对应的可读本地目录绝对路径")
     description: Optional[str] = Field(None, max_length=1000, description="Optional description / 可选描述")
     is_default: bool = Field(False, description="Is this the default workspace? / 是否为默认工作区")
-    role: Optional[str] = Field(None, max_length=255, description="User-defined role for this workspace / 工作区的用户定义角色")
-    role_description: Optional[str] = Field(None, max_length=2000, description="Detailed description of the role / 角色的详细描述")
     forbidden_actions: Optional[str] = Field(None, max_length=3000, description="Restrictions - what should NOT be done in this workspace / 限制项 - 在此工作区中不允许做什么")
     task_goals: Optional[str] = Field(None, max_length=5000, description="JSON array of task goals for this workspace / 此工作区的任务目标列表（JSON数组格式）")
     created_at: Optional[datetime] = Field(default_factory=_now, description="Creation timestamp / 创建时间戳")
@@ -43,12 +41,28 @@ class WorkspaceConfig(BaseModel):
         from pathlib import Path
         return str(Path(v).resolve())
 
+    @field_validator(
+        "description",
+        "forbidden_actions",
+        "task_goals",
+        mode="before",
+    )
+    @classmethod
+    def normalize_optional_text_fields(cls, v: Optional[str]) -> Optional[str]:
+        """Normalize optional text fields by trimming and converting blanks to None."""
+        if v is None:
+            return None
+        if not isinstance(v, str):
+            return v
+        text = v.strip()
+        return text or None
+
     model_config = ConfigDict(
         json_schema_extra={
             "example": {
                 "id": 1,
                 "name": "Main Project",
-                "path": "/home/user/projects/main",
+                "path": "<workspace-path>",
                 "description": "Main backend project",
                 "is_default": True,
                 "created_at": "2026-04-11T10:00:00+00:00",

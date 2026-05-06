@@ -8,6 +8,7 @@ servers to understand task IDs, traces, or task-center contracts.
 """
 
 import inspect
+import json
 from typing import Any, Dict, Optional
 
 from zentex.tasks.models import TaskStatus
@@ -34,6 +35,12 @@ def _task_payload(task: Any) -> Dict[str, Any]:
     return dict(task or {})
 
 
+def _persist_execution_output(task_service: Any, task_id: str, payload: Dict[str, Any]) -> None:
+    dao = getattr(task_service, "_task_dao", None)
+    if dao is not None:
+        dao.update_task(task_id, {"execution_output": json.dumps(payload, ensure_ascii=False, default=str)})
+
+
 async def mark_external_execution_started(
     *,
     task_service: Any,
@@ -53,7 +60,7 @@ async def mark_external_execution_started(
         raise ExternalExecutionWritebackError(f"Task {task_id} not found")
 
     status = _status_value(task)
-    if status == TaskStatus.TODO.value:
+    if status in {TaskStatus.TODO.value, TaskStatus.QUEUED.value}:
         task = await _await_if_needed(
             task_service.update_task_status(
                 task_id,
@@ -129,6 +136,17 @@ async def write_external_execution_result(
         )
     )
 
+    execution_evidence = {
+        "executor_type": executor_type,
+        "trace_id": trace_id,
+        "executor_metadata": dict(executor_metadata or {}),
+        "result_status": result_payload.get("status"),
+        "exit_code": result_payload.get("exit_code"),
+        "duration_ms": result_payload.get("duration_ms"),
+        "payload_present": bool(result_payload),
+        "evidence_ref": f"external_execution:{executor_type}:{task_id}:{trace_id}",
+    }
+
     if succeeded:
         completion = await _await_if_needed(
             task_service.complete_task_with_verification(
@@ -140,6 +158,7 @@ async def write_external_execution_result(
                         "trace_id": trace_id,
                         **executor_metadata,
                     },
+                    "evidence": execution_evidence,
                 },
                 remarks=f"{executor_type} execution completed",
             )
@@ -148,6 +167,19 @@ async def write_external_execution_result(
             raise ExternalExecutionWritebackError(
                 f"Task {task_id} completion writeback failed: {completion}"
             )
+        _persist_execution_output(
+            task_service,
+            task_id,
+            {
+                "succeeded": True,
+                "task_center_synchronized": True,
+                "executor_type": executor_type,
+                "trace_id": trace_id,
+                "result": result_payload,
+                "action_execution_receipt": execution_evidence,
+                "completion": completion,
+            },
+        )
         return completion
 
     failed_task = await _await_if_needed(
@@ -156,6 +188,19 @@ async def write_external_execution_result(
             TaskStatus.FAILED,
             remarks=error_message or f"{executor_type} execution failed",
         )
+    )
+    _persist_execution_output(
+        task_service,
+        task_id,
+        {
+            "succeeded": False,
+            "task_center_synchronized": True,
+            "executor_type": executor_type,
+            "trace_id": trace_id,
+            "result": result_payload,
+            "error": error_message,
+            "action_execution_receipt": execution_evidence,
+        },
     )
     return {
         "success": False,

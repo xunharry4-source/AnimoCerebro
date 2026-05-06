@@ -27,8 +27,8 @@ This directory houses the concrete implementations of various Zentex plugins.
 	- `src/plugins/oracle/posture/`
 	- `src/plugins/oracle/redline/`
 	- `src/plugins/nine_questions/q1_where_am_i/`
-	- `src/plugins/nine_questions/q2_who_am_i/`
-	- `src/plugins/nine_questions/q3_what_do_i_have/`
+	- `src/plugins/nine_questions/q2_asset_inventory/`
+	- `src/plugins/nine_questions/q3_role_inference/`
 	- `src/plugins/nine_questions/q4_what_can_i_do/`
 	- `src/plugins/nine_questions/q5_what_am_i_allowed_to_do/`
 	- `src/plugins/nine_questions/q6_what_should_i_not_do/`
@@ -72,8 +72,8 @@ This directory houses the concrete implementations of various Zentex plugins.
 	- `src/plugins/oracle/posture/`
 	- `src/plugins/oracle/redline/`
 	- `src/plugins/nine_questions/q1_where_am_i/`
-	- `src/plugins/nine_questions/q2_who_am_i/`
-	- `src/plugins/nine_questions/q3_what_do_i_have/`
+	- `src/plugins/nine_questions/q2_asset_inventory/`
+	- `src/plugins/nine_questions/q3_role_inference/`
 	- `src/plugins/nine_questions/q4_what_can_i_do/`
 	- `src/plugins/nine_questions/q5_what_am_i_allowed_to_do/`
 	- `src/plugins/nine_questions/q6_what_should_i_not_do/`

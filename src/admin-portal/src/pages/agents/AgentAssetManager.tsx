@@ -41,7 +41,11 @@ import {
   Add as AddIcon,
   Lan as LanIcon,
   Circle as CircleIcon,
+  PowerSettingsNew as PowerSettingsNewIcon,
+  Block as BlockIcon,
+  Article as LogsIcon,
 } from '@mui/icons-material';
+import { Trash2 } from 'lucide-react';
 
 // --- Types ---
 
@@ -199,6 +203,7 @@ export const AgentAssetManager: React.FC = () => {
   const navigate = useNavigate();
   const [agents, setAgents] = useState<AgentAsset[]>([]);
   const [error, setError] = useState<string | null>(null);
+  const [deletingAgentId, setDeletingAgentId] = useState<string | null>(null);
   const [isDialogOpen, setDialogOpen] = useState(false);
   const [activeStep, setActiveStep] = useState(0);
   // Search and filter state
@@ -284,6 +289,42 @@ export const AgentAssetManager: React.FC = () => {
     }
   };
 
+  const updateAgentActivation = async (agentId: string, action: 'activate' | 'disable') => {
+    try {
+      const res = await fetch(`/api/web/agents/${agentId}/${action}`, { method: 'POST' });
+      const payload = await res.json();
+      if (!res.ok) {
+        throw new Error(payload?.detail || `${action} failed`);
+      }
+      await fetchAgents();
+    } catch (err) {
+      setError(err instanceof Error ? err.message : `${action} failed`);
+    }
+  };
+
+  const deleteAgentRegistration = async (agent: AgentAsset) => {
+    if (!window.confirm(t('agents.deleteConfirm', { name: agent.agent_name || agent.agent_id }))) {
+      return;
+    }
+    setDeletingAgentId(agent.agent_id);
+    setError(null);
+    try {
+      const res = await fetch(`/api/web/agents/${encodeURIComponent(agent.agent_id)}`, { method: 'DELETE' });
+      const payload = await res.json().catch(() => ({}));
+      if (!res.ok) {
+        const detail = payload?.detail;
+        const message =
+          typeof detail === 'string' ? detail : detail?.operator_message || detail?.message || t('agents.deleteFailed');
+        throw new Error(message);
+      }
+      await fetchAgents();
+    } catch (err) {
+      setError(err instanceof Error ? err.message : t('agents.deleteFailed'));
+    } finally {
+      setDeletingAgentId(null);
+    }
+  };
+
   return (
     <Box sx={{ p: 3 }}>
       <Stack spacing={3}>
@@ -298,13 +339,22 @@ export const AgentAssetManager: React.FC = () => {
               {t('agents.subtitle')}
             </Typography>
           </Box>
-          <Button
-            variant="contained"
-            startIcon={<AddIcon />}
-            onClick={() => setDialogOpen(true)}
-          >
-            {t('agents.register')}
-          </Button>
+          <Stack direction="row" spacing={1}>
+            <Button
+              variant="outlined"
+              startIcon={<LogsIcon />}
+              onClick={() => navigate('/console/module-logs/agents')}
+            >
+              {t("moduleLogs.view")}
+            </Button>
+            <Button
+              variant="contained"
+              startIcon={<AddIcon />}
+              onClick={() => setDialogOpen(true)}
+            >
+              {t('agents.register')}
+            </Button>
+          </Stack>
         </Stack>
 
         <Alert severity="info" variant="outlined">
@@ -443,6 +493,40 @@ export const AgentAssetManager: React.FC = () => {
                   <Typography variant="caption" display="block" color="text.secondary">
                     {t('agents.inbox')}: {agent.inbox.length} | {t('agents.receipts')}: {agent.receipts.length}
                   </Typography>
+                  <Stack direction="row" spacing={1} sx={{ mt: 1 }} useFlexGap flexWrap="wrap">
+                    <Button
+                      size="small"
+                      startIcon={<PowerSettingsNewIcon />}
+                      onClick={(event) => {
+                        event.stopPropagation();
+                        void updateAgentActivation(agent.agent_id, 'activate');
+                      }}
+                    >
+                      激活
+                    </Button>
+                    <Button
+                      size="small"
+                      startIcon={<BlockIcon />}
+                      onClick={(event) => {
+                        event.stopPropagation();
+                        void updateAgentActivation(agent.agent_id, 'disable');
+                      }}
+                    >
+                      关闭
+                    </Button>
+                    <Button
+                      size="small"
+                      color="error"
+                      startIcon={<Trash2 size={16} />}
+                      disabled={deletingAgentId === agent.agent_id}
+                      onClick={(event) => {
+                        event.stopPropagation();
+                        void deleteAgentRegistration(agent);
+                      }}
+                    >
+                      {t('agents.delete')}
+                    </Button>
+                  </Stack>
                   <Divider sx={{ my: 2 }} />
                   <Box sx={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 2 }}>
                      <Box>

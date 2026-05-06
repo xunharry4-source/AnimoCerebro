@@ -20,6 +20,7 @@ from zentex.web_console.routers.execution import router as execution_router
 from zentex.web_console.routers.external_connectors import router as external_connectors_router
 from zentex.web_console.routers.external_brain import router as external_brain_router
 from zentex.web_console.routers.subject_evolution import router as subject_evolution_router
+from zentex.web_console.routers.system_identity import router as system_identity_router
 from zentex.web_console.routers.interventions import router as interventions_router
 from zentex.web_console.routers.memory import router as memory_router
 from zentex.web_console.routers.memory_governance import router as memory_governance_router
@@ -60,6 +61,7 @@ from zentex.web_console.routers.i18n import router as i18n_router
 from zentex.web_console.routers.managed_memory import router as managed_memory_router
 from zentex.web_console.routers.management_acceptance import router as management_acceptance_router
 from zentex.web_console.routers.model_provider_runtime import router as model_provider_runtime_router
+from zentex.web_console.routers.module_logs import router as module_logs_router
 from zentex.web_console.routers.autonomous_loop import router as autonomous_loop_router
 from zentex.web_console.routers.notifications import router as notifications_router
 from zentex.web_console.routers.observability_acceptance import router as observability_acceptance_router
@@ -108,6 +110,7 @@ api_router.include_router(i18n_router)
 api_router.include_router(model_provider_runtime_router)
 api_router.include_router(managed_memory_router)
 api_router.include_router(management_acceptance_router)
+api_router.include_router(module_logs_router)
 api_router.include_router(trace_observability_router)
 api_router.include_router(trace_replay_router)
 api_router.include_router(unified_errors_router)
@@ -115,6 +118,7 @@ api_router.include_router(autonomous_loop_router)
 api_router.include_router(notifications_router)
 api_router.include_router(observability_acceptance_router)
 api_router.include_router(workspaces_router)
+api_router.include_router(system_identity_router)
 api_router.include_router(external_connectors_router)
 api_router.include_router(evolution_router)
 api_router.include_router(observability_router)

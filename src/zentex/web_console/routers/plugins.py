@@ -33,6 +33,7 @@ from zentex.web_console.contracts.plugins import (
 
 # Import service layer
 from .plugin_commons import (
+    get_or_create_plugin_session,
     list_cognitive_plugins,
     list_functional_plugins,
     list_plugins_by_feature,
@@ -72,6 +73,13 @@ async def list_functional(request: Request):
 async def list_by_feature(request: Request):
     """List plugins grouped by feature"""
     return await list_plugins_by_feature(request)
+
+
+@router.get("/plugins/statistics")
+async def get_plugin_asset_statistics(request: Request) -> dict[str, Any]:
+    """Return internal plugin statistics from SystemPluginService."""
+    session = await get_or_create_plugin_session(request)
+    return session.plugin_service.get_plugin_asset_statistics()
 
 
 # ========== Plugin Detail Endpoints ==========

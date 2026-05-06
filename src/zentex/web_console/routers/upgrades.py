@@ -24,7 +24,7 @@ DOES NOT:
 
 from typing import Any, Optional
 
-from fastapi import APIRouter, HTTPException, Request
+from fastapi import APIRouter, HTTPException, Query, Request
 from fastapi import Depends
 
 from zentex.upgrade.service import (
@@ -66,6 +66,7 @@ from zentex.web_console.services.upgrades import (
     build_upgrade_record_item,
     build_upgrades_by_lifecycle_view,
 )
+from .module_log_writer import record_module_management_log
 
 
 router = APIRouter()
@@ -123,6 +124,7 @@ def get_upgrade_overview(
 def get_upgrades_by_lifecycle_view(
     target_kind: Optional[str] = None,
     plugin_action: Optional[str] = None,
+    per_group_limit: int = Query(default=50, ge=1, le=200),
     store: Any = Depends(_require_upgrade_management_store),
 ) -> UpgradesByLifecycleViewPayload:
     """Get upgrades grouped by lifecycle view for tabbed display."""
@@ -137,6 +139,7 @@ def get_upgrades_by_lifecycle_view(
         store,
         target_kind=tk,
         plugin_action=plugin_action,
+        per_group_limit=per_group_limit,
     )
 
 
@@ -439,10 +442,12 @@ def rollback_plugin_evolution(
 def cancel_upgrade_record(
     record_id: str,
     payload: UpgradeActionRequest,
+    request: Request,
     store=Depends(get_upgrade_management_store),
     evidence_service=Depends(get_upgrade_evidence_service),
 ) -> UpgradeRecordItem:
     try:
+        before = store.get(record_id)
         record = store.cancel(record_id, reason=payload.reason)
         evidence_service.record_event(
             record,
@@ -454,6 +459,18 @@ def cancel_upgrade_record(
         raise HTTPException(status_code=404, detail=f"Unknown upgrade record: {record_id}") from exc
     except ValueError as exc:
         raise HTTPException(status_code=409, detail=str(exc)) from exc
+    record_module_management_log(
+        request,
+        source_module="upgrade",
+        module_label="升级记录",
+        action="status_change",
+        action_label="已取消",
+        object_id=record_id,
+        before_status=before.current_status.value,
+        after_status=record.current_status.value,
+        reason=payload.reason,
+        details={"target_kind": record.target_kind.value, "action": record.action},
+    )
     return build_upgrade_record_item(record)
 
 
@@ -461,6 +478,7 @@ def cancel_upgrade_record(
 def cleanup_failed_plugin_candidate(
     record_id: str,
     payload: UpgradeActionRequest,
+    request: Request,
     store=Depends(get_upgrade_management_store),
     plugin_runtime=Depends(get_plugin_evolution_runtime),
     evidence_service=Depends(get_upgrade_evidence_service),
@@ -482,6 +500,18 @@ def cleanup_failed_plugin_candidate(
         raise HTTPException(status_code=404, detail=f"Unknown upgrade record: {record_id}") from exc
     except ValueError as exc:
         raise HTTPException(status_code=409, detail=str(exc)) from exc
+    record_module_management_log(
+        request,
+        source_module="upgrade",
+        module_label="升级记录",
+        action="delete",
+        action_label="失败候选已清理",
+        object_id=record_id,
+        before_status=record_before.current_status.value,
+        after_status=record.current_status.value,
+        reason=payload.reason,
+        details={"candidate_path": record_before.candidate_path, "target_kind": record.target_kind.value},
+    )
     return build_upgrade_record_item(record)
 
 
@@ -489,11 +519,13 @@ def cleanup_failed_plugin_candidate(
 def activate_phase_d_record(
     record_id: str,
     payload: UpgradeActionRequest,
+    request: Request,
     store=Depends(get_upgrade_management_store),
     learning_service=Depends(get_learning_service),
     evidence_service=Depends(get_upgrade_evidence_service),
 ) -> UpgradeRecordItem:
     try:
+        before = store.get(record_id)
         result = activate_phase_d_self_evolution(
             learning_service=learning_service,
             upgrade_management_store=store,
@@ -512,6 +544,18 @@ def activate_phase_d_record(
         raise HTTPException(status_code=404, detail=f"Unknown upgrade record: {record_id}") from exc
     except RuntimeError as exc:
         raise HTTPException(status_code=409, detail=getattr(exc, "failures", str(exc))) from exc
+    record_module_management_log(
+        request,
+        source_module="upgrade",
+        module_label="升级记录",
+        action="status_change",
+        action_label="Phase D 候选已激活",
+        object_id=record_id,
+        before_status=before.current_status.value,
+        after_status=record.current_status.value,
+        reason=payload.reason,
+        details=result,
+    )
     return build_upgrade_record_item(record)
 
 
@@ -519,6 +563,7 @@ def activate_phase_d_record(
 def observe_upgrade_record(
     record_id: str,
     payload: UpgradeActionRequest,
+    request: Request,
     store=Depends(get_upgrade_management_store),
     learning_service=Depends(get_learning_service),
     evidence_service=Depends(get_upgrade_evidence_service),
@@ -546,6 +591,18 @@ def observe_upgrade_record(
         raise HTTPException(status_code=404, detail=f"Unknown upgrade record: {record_id}") from exc
     except RuntimeError as exc:
         raise HTTPException(status_code=409, detail=getattr(exc, "failures", str(exc))) from exc
+    record_module_management_log(
+        request,
+        source_module="upgrade",
+        module_label="升级记录",
+        action="update",
+        action_label="观察结果已记录",
+        object_id=record_id,
+        before_status=record_before.current_status.value,
+        after_status=record.current_status.value,
+        reason=payload.reason,
+        details=result,
+    )
     return build_upgrade_record_item(record)
 
 
@@ -553,6 +610,7 @@ def observe_upgrade_record(
 def promote_upgrade_record(
     record_id: str,
     payload: UpgradeActionRequest,
+    request: Request,
     store=Depends(get_upgrade_management_store),
     learning_service=Depends(get_learning_service),
     evidence_service=Depends(get_upgrade_evidence_service),
@@ -579,6 +637,18 @@ def promote_upgrade_record(
         raise HTTPException(status_code=404, detail=f"Unknown upgrade record: {record_id}") from exc
     except RuntimeError as exc:
         raise HTTPException(status_code=409, detail=getattr(exc, "failures", str(exc))) from exc
+    record_module_management_log(
+        request,
+        source_module="upgrade",
+        module_label="升级记录",
+        action="status_change",
+        action_label="已提升为正式版本",
+        object_id=record_id,
+        before_status=record_before.current_status.value,
+        after_status=record.current_status.value,
+        reason=payload.reason,
+        details=result,
+    )
     return build_upgrade_record_item(record)
 
 
@@ -586,6 +656,7 @@ def promote_upgrade_record(
 def rollback_upgrade_record(
     record_id: str,
     payload: UpgradeActionRequest,
+    request: Request,
     store=Depends(get_upgrade_management_store),
     learning_service=Depends(get_learning_service),
     evidence_service=Depends(get_upgrade_evidence_service),
@@ -613,4 +684,16 @@ def rollback_upgrade_record(
         raise HTTPException(status_code=404, detail=f"Unknown upgrade record: {record_id}") from exc
     except RuntimeError as exc:
         raise HTTPException(status_code=409, detail=getattr(exc, "failures", str(exc))) from exc
+    record_module_management_log(
+        request,
+        source_module="upgrade",
+        module_label="升级记录",
+        action="status_change",
+        action_label="已回滚",
+        object_id=record_id,
+        before_status=record_before.current_status.value,
+        after_status=record.current_status.value,
+        reason=payload.reason,
+        details=result,
+    )
     return build_upgrade_record_item(record)

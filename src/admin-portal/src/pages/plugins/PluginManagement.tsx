@@ -26,6 +26,7 @@ import {
   TextField,
   Typography,
 } from "@mui/material";
+import ArticleIcon from "@mui/icons-material/Article";
 import {
   formatPluginOperationalStatus,
   formatPluginStatus,
@@ -71,6 +72,17 @@ function getOperationalStatusColor(
     default:
       return "default";
   }
+}
+
+export function getPluginLifecycleActionState(row: PluginRow): {
+  canShowForceEnable: boolean;
+  canShowForceDisable: boolean;
+} {
+  const isActiveEnabled = row.lifecycle_status === "active" && row.operational_status === "enabled";
+  return {
+    canShowForceEnable: Boolean(row.can_force_enable) && !isActiveEnabled,
+    canShowForceDisable: Boolean(row.can_force_disable) && isActiveEnabled,
+  };
 }
 
 function PluginTable({
@@ -143,41 +155,46 @@ function PluginTable({
                 <TableCell align="right">{row.usage_count}</TableCell>
                 <TableCell align="right">{row.failure_count}</TableCell>
                 <TableCell align="right">
-                  <Stack direction="row" spacing={1} justifyContent="flex-end">
-                    <Button size="small" variant="outlined" onClick={(event) => {
-                      event.stopPropagation();
-                      onOpenDetail(row);
-                    }}>
-                      {locale === "zh-CN" ? "查看" : "View"}
-                    </Button>
-                    {showLifecycleActions ? (
-                      <>
-                        <Button
-                          size="small"
-                          variant="contained"
-                          disabled={!row.can_force_enable || actionLoadingToolId === row.tool_id}
-                          onClick={(event) => {
-                            event.stopPropagation();
-                            onForceEnable(row);
-                          }}
-                        >
-                          {pluginManagementCopy[locale].forceEnable}
+                  {(() => {
+                    const actionState = getPluginLifecycleActionState(row);
+                    return (
+                      <Stack direction="row" spacing={1} justifyContent="flex-end">
+                        <Button size="small" variant="outlined" onClick={(event) => {
+                          event.stopPropagation();
+                          onOpenDetail(row);
+                        }}>
+                          {locale === "zh-CN" ? "查看" : "View"}
                         </Button>
-                        <Button
-                          size="small"
-                          color="warning"
-                          variant="outlined"
-                          disabled={!row.can_force_disable || actionLoadingToolId === row.tool_id}
-                          onClick={(event) => {
-                            event.stopPropagation();
-                            onForceDisable(row);
-                          }}
-                        >
-                          {pluginManagementCopy[locale].forceDisable}
-                        </Button>
-                      </>
-                    ) : null}
-                  </Stack>
+                        {showLifecycleActions && actionState.canShowForceEnable ? (
+                          <Button
+                            size="small"
+                            variant="contained"
+                            disabled={actionLoadingToolId === row.tool_id}
+                            onClick={(event) => {
+                              event.stopPropagation();
+                              onForceEnable(row);
+                            }}
+                          >
+                            {pluginManagementCopy[locale].forceEnable}
+                          </Button>
+                        ) : null}
+                        {showLifecycleActions && actionState.canShowForceDisable ? (
+                          <Button
+                            size="small"
+                            color="warning"
+                            variant="outlined"
+                            disabled={actionLoadingToolId === row.tool_id}
+                            onClick={(event) => {
+                              event.stopPropagation();
+                              onForceDisable(row);
+                            }}
+                          >
+                            {pluginManagementCopy[locale].forceDisable}
+                          </Button>
+                        ) : null}
+                      </Stack>
+                    );
+                  })()}
                 </TableCell>
               </TableRow>
             ))}
@@ -204,6 +221,10 @@ export default function PluginManagement() {
   const [activeTab, setActiveTab] = useState<"cognitive" | "functional">("cognitive");
   const [cognitiveRows, setCognitiveRows] = useState<PluginRow[]>([]);
   const [functionalRows, setFunctionalRows] = useState<PluginRow[]>([]);
+  const [loadedTabs, setLoadedTabs] = useState<Record<"cognitive" | "functional", boolean>>({
+    cognitive: false,
+    functional: false,
+  });
   const [loading, setLoading] = useState(true);
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
   const [searchQuery, setSearchQuery] = useState("");
@@ -212,15 +233,17 @@ export default function PluginManagement() {
 
   const text = pluginManagementCopy[locale];
 
-  const loadPlugins = async () => {
+  const loadPlugins = async (tab: "cognitive" | "functional" = activeTab) => {
     setLoading(true);
     try {
-      const [cognitive, functional] = await Promise.all([
-        fetchCognitivePlugins(),
-        fetchFunctionalPlugins(),
-      ]);
-      setCognitiveRows(cognitive);
-      setFunctionalRows(functional);
+      if (tab === "cognitive") {
+        const cognitive = await fetchCognitivePlugins();
+        setCognitiveRows(cognitive);
+      } else {
+        const functional = await fetchFunctionalPlugins();
+        setFunctionalRows(functional);
+      }
+      setLoadedTabs((current) => ({ ...current, [tab]: true }));
       setErrorMessage(null);
     } catch {
       setErrorMessage(text.backendError);
@@ -230,8 +253,14 @@ export default function PluginManagement() {
   };
 
   useEffect(() => {
-    void loadPlugins();
+    void loadPlugins("cognitive");
   }, []);
+
+  useEffect(() => {
+    if (!loadedTabs[activeTab]) {
+      void loadPlugins(activeTab);
+    }
+  }, [activeTab, loadedTabs]);
 
   const currentRows = activeTab === "cognitive" ? cognitiveRows : functionalRows;
 
@@ -260,7 +289,7 @@ export default function PluginManagement() {
     setActionLoadingToolId(plugin.tool_id);
     try {
       await forceEnablePlugin(plugin.tool_id, reason.trim());
-      await loadPlugins();
+      await loadPlugins(activeTab);
     } catch (error) {
       setErrorMessage(error instanceof Error ? error.message : pluginManagementCopy[locale].actionFailed);
     } finally {
@@ -276,7 +305,7 @@ export default function PluginManagement() {
     setActionLoadingToolId(plugin.tool_id);
     try {
       await forceDisablePlugin(plugin.tool_id, reason.trim());
-      await loadPlugins();
+      await loadPlugins(activeTab);
     } catch (error) {
       setErrorMessage(error instanceof Error ? error.message : pluginManagementCopy[locale].actionFailed);
     } finally {
@@ -317,7 +346,10 @@ export default function PluginManagement() {
               <MenuItem value="en-US">English</MenuItem>
             </Select>
           </FormControl>
-          <Button variant="contained" onClick={() => void loadPlugins()} disabled={loading}>
+          <Button variant="outlined" startIcon={<ArticleIcon />} onClick={() => navigate("/console/module-logs/plugins")}>
+            {t("moduleLogs.view")}
+          </Button>
+          <Button variant="contained" onClick={() => void loadPlugins(activeTab)} disabled={loading}>
             {loading ? t("common.refreshing") : t("common.refresh")}
           </Button>
         </Stack>
@@ -352,6 +384,8 @@ export default function PluginManagement() {
           value={activeTab}
           onChange={(_event: React.SyntheticEvent, newValue: "cognitive" | "functional") => {
             setActiveTab(newValue);
+            setSearchQuery("");
+            setStatusFilter("all");
           }}
           aria-label="plugin type tabs"
         >

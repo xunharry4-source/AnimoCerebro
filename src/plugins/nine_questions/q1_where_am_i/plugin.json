@@ -1,5 +1,5 @@
 {
   "plugin_id": "nine-question-q1-where-am-i",
-  "name": "Q1 Where Am I",
-  "description": "Answer the first nine-question prompt about current position and context."
+  "name": "Q1 我在那",
+  "description": "识别当前环境事实，给下游九问提供环境锚点。"
 }

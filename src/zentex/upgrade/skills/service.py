@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from pathlib import Path
+
 from zentex.common.prompt_upgrade_contract import ModulePromptUpgradeContract, build_section_policy
 
 
@@ -8,7 +10,7 @@ def list_prompt_upgrade_contracts() -> list[ModulePromptUpgradeContract]:
         ModulePromptUpgradeContract(
             prompt_id="upgrade.skills.atomic_planner",
             module_id="upgrade.skills",
-            prompt_file_path="/Users/harry/Documents/git/AnimoCerebro-V2/src/zentex/upgrade/skills/atomic_planner_llm_prompt.py",
+            prompt_file_path=str(Path(__file__).resolve().with_name("atomic_planner_llm_prompt.py")),
             prompt_builder_name="build_atomic_planner_prompt",
             prompt_builder_symbol="zentex.upgrade.skills.atomic_planner_llm_prompt.build_atomic_planner_prompt",
             target_component="upgrade.skills.atomic_planner.prompt",
@@ -31,7 +33,7 @@ def list_prompt_upgrade_contracts() -> list[ModulePromptUpgradeContract]:
         ModulePromptUpgradeContract(
             prompt_id="upgrade.skills.auto_debugger",
             module_id="upgrade.skills",
-            prompt_file_path="/Users/harry/Documents/git/AnimoCerebro-V2/src/zentex/upgrade/skills/auto_debugger_llm_prompt.py",
+            prompt_file_path=str(Path(__file__).resolve().with_name("auto_debugger_llm_prompt.py")),
             prompt_builder_name="build_root_cause_prompt",
             prompt_builder_symbol="zentex.upgrade.skills.auto_debugger_llm_prompt.build_root_cause_prompt",
             target_component="upgrade.skills.auto_debugger.prompt",
@@ -52,7 +54,7 @@ def list_prompt_upgrade_contracts() -> list[ModulePromptUpgradeContract]:
         ModulePromptUpgradeContract(
             prompt_id="upgrade.skills.auto_reviewer",
             module_id="upgrade.skills",
-            prompt_file_path="/Users/harry/Documents/git/AnimoCerebro-V2/src/zentex/upgrade/skills/auto_reviewer_llm_prompt.py",
+            prompt_file_path=str(Path(__file__).resolve().with_name("auto_reviewer_llm_prompt.py")),
             prompt_builder_name="build_code_review_prompt",
             prompt_builder_symbol="zentex.upgrade.skills.auto_reviewer_llm_prompt.build_code_review_prompt",
             target_component="upgrade.skills.auto_reviewer.prompt",

@@ -37,6 +37,7 @@ import NineQuestionRawPayloadCard from "../../../components/NineQuestionRawPaylo
 import NineQuestionWorkflowNavButton from "../../../components/NineQuestionWorkflowNavButton";
 import NineQuestionRecoveryActions from "../../../components/NineQuestionRecoveryActions";
 import NineQuestionIntegrationStatusCard from "../../../components/NineQuestionIntegrationStatusCard";
+import NineQuestionAnswerTable from "../../../components/NineQuestionAnswerTable";
 import { sanitizeQ5Evidence, sanitizeQ5Inference } from "../detailSafeData";
 
 function resolveErrorGuidance(errMsg: string): { title: string; action: string } {
@@ -130,7 +131,7 @@ export default function Q5Detail() {
   if (loading) return (
     <Box sx={{ display: "flex", alignItems: "center", gap: 2, p: 3 }}>
       <CircularProgress size={24} />
-      <Typography variant="body2" color="text.secondary">正在加载 Q5 权限审计数据...</Typography>
+      <Typography variant="body2" color="text.secondary">正在加载 Q5 禁止边界审计数据...</Typography>
     </Box>
   );
 
@@ -167,7 +168,7 @@ export default function Q5Detail() {
       <Stack direction="row" justifyContent="space-between" alignItems="center" sx={{ mb: 3 }}>
         <Box>
           <Typography variant="h4" gutterBottom>{getQuestionDisplayLabel(qId)} 正式审计页</Typography>
-          <Typography variant="body2" color="text.secondary">Permission Boundary & Compliance Audit (Independent API GET /nine-questions/q5)</Typography>
+          <Typography variant="body2" color="text.secondary">Cannot-Do Boundary & Compliance Audit (Independent API GET /nine-questions/q5)</Typography>
         </Box>
         <Stack direction="row" spacing={1}>
           <NineQuestionRerunButton qId={qId} onCompleted={loadDetail} />
@@ -178,7 +179,7 @@ export default function Q5Detail() {
 
       {/* 合规警戒提示保持不变 */}
       <Alert severity="error" sx={{ mb: 3, fontWeight: "bold" }}>
-        [合规警戒] Q5 审计已划定认知动作的终极禁区。任何越权推演均已被物理阻断，请核实 PermissionBoundaryProfile。
+        [合规警戒] Q5 审计已划定不能执行、未授权和需升级审批的动作边界。任何越权推演均已被物理阻断，请核实 CannotDoBoundaryProfile。
       </Alert>
 
       <NineQuestionIntroCard questionId="q5" />
@@ -206,6 +207,7 @@ export default function Q5Detail() {
           Q5 当前只拿到了部分分区数据，页面已按可用结果降级展示。
         </Alert>
       ) : null}
+      <NineQuestionAnswerTable questionId={qId} inference={inference} result={rawPayload?.result} />
       <NineQuestionSectionBoundary title="Q5 数据详情">
         {sectionErrors.summary ? <Alert severity="warning" sx={{ mb: 2 }}>{sectionErrors.summary}</Alert> : null}
         {sectionErrors.evidence ? <Alert severity="warning" sx={{ mb: 2 }}>{sectionErrors.evidence}</Alert> : null}

@@ -288,7 +288,7 @@ service._generate_reflection_content()
 运行LLM反思测试：
 
 ```bash
-cd /Users/harry/Documents/git/AnimoCerebro-V2
+cd <repo-root>
 PYTHONPATH=src:$PYTHONPATH python tests/reflection/test_llm_reflection.py
 ```
 

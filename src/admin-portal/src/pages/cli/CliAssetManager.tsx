@@ -27,6 +27,10 @@ import {
 import { DataGrid, GridColDef } from "@mui/x-data-grid";
 import AddIcon from "@mui/icons-material/Add";
 import ExpandMoreIcon from "@mui/icons-material/ExpandMore";
+import PowerSettingsNewIcon from "@mui/icons-material/PowerSettingsNew";
+import BlockIcon from "@mui/icons-material/Block";
+import ArticleIcon from "@mui/icons-material/Article";
+import { Trash2 } from "lucide-react";
 
 type CliToolItem = {
   command_name: string;
@@ -39,7 +43,46 @@ type CliToolItem = {
   side_effect_free: boolean;
   mutates_state: boolean;
   requires_cloud_audit: boolean;
-  status: "active" | "degraded" | "revoked";
+  status: "active" | "degraded" | "revoked" | "stopped";
+  help_doc_url?: string | null;
+  project_doc_url?: string | null;
+  project_path?: string | null;
+  project_name?: string | null;
+  project_description?: string | null;
+};
+
+const INITIAL_CLI_FORM_DATA = {
+  tool_name: "",
+  command_executable: "",
+  description: "",
+  read_only_flag: true,
+  project_path: "",
+  project_name: "",
+  project_description: "",
+  help_doc_url: "",
+  project_doc_url: "",
+  auth_type: "none",
+  credential_id: "",
+  api_key: "",
+  auth_env_name: "",
+  credential_payload_json: "{}",
+  login_command_executable: "",
+  login_command_args: "",
+  login_stdin_template: "",
+  access_token_path: "access_token",
+};
+
+const PLAYWRIGHT_CLI_EXAMPLE = {
+  tool_name: "playwright-cli",
+  command_executable: "playwright-cli",
+  description:
+    "Browser automation CLI for coding agents: open pages, inspect snapshots, click/type/fill elements, take screenshots or PDFs, and manage browser sessions.",
+  read_only_flag: false,
+  project_name: "Microsoft Playwright CLI",
+  project_description:
+    "Command-line interface for Playwright browser automation workflows used by coding agents.",
+  help_doc_url: "https://github.com/microsoft/playwright-cli",
+  project_doc_url: "https://github.com/microsoft/playwright-cli",
 };
 
 export default function CliAssetManager() {
@@ -50,37 +93,34 @@ export default function CliAssetManager() {
   const [error, setError] = useState<string | null>(null);
   const [openRegister, setOpenRegister] = useState(false);
   const [registering, setRegistering] = useState(false);
+  const [deletingToolName, setDeletingToolName] = useState<string | null>(null);
   const [selectedTool, setSelectedTool] = useState<CliToolItem | null>(null);
   const [testResult, setTestResult] = useState<string | null>(null);
 
-  const [formData, setFormData] = useState({
-    tool_name: "",
-    command_executable: "",
-    description: "",
-    read_only_flag: true,
-    project_path: "",
-    project_name: "",
-    project_description: "",
-    help_doc_url: "",
-    auth_type: "none",
-    credential_id: "",
-    api_key: "",
-    auth_env_name: "",
-    credential_payload_json: "{}",
-    login_command_executable: "",
-    login_command_args: "",
-    login_stdin_template: "",
-    access_token_path: "access_token",
-  });
+  const [formData, setFormData] = useState(INITIAL_CLI_FORM_DATA);
   const [testData, setTestData] = useState({
     arguments: "",
     stdin_input: "",
     working_directory: "",
   });
+  const trimmedToolName = formData.tool_name.trim();
+  const existingTool = trimmedToolName
+    ? rows.find((item) => item.command_name.toLowerCase() === trimmedToolName.toLowerCase())
+    : null;
+  const commandLooksLikeShellLine = /[\s|;&<>$`]/.test(formData.command_executable.trim());
+  const commandInstallHint =
+    formData.command_executable.trim() === "playwright-cli" ? t("cli.playwrightCliInstallHint") : null;
 
   useEffect(() => {
     void loadTools();
   }, []);
+
+  const applyPlaywrightCliExample = () => {
+    setFormData({
+      ...INITIAL_CLI_FORM_DATA,
+      ...PLAYWRIGHT_CLI_EXAMPLE,
+    });
+  };
 
   const loadTools = async () => {
     setLoading(true);
@@ -101,6 +141,10 @@ export default function CliAssetManager() {
 
   const handleRegister = async () => {
     if (registering) return;
+    if (existingTool) {
+      setError(t("cli.alreadyRegistered", { name: existingTool.command_name }));
+      return;
+    }
     setRegistering(true);
     try {
       const toolName = formData.tool_name.trim();
@@ -155,6 +199,7 @@ export default function CliAssetManager() {
         ...(formData.project_name.trim() ? { project_name: formData.project_name.trim() } : {}),
         ...(formData.project_description.trim() ? { project_description: formData.project_description.trim() } : {}),
         ...(formData.help_doc_url.trim() ? { help_doc_url: formData.help_doc_url.trim() } : {}),
+        ...(formData.project_doc_url.trim() ? { project_doc_url: formData.project_doc_url.trim() } : {}),
       };
       const response = await fetch("/api/web/cli-tools/register", {
         method: "POST",
@@ -168,34 +213,32 @@ export default function CliAssetManager() {
           typeof errorDetail === "string"
             ? errorDetail
             : errorDetail?.operator_message || errorDetail?.message || t("cli.registerFailed");
-        throw new Error(message);
+        throw new Error(formatCliRegistrationError(message));
       }
       setOpenRegister(false);
-      setFormData({
-        tool_name: "",
-        command_executable: "",
-        description: "",
-        read_only_flag: true,
-        project_path: "",
-        project_name: "",
-        project_description: "",
-        help_doc_url: "",
-        auth_type: "none",
-        credential_id: "",
-        api_key: "",
-        auth_env_name: "",
-        credential_payload_json: "{}",
-        login_command_executable: "",
-        login_command_args: "",
-        login_stdin_template: "",
-        access_token_path: "access_token",
-      });
+      setFormData(INITIAL_CLI_FORM_DATA);
       void loadTools();
     } catch (err: any) {
       alert(err.message);
     } finally {
       setRegistering(false);
     }
+  };
+
+  const formatCliRegistrationError = (message: string) => {
+    if (message.includes("already registered")) {
+      return t("cli.registerErrorAlreadyRegistered");
+    }
+    if (message.includes("bare executable path or command name")) {
+      return t("cli.registerErrorShellLine");
+    }
+    if (message.includes("health probe failed")) {
+      return t("cli.registerErrorCommandMissing", { command: formData.command_executable.trim() || "-" });
+    }
+    if (message.includes("read-only CLI tools cannot register mutating executables")) {
+      return t("cli.registerErrorReadOnlyMutating");
+    }
+    return message;
   };
 
   const handleTestCall = async () => {
@@ -221,6 +264,46 @@ export default function CliAssetManager() {
       setTestResult(JSON.stringify(payload, null, 2));
     } catch (err: any) {
       setTestResult(err?.message || t("cli.testCallFailed"));
+    }
+  };
+
+  const updateToolActivation = async (tool: CliToolItem, action: "activate" | "disable") => {
+    try {
+      const response = await fetch(`/api/web/cli-tools/${encodeURIComponent(tool.command_name)}/${action}`, {
+        method: "POST",
+      });
+      const payload = await response.json();
+      if (!response.ok) {
+        throw new Error(payload?.detail?.operator_message || payload?.detail || `${action} failed`);
+      }
+      await loadTools();
+    } catch (err: any) {
+      setError(err?.message || `${action} failed`);
+    }
+  };
+
+  const deleteToolRegistration = async (tool: CliToolItem) => {
+    if (!window.confirm(t("cli.deleteConfirm", { name: tool.command_name }))) {
+      return;
+    }
+    setDeletingToolName(tool.command_name);
+    setError(null);
+    try {
+      const response = await fetch(`/api/web/cli-tools/${encodeURIComponent(tool.command_name)}`, {
+        method: "DELETE",
+      });
+      const payload = await response.json().catch(() => ({}));
+      if (!response.ok) {
+        const detail = payload?.detail;
+        const message =
+          typeof detail === "string" ? detail : detail?.operator_message || detail?.message || t("cli.deleteFailed");
+        throw new Error(message);
+      }
+      await loadTools();
+    } catch (err: any) {
+      setError(err?.message || t("cli.deleteFailed"));
+    } finally {
+      setDeletingToolName(null);
     }
   };
 
@@ -276,12 +359,29 @@ export default function CliAssetManager() {
     {
       field: "actions",
       headerName: t("common.actions"),
-      minWidth: 120,
+      minWidth: 340,
       sortable: false,
       renderCell: (params) => (
-        <Button size="small" onClick={() => setSelectedTool(params.row as CliToolItem)}>
-          {t("cli.testCall")}
-        </Button>
+        <Stack direction="row" spacing={1}>
+          <Button size="small" startIcon={<PowerSettingsNewIcon />} onClick={() => void updateToolActivation(params.row as CliToolItem, "activate")}>
+            激活
+          </Button>
+          <Button size="small" startIcon={<BlockIcon />} onClick={() => void updateToolActivation(params.row as CliToolItem, "disable")}>
+            关闭
+          </Button>
+          <Button size="small" onClick={() => setSelectedTool(params.row as CliToolItem)}>
+            {t("cli.testCall")}
+          </Button>
+          <Button
+            size="small"
+            color="error"
+            startIcon={<Trash2 size={16} />}
+            disabled={deletingToolName === (params.row as CliToolItem).command_name}
+            onClick={() => void deleteToolRegistration(params.row as CliToolItem)}
+          >
+            {t("cli.delete")}
+          </Button>
+        </Stack>
       ),
     },
   ];
@@ -300,9 +400,14 @@ export default function CliAssetManager() {
             {t("cli.assetManagementSubtitle")}
           </Typography>
         </Box>
-        <Button variant="contained" startIcon={<AddIcon />} onClick={() => setOpenRegister(true)}>
-          {t("cli.registerNewTool")}
-        </Button>
+        <Stack direction="row" spacing={1}>
+          <Button variant="outlined" startIcon={<ArticleIcon />} onClick={() => navigate("/console/module-logs/cli-tools")}>
+            {t("moduleLogs.view")}
+          </Button>
+          <Button variant="contained" startIcon={<AddIcon />} onClick={() => setOpenRegister(true)}>
+            {t("cli.registerNewTool")}
+          </Button>
+        </Stack>
       </Stack>
 
       <Alert severity="info" variant="outlined">
@@ -326,6 +431,19 @@ export default function CliAssetManager() {
             <Alert severity="info" variant="outlined">
               {t("cli.registerBasicsHelp")}
             </Alert>
+            <Box>
+              <Typography variant="subtitle2" sx={{ mb: 1 }}>
+                {t("cli.registrationExampleTitle")}
+              </Typography>
+              <Stack direction="row" spacing={1} alignItems="center" useFlexGap flexWrap="wrap">
+                <Button size="small" variant="outlined" onClick={applyPlaywrightCliExample}>
+                  {t("cli.playwrightCliExample")}
+                </Button>
+                <Typography variant="caption" color="text.secondary">
+                  {t("cli.playwrightCliExampleHelp")}
+                </Typography>
+              </Stack>
+            </Box>
             <TextField
               label={t("cli.formToolName")}
               fullWidth
@@ -334,14 +452,24 @@ export default function CliAssetManager() {
               value={formData.tool_name}
               onChange={(e: React.ChangeEvent<HTMLInputElement>) => setFormData({ ...formData, tool_name: e.target.value })}
             />
+            {existingTool ? (
+              <Alert severity="warning" variant="outlined">
+                {t("cli.alreadyRegistered", { name: existingTool.command_name })}
+              </Alert>
+            ) : null}
             <TextField
               label={t("cli.formCommandExecutable")}
               fullWidth
               required
               placeholder={t("cli.formCommandPlaceholder")}
-              helperText={t("cli.formCommandExecutableHelp")}
               value={formData.command_executable}
               onChange={(e: React.ChangeEvent<HTMLInputElement>) => setFormData({ ...formData, command_executable: e.target.value })}
+              error={commandLooksLikeShellLine}
+              helperText={
+                commandLooksLikeShellLine
+                  ? t("cli.commandShellLineError")
+                  : commandInstallHint || t("cli.formCommandExecutableHelp")
+              }
             />
             <TextField
               label={t("cli.formDescription")}
@@ -410,6 +538,13 @@ export default function CliAssetManager() {
                     helperText={t("cli.formHelpDocUrlHelp")}
                     value={formData.help_doc_url}
                     onChange={(e: React.ChangeEvent<HTMLInputElement>) => setFormData({ ...formData, help_doc_url: e.target.value })}
+                  />
+                  <TextField
+                    label={t("cli.formProjectDocUrl")}
+                    fullWidth
+                    helperText={t("cli.formProjectDocUrlHelp")}
+                    value={formData.project_doc_url}
+                    onChange={(e: React.ChangeEvent<HTMLInputElement>) => setFormData({ ...formData, project_doc_url: e.target.value })}
                   />
                 </Stack>
               </AccordionDetails>
@@ -534,6 +669,8 @@ export default function CliAssetManager() {
             onClick={handleRegister}
             disabled={
               registering ||
+              Boolean(existingTool) ||
+              commandLooksLikeShellLine ||
               !formData.tool_name.trim() ||
               !formData.command_executable.trim() ||
               !formData.description.trim() ||

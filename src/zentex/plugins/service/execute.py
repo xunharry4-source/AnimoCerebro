@@ -16,6 +16,7 @@ import inspect
 import asyncio
 from copy import deepcopy
 from datetime import datetime, timezone
+from time import perf_counter
 from typing import Any, Dict, Optional
 
 from zentex.foundation.contracts import ActionIntent
@@ -135,6 +136,17 @@ class ExecutionService:
         return ""
 
     @staticmethod
+    def _extract_nine_question_id_from_plugin_id(plugin_id: str) -> str:
+        normalized = str(plugin_id or "").strip().lower().replace("_", "-")
+        for index in range(1, 10):
+            qid = f"q{index}"
+            if f"nine-question-{qid}" in normalized or f"nine-questions-{qid}" in normalized:
+                return qid
+            if f"-{qid}-" in normalized or normalized.endswith(f"-{qid}") or normalized.startswith(f"{qid}-"):
+                return qid
+        return ""
+
+    @staticmethod
     def _serialize_state_payload(state: Any) -> Dict[str, Any]:
         if isinstance(state, dict):
             return deepcopy(state)
@@ -163,6 +175,19 @@ class ExecutionService:
                 facade=facade,
                 state_manager=state_manager,
             )
+            system_identity = facade.get_system_identity()
+            if isinstance(system_identity, dict) and system_identity:
+                identity_kernel = system_identity.get("identity_kernel_snapshot")
+                parameters.setdefault(
+                    "identity_kernel_snapshot",
+                    identity_kernel if isinstance(identity_kernel, dict) else system_identity,
+                )
+                if system_identity.get("role_name"):
+                    parameters.setdefault("role_name", system_identity.get("role_name"))
+                if system_identity.get("mission"):
+                    parameters.setdefault("mission", system_identity.get("mission"))
+                if isinstance(system_identity.get("core_values"), list):
+                    parameters.setdefault("core_values", system_identity.get("core_values"))
             payload = await nq_service.assert_latest_qualified_upstreams(question_id)
             if payload:
                 parameters.setdefault("nine_question_state", payload)
@@ -179,6 +204,7 @@ class ExecutionService:
         question_id: str,
         plugin_id: str,
         trace_id: str,
+        session_id: str,
         result_payload: Dict[str, Any],
     ) -> None:
         if not question_id:
@@ -205,15 +231,29 @@ class ExecutionService:
         module_runs = diagnosis.get("module_runs") if isinstance(diagnosis, dict) else []
         module_runs = deepcopy(module_runs) if isinstance(module_runs, list) else []
 
+        result_for_patch = deepcopy(result_payload)
+
         patch = {
             "tool_id": plugin_id,
             "trace_id": trace_id,
             "summary": str(result_payload.get("summary") or ""),
             "confidence": float(result_payload.get("confidence") or 0.0),
-            "result": deepcopy(result_payload),
+            "result": result_for_patch,
             "context_updates": context_updates,
-            "module_runs": module_runs,
         }
+        llm_output = result_payload.get("llm_output")
+        if isinstance(llm_output, dict):
+            patch["llm_output"] = deepcopy(llm_output)
+        patch["module_runs"] = module_runs
+        result_trace_payload = result_payload.get("llm_trace_payload")
+        result_trace_payload = result_trace_payload if isinstance(result_trace_payload, dict) else {}
+        llm_trace_payload = {}
+        llm_trace_payload = self._extract_llm_trace_payload_from_transcript(
+            session_id=session_id,
+            trace_id=trace_id,
+        ) or result_trace_payload
+        if llm_trace_payload:
+            patch["llm_trace_payload"] = llm_trace_payload
 
         try:
             await nq_service.persist_question_snapshot_patch(
@@ -250,6 +290,110 @@ class ExecutionService:
                 dirty_questions=dirty_questions,
                 last_refresh_reason=f"plugin_execute_bootstrap:{question_id}:{plugin_id}",
             )
+
+    def _extract_llm_trace_payload_from_transcript(
+        self,
+        *,
+        session_id: str,
+        trace_id: str,
+    ) -> Dict[str, Any]:
+        store = self._transcript_store
+        if store is None or not trace_id:
+            return {}
+        try:
+            entries = list(store.read_entries(session_id=session_id or "unknown-session"))
+        except Exception:
+            logger.exception(
+                "[Plugins] Failed reading transcript entries for nine-question trace persistence: %s",
+                trace_id,
+            )
+            return {}
+
+        grouped_payloads: list[dict[str, dict[str, Any]]] = []
+        group_index: dict[str, dict[str, dict[str, Any]]] = {}
+
+        def _entry_type_value(entry: Any) -> str:
+            raw = getattr(entry, "entry_type", "")
+            return str(getattr(raw, "value", raw) or "")
+
+        def _group_key(payload: dict[str, Any], fallback: str) -> str:
+            return str(payload.get("request_id") or payload.get("decision_id") or fallback)
+
+        def _get_group(payload: dict[str, Any], fallback: str) -> dict[str, dict[str, Any]]:
+            key = _group_key(payload, fallback)
+            group = group_index.get(key)
+            if group is None:
+                group = {}
+                group_index[key] = group
+                grouped_payloads.append(group)
+            return group
+
+        for entry in entries:
+            if str(getattr(entry, "trace_id", "") or "") != trace_id:
+                continue
+            payload = getattr(entry, "payload", None)
+            payload = payload if isinstance(payload, dict) else {}
+            group = _get_group(payload, f"entry-{len(grouped_payloads)}")
+            entry_type = _entry_type_value(entry)
+            if entry_type == "model_provider_invoked":
+                group["invoked"] = payload
+            elif entry_type == "model_provider_completed":
+                group["completed"] = payload
+            elif entry_type == "model_provider_failed":
+                group["failed"] = payload
+
+        def _build_payload(group: dict[str, dict[str, Any]]) -> dict[str, Any]:
+            invoked = group.get("invoked") or {}
+            completed = group.get("completed") or {}
+            failed = group.get("failed") or {}
+            caller_context = invoked.get("caller_context")
+            caller_context = caller_context if isinstance(caller_context, dict) else {}
+            token_usage = completed.get("token_usage")
+            token_usage = token_usage if isinstance(token_usage, dict) else {}
+            return {
+                "request_id": invoked.get("request_id"),
+                "decision_id": invoked.get("decision_id"),
+                "asset_scope": invoked.get("asset_scope"),
+                "provider_name": invoked.get("provider_name") or invoked.get("provider_plugin_id"),
+                "model": completed.get("model") or failed.get("model"),
+                "system_prompt": invoked.get("system_prompt"),
+                "prompt": invoked.get("prompt"),
+                "source_module": caller_context.get("source_module"),
+                "invocation_phase": caller_context.get("invocation_phase"),
+                "question_driver_refs": caller_context.get("question_driver_refs") or [],
+                "context_data": invoked.get("context") if isinstance(invoked.get("context"), dict) else {},
+                "result": completed.get("result") if isinstance(completed.get("result"), dict) else None,
+                "raw_response": completed.get("raw_response") if isinstance(completed.get("raw_response"), dict) else None,
+                "token_usage": {
+                    "input_tokens": int(token_usage.get("input_tokens") or 0),
+                    "output_tokens": int(token_usage.get("output_tokens") or 0),
+                    "total_tokens": int(token_usage.get("total_tokens") or 0),
+                },
+                "elapsed_ms": completed.get("elapsed_ms") or failed.get("elapsed_ms"),
+                "error_type": failed.get("error_type"),
+                "error_message": failed.get("error_message") or failed.get("error"),
+            }
+
+        invocations = [
+            _build_payload(group)
+            for group in grouped_payloads
+            if group.get("invoked") or group.get("completed") or group.get("failed")
+        ]
+        material_invocations = [
+            item for item in invocations
+            if any(item.get(key) not in (None, "", [], {}) for key in ("provider_name", "model", "prompt", "raw_response", "error_type"))
+        ]
+        if not material_invocations:
+            return {}
+        primary = dict(material_invocations[-1])
+        primary["token_usage"] = {
+            "input_tokens": sum(int((item.get("token_usage") or {}).get("input_tokens") or 0) for item in material_invocations),
+            "output_tokens": sum(int((item.get("token_usage") or {}).get("output_tokens") or 0) for item in material_invocations),
+            "total_tokens": sum(int((item.get("token_usage") or {}).get("total_tokens") or 0) for item in material_invocations),
+        }
+        primary["elapsed_ms"] = sum(int(item.get("elapsed_ms") or 0) for item in material_invocations)
+        primary["invocations"] = material_invocations
+        return primary
 
     def _derive_operational_status(self, db_plugin: Dict[str, Any]) -> str:
         plugin_id = str(db_plugin.get("plugin_id") or "").strip()
@@ -318,23 +462,66 @@ class ExecutionService:
         Returns:
             TaskFeedback with execution result
         """
+        execution_started = perf_counter()
+        execution_parameters = parameters if isinstance(parameters, dict) else {}
+        logged_question_id = self._extract_nine_question_id(execution_parameters) or self._extract_nine_question_id_from_plugin_id(plugin_id)
+
+        def _log_nine_question_feedback(feedback: TaskFeedback, *, stage: str) -> TaskFeedback:
+            if not logged_question_id:
+                return feedback
+            elapsed_ms = int((perf_counter() - execution_started) * 1000)
+            status = str(getattr(feedback, "status", "") or "")
+            error = str(getattr(feedback, "error", "") or "")
+            remarks = str(getattr(feedback, "remarks", "") or "")
+            log_fn = logger.info if status == "done" else logger.error
+            log_fn(
+                "[NINE QUESTIONS EXECUTION] END question=%s plugin=%s task=%s trace=%s session=%s turn=%s originator=%s caller=%s stage=%s status=%s error=%s elapsed_ms=%d remarks=%s",
+                logged_question_id,
+                plugin_id,
+                task_id,
+                trace_id,
+                execution_parameters.get("session_id"),
+                execution_parameters.get("turn_id"),
+                originator_id,
+                caller_plugin_id or "",
+                stage,
+                status,
+                error,
+                elapsed_ms,
+                remarks,
+            )
+            return feedback
+
+        if logged_question_id:
+            logger.info(
+                "[NINE QUESTIONS EXECUTION] START question=%s plugin=%s task=%s trace=%s session=%s turn=%s originator=%s caller=%s",
+                logged_question_id,
+                plugin_id,
+                task_id,
+                trace_id,
+                execution_parameters.get("session_id"),
+                execution_parameters.get("turn_id"),
+                originator_id,
+                caller_plugin_id or "",
+            )
+
         if not plugin_id:
-            return TaskFeedback(
+            return _log_nine_question_feedback(TaskFeedback(
                 task_id=task_id,
                 status="failed",
                 error="plugin_not_found",
                 remarks="Missing plugin_id."
-            )
+            ), stage="validation")
 
         # Validate plugin exists in database
         db_plugin = self._storage.get_plugin(plugin_id)
         if not db_plugin:
-            return TaskFeedback(
+            return _log_nine_question_feedback(TaskFeedback(
                 task_id=task_id,
                 status="failed",
                 error="plugin_not_found",
                 remarks=f"Plugin {plugin_id} not registered in database."
-            )
+            ), stage="validation")
 
         # Validate call hierarchy constraints if caller is a plugin
         if caller_plugin_id:
@@ -344,7 +531,7 @@ class ExecutionService:
                 trace_id=trace_id
             )
             if constraint_error:
-                return constraint_error
+                return _log_nine_question_feedback(constraint_error, stage="hierarchy_validation")
 
         lifecycle_status = self._normalize_lifecycle_status(db_plugin.get("lifecycle_status"))
         if (
@@ -372,12 +559,12 @@ class ExecutionService:
                 )
 
         if lifecycle_status != PluginLifecycleStatus.ACTIVE.value:
-            return TaskFeedback(
+            return _log_nine_question_feedback(TaskFeedback(
                 task_id=task_id,
                 status="failed",
                 error="plugin_not_active",
                 remarks=f"Plugin {plugin_id} lifecycle_status is {lifecycle_status or 'unknown'}, not ACTIVE."
-            )
+            ), stage="lifecycle_validation")
 
         operational_status = self._derive_operational_status(db_plugin)
         if operational_status != "enabled":
@@ -392,7 +579,7 @@ class ExecutionService:
                 plugin_id in self._plugin_instances,
                 db_plugin.get("stopped_at"),
             )
-            return TaskFeedback(
+            return _log_nine_question_feedback(TaskFeedback(
                 task_id=task_id,
                 status="failed",
                 error="plugin_not_enabled",
@@ -400,7 +587,7 @@ class ExecutionService:
                     f"Plugin {plugin_id} is ACTIVE but operational_status is "
                     f"{operational_status}, so it cannot execute."
                 ),
-            )
+            ), stage="operational_validation")
 
         # Get plugin instance from memory (with on-demand rehydration)
         plugin_instance = self._plugin_instances.get(plugin_id)
@@ -410,7 +597,7 @@ class ExecutionService:
                     plugin_instance = self._plugin_instances.get(plugin_id)
 
         if not plugin_instance:
-            return TaskFeedback(
+            return _log_nine_question_feedback(TaskFeedback(
                 task_id=task_id,
                 status="failed",
                 error="plugin_not_instantiated",
@@ -418,7 +605,7 @@ class ExecutionService:
                     f"Plugin {plugin_id} is ACTIVE in the library but failed to instantiate "
                     "in memory. Check logs for rehydration errors."
                 )
-            )
+            ), stage="instance_resolution")
 
         try:
             if isinstance(parameters, dict) and self._public_service is not None:
@@ -457,7 +644,7 @@ class ExecutionService:
                 error_code = str(result.get("error_code") or "plugin_execution_failed")
                 error_message = str(result.get("error_message") or "Plugin execution failed.")
                 self._record_failed_execution(plugin_id, error_message)
-                return TaskFeedback(
+                return _log_nine_question_feedback(TaskFeedback(
                     task_id=task_id,
                     status="failed",
                     error=error_code,
@@ -468,7 +655,7 @@ class ExecutionService:
                         "details": result.get("data", {}),
                     },
                     remarks=error_message,
-                )
+                ), stage="contract")
 
             if result is None:
                 # 严禁把插件返回 None 伪装成成功执行。
@@ -480,7 +667,7 @@ class ExecutionService:
                 )
                 logger.error("[Plugins] Contract Violation: %s", error_message)
                 self._record_failed_execution(plugin_id, error_message)
-                return TaskFeedback(
+                return _log_nine_question_feedback(TaskFeedback(
                     task_id=task_id,
                     status="failed",
                     error="plugin_contract_violation_none",
@@ -490,7 +677,7 @@ class ExecutionService:
                         "details": {},
                     },
                     remarks=error_message,
-                )
+                ), stage="contract")
             
             # Update execution stats
             self._record_successful_execution(plugin_id)
@@ -501,6 +688,7 @@ class ExecutionService:
                         question_id=question_id,
                         plugin_id=plugin_id,
                         trace_id=trace_id,
+                        session_id=str((parameters if isinstance(parameters, dict) else {}).get("session_id") or "unknown-session"),
                         result_payload=self._normalize_result_payload(result),
                     )
                 except Exception:
@@ -509,18 +697,18 @@ class ExecutionService:
                         question_id,
                     )
             
-            return TaskFeedback(
+            return _log_nine_question_feedback(TaskFeedback(
                 task_id=task_id,
                 status="done",
                 result=self._normalize_result_payload(result),
                 progress=1.0,
                 remarks=f"Plugin {plugin_id} executed successfully."
-            )
+            ), stage="completed")
             
         except PluginExecutionError as p_exc:
-             logger.error(f"[Plugins] Structured execution error in {plugin_id}: {p_exc}")
+             logger.error(f"[Plugins] Structured execution error in {plugin_id}: {p_exc}", exc_info=True)
              self._record_failed_execution(plugin_id, str(p_exc))
-             return TaskFeedback(
+             return _log_nine_question_feedback(TaskFeedback(
                 task_id=task_id,
                 status="failed",
                 error="execution_error",
@@ -530,14 +718,14 @@ class ExecutionService:
                     "trace_id": trace_id
                 },
                 remarks=f"Plugin {plugin_id} execution failed: {p_exc}"
-            )
+            ), stage="exception")
         except Exception as exc:
             logger.error(f"[Plugins] Execution error in {plugin_id}: {exc}", exc_info=True)
             
             # Update failure stats
             self._record_failed_execution(plugin_id, str(exc))
             
-            return TaskFeedback(
+            return _log_nine_question_feedback(TaskFeedback(
                 task_id=task_id,
                 status="failed",
                 error="execution_error",
@@ -546,7 +734,7 @@ class ExecutionService:
                     "error": str(exc),
                 },
                 remarks=f"Plugin {plugin_id} execution failed: {exc}"
-            )
+            ), stage="exception")
 
     async def _call_plugin_execute(
         self,
@@ -647,6 +835,27 @@ class ExecutionService:
                 ctx['plugin_service'] = self._public_service
 
         # G12 & G14: Call with async support and timeout
+        call_started = perf_counter()
+        question_id = self._extract_nine_question_id(parameters if isinstance(parameters, dict) else {}) or self._extract_nine_question_id_from_plugin_id(
+            str(getattr(plugin_instance, "plugin_id", "") or "")
+        )
+        if question_id:
+            logger.info(
+                "[NINE QUESTIONS EXECUTION] METHOD START question=%s plugin=%s method=%s task=%s trace=%s category=%s timeout=%s call_kwargs=%s",
+                question_id,
+                getattr(plugin_instance, "plugin_id", "unknown"),
+                selected_method_name,
+                task_id,
+                trace_id,
+                category,
+                timeout,
+                json.dumps(
+                    {key: value for key, value in call_kwargs.items() if key not in {"context", "parameters", "input"}},
+                    ensure_ascii=False,
+                    sort_keys=True,
+                    default=str,
+                ),
+            )
         try:
             if inspect.iscoroutinefunction(execute_method):
                 result = await asyncio.wait_for(execute_method(**call_kwargs), timeout=timeout)
@@ -656,17 +865,51 @@ class ExecutionService:
                 # but real thread-blocking sync methods will still block.
                 result = execute_method(**call_kwargs)
         except asyncio.TimeoutError:
+            if question_id:
+                logger.exception(
+                    "[NINE QUESTIONS EXECUTION] METHOD TIMEOUT question=%s plugin=%s method=%s task=%s trace=%s timeout=%s elapsed_ms=%d",
+                    question_id,
+                    getattr(plugin_instance, "plugin_id", "unknown"),
+                    selected_method_name,
+                    task_id,
+                    trace_id,
+                    timeout,
+                    int((perf_counter() - call_started) * 1000),
+                )
             raise PluginExecutionError(
                 f"Plugin reached execution timeout of {timeout}s",
                 trace_id=trace_id
             )
         except Exception as exc:
+            if question_id:
+                logger.exception(
+                    "[NINE QUESTIONS EXECUTION] METHOD EXCEPTION question=%s plugin=%s method=%s task=%s trace=%s elapsed_ms=%d error_type=%s error_message=%s",
+                    question_id,
+                    getattr(plugin_instance, "plugin_id", "unknown"),
+                    selected_method_name,
+                    task_id,
+                    trace_id,
+                    int((perf_counter() - call_started) * 1000),
+                    exc.__class__.__name__,
+                    str(exc),
+                )
             if isinstance(exc, PluginExecutionError):
                 raise exc
             raise PluginExecutionError(
                 f"Plugin execution failed internally: {exc}",
                 original_exc=exc,
                 trace_id=trace_id
+            )
+        if question_id:
+            logger.info(
+                "[NINE QUESTIONS EXECUTION] METHOD END question=%s plugin=%s method=%s task=%s trace=%s elapsed_ms=%d result_type=%s",
+                question_id,
+                getattr(plugin_instance, "plugin_id", "unknown"),
+                selected_method_name,
+                task_id,
+                trace_id,
+                int((perf_counter() - call_started) * 1000),
+                type(result).__name__,
             )
 
         # G11: Enforce strict contract (No None allowed)

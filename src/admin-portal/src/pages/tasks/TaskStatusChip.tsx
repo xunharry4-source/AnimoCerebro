@@ -11,6 +11,7 @@ const StatusChip: React.FC<StatusChipProps> = ({ status }) => {
   const { t } = useTranslation();
   const colorMap: Record<TaskStatus, any> = {
     todo: 'default',
+    assignment_pending: 'default',
     in_progress: 'primary',
     blocked: 'warning',
     waiting_confirmation: 'secondary',

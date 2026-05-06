@@ -1,9 +1,17 @@
 from __future__ import annotations
 
+import json
+import logging
+import time
 from typing import Any
 
 from fastapi import APIRouter, HTTPException, Query, Request
 
+from plugins.nine_questions.q9_how_should_i_act.llm_output_table import (
+    build_llm_trace_payload_from_table as build_q9_llm_trace_payload_from_table,
+    load_q9_llm_task_detail,
+    load_q9_llm_tasks,
+)
 from zentex.nine_questions.objective_engine import NineQDrivenObjectiveEngine, ObjectiveProfileMissingError
 from zentex.kernel.prompt_contracts import build_contract_summary
 from zentex.nine_questions.q8_phase_a_observability import (
@@ -72,57 +80,155 @@ from zentex.nine_questions.workflow import build_workflow_question_entry
 from zentex.reflection.living_self_model import LivingSelfModelError, build_living_self_model_report
 from zentex.web_console.contracts.nine_questions import NineQuestionsReportPayload
 from zentex.web_console.dependencies import (
+    get_cli_service,
     get_enhanced_memory_service,
     get_learning_service,
+    get_mcp_service,
     get_reflection_service,
     get_task_service,
 )
 
-from .q_commons import build_question_report_items
+from .q_commons import build_question_report_items, build_question_report_summary_items
 from .q_state import _get_nine_question_service, build_trace_id_map, get_nine_question_state, get_or_create_session
 from .route_handlers_shared import QUESTION_TITLES, stringify_timestamp
 from .trace_builder import build_trace_detail
 
 router = APIRouter()
-
-
-def _is_material_llm_trace(payload: Any) -> bool:
-    if not isinstance(payload, dict) or not payload:
-        return False
-    for key in (
-        "provider_name",
-        "model",
-        "system_prompt",
-        "prompt",
-        "context_data",
-        "raw_response",
-        "token_usage",
-        "elapsed_ms",
-        "error_type",
-        "error_message",
-    ):
-        value = payload.get(key)
-        if value not in (None, "", [], {}):
-            return True
-    return False
+logger = logging.getLogger(__name__)
 
 
 def _merge_trace_payloads(*payloads: Any) -> dict[str, Any]:
     merged: dict[str, Any] = {}
+    invocations: list[dict[str, Any]] = []
+    seen_invocations: set[str] = set()
+
+    def _has_material(payload: Any) -> bool:
+        if not isinstance(payload, dict):
+            return False
+        return any(
+            payload.get(key) not in (None, "", [], {})
+            for key in ("provider_name", "model", "prompt", "system_prompt", "context_data", "raw_response", "error_type", "error_message")
+        )
+
+    def _invocation_key(payload: dict[str, Any]) -> str:
+        content_key = {
+            "invocation_phase": payload.get("invocation_phase"),
+            "prompt": payload.get("prompt"),
+            "raw_response": payload.get("raw_response"),
+        }
+        if any(value not in (None, "", [], {}) for value in content_key.values()):
+            return json.dumps(content_key, ensure_ascii=False, sort_keys=True, default=str)
+        return str(payload.get("request_id") or payload.get("decision_id") or json.dumps(payload, ensure_ascii=False, sort_keys=True, default=str))
+
+    def _append_invocation(payload: Any) -> None:
+        if not isinstance(payload, dict) or not _has_material(payload):
+            return
+        key = _invocation_key(payload)
+        if key in seen_invocations:
+            return
+        seen_invocations.add(key)
+        invocations.append(payload)
+
     for payload in payloads:
         if not isinstance(payload, dict):
             continue
+        raw_invocations = payload.get("invocations")
+        if isinstance(raw_invocations, list):
+            for invocation in raw_invocations:
+                _append_invocation(invocation)
+        elif _has_material(payload):
+            _append_invocation(payload)
         for key, value in payload.items():
             if value in (None, "", [], {}):
                 continue
             existing = merged.get(key)
             if isinstance(existing, dict) and isinstance(value, dict):
                 nested = dict(existing)
-                nested.update({k: v for k, v in value.items() if v not in (None, "", [], {})})
+                for nested_key, nested_value in value.items():
+                    if nested_value in (None, "", [], {}):
+                        continue
+                    if nested.get(nested_key) in (None, "", [], {}):
+                        nested[nested_key] = nested_value
                 merged[key] = nested
             elif existing in (None, "", [], {}):
                 merged[key] = value
+    if invocations:
+        merged["invocations"] = invocations
+        merged["token_usage"] = {
+            "input_tokens": sum(int((item.get("token_usage") or {}).get("input_tokens") or 0) for item in invocations),
+            "output_tokens": sum(int((item.get("token_usage") or {}).get("output_tokens") or 0) for item in invocations),
+            "total_tokens": sum(int((item.get("token_usage") or {}).get("total_tokens") or 0) for item in invocations),
+        }
+        elapsed_values = [int(item.get("elapsed_ms") or 0) for item in invocations]
+        if any(elapsed_values):
+            merged["elapsed_ms"] = sum(elapsed_values)
     return merged
+
+
+def _module_output_data(module_payload: Any) -> dict[str, Any]:
+    if not isinstance(module_payload, dict):
+        return {}
+    data = module_payload.get("data")
+    if isinstance(data, dict):
+        return data
+    return module_payload
+
+
+def _build_q8_module_llm_trace_payload(modules_payload: Any) -> dict[str, Any]:
+    modules_root = modules_payload.get("modules") if isinstance(modules_payload, dict) else {}
+    modules_root = modules_root if isinstance(modules_root, dict) else {}
+    invocations: list[dict[str, Any]] = []
+
+    for module_id, input_key, output_key, phase in (
+        (
+            "q8_internal_task_generation",
+            "q8_internal_llm_input",
+            "q8_internal_llm_output",
+            "nine_question_q8_internal_decision",
+        ),
+        (
+            "q8_external_task_generation",
+            "q8_external_llm_input",
+            "q8_external_llm_output",
+            "nine_question_q8_external_decision",
+        ),
+    ):
+        module_payload = modules_root.get(module_id)
+        module_data = _module_output_data(module_payload)
+        llm_input = module_data.get(input_key)
+        llm_input = llm_input if isinstance(llm_input, dict) else {}
+        llm_output = module_data.get(output_key)
+        llm_output = llm_output if isinstance(llm_output, dict) else {}
+        if not llm_input and not llm_output:
+            continue
+        caller_context = llm_input.get("caller_context")
+        caller_context = caller_context if isinstance(caller_context, dict) else {}
+        invocations.append(
+            {
+                "system_prompt": llm_input.get("system_prompt"),
+                "prompt": llm_input.get("prompt"),
+                "source_module": caller_context.get("source_module") or module_id,
+                "invocation_phase": caller_context.get("invocation_phase") or phase,
+                "question_driver_refs": caller_context.get("question_driver_refs") or ["我现在应该做什么"],
+                "context_data": llm_input.get("context") if isinstance(llm_input.get("context"), dict) else {},
+                "raw_response": llm_output or None,
+                "token_usage": {
+                    "input_tokens": 0,
+                    "output_tokens": 0,
+                    "total_tokens": 0,
+                },
+                "elapsed_ms": 0,
+            }
+        )
+
+    if not invocations:
+        return {}
+    return {
+        "question_id": "q8",
+        "source_module": "q8_module_llm_io_readback",
+        "invocation_phase": "nine_question_q8_internal_external_llm_io_readback",
+        "invocations": invocations,
+    }
 
 
 def _first_non_empty_string(*values: Any) -> str:
@@ -155,20 +261,30 @@ def _get_llm_service(request: Request) -> Any:
 
 
 @router.get("/nine-questions/status", response_model=NineQuestionsReportPayload)
-async def get_nine_questions_status(request: Request):
+async def get_nine_questions_status(request: Request, include_questions: bool = Query(False)):
+    started = time.monotonic()
     session = await get_or_create_session(request)
-    state = await get_nine_question_state(request)
-    questions = await build_question_report_items(
-        request=request,
-        state=state,
-        include_trace_detail=False,
+    service = _get_nine_question_service(request)
+    state = await service.get_state_metadata()
+    questions = []
+    if include_questions:
+        questions = await build_question_report_items(
+            request=request,
+            state=state,
+            include_trace_detail=False,
+        )
+    logger.info(
+        "[nine-questions] status query complete include_questions=%s question_count=%d elapsed=%.3fs",
+        include_questions,
+        len(questions),
+        time.monotonic() - started,
     )
     return NineQuestionsReportPayload(
         session_id=session.session_id,
         last_turn_id=str(getattr(session, "last_turn_id", "") or ""),
         snapshot_version=int(state.get("snapshot_version", 0) if isinstance(state, dict) else getattr(state, "snapshot_version", 0)),
         revision=int(state.get("revision", 0) if isinstance(state, dict) else getattr(state, "revision", 0)),
-        refreshed_at=stringify_timestamp(state.get("last_updated_at") if isinstance(state, dict) else getattr(state, "updated_at", None)),
+        refreshed_at=stringify_timestamp((state.get("last_updated_at") or state.get("updated_at")) if isinstance(state, dict) else getattr(state, "updated_at", None)),
         last_refresh_reason=(state.get("last_refresh_reason") if isinstance(state, dict) else getattr(state, "last_refresh_reason", None)),
         question_driver_refs=list(state.get("question_driver_refs", []) if isinstance(state, dict) else getattr(state, "question_driver_refs", [])),
         questions=questions,
@@ -178,19 +294,23 @@ async def get_nine_questions_status(request: Request):
 
 @router.get("/nine-questions/latest-report", response_model=NineQuestionsReportPayload)
 async def get_latest_nine_questions_report(request: Request):
-    session = await get_or_create_session(request)
-    state = await get_nine_question_state(request)
-    questions = await build_question_report_items(
+    started = time.monotonic()
+    service = _get_nine_question_service(request)
+    state = await service.get_state_metadata()
+    questions = await build_question_report_summary_items(
         request=request,
         state=state,
-        include_trace_detail=True,
+    )
+    logger.info(
+        "[nine-questions] latest report query complete question_count=%d elapsed=%.3fs",
+        len(questions),
+        time.monotonic() - started,
     )
     return NineQuestionsReportPayload(
-        session_id=session.session_id,
-        last_turn_id=str(getattr(session, "last_turn_id", "") or ""),
+        last_turn_id="",
         snapshot_version=int(state.get("snapshot_version", 0) if isinstance(state, dict) else getattr(state, "snapshot_version", 0)),
         revision=int(state.get("revision", 0) if isinstance(state, dict) else getattr(state, "revision", 0)),
-        refreshed_at=stringify_timestamp(state.get("last_updated_at") if isinstance(state, dict) else getattr(state, "updated_at", None)),
+        refreshed_at=stringify_timestamp((state.get("last_updated_at") or state.get("updated_at")) if isinstance(state, dict) else getattr(state, "updated_at", None)),
         last_refresh_reason=(state.get("last_refresh_reason") if isinstance(state, dict) else getattr(state, "last_refresh_reason", None)),
         question_driver_refs=list(state.get("question_driver_refs", []) if isinstance(state, dict) else getattr(state, "question_driver_refs", [])),
         questions=questions,
@@ -759,8 +879,16 @@ async def get_nine_question_trace_payload(request: Request, question_id: str):
     if question_id not in [f"q{i}" for i in range(1, 10)]:
         raise HTTPException(status_code=400, detail=f"Invalid question ID: {question_id}")
 
-    session = await get_or_create_session(request)
+    await get_or_create_session(request)
     service = _get_nine_question_service(request)
+    if question_id == "q8":
+        modules_payload = await service.get_question_modules(question_id)
+        return _build_q8_module_llm_trace_payload(modules_payload)
+    if question_id == "q9":
+        get_db_path = getattr(service, "sqlite_db_path", None)
+        db_path = get_db_path() if callable(get_db_path) else None
+        return build_q9_llm_trace_payload_from_table(db_path=db_path)
+
     trace_payload = await service.get_question_trace(question_id)
     trace_payload = trace_payload if isinstance(trace_payload, dict) else {}
 
@@ -768,6 +896,10 @@ async def get_nine_question_trace_payload(request: Request, question_id: str):
     raw_payload = raw_payload if isinstance(raw_payload, dict) else {}
     raw_llm_payload = raw_payload.get("llm_trace_payload")
     raw_llm_payload = raw_llm_payload if isinstance(raw_llm_payload, dict) else {}
+    raw_context_updates = raw_payload.get("context_updates")
+    raw_context_updates = raw_context_updates if isinstance(raw_context_updates, dict) else {}
+    raw_context_llm_payload = raw_context_updates.get("llm_trace_payload")
+    raw_context_llm_payload = raw_context_llm_payload if isinstance(raw_context_llm_payload, dict) else {}
 
     snapshot = await service.get_question_snapshot(question_id) or {}
     snapshot = snapshot if isinstance(snapshot, dict) else {}
@@ -780,37 +912,109 @@ async def get_nine_question_trace_payload(request: Request, question_id: str):
         snapshot.get("trace_id"),
     )
 
-    trace_detail_payload: dict[str, Any] = {}
-    if (
-        trace_id
-        and not trace_id.endswith(":no-trace")
-        and not any(
-            _is_material_llm_trace(candidate)
-            for candidate in (trace_payload, raw_llm_payload, snapshot_llm_payload)
-        )
-    ):
-        trace_detail = await build_trace_detail(
-            request=request,
-            trace_id=trace_id,
-            session_id=session.session_id,
-        )
-        if isinstance(trace_detail, dict):
-            candidate = trace_detail.get("llm_trace_payload")
-            trace_detail_payload = candidate if isinstance(candidate, dict) else {}
-
     merged = _merge_trace_payloads(
         {"trace_id": trace_id, "question_id": question_id},
         trace_payload,
         raw_llm_payload,
+        raw_context_llm_payload,
         snapshot_llm_payload,
-        trace_detail_payload,
     )
-    return merged if merged else trace_payload
+    return merged
+
+
+def _q9_state_db_path(request: Request) -> Any:
+    service = _get_nine_question_service(request)
+    get_db_path = getattr(service, "sqlite_db_path", None)
+    return get_db_path() if callable(get_db_path) else None
+
+
+def _q9_session_candidates(session_id: str) -> list[str]:
+    candidates: list[str] = []
+    for candidate in ("nq-baseline", session_id, "zentex-default-session"):
+        text = str(candidate or "").strip()
+        if text and text not in candidates:
+            candidates.append(text)
+    return candidates
+
+
+@router.get("/nine-questions/q9/llm-tasks")
+async def get_q9_llm_tasks(request: Request):
+    session = await get_or_create_session(request)
+    db_path = _q9_state_db_path(request)
+    last_payload: dict[str, Any] | None = None
+    for session_id in _q9_session_candidates(str(session.session_id)):
+        payload = load_q9_llm_tasks(
+            db_path=db_path,
+            session_id=session_id,
+            include_payloads=False,
+        )
+        last_payload = payload
+        if payload.get("tasks"):
+            return payload
+    return last_payload or load_q9_llm_tasks(db_path=db_path, session_id="nq-baseline", include_payloads=False)
+
+
+@router.get("/nine-questions/q9/llm-tasks/{task_key}")
+async def get_q9_llm_task_detail(request: Request, task_key: str):
+    session = await get_or_create_session(request)
+    db_path = _q9_state_db_path(request)
+    last_error: RuntimeError | None = None
+    for session_id in _q9_session_candidates(str(session.session_id)):
+        try:
+            return load_q9_llm_task_detail(
+                db_path=db_path,
+                session_id=session_id,
+                task_key=task_key,
+            )
+        except RuntimeError as exc:
+            if "q9_llm_task_missing" in str(exc):
+                last_error = exc
+                continue
+            raise
+    try:
+        raise last_error or RuntimeError(f"q9_llm_task_missing:{task_key}")
+    except RuntimeError as exc:
+        if "q9_llm_task_missing" in str(exc):
+            raise HTTPException(status_code=404, detail=str(exc)) from exc
+        raise
 
 
 @router.get("/nine-questions/{question_id}/raw")
 async def get_nine_question_raw(request: Request, question_id: str):
     return await _get_question_payload(request, question_id, "get_question_raw")
+
+
+@router.get("/nine-questions/q2/llm")
+async def get_q2_llm(request: Request):
+    await get_or_create_session(request)
+    service = _get_nine_question_service(request)
+    return await service.get_q2_llm_trace()
+
+
+@router.get("/nine-questions/q2/asset-statistics")
+async def get_q2_asset_statistics(request: Request):
+    await get_or_create_session(request)
+    service = _get_nine_question_service(request)
+    app_state = getattr(request.app, "state", None)
+    from zentex.external_connectors.service import resolve_service as resolve_external_connector_service
+    from zentex.mcp.service import resolve_service as resolve_mcp_service
+
+    candidate_external_connector_service = (
+        getattr(app_state, "external_connector_service", None)
+        if app_state is not None
+        else None
+    )
+    return await service.get_q2_asset_statistics(
+        cli_service=get_cli_service(request),
+        mcp_service=resolve_mcp_service(get_mcp_service(request)),
+        agent_service=(
+            getattr(app_state, "agent_service", None)
+            or getattr(app_state, "agent_coordination_service", None)
+        )
+        if app_state is not None
+        else None,
+        external_connector_service=resolve_external_connector_service(candidate_external_connector_service),
+    )
 
 
 @router.get("/nine-questions/{question_id}/modules")
@@ -822,7 +1026,7 @@ async def get_nine_question_modules_endpoint(request: Request, question_id: str)
 async def get_nine_question_detail(request: Request, question_id: str):
     if question_id not in [f"q{i}" for i in range(1, 10)]:
         raise HTTPException(status_code=400, detail=f"Invalid question ID: {question_id}")
-    state = await get_nine_question_state(request)
+    state = await _get_nine_question_service(request).get_state_metadata()
     question_item = await build_question_report_items(
         request=request,
         state=state,

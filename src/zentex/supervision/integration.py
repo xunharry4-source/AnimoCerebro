@@ -11,8 +11,8 @@ import logging
 from typing import Any, Dict, Optional
 from datetime import datetime, timezone
 
-from zentex.tasks.service import TaskManagementService
-from zentex.tasks.service import ZentexTask, TaskStatus
+from zentex.tasks import TaskManagementService
+from zentex.tasks import ZentexTask, TaskStatus
 from zentex.supervision.ai_supervisor import (
     AISupervisor, 
     TaskSupervisor, 

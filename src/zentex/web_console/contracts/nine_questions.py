@@ -37,8 +37,12 @@ class NineQuestionSandboxRequest(BaseModel):
 class NineQuestionsRunRequest(BaseModel):
     model_config = ConfigDict(extra="ignore", frozen=True)
 
-    force_refresh: bool = True
+    force_refresh: bool = False
     single_only: bool = False
+    self_model: dict[str, Any] | None = None
+    living_self_model: dict[str, Any] | None = None
+    reasoning_budget: dict[str, Any] | None = None
+    budget: dict[str, Any] | None = None
 
 
 class NineQuestionsRunResponse(BaseModel):
@@ -139,15 +143,21 @@ class Q2ManualIntervention(BaseModel):
 
 class Q2PreprocessedEvidence(BaseModel):
     model_config = ConfigDict(extra="ignore", frozen=True)
-    q1_summary: Q2Q1Summary
-    identity_kernel: Q2IdentityKernel
+    q1_summary: Optional[Q2Q1Summary] = None
+    identity_kernel: Optional[Q2IdentityKernel] = None
     manual_intervention: Optional[Q2ManualIntervention] = None
+    workspace_permission: dict[str, Any] = Field(default_factory=dict)
+    tools_agents: dict[str, Any] = Field(default_factory=dict)
+    memory_strategy: dict[str, Any] = Field(default_factory=dict)
+    asset_inventory: dict[str, Any] = Field(default_factory=dict)
 
 
 class Q2RoleView(BaseModel):
     model_config = ConfigDict(extra="ignore", frozen=True)
     identity_role: str
     active_role: str
+    inferred_reference_role: str = ""
+    role_alignment_gap: str = ""
     task_role: str
 
 
@@ -158,10 +168,26 @@ class Q2MissionBoundaryView(BaseModel):
     continuity_boundaries: list[str] = Field(default_factory=list)
 
 
+class Q2RoleAlignmentJudgementView(BaseModel):
+    model_config = ConfigDict(extra="ignore", frozen=True)
+    user_configured_role: str = ""
+    inferred_reference_role: str = ""
+    role_alignment_gap: str = ""
+    q2_computed_role_profile: dict[str, Any] = Field(default_factory=dict)
+    final_role_profile: dict[str, Any] = Field(default_factory=dict)
+    aligned: bool = False
+    replacement_allowed: bool = False
+    analysis_source: str = ""
+    analysis: str = ""
+
+
 class Q2WhoAmIInferenceView(BaseModel):
     model_config = ConfigDict(extra="ignore", frozen=True)
-    role_profile: Q2RoleView
-    mission_boundary: Q2MissionBoundaryView
+    asset_inventory: dict[str, Any] = Field(default_factory=dict)
+    sufficiency_assessment: dict[str, Any] = Field(default_factory=dict)
+    role_profile: Optional[Q2RoleView] = None
+    mission_boundary: Optional[Q2MissionBoundaryView] = None
+    role_alignment_judgement: Optional[Q2RoleAlignmentJudgementView] = None
 
 
 class Q3WorkspaceAndPermission(BaseModel):
@@ -202,11 +228,27 @@ class Q3MemoryAndStrategy(BaseModel):
     strategy_patches: list[str] = Field(default_factory=list)
 
 
+class Q3AssetInventoryItemView(BaseModel):
+    model_config = ConfigDict(extra="ignore", frozen=True)
+    asset_name: str
+    description: str
+    source: str
+    plugin_category: str
+    trust_level: str
+    validity: str
+
+
 class Q3PreprocessedEvidence(BaseModel):
     model_config = ConfigDict(extra="ignore", frozen=True)
     workspace_permission: Q3WorkspaceAndPermission
     tools_agents: Q3ToolsAndAgents
     memory_strategy: Q3MemoryAndStrategy
+    asset_inventory: dict[str, Any] = Field(default_factory=dict)
+    q1_environment_inference: dict[str, Any] = Field(default_factory=dict)
+    q2_asset_inventory: dict[str, Any] = Field(default_factory=dict)
+    q1_llm_trace_payload: dict[str, Any] = Field(default_factory=dict)
+    q2_llm_trace_payload: dict[str, Any] = Field(default_factory=dict)
+    identity_kernel_snapshot: dict[str, Any] = Field(default_factory=dict)
 
 
 class Q3ResourceSufficiencyView(BaseModel):
@@ -221,7 +263,10 @@ class Q3ResourceSufficiencyView(BaseModel):
 
 class Q3WhatDoIHaveInferenceView(BaseModel):
     model_config = ConfigDict(extra="ignore", frozen=True)
-    sufficiency_assessment: Q3ResourceSufficiencyView
+    asset_inventory: dict[str, Any] = Field(default_factory=dict)
+    sufficiency_assessment: Optional[Q3ResourceSufficiencyView] = None
+    role_profile: Optional[Q2RoleView] = None
+    mission_boundary: Optional[Q2MissionBoundaryView] = None
 
 
 class Q4PreprocessedEvidence(BaseModel):
@@ -232,7 +277,7 @@ class Q4PreprocessedEvidence(BaseModel):
 
 
 class Q4WhatCanIDoInferenceView(BaseModel):
-    model_config = ConfigDict(extra="ignore", frozen=True)
+    model_config = ConfigDict(extra="forbid", frozen=True)
     capability_upper_limits: list[str] = Field(default_factory=list)
     actionable_space: list[str] = Field(default_factory=list)
     executable_strategies: list[str] = Field(default_factory=list)
@@ -248,6 +293,13 @@ class Q5PreprocessedEvidence(BaseModel):
 
 class Q5WhatAmIAllowedToDoInferenceView(BaseModel):
     model_config = ConfigDict(extra="ignore", frozen=True)
+    authorization_boundary: dict[str, Any] = Field(default_factory=dict)
+    current_authorization_scope: str = ""
+    contact_policies: list[str] = Field(default_factory=list)
+    organizational_boundaries: str = ""
+    allowed_actions: list[str] = Field(default_factory=list)
+    forbidden_actions: list[str] = Field(default_factory=list)
+    question_driver_refs: list[str] = Field(default_factory=list)
     execution_tier: str
     interaction_scope: str
     requires_human_confirmation: bool
@@ -266,28 +318,52 @@ class Q6PreprocessedEvidence(BaseModel):
 
 
 class Q6ForbiddenZoneInferenceView(BaseModel):
-    model_config = ConfigDict(extra="ignore", frozen=True)
+    model_config = ConfigDict(extra="forbid", frozen=True)
     absolute_red_lines: list[str] = Field(default_factory=list)
     performance_tradeoff_bans: list[str] = Field(default_factory=list)
     prohibited_strategies: list[str] = Field(default_factory=list)
     contamination_risks: list[str] = Field(default_factory=list)
 
 
+class Q6EvolutionDirectionView(BaseModel):
+    model_config = ConfigDict(extra="forbid", frozen=True)
+    current_evolution_assessment: str = ""
+    capability_gaps: list[str] = Field(default_factory=list)
+    recommended_expansions: list[str] = Field(default_factory=list)
+    risk_threshold: str = ""
+
+
+class Q6EvolutionProfileView(BaseModel):
+    model_config = ConfigDict(extra="forbid", frozen=True)
+    allowed_directions: list[str] = Field(default_factory=list)
+    forbidden_boundaries: list[str] = Field(default_factory=list)
+    validation_requirements: list[str] = Field(default_factory=list)
+
+
+class Q6EvolutionInferenceView(BaseModel):
+    model_config = ConfigDict(extra="forbid", frozen=True)
+    EvolutionDirection: Q6EvolutionDirectionView
+    EvolutionProfile: Q6EvolutionProfileView
+
+
 class Q7PreprocessedEvidence(BaseModel):
     model_config = ConfigDict(extra="ignore", frozen=True)
-    resource_bottlenecks: list[str] = Field(default_factory=list)
-    capability_limits: list[str] = Field(default_factory=list)
-    permission_boundaries: list[str] = Field(default_factory=list)
-    absolute_red_lines: list[str] = Field(default_factory=list)
-    historical_failure_patches: list[str] = Field(default_factory=list)
+    identity_kernel_constraints: list[str] = Field(default_factory=list)
+    authorization_boundary_constraints: list[str] = Field(default_factory=list)
+    safety_rejection_history: list[str] = Field(default_factory=list)
+    procedural_memory_constraints: list[str] = Field(default_factory=list)
+    non_bypassable_constraints: list[str] = Field(default_factory=list)
+    ban_source_explanations: list[str] = Field(default_factory=list)
+    question_driver_refs: list[str] = Field(default_factory=list)
 
 
 class Q7AlternativeStrategyInferenceView(BaseModel):
-    model_config = ConfigDict(extra="ignore", frozen=True)
-    fallback_plans: list[str] = Field(default_factory=list)
-    degradation_strategies: list[str] = Field(default_factory=list)
-    collaboration_switches: list[str] = Field(default_factory=list)
-    exploratory_actions: list[str] = Field(default_factory=list)
+    model_config = ConfigDict(extra="forbid", frozen=True)
+    current_red_line_hits: list[str] = Field(default_factory=list)
+    rejected_operation_records: list[str] = Field(default_factory=list)
+    ban_source_explanations: list[str] = Field(default_factory=list)
+    non_bypassable_constraints: list[str] = Field(default_factory=list)
+    question_driver_refs: list[str] = Field(default_factory=list)
 
 
 class Q8AggregatedContextEvidence(BaseModel):
@@ -351,6 +427,8 @@ class Q8WhatShouldIDoNowInferenceView(BaseModel):
     model_config = ConfigDict(extra="ignore", frozen=True)
     objective_profile: Q8ObjectiveProfileView
     task_queue: Q8AutonomousTaskQueueView
+    q8_internal_cognitive_tasks: list[dict[str, Any]] = Field(default_factory=list)
+    q8_external_execution_tasks: list[dict[str, Any]] = Field(default_factory=list)
 
 
 class Q9CognitiveSnapshotEvidence(BaseModel):
@@ -393,6 +471,13 @@ class Q9PreprocessedEvidence(BaseModel):
 
 class Q9ActionPostureInferenceView(BaseModel):
     model_config = ConfigDict(extra="ignore", frozen=True)
+    current_action_plan: list[str] = Field(default_factory=list)
+    method_selection: str = ""
+    required_resources: list[str] = Field(default_factory=list)
+    risk_assessment: str = ""
+    expected_outcome: str = ""
+    alternative_candidates: list[str] = Field(default_factory=list)
+    question_driver_refs: list[str] = Field(default_factory=list)
     evaluation_style: str
     risk_tolerance: str
     action_rhythm: str
@@ -418,30 +503,8 @@ class NineQuestionReportItem(BaseModel):
     cache_status: str = "未知"
     provider_name: Optional[str] = None
     mounted_plugins: list[MountedPluginInfo] = Field(default_factory=list)
-    preprocessed_evidence: Union[
-        Q1PreprocessedEvidence,
-        Q2PreprocessedEvidence,
-        Q3PreprocessedEvidence,
-        Q4PreprocessedEvidence,
-        Q5PreprocessedEvidence,
-        Q6PreprocessedEvidence,
-        Q7PreprocessedEvidence,
-        Q8PreprocessedEvidence,
-        Q9PreprocessedEvidence,
-        None,
-    ] = None
-    inference_result: Union[
-        WorkspaceDomainInferenceView,
-        Q2WhoAmIInferenceView,
-        Q3WhatDoIHaveInferenceView,
-        Q4WhatCanIDoInferenceView,
-        Q5WhatAmIAllowedToDoInferenceView,
-        Q6ForbiddenZoneInferenceView,
-        Q7AlternativeStrategyInferenceView,
-        Q8WhatShouldIDoNowInferenceView,
-        Q9ActionPostureInferenceView,
-        None,
-    ] = None
+    preprocessed_evidence: Any = None
+    inference_result: Any = None
     q1_llm_upgrade: Optional[Q1LLMUpgradeView] = None
     llm_trace_payload: Optional[LLMTracePayload] = None
 
@@ -462,30 +525,8 @@ class NineQuestionSandboxResponse(BaseModel):
     context: dict[str, Any] = Field(default_factory=dict)
     result: Any
     context_updates: dict[str, Any] = Field(default_factory=dict)
-    preprocessed_evidence: Union[
-        Q1PreprocessedEvidence,
-        Q2PreprocessedEvidence,
-        Q3PreprocessedEvidence,
-        Q4PreprocessedEvidence,
-        Q5PreprocessedEvidence,
-        Q6PreprocessedEvidence,
-        Q7PreprocessedEvidence,
-        Q8PreprocessedEvidence,
-        Q9PreprocessedEvidence,
-        None,
-    ] = None
-    inference_result: Union[
-        WorkspaceDomainInferenceView,
-        Q2WhoAmIInferenceView,
-        Q3WhatDoIHaveInferenceView,
-        Q4WhatCanIDoInferenceView,
-        Q5WhatAmIAllowedToDoInferenceView,
-        Q6ForbiddenZoneInferenceView,
-        Q7AlternativeStrategyInferenceView,
-        Q8WhatShouldIDoNowInferenceView,
-        Q9ActionPostureInferenceView,
-        None,
-    ] = None
+    preprocessed_evidence: Any = None
+    inference_result: Any = None
     q1_llm_upgrade: Optional[Q1LLMUpgradeView] = None
     llm_trace_payload: Optional[LLMTracePayload] = None
 

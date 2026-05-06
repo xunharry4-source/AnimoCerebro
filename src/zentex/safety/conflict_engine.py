@@ -224,6 +224,7 @@ class CognitiveConflictEngine:
         detected.extend(self._detect_confidence_conflicts(self_model_dict))
         detected.extend(self._detect_budget_conflicts(budget_dict, agenda_items))
         detected.extend(self._detect_boundary_conflicts(nq))
+        detected.extend(self._detect_role_conflicts(nq))
 
         if detected:
             self.ingest_reports(detected)
@@ -439,6 +440,53 @@ class CognitiveConflictEngine:
             )
         ]
 
+    def _detect_role_conflicts(self, nine_q_state: dict[str, Any]) -> list[CognitiveConflictReport]:
+        role_profile = _extract_q3_role_profile(nine_q_state)
+        if not role_profile:
+            return []
+        active_role = str(role_profile.get("active_role") or "").strip()
+        inferred_reference_role = str(role_profile.get("inferred_reference_role") or "").strip()
+        role_alignment_gap = str(role_profile.get("role_alignment_gap") or "").strip()
+        if not active_role or not inferred_reference_role or active_role == inferred_reference_role:
+            return []
+        summary = (
+            f"Q3 active_role is user-locked as {active_role}, while Q3 inferred_reference_role is "
+            f"{inferred_reference_role}; human confirmation is required before any role change."
+        )
+        return [
+            CognitiveConflictReport(
+                conflict_type="role_conflict",
+                severity="high",
+                suggested_resolution="request_user_role_confirmation",
+                summary=summary,
+                source_refs=["q3.role_profile.active_role", "q3.role_profile.inferred_reference_role"],
+                conflict_sources=[
+                    ConflictSource(
+                        source_kind="nine_q_state",
+                        source_ref="q3.role_profile.active_role",
+                        conflict_note=f"user_locked_active_role={active_role}",
+                    ),
+                    ConflictSource(
+                        source_kind="nine_q_state",
+                        source_ref="q3.role_profile.inferred_reference_role",
+                        conflict_note=f"inferred_reference_role={inferred_reference_role}",
+                    ),
+                ],
+                source_plugin_id="core.cognitive_conflict_engine",
+                details={
+                    "active_role": active_role,
+                    "inferred_reference_role": inferred_reference_role,
+                    "role_alignment_gap": role_alignment_gap,
+                    "active_role_user_locked": True,
+                    "auto_role_change_allowed": False,
+                    "recommendation": (
+                        f"当前环境参考角色为“{inferred_reference_role}”，但当前执行角色锁定为“{active_role}”。"
+                        "是否采纳系统参考角色必须由用户手动确认。"
+                    ),
+                },
+            )
+        ]
+
     def _severity_rank(self, severity: str) -> int:
         return {"low": 1, "medium": 2, "high": 3, "critical": 4}.get(severity, 1)
 
@@ -482,6 +530,29 @@ def _as_list(value: Any) -> list[Any]:
     if isinstance(value, set):
         return list(value)
     return [value]
+
+
+def _extract_q3_role_profile(nine_q_state: dict[str, Any]) -> dict[str, Any]:
+    candidates = [
+        nine_q_state.get("q3_role_profile"),
+        _as_dict(nine_q_state.get("role_profile")),
+        _as_dict(nine_q_state.get("q3")).get("role_profile"),
+        _as_dict(nine_q_state.get("q3_context")).get("role_profile"),
+        _as_dict(nine_q_state.get("q3_context")).get("q3_role_profile"),
+    ]
+    q3_snapshot = _as_dict(nine_q_state.get("q3"))
+    candidates.extend(
+        [
+            _as_dict(q3_snapshot.get("context_updates")).get("q3_role_profile"),
+            _as_dict(q3_snapshot.get("inference_result")).get("role_profile"),
+            _as_dict(q3_snapshot.get("result")).get("role_profile"),
+        ]
+    )
+    for candidate in candidates:
+        data = _as_dict(candidate)
+        if data:
+            return data
+    return {}
 
 
 def _item_ref(item: dict[str, Any]) -> str:

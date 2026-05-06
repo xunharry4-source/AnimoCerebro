@@ -31,6 +31,19 @@ from zentex.tasks.execution.external_result_bridge import (
     write_external_execution_result,
 )
 
+
+def _stable_mcp_task_error_code(error_code: Any) -> str:
+    normalized = str(error_code or "").strip().lower()
+    if normalized in {"mcp_server_unavailable", "server_unavailable", "connection_error", "timeout"}:
+        return "MCP_SERVER_UNAVAILABLE"
+    if normalized in {"mcp_tool_not_registered", "mcp_tool_not_found", "tool_not_found"}:
+        return "MCP_TOOL_NOT_FOUND"
+    if normalized in {"mcp_bad_json", "malformed_adapter_response", "schema_invalid", "mcp_schema_invalid"}:
+        return "MCP_SCHEMA_INVALID"
+    if normalized in {"mcp_auth_failed", "authentication_failed", "unauthorized", "permission_denied"}:
+        return "MCP_AUTH_FAILED"
+    return normalized.upper() if normalized else "MCP_EXECUTION_FAILED"
+
 logger = logging.getLogger(__name__)
 
 
@@ -102,7 +115,7 @@ class McpIntegrationService:
             self._adapter.attach_auth_service(auth_service)
         self._task_service = task_service
         self._documentation_learning_service = documentation_learning_service or ToolDocumentationLearningService(
-            llm_service=llm_service
+            llm_service=llm_service,
         )
         self._usage_profiles: Dict[str, Any] = {}
         self._registry_path = Path(registry_path) if registry_path is not None else get_storage_paths().runtime_data_dir / "mcp_servers.json"
@@ -141,7 +154,8 @@ class McpIntegrationService:
             if row["asset_id"] in seen:
                 continue
             try:
-                config = McpServerConfig.model_validate(row["payload"])
+                repaired_payload, _ = self._repair_persisted_auth_reference(row["payload"])
+                config = McpServerConfig.model_validate(repaired_payload)
                 states.append(
                     McpServerRuntimeState(
                         server_id=config.server_id,
@@ -150,6 +164,8 @@ class McpIntegrationService:
                         tool_count=0,
                         error_message=self._restore_errors.get(config.server_id) or "registered MCP server is persisted but not active in runtime",
                         tools=[],
+                        help_doc_url=config.help_doc_url,
+                        project_doc_url=config.project_doc_url,
                     )
                 )
             except Exception as exc:
@@ -164,6 +180,19 @@ class McpIntegrationService:
                     )
                 )
         return states
+
+    def _repair_persisted_auth_reference(self, payload: Dict[str, Any]) -> tuple[Dict[str, Any], bool]:
+        data = dict(payload or {})
+        auth_config = dict(data.get("auth_config") or {})
+        server_id = str(data.get("server_id") or "").strip()
+        if auth_config.get("credential_ref") != "[REDACTED]" or not server_id or self._auth_service is None:
+            return data, False
+        candidates = self._auth_service.vault.list_metadata_for_owner("mcp", server_id)
+        if len(candidates) != 1:
+            return data, False
+        auth_config["credential_ref"] = candidates[0].credential_id
+        data["auth_config"] = auth_config
+        return data, True
 
     def register_server(self, config: McpServerConfig) -> McpServerRuntimeState:
         state = self._adapter.register_server(config)
@@ -185,15 +214,23 @@ class McpIntegrationService:
         *,
         config: McpServerConfig,
         state: McpServerRuntimeState,
+        documentation_learning_service: Optional[ToolDocumentationLearningService] = None,
     ) -> None:
         if not config.documentation_learning_required or not state.tools:
             return
+        learning_service = documentation_learning_service or self._documentation_learning_service
         fetched_doc = ""
         if config.help_doc_url:
             try:
-                fetched_doc = self._documentation_learning_service.fetch_mcp_doc(config)
+                fetched_doc = learning_service.fetch_mcp_doc(config)
             except Exception:
                 fetched_doc = ""
+        fetched_project_doc = ""
+        if config.project_doc_url:
+            try:
+                fetched_project_doc = learning_service.fetch_mcp_project_doc(config)
+            except Exception:
+                fetched_project_doc = ""
         updated_tools = []
         degraded = False
         for runtime_tool in state.tools:
@@ -206,8 +243,13 @@ class McpIntegrationService:
                 read_only_hint=runtime_tool.read_only,
             )
             try:
-                profile = self._documentation_learning_service.learn_mcp_tool_usage_profile(
-                    McpDocumentationInput(config=config, tool=descriptor, fetched_doc=fetched_doc)
+                profile = learning_service.learn_mcp_tool_usage_profile(
+                    McpDocumentationInput(
+                        config=config,
+                        tool=descriptor,
+                        fetched_doc=fetched_doc,
+                        fetched_project_doc=fetched_project_doc,
+                    )
                 )
                 self._usage_profiles[f"{config.server_id}:{runtime_tool.tool_name}"] = profile
                 updated_tools.append(runtime_tool)
@@ -238,11 +280,58 @@ class McpIntegrationService:
     def list_usage_profiles(self) -> Dict[str, Any]:
         return dict(self._usage_profiles)
 
+    def get_mcp_server_statistics(self) -> Dict[str, Any]:
+        servers = self.list_servers()
+        status_counts: Dict[str, int] = {}
+        tool_status_counts: Dict[str, int] = {}
+        total_tools = 0
+        for server in servers:
+            status_counts[server.status] = status_counts.get(server.status, 0) + 1
+            total_tools += len(server.tools)
+            for tool in server.tools:
+                tool_status_counts[tool.status] = tool_status_counts.get(tool.status, 0) + 1
+        return {
+            "asset_type": "mcp",
+            "total_servers": len(servers),
+            "online_servers": status_counts.get("online", 0),
+            "offline_servers": status_counts.get("offline", 0),
+            "degraded_servers": status_counts.get("degraded", 0),
+            "total_tools": total_tools,
+            "active_tools": tool_status_counts.get("active", 0),
+            "degraded_tools": tool_status_counts.get("degraded", 0),
+            "revoked_tools": tool_status_counts.get("revoked", 0),
+            "learned_profiles": len(self._usage_profiles),
+            "status_counts": status_counts,
+            "tool_status_counts": tool_status_counts,
+        }
+
     def activate_server(self, server_id: str) -> McpServerRuntimeState:
-        return self._adapter.activate_server(server_id)
+        state = self._adapter.activate_server(server_id)
+        config = next((item for item in getattr(self._adapter, "server_configs", []) if item.server_id == server_id), None)
+        if config is not None:
+            self._registry_store.upsert_current(
+                "mcp",
+                server_id,
+                config.model_dump(mode="json"),
+                status=state.status,
+                display_name=server_id,
+                action="activate",
+            )
+        return state
 
     def disable_server(self, server_id: str) -> McpServerRuntimeState:
-        return self._adapter.disable_server(server_id)
+        state = self._adapter.disable_server(server_id)
+        config = next((item for item in getattr(self._adapter, "server_configs", []) if item.server_id == server_id), None)
+        if config is not None:
+            self._registry_store.upsert_current(
+                "mcp",
+                server_id,
+                config.model_dump(mode="json"),
+                status=state.status,
+                display_name=server_id,
+                action="disable",
+            )
+        return state
 
     def delete_server(self, server_id: str) -> bool:
         deleted = self._adapter.delete_server(server_id)
@@ -259,8 +348,14 @@ class McpIntegrationService:
         if not hasattr(self._adapter, "server_configs"):
             return
         db_rows = self._registry_store.list_current("mcp")
+        repaired_server_ids: set[str] = set()
         if db_rows:
-            payload = [row["payload"] for row in db_rows]
+            payload = []
+            for row in db_rows:
+                repaired_payload, repaired = self._repair_persisted_auth_reference(row["payload"])
+                payload.append(repaired_payload)
+                if repaired:
+                    repaired_server_ids.add(str(row["asset_id"]))
         elif self._registry_path.exists():
             try:
                 payload = json.loads(self._registry_path.read_text(encoding="utf-8"))
@@ -279,7 +374,21 @@ class McpIntegrationService:
                 continue
             try:
                 state = self._adapter.register_server(config)
+                self._learn_usage_profiles_after_registration(
+                    config=config,
+                    state=state,
+                    documentation_learning_service=ToolDocumentationLearningService(allow_heuristic_fallback=True),
+                )
                 self._restore_errors.pop(config.server_id, None)
+                if db_rows and config.server_id in repaired_server_ids:
+                    self._registry_store.upsert_current(
+                        "mcp",
+                        config.server_id,
+                        config.model_dump(mode="json"),
+                        status=state.status,
+                        display_name=config.server_id,
+                        action="repair_auth_reference",
+                    )
                 if not db_rows:
                     self._registry_store.upsert_current(
                         "mcp",
@@ -446,6 +555,7 @@ class McpIntegrationService:
         result_payload = dict(result)
         status = str(result_payload.get("status") or "")
         succeeded = status == "completed"
+        stable_error_code = "" if succeeded else _stable_mcp_task_error_code(result_payload.get("error_code"))
         error_message = None if succeeded else (
             result_payload.get("error_message")
             or result_payload.get("error")
@@ -471,6 +581,7 @@ class McpIntegrationService:
             "executor_id": f"mcp:{server_id}:{tool_name}",
             "output": result_payload,
             "error": str(error_message) if error_message else None,
+            "error_code": stable_error_code,
             "duration_seconds": 0.0,
             "failure_classification": result_payload.get("error_code"),
             "task_writeback": writeback,
@@ -519,6 +630,8 @@ class McpIntegrationService:
             success_rate=success_rate,
             uptime_seconds=uptime,
             error_message=state.error_message,
+            help_doc_url=state.help_doc_url,
+            project_doc_url=state.project_doc_url,
             tools=[
                 McpServerToolItem(
                     tool_name=t.tool_name,
@@ -575,12 +688,26 @@ class McpIntegrationService:
             ))
         return sorted(summaries, key=lambda x: x.start_time, reverse=True)
 
+_SERVICE: McpIntegrationService | None = None
+
+
+def resolve_service(candidate: Any = None, *, llm_service: Any = None) -> McpIntegrationService:
+    global _SERVICE
+    if candidate is not None and callable(getattr(candidate, "list_servers", None)):
+        _SERVICE = candidate
+        return candidate
+    return get_service(llm_service=llm_service)
+
+
 def get_service(llm_service: Any = None) -> McpIntegrationService:
     """Standard service factory function for launcher assembly.
     
     Returns a configured McpIntegrationService. This factory is resilient
     to missing global dependencies during the early assembly phase.
     """
+    global _SERVICE
+    if _SERVICE is not None:
+        return _SERVICE
     try:
         from zentex.kernel import AuditEventStore
         from zentex.plugins.service import CognitiveToolRegistry
@@ -603,15 +730,17 @@ def get_service(llm_service: Any = None) -> McpIntegrationService:
                 llm_service = get_llm_service()
             except Exception:
                 llm_service = None
-        return McpIntegrationService(
+        _SERVICE = McpIntegrationService(
             adapter=adapter,
             llm_service=llm_service,
             auth_service=AgentAuthService(),
         )
+        return _SERVICE
     except Exception as exc:
         import logging
         logging.getLogger(__name__).warning("MCP assembly failed (degraded): %s", exc)
-        return McpIntegrationService(adapter=_AssemblyFailedAdapter(str(exc)))
+        _SERVICE = McpIntegrationService(adapter=_AssemblyFailedAdapter(str(exc)))
+        return _SERVICE
 
 
 __all__ = [
@@ -622,4 +751,6 @@ __all__ = [
     "McpServerRuntimeState",
     "McpToolBindingConfig",
     "McpToolDescriptor",
+    "get_service",
+    "resolve_service",
 ]

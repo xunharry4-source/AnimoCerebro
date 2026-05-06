@@ -8,7 +8,7 @@ from typing import Any, Dict, List
 from fastapi import HTTPException, Request
 
 from zentex.agents.service import AgentCoordinationService, AgentAsset
-from zentex.tasks.service import TaskManagementService
+from zentex.tasks import TaskManagementService
 from zentex.web_console.contracts.agents import (
     AgentConsoleRecord,
     AgentInboxItem,

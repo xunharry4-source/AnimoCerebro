@@ -49,7 +49,7 @@ task = ZentexTask(
 ### 2. 通过Service层使用
 
 ```python
-from zentex.tasks.service import TaskManagementService
+from zentex.tasks import TaskManagementService
 
 # 初始化服务（验证引擎会自动初始化）
 service = TaskManagementService(

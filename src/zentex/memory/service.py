@@ -11,6 +11,7 @@ internal store paths or complex ingestion logic.
 import logging
 import os
 import threading
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Optional, Union
 
@@ -130,13 +131,61 @@ class MemoryService:
         self._attach_consolidation_bridge(future=future, bridge=bridge)
         return handle
 
-    def trigger_automatic_consolidation_check(self) -> Any:
+    def force_start_automatic_organization(
+        self,
+        *,
+        operator: str = "memory_service_force_start",
+        memory_limit: int = 100,
+    ) -> Any:
+        """
+        Force-start an automatic memory organization cycle.
+
+        Unlike ``trigger_automatic_consolidation_check()``, this bypasses idle
+        and storage-pressure gates and immediately queues the automatic
+        consolidation path with the current active managed memories.
+        """
+        import uuid
+
+        engine, bridge = self._ensure_consolidation_stack()
+        memory_records = self.query_managed_records(
+            limit=max(1, memory_limit),
+            status="active",
+        )
+        input_refs = [
+            self._build_consolidation_ref(record)
+            for record in memory_records
+        ]
+        handle, future = engine.submit_cycle(
+            trigger_stage="memory_governance_review",
+            input_memory_refs=input_refs,
+            noise_rules=[],
+            context={
+                "operator": operator,
+                "trigger": "automatic",
+                "trigger_reason": "force_auto_organization",
+                "force_start": True,
+                "used_memory_count": len(input_refs),
+            },
+            idempotency_key=f"force-auto-{uuid.uuid4()}",
+            snapshot_version=engine.snapshot_version,
+        )
+        self._attach_consolidation_bridge(future=future, bridge=bridge)
+        return handle
+
+    def trigger_automatic_consolidation_check(
+        self,
+        *,
+        force: bool = False,
+        operator: str = "memory_service_auto",
+    ) -> Any:
         """
         Expose the engine's automatic consolidation decision path via service.py.
 
         This lets callers invoke the same budget/idle checks manually from the
         service boundary without importing consolidation internals directly.
         """
+        if force:
+            return self.force_start_automatic_organization(operator=operator)
         engine, _bridge = self._ensure_consolidation_stack()
         return engine.check_and_trigger_automatic_consolidation()
 
@@ -234,6 +283,87 @@ class MemoryService:
             target_id=target_id
         )
 
+    def query_q2_memory_context(
+        self,
+        *,
+        topic: Optional[str] = None,
+        role: Optional[str] = None,
+        risk_level: Optional[str] = None,
+        top_k: int = 8,
+        trace_id: Optional[str] = None,
+        target_id: Optional[str] = None,
+    ) -> dict[str, Any]:
+        """
+        Return Q2-ready long-term memory summaries through the MemoryService boundary.
+
+        This is the asset-inventory facade used before Q2 LLM execution. It does not
+        expose raw memory bodies. It uses the existing recall/query paths, applies the
+        Q2 filters supplied by the runtime frame, removes archived/invalidated/
+        quarantined records, and returns only compact summaries with freshness,
+        score, status, verification status, credibility, and source references.
+        """
+        limit = max(1, int(top_k or 8))
+        pool_limit = max(limit * 5, limit)
+        query_text = " ".join(
+            part
+            for part in (
+                str(topic or "").strip(),
+                str(role or "").strip(),
+                str(risk_level or "").strip(),
+            )
+            if part
+        )
+
+        candidates: list[tuple[ManagedEnhancedMemoryRecord, float]] = []
+        if query_text:
+            for hit in self.recall(query_text, limit=pool_limit, trace_id=trace_id, target_id=target_id):
+                record = self.get_record(hit.memory_id)
+                if record is not None:
+                    candidates.append((record, float(hit.score)))
+
+        if not candidates:
+            candidates = [
+                (record, 0.0)
+                for record in self.query_managed_records(
+                    limit=pool_limit,
+                    status="active",
+                    trace_id=trace_id,
+                    target_id=target_id,
+                )
+            ]
+
+        summaries: list[dict[str, Any]] = []
+        seen: set[str] = set()
+        for record, relevance_score in candidates:
+            if record.memory_id in seen:
+                continue
+            seen.add(record.memory_id)
+            if not _q2_memory_record_is_visible(record):
+                continue
+            if not _q2_memory_record_matches(record, topic=topic, role=role, risk_level=risk_level):
+                continue
+            summaries.append(_q2_memory_summary(record, relevance_score=relevance_score))
+
+        summaries.sort(
+            key=lambda item: (
+                float(item.get("score") or 0.0),
+                str(item.get("updated_at") or item.get("created_at") or ""),
+            ),
+            reverse=True,
+        )
+        return {
+            "source": "zentex.memory.service.MemoryService.query_q2_memory_context",
+            "filters": {
+                "topic": str(topic or "").strip(),
+                "role": str(role or "").strip(),
+                "risk_level": str(risk_level or "").strip(),
+                "trace_id": str(trace_id or "").strip(),
+                "target_id": str(target_id or "").strip(),
+            },
+            "excluded_statuses": ["archived", "invalidated", "quarantined"],
+            "long_term_memories": summaries[:limit],
+        }
+
     def get_record(self, memory_id: str) -> Optional[ManagedEnhancedMemoryRecord]:
         """Retrieve a specific memory record by its unique ID."""
         return self._internal_service.get_managed_record(memory_id)
@@ -253,6 +383,9 @@ class MemoryService:
 
     def list_episodic_records(self) -> list[EnhancedMemoryRecord]:
         return self._internal_service.list_episodic_records()
+
+    def build_overview_snapshot(self) -> dict[str, Any]:
+        return self._internal_service.build_overview_snapshot()
 
     def list_managed_records(self, *args: Any, **kwargs: Any) -> list[ManagedEnhancedMemoryRecord]:
         return self._internal_service.list_managed_records(*args, **kwargs)
@@ -507,6 +640,30 @@ class MemoryService:
         if callable(getattr(future, "add_done_callback", None)):
             future.add_done_callback(_on_complete)
 
+    def _build_consolidation_ref(self, record: Any) -> dict[str, Any]:
+        created_at = getattr(record, "created_at", None)
+        created_at_ts = (
+            created_at.timestamp()
+            if callable(getattr(created_at, "timestamp", None))
+            else None
+        )
+        tags = list(getattr(record, "tags", []) or [])
+        memory_id = str(getattr(record, "memory_id", "") or "")
+        confidence = float(getattr(record, "confidence_score", 0.5) or 0.5)
+        return {
+            "ref_id": memory_id,
+            "id": memory_id,
+            "kind": str(getattr(record, "source_kind", "") or getattr(record, "memory_layer", "") or "memory"),
+            "topic": tags[0] if tags else str(getattr(record, "memory_layer", "") or "memory"),
+            "summary": str(getattr(record, "summary", "") or getattr(record, "title", "") or ""),
+            "confidence": confidence,
+            "reuse_value": confidence,
+            "created_at_ts": created_at_ts,
+            "tags": tags,
+            "memory_tier": str(getattr(record, "memory_tier", "") or ""),
+            "status": str(getattr(record, "status", "") or ""),
+        }
+
     def get_status(self) -> dict[str, Any]:
         """Return diagnostic information about the memory service."""
         health_snapshot = self._internal_service.get_health_snapshot()
@@ -519,6 +676,92 @@ class MemoryService:
             "initialization_failures": self._internal_service.list_initialization_failures(),
             "governance_failures": self._internal_service.list_governance_failures(),
         }
+
+
+def _q2_text(value: Any) -> str:
+    return str(value or "").strip()
+
+
+def _q2_memory_record_is_visible(record: ManagedEnhancedMemoryRecord) -> bool:
+    status = _q2_text(getattr(record, "status", "")).lower()
+    visibility = _q2_text(getattr(record, "visibility", "")).lower()
+    verification_status = _q2_text(getattr(record, "verification_status", "")).lower()
+    if status in {"archived", "invalidated", "quarantined", "rejected"}:
+        return False
+    if visibility == "hidden":
+        return False
+    if verification_status in {"retracted", "invalidated"}:
+        return False
+    return True
+
+
+def _q2_memory_filter_values(record: ManagedEnhancedMemoryRecord, key: str) -> list[str]:
+    payload = getattr(record, "payload", {}) if isinstance(getattr(record, "payload", {}), dict) else {}
+    values: list[str] = []
+    for candidate_key in (key, f"{key}_tag"):
+        value = payload.get(candidate_key)
+        if isinstance(value, list):
+            values.extend(_q2_text(item) for item in value)
+        else:
+            values.append(_q2_text(value))
+    values.extend(_q2_text(item) for item in getattr(record, "tags", []) or [])
+    if key == "topic":
+        values.append(_q2_text(getattr(record, "title", "")))
+        values.append(_q2_text(getattr(record, "summary", "")))
+    return [item.lower() for item in values if item]
+
+
+def _q2_memory_record_matches(
+    record: ManagedEnhancedMemoryRecord,
+    *,
+    topic: Optional[str],
+    role: Optional[str],
+    risk_level: Optional[str],
+) -> bool:
+    filters = {
+        "topic": _q2_text(topic).lower(),
+        "role": _q2_text(role).lower(),
+        "risk_level": _q2_text(risk_level).lower(),
+    }
+    for key, expected in filters.items():
+        if not expected:
+            continue
+        values = _q2_memory_filter_values(record, key)
+        if not any(expected in value or value in expected for value in values):
+            return False
+    return True
+
+
+def _q2_memory_freshness(record: ManagedEnhancedMemoryRecord) -> str:
+    updated_at = getattr(record, "updated_at", None) or getattr(record, "created_at", None)
+    if not isinstance(updated_at, datetime):
+        return "时效未知"
+    now = datetime.now(timezone.utc)
+    compared = updated_at if updated_at.tzinfo is not None else updated_at.replace(tzinfo=timezone.utc)
+    age_days = max(0, (now - compared).days)
+    if age_days <= 30:
+        return "近期更新"
+    if age_days <= 180:
+        return "中期有效"
+    return "长期沉淀"
+
+
+def _q2_memory_summary(record: ManagedEnhancedMemoryRecord, *, relevance_score: float) -> dict[str, Any]:
+    confidence = float(getattr(record, "confidence_score", 0.0) or 0.0)
+    score = relevance_score if relevance_score > 0 else confidence
+    return {
+        "memory_id": _q2_text(getattr(record, "memory_id", "")),
+        "summary": _q2_text(getattr(record, "summary", "")),
+        "freshness": _q2_memory_freshness(record),
+        "memory_type": _q2_text(getattr(record, "memory_layer", "")),
+        "score": round(max(0.0, min(1.0, score)), 4),
+        "status": _q2_text(getattr(record, "status", "")),
+        "verification_status": _q2_text(getattr(record, "verification_status", "")),
+        "source_credibility": _q2_text(getattr(record, "source_credibility", "")),
+        "source_refs": list(getattr(record, "source_refs", []) or []),
+        "created_at": _q2_text(getattr(record, "created_at", "")),
+        "updated_at": _q2_text(getattr(record, "updated_at", "")),
+    }
 
 
 # Global singleton instance for easy access

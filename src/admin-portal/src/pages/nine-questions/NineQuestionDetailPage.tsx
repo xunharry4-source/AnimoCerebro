@@ -1,9 +1,6 @@
 import { useTranslation } from "react-i18next";
 import { useEffect, useState } from "react";
 import {
-  Accordion,
-  AccordionDetails,
-  AccordionSummary,
   Alert,
   Box,
   Button,
@@ -15,14 +12,12 @@ import {
   Stack,
   Typography,
 } from "@mui/material";
-import ExpandMoreIcon from "@mui/icons-material/ExpandMore";
 import { Link as RouterLink, useParams } from "react-router-dom";
 
 import {
   ReportPayload,
   TraceDetail,
   fetchNineQuestionTrace,
-  fetchNineQuestionsReport,
   fetchNineQuestionDetail,
   getQuestionDisplayLabel,
   getNineQuestionIntro,
@@ -48,7 +43,7 @@ import {
   Q5PreprocessedEvidence,
   Q5WhatAmIAllowedToDoInferenceView,
   Q6PreprocessedEvidence,
-  Q6ForbiddenZoneInferenceView,
+  Q6ConsequenceInferenceView,
   Q7PreprocessedEvidence,
   Q7AlternativeStrategyInferenceView,
   Q8PreprocessedEvidence,
@@ -122,10 +117,7 @@ export default function NineQuestionDetailPage() {
   const q1Inference = question.question_id === "q1" ? question.inference_result || traceDetail?.inference_result : null;
   const q2Evidence = question.question_id === "q2" ? question.preprocessed_evidence || traceDetail?.preprocessed_evidence : null;
   const q2Inference = question.question_id === "q2" ? question.inference_result || traceDetail?.inference_result : null;
-  const llmTracePayload =
-    question.question_id === "q1" || question.question_id === "q2" || question.question_id === "q8" || question.question_id === "q9"
-      ? question.llm_trace_payload || traceDetail?.llm_trace_payload
-      : null;
+  const llmTracePayload = question.llm_trace_payload || traceDetail?.llm_trace_payload || null;
   const q3Evidence = question.question_id === "q3" ? question.preprocessed_evidence || traceDetail?.preprocessed_evidence : null;
   const q3Inference = question.question_id === "q3" ? question.inference_result || traceDetail?.inference_result : null;
   const q4Evidence = question.question_id === "q4" ? question.preprocessed_evidence || traceDetail?.preprocessed_evidence : null;
@@ -235,7 +227,7 @@ export default function NineQuestionDetailPage() {
               inference={q3Inference as Q3WhatDoIHaveInferenceView}
               providerName={question.provider_name || traceDetail?.provider_name || null}
               elapsedMs={0}
-              trace={question.llm_trace_payload || traceDetail?.llm_trace_payload}
+              trace={undefined}
             />
           ) : question.question_id === "q4" && q4Evidence ? (
             <Q4EvidencePanel
@@ -254,7 +246,7 @@ export default function NineQuestionDetailPage() {
           ) : question.question_id === "q6" && q6Evidence ? (
             <Q6EvidencePanel
               evidence={q6Evidence as Q6PreprocessedEvidence}
-              inference={q6Inference as Q6ForbiddenZoneInferenceView}
+              inference={q6Inference as Q6ConsequenceInferenceView}
               providerName={question.provider_name || traceDetail?.provider_name || null}
               elapsedMs={0}
             />
@@ -297,64 +289,7 @@ export default function NineQuestionDetailPage() {
         </CardContent>
       </Card>
 
-      {question.question_id === "q1" || question.question_id === "q2" || question.question_id === "q8" || question.question_id === "q9" ? (
-        <LLMTracePanel trace={llmTracePayload} />
-      ) : (
-      <Card variant="outlined">
-        <CardContent>
-          <Typography variant="h6" gutterBottom>
-            调用链路溯源 (Trace Chain)
-          </Typography>
-          <Divider sx={{ mb: 2 }} />
-          <Stack spacing={2}>
-            <Accordion defaultExpanded>
-              <AccordionSummary expandIcon={<ExpandMoreIcon />}>
-                <Typography variant="subtitle2">{t("nineQuestions.promptOriginal")}</Typography>
-              </AccordionSummary>
-              <AccordionDetails>
-                <Box
-                  component="pre"
-                  sx={{
-                    m: 0,
-                    p: 2,
-                    bgcolor: "#1e1e1e",
-                    color: "#cecece",
-                    borderRadius: 1,
-                    overflow: "auto",
-                    whiteSpace: "pre-wrap",
-                    fontSize: "0.85rem",
-                  }}
-                >
-                  <code>{traceDetail?.prompt || "No prompt available"}</code>
-                </Box>
-              </AccordionDetails>
-            </Accordion>
-
-            <Accordion>
-              <AccordionSummary expandIcon={<ExpandMoreIcon />}>
-                <Typography variant="subtitle2">{t("nineQuestions.contextOriginal")}</Typography>
-              </AccordionSummary>
-              <AccordionDetails>
-                <Box component="pre" sx={{ m: 0, p: 2, bgcolor: "action.hover", borderRadius: 1, overflow: "auto" }}>
-                  <code>{JSON.stringify(traceDetail?.context || {}, null, 2)}</code>
-                </Box>
-              </AccordionDetails>
-            </Accordion>
-
-            <Accordion>
-              <AccordionSummary expandIcon={<ExpandMoreIcon />}>
-                <Typography variant="subtitle2">{t("nineQuestions.resultOriginal")}</Typography>
-              </AccordionSummary>
-              <AccordionDetails>
-                <Box component="pre" sx={{ m: 0, p: 2, bgcolor: "action.hover", borderRadius: 1, overflow: "auto" }}>
-                  <code>{JSON.stringify(traceDetail?.result || {}, null, 2)}</code>
-                </Box>
-              </AccordionDetails>
-            </Accordion>
-          </Stack>
-        </CardContent>
-      </Card>
-      )}
+      <LLMTracePanel trace={llmTracePayload} />
     </Box>
   );
 }

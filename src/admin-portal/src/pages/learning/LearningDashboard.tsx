@@ -13,6 +13,8 @@ import {
   Typography,
 } from "@mui/material";
 import { DataGrid, type GridColDef } from "@mui/x-data-grid";
+import ArticleIcon from "@mui/icons-material/Article";
+import { Play } from "lucide-react";
 import { useCallback, useEffect, useState } from "react";
 import { Link as RouterLink } from "react-router-dom";
 import { FIXED_LEARNING_QUESTIONS } from "../shared/fixedReflectionLearningQuestions";
@@ -49,6 +51,23 @@ type LearningHistoryResponse = {
   total_pages: number;
 };
 
+type LearningMaintenancePayload = {
+  started: boolean;
+  forced: boolean;
+  trace_id: string;
+  used_memory_count: number;
+  used_reflection_count: number;
+  deleted_entry_count: number;
+  summary: string;
+};
+
+function formatLearningTime(value: string): string {
+  if (!value) return "-";
+  const parsed = new Date(value);
+  if (Number.isNaN(parsed.getTime())) return value;
+  return parsed.toLocaleString();
+}
+
 export default function LearningDashboard() {
   const { t } = useTranslation();
   const [plan, setPlan] = useState<{ directions: PlanDirection[]; redlines: { zh: string; en: string } } | null>(
@@ -59,7 +78,9 @@ export default function LearningDashboard() {
   const [error, setError] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);
   const [historyLoading, setHistoryLoading] = useState(false);
+  const [maintenanceLoading, setMaintenanceLoading] = useState(false);
   const [lastRun, setLastRun] = useState<string | null>(null);
+  const [lastMaintenance, setLastMaintenance] = useState<LearningMaintenancePayload | null>(null);
   const [paginationModel, setPaginationModel] = useState({ page: 0, pageSize: 25 });
   const [rowCount, setRowCount] = useState(0);
 
@@ -134,8 +155,46 @@ export default function LearningDashboard() {
     }
   };
 
+  const forceAutoOrganize = async () => {
+    setMaintenanceLoading(true);
+    setError(null);
+    setLastMaintenance(null);
+    try {
+      const res = await fetch("/api/web/learning/maintenance/trigger", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ force: true }),
+      });
+      const payload = await res.json().catch(() => ({}));
+      if (!res.ok) {
+        const detail = payload?.detail;
+        const message =
+          typeof detail === "string"
+            ? detail
+            : detail?.operator_message || detail?.message || t("learning.forceAutoOrganizeFailed");
+        throw new Error(message);
+      }
+      setLastMaintenance(payload as LearningMaintenancePayload);
+      setLastRun(`maintenance trace=${payload.trace_id}`);
+      if (paginationModel.page === 0) {
+        await loadHistory(0, paginationModel.pageSize);
+      } else {
+        setPaginationModel((current) => ({ ...current, page: 0 }));
+      }
+    } catch (e) {
+      setError(e instanceof Error ? e.message : t("learning.forceAutoOrganizeFailed"));
+    } finally {
+      setMaintenanceLoading(false);
+    }
+  };
+
   const columns: GridColDef[] = [
-    { field: "timestamp", headerName: t("learning.time"), width: 220 },
+    {
+      field: "timestamp",
+      headerName: t("learning.time"),
+      width: 220,
+      renderCell: (p) => formatLearningTime(String(p.value || "")),
+    },
     { field: "kind", headerName: t("learning.kind"), width: 140 },
     { field: "direction", headerName: t("learning.direction"), width: 180 },
     {
@@ -197,14 +256,47 @@ export default function LearningDashboard() {
 
   return (
     <Stack spacing={2}>
-      <Typography variant="h5">{t("learning.title")}</Typography>
-      <Typography variant="body2" color="text.secondary">
-        {t("learning.subtitle")}
-      </Typography>
+      <Stack direction={{ xs: "column", md: "row" }} justifyContent="space-between" spacing={2}>
+        <Box>
+          <Typography variant="h5">{t("learning.title")}</Typography>
+          <Typography variant="body2" color="text.secondary">
+            {t("learning.subtitle")}
+          </Typography>
+        </Box>
+        <Stack direction="row" spacing={1} useFlexGap flexWrap="wrap">
+          <Button
+            variant="contained"
+            startIcon={<Play size={16} />}
+            disabled={maintenanceLoading}
+            onClick={() => void forceAutoOrganize()}
+          >
+            {maintenanceLoading ? t("common.processing") : t("learning.forceAutoOrganize")}
+          </Button>
+          <Button
+            component={RouterLink}
+            to="/console/module-logs/learning"
+            variant="outlined"
+            startIcon={<ArticleIcon />}
+          >
+            {t("moduleLogs.view")}
+          </Button>
+        </Stack>
+      </Stack>
 
       {error ? (
         <Alert severity="error" data-testid="learning-error">
           {error}
+        </Alert>
+      ) : null}
+
+      {lastMaintenance ? (
+        <Alert severity="success" variant="outlined">
+          <Stack direction="row" spacing={1} useFlexGap flexWrap="wrap" alignItems="center">
+            <Typography variant="body2">{lastMaintenance.summary}</Typography>
+            <Chip size="small" label={`trace=${lastMaintenance.trace_id}`} />
+            <Chip size="small" label={`memory=${lastMaintenance.used_memory_count}`} />
+            <Chip size="small" label={`reflection=${lastMaintenance.used_reflection_count}`} />
+          </Stack>
         </Alert>
       ) : null}
 

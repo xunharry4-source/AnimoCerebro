@@ -37,6 +37,7 @@ import NineQuestionSectionBoundary from "../../../components/NineQuestionSection
 import NineQuestionRawPayloadCard from "../../../components/NineQuestionRawPayloadCard";
 import NineQuestionWorkflowNavButton from "../../../components/NineQuestionWorkflowNavButton";
 import NineQuestionIntegrationStatusCard from "../../../components/NineQuestionIntegrationStatusCard";
+import NineQuestionAnswerTable from "../../../components/NineQuestionAnswerTable";
 import { sanitizeQ1Evidence, sanitizeQ1Inference } from "../detailSafeData";
 
 // Maps HTTP error context → human-readable guidance
@@ -266,6 +267,8 @@ export default function Q1Detail() {
           <Box sx={{ mt: 1 }}>
             runtime: {String(sourceSummary.physical_and_environment || "unknown")}
           </Box>
+          <Box>workspace: {String(sourceSummary.workspace_root || "unknown")}</Box>
+          <Box>access_policy: {String(sourceSummary.workspace_access_policy || "unknown")}</Box>
           <Box>structure: {String(sourceSummary.workspace_structure || "unknown")}</Box>
           <Box>structure_source: {String(sourceSummary.structure_source || "unknown")}</Box>
           <Box>sampling: {String(sourceSummary.workspace_content_sampling || "unknown")}</Box>
@@ -278,6 +281,7 @@ export default function Q1Detail() {
           Q1 当前只拿到了部分分区数据，页面已按可用结果降级展示。
         </Alert>
       ) : null}
+      <NineQuestionAnswerTable questionId={qId} inference={inference} result={rawPayload?.result} />
       <Typography variant="h6" sx={{ mb: 1, fontWeight: "bold" }}>
         Q1 数据详情
       </Typography>

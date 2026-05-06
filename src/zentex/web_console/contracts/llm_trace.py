@@ -31,6 +31,7 @@ class LLMTracePayload(BaseModel):
     elapsed_ms: Optional[int] = None
     error_type: Optional[str] = None
     error_message: Optional[str] = None
+    invocations: list[dict[str, Any]] = Field(default_factory=list)
 
 
 LLMTokenUsagePayload.model_rebuild()

@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from pathlib import Path
+
 from zentex.common.prompt_upgrade_contract import (
     ModulePromptUpgradeContract,
     build_section_policy,
@@ -23,7 +25,7 @@ def _build_simple_decomposition_contract() -> ModulePromptUpgradeContract:
     return ModulePromptUpgradeContract(
         prompt_id="tasks.core.simple_decomposition",
         module_id="tasks.core",
-        prompt_file_path="/Users/harry/Documents/git/AnimoCerebro-V2/src/zentex/tasks/core/simple_llm_prompt.py",
+        prompt_file_path=str(Path(__file__).resolve().with_name("simple_llm_prompt.py")),
         prompt_builder_name="build_simple_decomposition_request",
         prompt_builder_symbol="zentex.tasks.core.simple_llm_prompt.build_simple_decomposition_request",
         target_component="tasks.core.simple_decomposition.prompt",
@@ -56,7 +58,7 @@ def _build_semantic_decomposition_contract() -> ModulePromptUpgradeContract:
     return ModulePromptUpgradeContract(
         prompt_id="tasks.core.semantic_decomposition",
         module_id="tasks.core",
-        prompt_file_path="/Users/harry/Documents/git/AnimoCerebro-V2/src/zentex/tasks/core/semantic_kernel_llm_prompt.py",
+        prompt_file_path=str(Path(__file__).resolve().with_name("semantic_kernel_llm_prompt.py")),
         prompt_builder_name="build_semantic_kernel_request",
         prompt_builder_symbol="zentex.tasks.core.semantic_kernel_llm_prompt.build_semantic_kernel_request",
         target_component="tasks.core.semantic_decomposition.prompt",
@@ -82,7 +84,7 @@ def _build_semantic_analysis_contract() -> ModulePromptUpgradeContract:
     return ModulePromptUpgradeContract(
         prompt_id="tasks.core.semantic_analysis",
         module_id="tasks.core",
-        prompt_file_path="/Users/harry/Documents/git/AnimoCerebro-V2/src/zentex/tasks/core/semantic_kernel_llm_prompt.py",
+        prompt_file_path=str(Path(__file__).resolve().with_name("semantic_kernel_llm_prompt.py")),
         prompt_builder_name="build_semantic_analysis_request",
         prompt_builder_symbol="zentex.tasks.core.semantic_kernel_llm_prompt.build_semantic_analysis_request",
         target_component="tasks.core.semantic_analysis.prompt",

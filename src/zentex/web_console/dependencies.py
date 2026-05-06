@@ -238,7 +238,17 @@ def get_temporal_engine(request: Request) -> Any:
 
 def get_conflict_engine(request: Request) -> Any:
     """Returns CognitiveConflictEngine (modern first)."""
-    return _get_state_or_kernel_service(request, "conflict_engine")
+    svc = _get_app_state_service(request, "conflict_engine")
+    if svc is not None:
+        return svc
+    facade = get_kernel_service_facade(request)
+    active_sessions = facade.list_active_sessions()
+    session_id = active_sessions[0] if active_sessions else "zentex-default-session"
+    kernel = getattr(facade, "_get_kernel_service", lambda: None)()
+    get_for_session = getattr(kernel, "get_conflict_engine", None)
+    if callable(get_for_session):
+        return get_for_session(session_id)
+    return _get_legacy_kernel_attr(request, "conflict_engine")
 
 
 def get_simulation_engine(request: Request) -> Any:

@@ -90,7 +90,7 @@ type OverviewPayload = {
 type CognitivePluginRow = {
   tool_id: string;
   plugin_kind: string;
-  status: "candidate" | "sandbox_verified" | "active" | "degraded" | "revoked";
+  status: string;
   health_status: string | null;
   usage_count: number;
   failure_count: number;
@@ -168,7 +168,18 @@ type SnackbarState = {
   message: string;
 };
 
+type SectionErrors = {
+  plugins?: string;
+  conflicts?: string;
+  interactionMind?: string;
+};
+
 type StreamConnectionState = "connecting" | "connected" | "reconnecting" | "disconnected";
+
+async function buildHttpError(response: Response, code: string): Promise<Error> {
+  const body = await response.text();
+  return new Error(`${code}: HTTP ${response.status}${body ? ` ${body.slice(0, 300)}` : ""}`);
+}
 
 function buildStreamUrl(lastEntryId: string | null): string {
   const search = lastEntryId ? `?last_entry_id=${encodeURIComponent(lastEntryId)}` : "";
@@ -219,6 +230,7 @@ export default function RealtimeDashboard() {
   const [eventStream, setEventStream] = useState<TranscriptEvent[]>([]);
   const [streamError, setStreamError] = useState<string | null>(null);
   const [loadError, setLoadError] = useState<string | null>(null);
+  const [sectionErrors, setSectionErrors] = useState<SectionErrors>({});
   const [dialogOpen, setDialogOpen] = useState(false);
   const [reason, setReason] = useState("");
   const [pendingAction, setPendingAction] = useState<InterventionAction>("pause");
@@ -244,7 +256,7 @@ export default function RealtimeDashboard() {
       headers: { Accept: "application/json" },
     });
     if (!response.ok) {
-      throw new Error("overview_failed");
+      throw await buildHttpError(response, "overview_failed");
     }
     const payload = (await response.json()) as OverviewPayload;
     setOverview(payload);
@@ -257,10 +269,26 @@ export default function RealtimeDashboard() {
       headers: { Accept: "application/json" },
     });
     if (!response.ok) {
-      throw new Error("plugins_failed");
+      throw await buildHttpError(response, "plugins_failed");
     }
-    const payload = (await response.json()) as CognitivePluginRow[];
-    setPluginRows(payload);
+    const payload = (await response.json()) as Array<CognitivePluginRow & {
+      lifecycle_status?: string;
+      operational_status?: string;
+    }>;
+    if (!Array.isArray(payload)) {
+      throw new Error("plugins_failed: response is not an array");
+    }
+    setPluginRows(
+      payload.map((row) => ({
+        ...row,
+        status: row.status || row.lifecycle_status || row.operational_status || "unknown",
+        health_status: row.health_status || "unknown",
+        usage_count: Number(row.usage_count || 0),
+        failure_count: Number(row.failure_count || 0),
+        rollback_conditions: Array.isArray(row.rollback_conditions) ? row.rollback_conditions : [],
+        trigger_conditions: Array.isArray(row.trigger_conditions) ? row.trigger_conditions : [],
+      })),
+    );
   };
 
   const loadConflicts = async (): Promise<void> => {
@@ -269,9 +297,12 @@ export default function RealtimeDashboard() {
       headers: { Accept: "application/json" },
     });
     if (!response.ok) {
-      throw new Error("conflicts_failed");
+      throw await buildHttpError(response, "conflicts_failed");
     }
     const payload = (await response.json()) as { conflicts: CognitiveConflict[] };
+    if (!Array.isArray(payload.conflicts)) {
+      throw new Error("conflicts_failed: response.conflicts is not an array");
+    }
     setConflicts(payload.conflicts);
   };
 
@@ -281,7 +312,7 @@ export default function RealtimeDashboard() {
       headers: { Accept: "application/json" },
     });
     if (!response.ok) {
-      throw new Error("interaction_mind_failed");
+      throw await buildHttpError(response, "interaction_mind_failed");
     }
     const payload = (await response.json()) as { state: InteractionMindState };
     // 如果 state 是空对象或没有 entity_id，视为无效数据
@@ -297,10 +328,25 @@ export default function RealtimeDashboard() {
       setEventStream(recentEvents.slice(0, 50));
       lastEntryIdRef.current = recentEvents[0]?.entry_id || null;
       const interactionEntityId = overviewPayload.session?.session_id || "web-console";
-      await Promise.allSettled([loadPlugins(), loadConflicts(), loadInteractionMind(interactionEntityId)]);
+      const settled = await Promise.allSettled([
+        loadPlugins(),
+        loadConflicts(),
+        loadInteractionMind(interactionEntityId),
+      ]);
+      const nextSectionErrors: SectionErrors = {};
+      if (settled[0].status === "rejected") {
+        nextSectionErrors.plugins = settled[0].reason instanceof Error ? settled[0].reason.message : String(settled[0].reason);
+      }
+      if (settled[1].status === "rejected") {
+        nextSectionErrors.conflicts = settled[1].reason instanceof Error ? settled[1].reason.message : String(settled[1].reason);
+      }
+      if (settled[2].status === "rejected") {
+        nextSectionErrors.interactionMind = settled[2].reason instanceof Error ? settled[2].reason.message : String(settled[2].reason);
+      }
+      setSectionErrors(nextSectionErrors);
       setLoadError(null);
-    } catch {
-      setLoadError(formatUserFacingError(locale));
+    } catch (error) {
+      setLoadError(error instanceof Error ? error.message : formatUserFacingError(locale));
     } finally {
       setRefreshing(false);
     }
@@ -581,7 +627,16 @@ export default function RealtimeDashboard() {
 
         {loadError ? (
           <Alert severity="error" data-testid="overview-load-error">
-            {t("dashboard.backendDisconnected")}
+            {t("dashboard.backendDisconnected")} {loadError}
+          </Alert>
+        ) : null}
+
+        {Object.keys(sectionErrors).length > 0 ? (
+          <Alert severity="error" data-testid="dashboard-section-load-error">
+            {t("dashboard.sectionLoadFailed")}{" "}
+            {Object.entries(sectionErrors)
+              .map(([section, message]) => `${t(`dashboard.sections.${section}`)}: ${message}`)
+              .join(inlineSeparator)}
           </Alert>
         ) : null}
 

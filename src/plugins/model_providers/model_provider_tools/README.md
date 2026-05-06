@@ -37,7 +37,7 @@
 
 本插件的默认 provider 选择和 provider 细节都来自：
 
-- [config/provider_tools.yml](/Users/harry/Documents/git/AnimoCerebro-V2/config/provider_tools.yml)
+- [config/provider_tools.yml](config/provider_tools.yml)
 
 其中：
 - `default_provider` 决定未显式传 `provider_key` 时默认用哪个 provider

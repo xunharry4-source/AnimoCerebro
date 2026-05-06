@@ -39,7 +39,7 @@ class ToolInvocationRequest(BaseModel):
     prompt: str
     system_prompt: str | None = None
     temperature: float = 0.2
-    max_output_tokens: int = 1024
+    max_output_tokens: int | None = None
     metadata: dict[str, Any] = Field(default_factory=dict)
 
 

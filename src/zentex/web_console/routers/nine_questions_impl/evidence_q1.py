@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 """
-Q1 (我在哪) evidence building and extraction.
+Q1 (我在那) evidence building and extraction.
 
 Contains functions for building Q1 preprocessed evidence from context snapshots
 and extracting Q1 inference results from tool outputs.

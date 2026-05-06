@@ -36,8 +36,6 @@ class WorkspaceStore:
                     path TEXT NOT NULL UNIQUE,
                     description TEXT,
                     is_default BOOLEAN DEFAULT 0,
-                    role TEXT,
-                    role_description TEXT,
                     forbidden_actions TEXT,
                     task_goals TEXT,
                     created_at TEXT NOT NULL,
@@ -48,12 +46,46 @@ class WorkspaceStore:
 
             cursor = self._conn.execute("PRAGMA table_info(workspaces)")
             columns = {row[1] for row in cursor.fetchall()}
-            if "role" not in columns:
-                logger.info("Migrating: Adding 'role' column to workspaces table")
-                self._conn.execute("ALTER TABLE workspaces ADD COLUMN role TEXT")
-            if "role_description" not in columns:
-                logger.info("Migrating: Adding 'role_description' column to workspaces table")
-                self._conn.execute("ALTER TABLE workspaces ADD COLUMN role_description TEXT")
+            if "role" in columns or "role_description" in columns:
+                logger.info("Migrating: Rebuilding workspaces table without role fields")
+                self._conn.execute("DROP TABLE IF EXISTS workspaces_new")
+                self._conn.execute(
+                    """
+                    CREATE TABLE IF NOT EXISTS workspaces_new (
+                        id INTEGER PRIMARY KEY AUTOINCREMENT,
+                        name TEXT NOT NULL UNIQUE,
+                        path TEXT NOT NULL UNIQUE,
+                        description TEXT,
+                        is_default BOOLEAN DEFAULT 0,
+                        forbidden_actions TEXT,
+                        task_goals TEXT,
+                        created_at TEXT NOT NULL,
+                        updated_at TEXT NOT NULL
+                    )
+                    """
+                )
+                forbidden_actions_expr = (
+                    "forbidden_actions" if "forbidden_actions" in columns else "NULL"
+                )
+                task_goals_expr = "task_goals" if "task_goals" in columns else "NULL"
+                self._conn.execute(
+                    """
+                    INSERT INTO workspaces_new
+                    (id, name, path, description, is_default, forbidden_actions, task_goals, created_at, updated_at)
+                    SELECT id, name, path, description, is_default, {forbidden_actions_expr}, {task_goals_expr}, created_at, updated_at
+                    FROM workspaces
+                    """.format(
+                        forbidden_actions_expr=forbidden_actions_expr,
+                        task_goals_expr=task_goals_expr,
+                    )
+                )
+                self._conn.execute("DROP TABLE workspaces")
+                self._conn.execute("ALTER TABLE workspaces_new RENAME TO workspaces")
+                self._conn.execute("CREATE INDEX IF NOT EXISTS idx_workspace_default ON workspaces(is_default)")
+                self._conn.execute("CREATE INDEX IF NOT EXISTS idx_workspace_path ON workspaces(path)")
+                cursor = self._conn.execute("PRAGMA table_info(workspaces)")
+                columns = {row[1] for row in cursor.fetchall()}
+
             if "forbidden_actions" not in columns:
                 logger.info("Migrating: Adding 'forbidden_actions' column to workspaces table")
                 self._conn.execute("ALTER TABLE workspaces ADD COLUMN forbidden_actions TEXT")
@@ -75,16 +107,14 @@ class WorkspaceStore:
                 cursor = self._conn.execute(
                     """
                     INSERT INTO workspaces
-                    (name, path, description, is_default, role, role_description, forbidden_actions, task_goals, created_at, updated_at)
-                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    (name, path, description, is_default, forbidden_actions, task_goals, created_at, updated_at)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?)
                     """,
                     (
                         config.name,
                         config.path,
                         config.description,
                         1 if config.is_default else 0,
-                        config.role,
-                        config.role_description,
                         config.forbidden_actions,
                         config.task_goals,
                         self._get_now(),
@@ -131,7 +161,7 @@ class WorkspaceStore:
             self._conn.execute(
                 """
                 UPDATE workspaces
-                SET name = ?, path = ?, description = ?, is_default = ?, role = ?, role_description = ?, forbidden_actions = ?, task_goals = ?, updated_at = ?
+                SET name = ?, path = ?, description = ?, is_default = ?, forbidden_actions = ?, task_goals = ?, updated_at = ?
                 WHERE id = ?
                 """,
                 (
@@ -139,8 +169,6 @@ class WorkspaceStore:
                     config.path,
                     config.description,
                     1 if config.is_default else 0,
-                    config.role,
-                    config.role_description,
                     config.forbidden_actions,
                     config.task_goals,
                     self._get_now(),
@@ -187,8 +215,6 @@ class WorkspaceStore:
             path=row["path"],
             description=row["description"],
             is_default=bool(row["is_default"]),
-            role=row["role"],
-            role_description=row["role_description"],
             forbidden_actions=row["forbidden_actions"],
             task_goals=row["task_goals"],
             created_at=datetime.fromisoformat(row["created_at"]),

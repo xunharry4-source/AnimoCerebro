@@ -41,6 +41,7 @@ class McpServerConfig(BaseModel):
     auth_mode: Literal["none", "bearer", "api_key", "oauth_pkce"] = "none"
     tool_bindings: List[McpToolBindingConfig] = Field(default_factory=list)
     help_doc_url: Optional[str] = None
+    project_doc_url: Optional[str] = None
     documentation_learning_required: bool = True
 
 class McpToolDescriptor(BaseModel):
@@ -84,6 +85,8 @@ class McpServerRuntimeState(BaseModel):
     protocol_version: str = "2024-11-05"
     scope: List[str] = Field(default_factory=lambda: ["read"])
     auth_mode: str = "none"
+    help_doc_url: Optional[str] = None
+    project_doc_url: Optional[str] = None
 
     @property
     def lifecycle_status(self) -> str:

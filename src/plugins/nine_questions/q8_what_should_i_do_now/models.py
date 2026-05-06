@@ -13,6 +13,8 @@ class ObjectiveProfile(BaseModel):
     model_config = ConfigDict(extra="forbid", frozen=True)
 
     current_mission: str = Field(..., description="The highly condensed core focus for now.")
+    mission_rationale: str = Field(default="", description="How the objective serves the upstream strategic mission.")
+    basis_and_traceability: Dict[str, Any] = Field(default_factory=dict, description="Q1/Q2/Q5/Q6/Q7 isolated traceability arrays.")
     primary_objectives: List[str] = Field(default_factory=list, description="Top priority objectives.")
     secondary_objectives: List[str] = Field(default_factory=list, description="Lower priority or parallel objectives.")
     completion_conditions: List[str] = Field(default_factory=list, description="Conditions for success.")
@@ -29,7 +31,7 @@ class AutonomousTaskQueue(BaseModel):
     """
     model_config = ConfigDict(extra="forbid", frozen=True)
 
-    next_self_tasks: List[Dict[str, Any]] = Field(..., description="Tasks allowed within Q4/Q5 bounds.")
+    next_self_tasks: List[Dict[str, Any]] = Field(..., description="Tasks allowed within validated permission and redline bounds.")
     blocked_self_tasks: List[Dict[str, Any]] = Field(..., description="Tasks currently blocked, with specific reasons (e.g., waiting for confirmation, lack of auth).")
     proactive_actions: List[Dict[str, Any]] = Field(..., description="Suggested proactive or exploratory steps.")
 

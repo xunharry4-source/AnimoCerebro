@@ -20,6 +20,11 @@ import AddIcon from "@mui/icons-material/Add";
 import HealthAndSafetyIcon from "@mui/icons-material/HealthAndSafety";
 import PlayArrowIcon from "@mui/icons-material/PlayArrow";
 import DescriptionIcon from "@mui/icons-material/Description";
+import PowerSettingsNewIcon from "@mui/icons-material/PowerSettingsNew";
+import BlockIcon from "@mui/icons-material/Block";
+import ArticleIcon from "@mui/icons-material/Article";
+import { Link as RouterLink } from "react-router-dom";
+import { Trash2 } from "lucide-react";
 
 type ConnectorType = "api_app" | "desktop_app" | "browser_app" | "file_app" | "service_bridge" | "sdk_app";
 
@@ -60,6 +65,7 @@ export default function ExternalConnectorCenter() {
   const [manifestError, setManifestError] = useState<string | null>(null);
   const [manifests, setManifests] = useState<ManifestCard[]>([]);
   const [openRegister, setOpenRegister] = useState(false);
+  const [deletingConnectorId, setDeletingConnectorId] = useState<string | null>(null);
   const [selected, setSelected] = useState<ConnectorRecord | null>(null);
   const [result, setResult] = useState<string | null>(null);
   const [form, setForm] = useState({
@@ -181,6 +187,47 @@ export default function ExternalConnectorCenter() {
     setResult(JSON.stringify(payload, null, 2));
   };
 
+  const updateConnectorActivation = async (connector: ConnectorRecord, action: "activate" | "disable") => {
+    const response = await fetch(`/api/web/external-connectors/${encodeURIComponent(connector.connector_id)}/${action}`, {
+      method: "POST",
+    });
+    const payload = await response.json();
+    if (!response.ok) {
+      setError(payload?.detail?.operator_message || `${action} failed`);
+      return;
+    }
+    setResult(JSON.stringify(payload, null, 2));
+    await loadConnectors();
+  };
+
+  const deleteConnectorRegistration = async (connector: ConnectorRecord) => {
+    if (!window.confirm(t("externalConnectors.deleteConfirm", { name: connector.display_name || connector.connector_id }))) {
+      return;
+    }
+    setDeletingConnectorId(connector.connector_id);
+    setError(null);
+    try {
+      const response = await fetch(`/api/web/external-connectors/${encodeURIComponent(connector.connector_id)}`, {
+        method: "DELETE",
+      });
+      const payload = await response.json().catch(() => ({}));
+      if (!response.ok) {
+        const detail = payload?.detail;
+        const message =
+          typeof detail === "string"
+            ? detail
+            : detail?.operator_message || detail?.message || t("externalConnectors.deleteFailed");
+        throw new Error(message);
+      }
+      setSelected((current) => current && current.connector_id === connector.connector_id ? null : current);
+      await loadConnectors();
+    } catch (err) {
+      setError(err instanceof Error ? err.message : t("externalConnectors.deleteFailed"));
+    } finally {
+      setDeletingConnectorId(null);
+    }
+  };
+
   const columns: GridColDef[] = [
     { field: "connector_id", headerName: t("externalConnectors.connectorId"), flex: 1.2, minWidth: 180 },
     { field: "display_name", headerName: t("externalConnectors.name"), flex: 1, minWidth: 160 },
@@ -218,15 +265,30 @@ export default function ExternalConnectorCenter() {
     {
       field: "actions",
       headerName: t("common.actions"),
-      minWidth: 210,
+      minWidth: 470,
       sortable: false,
       renderCell: (params) => (
         <Stack direction="row" spacing={1}>
+          <Button size="small" startIcon={<PowerSettingsNewIcon />} onClick={() => void updateConnectorActivation(params.row, "activate")}>
+            激活
+          </Button>
+          <Button size="small" startIcon={<BlockIcon />} onClick={() => void updateConnectorActivation(params.row, "disable")}>
+            关闭
+          </Button>
           <Button size="small" startIcon={<HealthAndSafetyIcon />} onClick={() => runHealth(params.row)}>
             {t("externalConnectors.health")}
           </Button>
           <Button size="small" startIcon={<PlayArrowIcon />} onClick={() => setSelected(params.row)}>
             {t("externalConnectors.test")}
+          </Button>
+          <Button
+            size="small"
+            color="error"
+            startIcon={<Trash2 size={16} />}
+            disabled={deletingConnectorId === params.row.connector_id}
+            onClick={() => void deleteConnectorRegistration(params.row)}
+          >
+            {t("externalConnectors.delete")}
           </Button>
         </Stack>
       ),
@@ -247,9 +309,19 @@ export default function ExternalConnectorCenter() {
               {t("externalConnectors.subtitle")}
             </Typography>
           </Box>
-          <Button variant="contained" startIcon={<AddIcon />} onClick={() => setOpenRegister(true)}>
-            {t("externalConnectors.register")}
-          </Button>
+          <Stack direction="row" spacing={1}>
+            <Button
+              component={RouterLink}
+              to="/console/module-logs/external-connectors"
+              variant="outlined"
+              startIcon={<ArticleIcon />}
+            >
+              {t("moduleLogs.view")}
+            </Button>
+            <Button variant="contained" startIcon={<AddIcon />} onClick={() => setOpenRegister(true)}>
+              {t("externalConnectors.register")}
+            </Button>
+          </Stack>
         </Stack>
 
         <Alert severity="info" variant="outlined">

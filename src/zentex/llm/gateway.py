@@ -19,6 +19,16 @@ from zentex.foundation.specs.model_provider import (
     ModelProviderTimeoutError,
 )
 
+
+def _audit_dump(value: Any) -> str:
+    if isinstance(value, str):
+        return value
+    try:
+        return json.dumps(value, ensure_ascii=False, sort_keys=True, default=str)
+    except Exception:
+        return str(value)
+
+
 @dataclass(frozen=True)
 class LLMTokenUsage:
     input_tokens: int = 0
@@ -29,14 +39,47 @@ class LLMTokenUsage:
     def from_optional_mapping(cls, payload: Dict[str, Optional[Any]]) -> "LLMTokenUsage":
         if not payload:
             return cls()
-        input_tokens = int(payload.get("input_tokens") or 0)
-        output_tokens = int(payload.get("output_tokens") or 0)
-        total_tokens = int(payload.get("total_tokens") or (input_tokens + output_tokens))
+        input_tokens = cls._first_int(
+            payload,
+            "input_tokens",
+            "prompt_tokens",
+            "prompt_token_count",
+            "promptTokenCount",
+            "input_token_count",
+            "inputTokenCount",
+        )
+        output_tokens = cls._first_int(
+            payload,
+            "output_tokens",
+            "completion_tokens",
+            "candidates_token_count",
+            "candidatesTokenCount",
+            "output_token_count",
+            "outputTokenCount",
+        )
+        total_tokens = cls._first_int(
+            payload,
+            "total_tokens",
+            "total_token_count",
+            "totalTokenCount",
+        ) or (input_tokens + output_tokens)
         return cls(
             input_tokens=max(0, input_tokens),
             output_tokens=max(0, output_tokens),
             total_tokens=max(0, total_tokens),
         )
+
+    @staticmethod
+    def _first_int(payload: Dict[str, Optional[Any]], *keys: str) -> int:
+        for key in keys:
+            value = payload.get(key)
+            if value in (None, ""):
+                continue
+            try:
+                return int(value)
+            except (TypeError, ValueError):
+                continue
+        return 0
 
 
 @dataclass(frozen=True)
@@ -54,6 +97,8 @@ class LLMGateway:
         *,
         default_provider_key: Optional[str] = None,
         tools: Optional[Dict[str, Any]] = None,
+        usage_store: Optional[Any] = None,
+        enable_usage_persistence: bool = True,
     ) -> None:
         from zentex.plugins.service import build_default_provider_tools, get_default_provider_key
         
@@ -69,6 +114,14 @@ class LLMGateway:
         self._input_tokens = 0
         self._output_tokens = 0
         self._provider_stats: Dict[str, Dict[str, int]] = {}
+        self._usage_store = usage_store
+        if self._usage_store is None and enable_usage_persistence:
+            try:
+                from zentex.llm.usage_store import LLMUsageStore
+
+                self._usage_store = LLMUsageStore()
+            except Exception:
+                logger.exception("[LLM GATEWAY] Failed to initialize durable LLM usage store")
 
     @staticmethod
     def _strip_markdown_fence(text: str) -> str:
@@ -128,6 +181,11 @@ class LLMGateway:
         raise ModelProviderParseError("Provider returned non-JSON output that cannot be recovered to a JSON object.")
 
     def stats_snapshot(self) -> Dict[str, int]:
+        if self._usage_store is not None:
+            try:
+                return self._usage_store.stats_snapshot()
+            except Exception:
+                logger.exception("[LLM GATEWAY] Failed to read durable LLM usage stats; falling back to memory")
         with self._lock:
             total = self._input_tokens + self._output_tokens
             return {
@@ -137,7 +195,17 @@ class LLMGateway:
                 "total_tokens": total,
             }
 
-    def _record_usage(self, provider_key: str, usage: LLMTokenUsage) -> None:
+    def _record_usage(
+        self,
+        provider_key: str,
+        model: str,
+        usage: LLMTokenUsage,
+        *,
+        caller_context: Optional[ModelProviderCallerContext],
+        metadata: Optional[Dict[str, Any]],
+        raw_usage: Optional[Dict[str, Any]],
+        call_type: str = "generate_json",
+    ) -> None:
         with self._lock:
             self._request_count += 1
             self._input_tokens += usage.input_tokens
@@ -154,6 +222,25 @@ class LLMGateway:
             p_stats["input_tokens"] += usage.input_tokens
             p_stats["output_tokens"] += usage.output_tokens
             p_stats["total_tokens"] += usage.total_tokens
+        if self._usage_store is not None:
+            try:
+                self._usage_store.record_usage(
+                    provider_key=provider_key,
+                    model=model,
+                    input_tokens=usage.input_tokens,
+                    output_tokens=usage.output_tokens,
+                    total_tokens=usage.total_tokens,
+                    caller_context=caller_context,
+                    metadata=metadata,
+                    raw_usage=raw_usage,
+                    call_type=call_type,
+                )
+            except Exception:
+                logger.exception(
+                    "[LLM GATEWAY] Failed to persist LLM usage event | provider=%s model=%s",
+                    provider_key,
+                    model,
+                )
 
     def invoke_generate_json(
         self,
@@ -165,7 +252,7 @@ class LLMGateway:
         model: Optional[str] = None,
         system_prompt: Optional[str] = None,
         temperature: float = 0.2,
-        max_output_tokens: int = 1024,
+        max_output_tokens: Optional[int] = None,
         metadata: Dict[str, Optional[Any]] = None,
     ) -> LLMGatewayCall:
         selected_provider_key, selected_model = self._resolve_provider_and_model(
@@ -179,6 +266,10 @@ class LLMGateway:
         )
         if not selected_provider_key:
             raise ModelProviderConfigError("provider_key must not be empty")
+        if (metadata or {}).get("output_truncation_forbidden") and max_output_tokens is not None:
+            raise ModelProviderConfigError(
+                "output_truncation_forbidden is set; max_output_tokens must not be provided"
+            )
 
         tool = self._tools.get(selected_provider_key)
         if tool is None:
@@ -190,6 +281,21 @@ class LLMGateway:
             f"Task:\n{prompt}",
             f"Context JSON:\n{rendered_context}",
         ])
+        audit_trace_id = str(getattr(caller_context, "trace_id", "") or (metadata or {}).get("trace_id") or "")
+        audit_source = str(getattr(caller_context, "source_module", "") or "")
+        audit_phase = str(getattr(caller_context, "invocation_phase", "") or "")
+        logger.info(
+            "[LLM AUDIT INPUT] provider=%s model=%s trace=%s source=%s phase=%s system_prompt=%s prompt=%s context=%s metadata=%s",
+            selected_provider_key,
+            selected_model,
+            audit_trace_id,
+            audit_source,
+            audit_phase,
+            system_prompt or "You are a JSON generator.",
+            prompt,
+            rendered_context,
+            _audit_dump(metadata or {}),
+        )
         
         from zentex.plugins.service import ToolInvocationRequest
         invocation = ToolInvocationRequest(
@@ -203,12 +309,45 @@ class LLMGateway:
 
         try:
             response = tool.call(invocation)
+            logger.info(
+                "[LLM AUDIT RAW OUTPUT] provider=%s model=%s trace=%s source=%s phase=%s output=%s raw_response=%s",
+                selected_provider_key,
+                selected_model,
+                audit_trace_id,
+                audit_source,
+                audit_phase,
+                response.output_text,
+                _audit_dump(response.raw_response),
+            )
             usage = LLMTokenUsage.from_optional_mapping(response.usage)
-            self._record_usage(selected_provider_key, usage)
+            self._record_usage(
+                selected_provider_key,
+                selected_model,
+                usage,
+                caller_context=caller_context,
+                metadata=metadata,
+                raw_usage=response.usage,
+            )
 
             try:
                 output = self._parse_json_output(response.output_text)
+                logger.info(
+                    "[LLM AUDIT PARSED OUTPUT] provider=%s model=%s trace=%s source=%s phase=%s output=%s",
+                    selected_provider_key,
+                    selected_model,
+                    audit_trace_id,
+                    audit_source,
+                    audit_phase,
+                    _audit_dump(output),
+                )
             except Exception as exc:
+                invalid_output = response.output_text
+                logger.error(
+                    "[LLM GATEWAY RAW OUTPUT] provider=%s model=%s phase=initial output=%s",
+                    selected_provider_key,
+                    selected_model,
+                    invalid_output,
+                )
                 logger.error(
                     "[LLM GATEWAY] Provider returned non-JSON output | provider=%s model=%s error=%s",
                     selected_provider_key,
@@ -216,8 +355,12 @@ class LLMGateway:
                     str(exc),
                 )
                 last_error: Exception = exc
-                invalid_output = response.output_text
-                for attempt in range(1, 4):
+                repair_attempts_raw = (metadata or {}).get("max_json_repair_attempts", 0)
+                try:
+                    repair_attempts = max(0, min(3, int(repair_attempts_raw)))
+                except Exception:
+                    repair_attempts = 0
+                for attempt in range(1, repair_attempts + 1):
                     repair_prompt = "\n\n".join([
                         "Your previous answer was not valid JSON.",
                         "Return ONLY one valid JSON object that satisfies the original task.",
@@ -227,6 +370,25 @@ class LLMGateway:
                         f"Context JSON:\n{rendered_context}",
                         f"Previous invalid output:\n{invalid_output}",
                     ])
+                    logger.info(
+                        "[LLM AUDIT INPUT] provider=%s model=%s trace=%s source=%s phase=json_repair attempt=%d system_prompt=%s prompt=%s context=%s metadata=%s",
+                        selected_provider_key,
+                        selected_model,
+                        audit_trace_id,
+                        audit_source,
+                        attempt,
+                        system_prompt or "You are a strict JSON generator.",
+                        repair_prompt,
+                        rendered_context,
+                        _audit_dump(
+                            {
+                                **(metadata or {}),
+                                "require_json_format": True,
+                                "json_repair_retry": True,
+                                "json_repair_attempt": attempt,
+                            }
+                        ),
+                    )
                     repair_invocation = ToolInvocationRequest(
                         model=selected_model,
                         prompt=repair_prompt,
@@ -242,9 +404,40 @@ class LLMGateway:
                     )
                     try:
                         repair_response = tool.call(repair_invocation)
+                        logger.info(
+                            "[LLM AUDIT RAW OUTPUT] provider=%s model=%s trace=%s source=%s phase=json_repair attempt=%d output=%s raw_response=%s",
+                            selected_provider_key,
+                            selected_model,
+                            audit_trace_id,
+                            audit_source,
+                            attempt,
+                            repair_response.output_text,
+                            _audit_dump(repair_response.raw_response),
+                        )
                         repair_usage = LLMTokenUsage.from_optional_mapping(repair_response.usage)
-                        self._record_usage(selected_provider_key, repair_usage)
+                        self._record_usage(
+                            selected_provider_key,
+                            selected_model,
+                            repair_usage,
+                            caller_context=caller_context,
+                            metadata={
+                                **(metadata or {}),
+                                "json_repair_retry": True,
+                                "json_repair_attempt": attempt,
+                            },
+                            raw_usage=repair_response.usage,
+                            call_type="generate_json_repair",
+                        )
                         output = self._parse_json_output(repair_response.output_text)
+                        logger.info(
+                            "[LLM AUDIT PARSED OUTPUT] provider=%s model=%s trace=%s source=%s phase=json_repair attempt=%d output=%s",
+                            selected_provider_key,
+                            selected_model,
+                            audit_trace_id,
+                            audit_source,
+                            attempt,
+                            _audit_dump(output),
+                        )
                         response = repair_response
                         usage = repair_usage
                         logger.warning(
@@ -255,12 +448,24 @@ class LLMGateway:
                         )
                         break
                     except Exception as repair_exc:
+                        repair_output = getattr(locals().get("repair_response"), "output_text", invalid_output)
+                        logger.error(
+                            "[LLM GATEWAY RAW OUTPUT] provider=%s model=%s phase=json_repair attempt=%d output=%s",
+                            selected_provider_key,
+                            selected_model,
+                            attempt,
+                            repair_output,
+                        )
                         last_error = repair_exc
-                        invalid_output = getattr(locals().get("repair_response"), "output_text", invalid_output)
+                        invalid_output = repair_output
                 else:
-                    raise ModelProviderParseError(
+                    parse_error = ModelProviderParseError(
                         f"Provider {selected_provider_key} returned non-JSON output and repair failed: {str(last_error)}"
-                    ) from last_error
+                    )
+                    setattr(parse_error, "provider_raw_output", invalid_output)
+                    setattr(parse_error, "provider_key", selected_provider_key)
+                    setattr(parse_error, "model", selected_model)
+                    raise parse_error from last_error
             return LLMGatewayCall(
                 provider_key=selected_provider_key,
                 model=selected_model,
@@ -284,7 +489,7 @@ class LLMGateway:
                 model=selected_model,
                 metadata=metadata or {},
             )
-            logger.error(
+            logger.exception(
                 "[LLM GATEWAY] Provider call failed | provider=%s model=%s category=%s root_type=%s root_message=%s",
                 selected_provider_key,
                 selected_model,
@@ -292,10 +497,45 @@ class LLMGateway:
                 root.__class__.__name__,
                 str(root),
             )
+            logger.error(
+                "[LLM AUDIT FAILURE] provider=%s model=%s trace=%s source=%s phase=%s category=%s input_prompt=%s input_context=%s metadata=%s error_type=%s error_message=%s",
+                selected_provider_key,
+                selected_model,
+                audit_trace_id,
+                audit_source,
+                audit_phase,
+                category,
+                prompt,
+                rendered_context,
+                _audit_dump(metadata or {}),
+                root.__class__.__name__,
+                str(root),
+                exc_info=True,
+            )
             raise categorized_error from exc
 
     def get_aggregated_stats(self) -> Dict[str, Any]:
         """Return global and per-provider stats."""
+        if self._usage_store is not None:
+            try:
+                durable = self._usage_store.aggregated_stats()
+                with self._lock:
+                    error_counts = {
+                        key: int(value.get("error_count", 0))
+                        for key, value in self._provider_stats.items()
+                    }
+                for provider_key, error_count in error_counts.items():
+                    p_stats = durable["providers"].setdefault(provider_key, {
+                        "request_count": 0,
+                        "input_tokens": 0,
+                        "output_tokens": 0,
+                        "total_tokens": 0,
+                        "error_count": 0,
+                    })
+                    p_stats["error_count"] = error_count
+                return durable
+            except Exception:
+                logger.exception("[LLM GATEWAY] Failed to read durable LLM aggregate stats; falling back to memory")
         with self._lock:
             return {
                 "total_request_count": self._request_count,
@@ -361,6 +601,7 @@ class LLMGateway:
     @staticmethod
     def _root_cause(exc: Exception) -> Exception:
         current: Exception = exc
+        previous: Exception = exc
         seen: set[int] = set()
         while True:
             marker = id(current)
@@ -370,6 +611,9 @@ class LLMGateway:
             cause = getattr(current, "__cause__", None) or getattr(current, "__context__", None)
             if not isinstance(cause, Exception):
                 return current
+            if isinstance(cause, RuntimeError) and str(cause) == "no running event loop":
+                return previous
+            previous = cause
             current = cause
 
     @staticmethod

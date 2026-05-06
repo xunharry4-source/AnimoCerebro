@@ -10,7 +10,7 @@ from zentex.plugins.contracts import (
     PluginHealthStatus,
     PluginLifecycleStatus,
 )
-from zentex.tasks.service import task_plugin_normalize_result
+from zentex.tasks import task_plugin_normalize_result
 
 
 class TaskResultNormalizerPlugin(FunctionalPluginSpec):

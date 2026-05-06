@@ -53,10 +53,14 @@ class WebConsoleContainer:
           zombie state.
         """
         if kernel_service is None:
+            from .contracts.kernel_service import AppConfig
             from .kernel_service_impl import DefaultKernelServiceFacade
+            from zentex.kernel.workspace_policy import get_q1_default_analysis_workspace
 
             # Any initialization failure here correctly propagates up
-            kernel_service = DefaultKernelServiceFacade()
+            kernel_service = DefaultKernelServiceFacade(
+                config=AppConfig(default_workspace=str(get_q1_default_analysis_workspace()))
+            )
 
         cls._kernel_service = kernel_service
         cls._initialized = True

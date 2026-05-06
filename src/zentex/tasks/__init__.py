@@ -5,7 +5,23 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional
 
 from zentex.tasks.models import ZentexTask, TaskStatus, TaskType, TaskScope, TaskPriority, SuspendedTask
-from zentex.tasks.service import TaskManagementService
+from zentex.tasks.management.task_management_service import (
+    LLMTaskDecomposerPlugin,
+    PydanticAITaskDecomposerPlugin,
+    TaskAutoLoopScheduler,
+    TaskManagementService,
+    get_service,
+    recover_waiting_confirmation_task,
+    task_plugin_check_constraints,
+    task_plugin_extract_evidence,
+    task_plugin_match_capabilities,
+    task_plugin_normalize_result,
+    task_plugin_plan_compensation,
+    task_plugin_rule_based_verification,
+    verify_external_side_effect,
+    verify_writeback_content,
+)
+from zentex.tasks.service import TaskManagementServiceInterface
 from zentex.tasks.registry import TaskRegistry
 from zentex.tasks.core.decomposer import TaskDecomposerPlugin
 from zentex.tasks.models.errors import TaskStateError

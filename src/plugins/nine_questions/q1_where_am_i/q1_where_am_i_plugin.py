@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import logging
-import os
 import re
 from collections import Counter
 from datetime import datetime, timezone
@@ -25,12 +24,16 @@ from plugins.nine_questions.q1_where_am_i.modules import (
 )
 from plugins.nine_questions.q1_where_am_i.llm_upgrade import build_q1_upgrade_payload
 from plugins.nine_questions.q1_where_am_i.models import WorkspaceDomainInference
+from zentex.kernel.workspace_policy import (
+    build_q1_workspace_policy_snapshot,
+    resolve_q1_workspace_root,
+)
 from zentex.plugins.service import (
     query_enabled_cognitive_plugin_functionals,
     unwrap_plugin_feedback_result,
 )
 
-QUESTION_REF = "我在哪"
+QUESTION_REF = "我在那"
 
 UTC = timezone.utc
 
@@ -62,25 +65,243 @@ from zentex.common.nine_questions_shared import (
 logger = logging.getLogger(__name__)
 
 TEXT_SAMPLE_SUFFIXES = {
-    ".py", ".ts", ".tsx", ".js", ".jsx", ".json", ".yaml", ".yml",
+    ".py", ".ts", ".tsx", ".js", ".jsx", ".json", ".jsonl", ".yaml", ".yml",
     ".md", ".txt", ".toml", ".ini", ".cfg", ".conf", ".log", ".sh",
+    ".csv", ".tsv", ".sql", ".bat", ".ps1", ".env", ".properties", ".xml", ".ini",
 }
+TEXT_SAMPLE_FILENAME_WHITELIST = {
+    "makefile",
+    "dockerfile",
+    "readme",
+    "readme.md",
+    "readme.txt",
+    "license",
+    "license.md",
+    "changelog",
+    "changelog.md",
+    "changelog.txt",
+    "requirements.txt",
+    "requirements-dev.txt",
+    "requirements.in",
+    "pyproject.toml",
+    "setup.cfg",
+    "setup.py",
+    "go.mod",
+    "go.sum",
+    "cargo.toml",
+    "pom.xml",
+    ".env",
+    ".env.example",
+    ".env.local",
+    "docker-compose.yml",
+    "docker-compose.yaml",
+    "procfile",
+    "package-lock.json",
+    "yarn.lock",
+    "pnpm-lock.yaml",
+    "pnpm-lock.yml",
+}
+TEXT_SAMPLE_FILENAME_PREFIX_WHITELIST = {
+    "requirements",
+}
+TEXT_SAMPLE_FILENAME_WHITELIST_BUDGET_RATIO = 0.3
+TEXT_SAMPLE_FILENAME_WHITELIST_MIN_BUDGET = 2
 RISK_FILE_NAMES = {
     ".env", ".env.local", "secrets.json", "credentials.json", "id_rsa", "known_hosts",
 }
 MAX_SCAN_FILES = 400
 MAX_SAMPLE_FILES = 8
 MAX_SAMPLE_BYTES = 2048
+MAX_Q1_LLM_ATTEMPTS = 3
+Q1_INFERENCE_REQUIRED_KEYS = {
+    "primary_domain",
+    "secondary_domains",
+    "confidence",
+    "reasoning_summary",
+    "uncertainties",
+    "suggested_first_step",
+}
 
 
-def _resolve_workspace_root(context: Dict[str, Any], snapshot: Dict[str, Any]) -> str:
-    return str(
+def _candidate_workspace_root(context: Dict[str, Any], snapshot: Dict[str, Any]) -> Any:
+    return (
         snapshot.get("workspace_root")
         or snapshot.get("cwd")
         or context.get("workspace_root")
         or context.get("cwd")
-        or os.getcwd()
     )
+
+
+def _resolve_workspace_root(context: Dict[str, Any], snapshot: Dict[str, Any]) -> str:
+    candidate = _candidate_workspace_root(context, snapshot)
+    return str(resolve_q1_workspace_root(candidate, context.get("workspace_store")))
+
+
+def _snapshot_payload_matches_workspace(payload: Any, workspace_root: str) -> bool:
+    if not isinstance(payload, dict):
+        return True
+    declared = None
+    for key in ("analyzer_snapshot", "sampler_snapshot"):
+        block = payload.get(key)
+        if isinstance(block, dict) and block.get("workspace_root"):
+            declared = block.get("workspace_root")
+            break
+    if not declared:
+        return True
+    try:
+        return Path(str(declared)).expanduser().resolve() == Path(workspace_root).expanduser().resolve()
+    except (OSError, RuntimeError, ValueError):
+        return False
+
+
+def _select_workspace_scan_roots(
+    candidate: Any,
+    resolved_root: Path,
+    allowed_workspace_roots: list[str],
+) -> list[Path]:
+    scan_roots: list[Path] = []
+    for raw_root in allowed_workspace_roots:
+        try:
+            root = Path(str(raw_root)).expanduser().resolve()
+        except (OSError, RuntimeError, ValueError):
+            continue
+        if root.exists() and root.is_dir():
+            scan_roots.append(root)
+
+    return scan_roots or [resolved_root]
+
+
+def _build_aggregated_workspace_structure(roots: list[Path]) -> dict[str, Any]:
+    if len(roots) == 1:
+        return _build_workspace_structure_analysis(str(roots[0]))
+
+    total_file_count = 0
+    suffix_counter: Counter[str] = Counter()
+    keyword_counter: Counter[str] = Counter()
+    top_level_dirs: List[str] = []
+    candidate_groups: List[str] = []
+    risk_files: List[str] = []
+    tree_rows: List[dict[str, Any]] = []
+    group_details: List[dict[str, Any]] = []
+
+    for root in roots:
+        structure = _build_workspace_structure_analysis(str(root))
+        if not structure:
+            continue
+
+        structure_root = structure.get("analyzer_snapshot", {}).get("workspace_root", str(root))
+        normalized_root = str(Path(str(structure_root)))
+
+        total_file_count += int(structure.get("file_total_count") or 0)
+
+        for key, value in (structure.get("suffix_distribution") or {}).items():
+            if key and isinstance(value, int):
+                suffix_counter[str(key)] += int(value)
+
+        for key, value in (structure.get("high_frequency_filename_keywords") or {}).items():
+            if key and isinstance(value, int):
+                keyword_counter[str(key)] += int(value)
+
+        for directory in structure.get("top_level_dirs") or []:
+            if directory:
+                top_level_dirs.append(f"{root.name}:{directory}")
+
+        for group in structure.get("candidate_groups") or []:
+            if group and group not in candidate_groups:
+                candidate_groups.append(group)
+
+        for risk_file in structure.get("obvious_risk_files") or []:
+            if risk_file:
+                prefixed = str(risk_file)
+                if not prefixed.startswith(f"{root.name}/"):
+                    prefixed = f"{root.name}/{prefixed}"
+                risk_files.append(prefixed)
+
+        for row in structure.get("directory_tree_rows") or []:
+            if not isinstance(row, dict):
+                continue
+            prefixed_row = dict(row)
+            row_path = row.get("path")
+            if isinstance(row_path, str):
+                prefixed_row["path"] = f"{root.name}/{row_path}"
+            row_id = row.get("row_id")
+            if isinstance(row_id, str):
+                prefixed_row["row_id"] = f"{root.name}:{row_id}"
+            tree_rows.append(prefixed_row)
+
+        for detail in structure.get("candidate_group_details") or []:
+            if not isinstance(detail, dict):
+                continue
+            detail_with_root = dict(detail)
+            detail_with_root.setdefault("workspace_root", normalized_root)
+            group_details.append(detail_with_root)
+
+    selected_summary = ", ".join(root.as_posix() for root in roots)
+
+    return {
+        "directory_hierarchy_summary": (
+            f"Aggregated workspace scan across {len(roots)} allowed roots: {selected_summary}"
+        ),
+        "top_level_dirs": top_level_dirs,
+        "file_total_count": total_file_count,
+        "suffix_distribution": dict(suffix_counter),
+        "high_frequency_filename_keywords": dict(keyword_counter),
+        "candidate_groups": candidate_groups,
+        "obvious_risk_files": risk_files[:12],
+        "directory_tree_rows": tree_rows,
+        "candidate_group_details": group_details,
+        "obvious_risk_file_details": [{"path": path, "severity": "medium"} for path in risk_files[:12]],
+        "analyzer_snapshot": {
+            "workspace_roots": [str(root) for root in roots],
+            "workspace_root": str(roots[0]),
+            "scan_limited": False,
+            "scanned_files": total_file_count,
+            "aggregated": True,
+        },
+    }
+
+
+def _build_aggregated_workspace_samples(roots: list[Path]) -> dict[str, Any]:
+    if len(roots) == 1:
+        return _build_workspace_content_samples(str(roots[0]))
+
+    sampled: List[dict[str, Any]] = []
+    anomalies: List[str] = []
+
+    for root in roots:
+        samples = _build_workspace_content_samples(str(root))
+        if not samples:
+            continue
+
+        for item in samples.get("sampled_file_summaries") or []:
+            if not isinstance(item, dict):
+                continue
+            copy_item = dict(item)
+            path = str(item.get("path", ""))
+            if path and not path.startswith(f"{root.name}/"):
+                copy_item["path"] = f"{root.name}/{path}"
+            sampled.append(copy_item)
+
+        for item in samples.get("log_anomaly_snippets") or []:
+            if not isinstance(item, str) or not item.strip():
+                continue
+            text = item.strip()
+            if not text.startswith(f"{root.name}:"):
+                text = f"{root.name}: {text}"
+            anomalies.append(text)
+
+    sampled = sampled[:MAX_SAMPLE_FILES]
+    return {
+        "sampled_file_summaries": sampled,
+        "log_anomaly_snippets": anomalies[:8],
+        "sampler_snapshot": {
+            "workspace_roots": [str(root) for root in roots],
+            "workspace_root": str(roots[0]),
+            "sampled_paths": [item.get("path") for item in sampled if isinstance(item, dict)],
+            "sample_limit": MAX_SAMPLE_FILES,
+            "aggregated": True,
+        },
+    }
 
 
 def _is_non_empty_payload(value: Any) -> bool:
@@ -89,6 +310,22 @@ def _is_non_empty_payload(value: Any) -> bool:
     if isinstance(value, list):
         return any(_is_non_empty_payload(item) for item in value)
     return value not in (None, "", 0, False)
+
+
+def _is_text_sample_filename(path: Path) -> bool:
+    name = path.name.lower()
+    stem = path.stem.lower()
+
+    if name in TEXT_SAMPLE_FILENAME_WHITELIST:
+        return True
+    if stem in TEXT_SAMPLE_FILENAME_WHITELIST:
+        return True
+    if stem in TEXT_SAMPLE_FILENAME_PREFIX_WHITELIST:
+        return True
+    for prefix in TEXT_SAMPLE_FILENAME_PREFIX_WHITELIST:
+        if stem.startswith(f"{prefix}-") or stem.startswith(f"{prefix}_"):
+            return True
+    return False
 
 
 def _to_json_dict(value: Any) -> dict[str, Any]:
@@ -113,6 +350,35 @@ def _normalize_inference_payload(raw: Any) -> dict[str, Any]:
     return normalized
 
 
+def _validate_q1_llm_output(raw: Any) -> tuple[WorkspaceDomainInference | None, list[str]]:
+    if not isinstance(raw, dict):
+        return None, ["Q1 LLM 输出必须是 JSON 对象。"]
+    raw_keys = set(raw.keys())
+    missing = sorted(Q1_INFERENCE_REQUIRED_KEYS - raw_keys)
+    extra = sorted(raw_keys - Q1_INFERENCE_REQUIRED_KEYS)
+    issues: list[str] = []
+    if missing:
+        issues.append(f"缺少 required 字段: {missing}")
+    if extra:
+        issues.append(f"输出包含未授权字段: {extra}")
+
+    for key in ("secondary_domains", "uncertainties"):
+        value = raw.get(key)
+        if not isinstance(value, list):
+            issues.append(f"{key} 必须是 string[]。")
+        elif any(not isinstance(item, str) or not item.strip() for item in value):
+            issues.append(f"{key} 中必须只包含非空字符串。")
+    if isinstance(raw.get("uncertainties"), list) and not raw.get("uncertainties"):
+        issues.append("uncertainties 不得为空。")
+
+    if issues:
+        return None, issues
+    try:
+        return WorkspaceDomainInference.model_validate(raw), []
+    except Exception as exc:
+        return None, [str(exc)]
+
+
 def _build_q1_partial_failure_result(
     *,
     context: dict[str, Any],
@@ -124,7 +390,6 @@ def _build_q1_partial_failure_result(
     functional_chain_status: str,
     functional_chain_error: str,
     environment_service_status: str,
-    snapshot_fallback_used: bool,
     overall_authenticity: str,
     structure_snapshot: dict[str, Any],
     samples_snapshot: dict[str, Any],
@@ -134,11 +399,12 @@ def _build_q1_partial_failure_result(
     physical_host_state: dict[str, Any],
     sensory_audit: dict[str, Any],
     compression_snapshot: dict[str, Any],
+    workspace_policy: dict[str, Any],
 ) -> CognitiveToolResult:
     diagnosis = question_authenticity_judgment(
         module_runs=module_runs,
         upstream_dependencies=[],
-        used_fallback=snapshot_fallback_used,
+        used_fallback=False,
         diagnosis_code=error_code,
         diagnosis_message=error_message,
         required_modules=[
@@ -194,7 +460,6 @@ def _build_q1_partial_failure_result(
         "functional_chain_status": functional_chain_status,
         "functional_chain_error": functional_chain_error,
         "environment_service_status": environment_service_status,
-        "snapshot_fallback_used": snapshot_fallback_used,
         "overall_authenticity": overall_authenticity,
         "plugin_runs": plugin_runs,
         **diagnosis,
@@ -211,6 +476,7 @@ def _build_q1_partial_failure_result(
         "physical_host_state": physical_host_state,
         "q1_sensory_audit": sensory_audit,
         "q1_compression_snapshot": compression_snapshot,
+        "q1_workspace_policy": workspace_policy,
         "q1_execution_diagnosis": execution_diagnosis,
     }
 
@@ -370,15 +636,27 @@ def _build_workspace_content_samples(workspace_root: str) -> dict[str, Any]:
     sampled: List[dict[str, Any]] = []
     anomalies: List[str] = []
     candidate_files: List[Path] = []
+    filename_allowance = max(
+        TEXT_SAMPLE_FILENAME_WHITELIST_MIN_BUDGET,
+        int(MAX_SAMPLE_FILES * TEXT_SAMPLE_FILENAME_WHITELIST_BUDGET_RATIO),
+    )
+    filename_take = 0
 
     for path in sorted(root.rglob("*"), key=lambda item: str(item).lower()):
         if len(candidate_files) >= MAX_SAMPLE_FILES:
             break
         if not path.is_file():
             continue
-        if any(part.startswith(".") and part not in {".github", ".vscode"} for part in path.parts):
+        hidden_segments = [
+            part for part in path.parts if part.startswith(".") and part not in {".github", ".vscode"}
+        ]
+        if hidden_segments and (len(hidden_segments) > 1 or not _is_text_sample_filename(path)):
             continue
-        if path.suffix.lower() not in TEXT_SAMPLE_SUFFIXES:
+        if path.suffix.lower() in TEXT_SAMPLE_SUFFIXES:
+            pass
+        elif _is_text_sample_filename(path) and filename_take < filename_allowance:
+            filename_take += 1
+        else:
             continue
         candidate_files.append(path)
 
@@ -465,13 +743,13 @@ class Q1WhereAmIPlugin(BaseModel):
     plugin_id: str = NINE_QUESTION_Q1
     version: str = "1.0.0"
     feature_code: str = "nine_questions.q1"
-    display_name: str = "Q1: Where am I?"
+    display_name: str = "Q1: 我在那"
     behavior_key: str = "nine_questions"
     lifecycle_status: str = PluginLifecycleStatus.ACTIVE.value
     health_status: str = "healthy"
     operational_status: str = "enabled"
     """
-    Q1: 我在哪 (workspace domain inference)
+    Q1: 我在那 (workspace domain inference)
 
     Absolute red lines (enforced here):
     - NEVER read raw file bodies.
@@ -537,15 +815,13 @@ class Q1WhereAmIPlugin(BaseModel):
                 status="failed",
                 error_code="plugin_service_missing",
                 error_message="Q1 functional plugin chain not started because plugin_service is missing.",
-                used_fallback=True,
             )
         elif dependency_check["functional_bindings_missing"]:
             fail_module_run(
                 dependency_run,
-                status="degraded",
+                status="failed",
                 error_code="functional_bindings_missing",
                 error_message="Q1 has no enabled functional bindings.",
-                used_fallback=True,
             )
         else:
             finish_module_run(dependency_run)
@@ -562,9 +838,23 @@ class Q1WhereAmIPlugin(BaseModel):
         # Phase 2: Snapshot floor (always used as baseline)
         # ------------------------------------------------------------------
         snapshot = context.get("context_snapshot", {}) or {}
+        candidate_root = _candidate_workspace_root(context, snapshot)
+        workspace_root = _resolve_workspace_root(context, snapshot)
+        workspace_policy = build_q1_workspace_policy_snapshot(
+            Path(workspace_root),
+            context.get("workspace_store"),
+        )
+        workspace_scan_roots = _select_workspace_scan_roots(
+            candidate_root,
+            Path(workspace_root),
+            workspace_policy["allowed_workspace_roots"],
+        )
         structure = snapshot.get("workspace_structure_analysis", {}) or {}
         samples_block = snapshot.get("workspace_content_samples", {}) or {}
-        workspace_root = _resolve_workspace_root(context, snapshot)
+        if not _snapshot_payload_matches_workspace(structure, workspace_root):
+            structure = {}
+        if not _snapshot_payload_matches_workspace(samples_block, workspace_root):
+            samples_block = {}
         local_inputs: Dict[str, Any] = {
             "structure": structure,
             "samples": samples_block,
@@ -577,16 +867,18 @@ class Q1WhereAmIPlugin(BaseModel):
             "workspace_root": workspace_root,
             "structure_source": "snapshot" if _is_non_empty_payload(structure) else "missing",
             "samples_source": "snapshot" if _is_non_empty_payload(samples_block) else "missing",
+            "workspace_access_policy": workspace_policy["access_policy"],
+            "allowed_workspace_roots": workspace_policy["allowed_workspace_roots"],
         }
 
         if not _is_non_empty_payload(local_inputs["structure"]):
-            generated_structure = _build_workspace_structure_analysis(workspace_root)
+            generated_structure = _build_aggregated_workspace_structure(workspace_scan_roots)
             if generated_structure:
                 local_inputs["structure"] = generated_structure
                 producer_status["structure_source"] = "runtime_workspace_scan"
 
         if not _is_non_empty_payload(local_inputs["samples"]):
-            generated_samples = _build_workspace_content_samples(workspace_root)
+            generated_samples = _build_aggregated_workspace_samples(workspace_scan_roots)
             if generated_samples:
                 local_inputs["samples"] = generated_samples
                 producer_status["samples_source"] = "runtime_workspace_sampler"
@@ -595,18 +887,13 @@ class Q1WhereAmIPlugin(BaseModel):
         )
         structure_run["data"] = dict(local_inputs["structure"] or {})
         if _is_non_empty_payload(local_inputs["structure"]):
-            finish_module_run(
-                structure_run,
-                status="completed",
-                used_fallback=producer_status["structure_source"] != "snapshot",
-            )
+            finish_module_run(structure_run, status="completed")
         else:
             fail_module_run(
                 structure_run,
                 status="missing",
                 error_code="workspace_structure_missing",
                 error_message="Q1 structure scan produced no usable structure evidence.",
-                used_fallback=True,
             )
         persist_question_module_output(
             context,
@@ -622,18 +909,13 @@ class Q1WhereAmIPlugin(BaseModel):
         )
         content_run["data"] = dict(local_inputs["samples"] or {})
         if _is_non_empty_payload(local_inputs["samples"]):
-            finish_module_run(
-                content_run,
-                status="completed",
-                used_fallback=producer_status["samples_source"] != "snapshot",
-            )
+            finish_module_run(content_run, status="completed")
         else:
             fail_module_run(
                 content_run,
                 status="missing",
                 error_code="workspace_samples_missing",
                 error_message="Q1 content sampling produced no usable samples.",
-                used_fallback=True,
             )
         persist_question_module_output(
             context,
@@ -674,13 +956,7 @@ class Q1WhereAmIPlugin(BaseModel):
                     elif feature_code == "sensory.interpret":
                         parameters = {"signal": sanitized_signal}
                     else:
-                        parameters = {
-                            "workspace_root": (
-                                (context.get("context_snapshot", {}) or {}).get("workspace_root")
-                                or (context.get("context_snapshot", {}) or {}).get("cwd")
-                                or context.get("workspace_root")
-                            )
-                        }
+                        parameters = {"workspace_root": workspace_root}
 
                     run_record["attempted"] = True
                     run_record["status"] = "running"
@@ -791,7 +1067,7 @@ class Q1WhereAmIPlugin(BaseModel):
                     "status": functional_chain_status,
                     "error": functional_chain_error,
                     "plugin_runs": plugin_runs,
-                    "snapshot_fallback_used": not sensory_chain_ok,
+                    "module_issue": not sensory_chain_ok,
                 }
                 if functional_chain_status == "completed":
                     finish_module_run(chain_run)
@@ -801,7 +1077,6 @@ class Q1WhereAmIPlugin(BaseModel):
                         status="partial_failed",
                         error_code="functional_chain_partial",
                         error_message="Q1 functional chain produced only partial sensory evidence.",
-                        used_fallback=True,
                     )
                 elif functional_chain_status == "no_bindings":
                     fail_module_run(
@@ -809,7 +1084,6 @@ class Q1WhereAmIPlugin(BaseModel):
                         status="missing",
                         error_code="functional_bindings_missing",
                         error_message="Q1 functional plugin chain found no enabled bindings.",
-                        used_fallback=True,
                     )
                 else:
                     fail_module_run(
@@ -817,7 +1091,6 @@ class Q1WhereAmIPlugin(BaseModel):
                         status="failed",
                         error_code="functional_plugin_failed" if plugin_failure_detected else "functional_chain_failed",
                         error_message=functional_chain_error or "Q1 functional plugin chain failed.",
-                        used_fallback=True,
                     )
 
             except Exception as exc:
@@ -827,14 +1100,13 @@ class Q1WhereAmIPlugin(BaseModel):
                     "status": functional_chain_status,
                     "error": functional_chain_error,
                     "plugin_runs": plugin_runs,
-                    "snapshot_fallback_used": True,
+                    "module_issue": True,
                 }
                 fail_module_run(
                     chain_run,
                     status="failed",
                     error_code="functional_chain_exception",
                     error_message=str(exc),
-                    used_fallback=True,
                 )
                 # 严禁吞掉 functional chain 级异常并继续伪装成普通降级。
                 # 这里必须留下异常堆栈，否则后台链路故障会被监控页误判成普通无数据。
@@ -848,18 +1120,13 @@ class Q1WhereAmIPlugin(BaseModel):
                 "status": functional_chain_status,
                 "error": functional_chain_error,
                 "plugin_runs": plugin_runs,
-                "snapshot_fallback_used": True,
+                "module_issue": True,
             }
             fail_module_run(
                 chain_run,
                 status="missing",
                 error_code="plugin_service_missing",
                 error_message="Q1 functional plugin chain not started because plugin_service is missing.",
-                used_fallback=True,
-            )
-            logger.warning(
-                "q1.snapshot_fallback.used session=%s trace=%s reason=plugin_service_unavailable",
-                session_id, trace_id,
             )
         persist_question_module_output(
             context,
@@ -933,7 +1200,6 @@ class Q1WhereAmIPlugin(BaseModel):
                         status="missing",
                         error_code="environment_service_no_result",
                         error_message="Environment service returned no usable result.",
-                        used_fallback=True,
                     )
             except Exception as env_exc:
                 environment_service_status = "failed"
@@ -943,7 +1209,6 @@ class Q1WhereAmIPlugin(BaseModel):
                     status="failed",
                     error_code="environment_service_failed",
                     error_message=str(env_exc),
-                    used_fallback=True,
                 )
                 # 严禁吞掉 environment_service 异常后继续把 Q1 伪装成正常完成。
                 # 环境感知后台一旦失败，结果必须保留失败状态和异常日志，不能假装只是“当前没采到环境数据”。
@@ -955,7 +1220,6 @@ class Q1WhereAmIPlugin(BaseModel):
                 status="missing",
                 error_code="environment_service_missing",
                 error_message="EnvironmentAwarenessService not available for Q1.",
-                used_fallback=True,
             )
         persist_question_module_output(
             context,
@@ -977,7 +1241,6 @@ class Q1WhereAmIPlugin(BaseModel):
             finish_module_run(
                 environment_scan_run,
                 status="completed",
-                used_fallback=not sensory_chain_ok,
             )
         else:
             fail_module_run(
@@ -985,7 +1248,6 @@ class Q1WhereAmIPlugin(BaseModel):
                 status="missing",
                 error_code="environment_scan_missing",
                 error_message="Q1 environment scan produced no host or environment evidence.",
-                used_fallback=True,
             )
         persist_question_module_output(
             context,
@@ -999,23 +1261,22 @@ class Q1WhereAmIPlugin(BaseModel):
         # ------------------------------------------------------------------
         # Phase 5: Authenticity determination
         # ------------------------------------------------------------------
-        snapshot_fallback_used = not (
-            sensory_chain_ok
-            or environment_service_status == "completed"
+        module_issue = any(
+            str(run.get("status")) in {"failed", "partial_failed", "partial", "missing", "degraded"}
+            for run in module_runs
         )
-
-        if sensory_chain_ok or environment_service_status == "completed":
-            overall_authenticity = "real"
-        elif plugin_service is None:
-            overall_authenticity = "degraded_no_plugin_service"
-        else:
-            overall_authenticity = "degraded_chain_incomplete"
-
-        if snapshot_fallback_used:
-            logger.warning(
-                "q1.snapshot_fallback.used session=%s trace=%s authenticity=%s functional_chain=%s",
-                session_id, trace_id, overall_authenticity, functional_chain_status,
+        overall_authenticity = "real" if not module_issue else "partial_failed"
+        if module_issue:
+            failed_modules = [
+                f"{run.get('module_id') or 'unknown'}:{run.get('status') or 'missing'}"
+                for run in module_runs
+                if str(run.get("status")) in {"failed", "partial_failed", "partial", "missing", "degraded"}
+            ]
+            raise RuntimeError(
+                "Q1 prerequisite modules are not fully completed: "
+                + ", ".join(failed_modules)
             )
+        snapshot_fallback_used = False
 
         # ------------------------------------------------------------------
         # Phase 6: Compress + LLM
@@ -1069,7 +1330,6 @@ class Q1WhereAmIPlugin(BaseModel):
         model_context = llm_request["model_context"]
 
         turn_id = str(context.get("turn_id") or "unknown-turn")
-        request_id = str(uuid4())
         decision_id = str(context.get("decision_id") or f"{turn_id}:q1_where_am_i")
 
         caller_context = build_caller_context(
@@ -1081,224 +1341,191 @@ class Q1WhereAmIPlugin(BaseModel):
             trace_id=trace_id,
         )
 
-        record_model_invoked(
-            transcript_store,
-            session_id=session_id,
-            turn_id=turn_id,
-            trace_id=trace_id,
-            source="plugins.nine_questions.q1_where_am_i",
-            payload={
-                "request_id": request_id,
-                "decision_id": decision_id,
-                "question_ref": QUESTION_REF,
-                "provider_plugin_id": safe_provider_plugin_id(provider),
-                "caller_context": caller_context.model_dump(mode="json"),
-                "prompt": prompt,
-                "system_prompt": system_prompt,
-                "context": model_context,
-            },
-        )
-
         started = perf_counter()
         domain_inference_run = start_module_run(
             module_runs, "domain_inference", source="plugins.nine_questions.q1"
         )
 
-        def _finalize_fallback_projection_modules(failure_reason: str) -> None:
-            uncertainty_run = start_module_run(
-                module_runs, "uncertainty_projection", source="plugins.nine_questions.q1"
-            )
-            uncertainty_run["data"] = {
-                "risk_sources": [failure_reason],
-                "uncertainty_intensity": 1.0,
-                "sensory_chain_ok": sensory_chain_ok,
-            }
-            finish_module_run(
-                uncertainty_run,
-                status="partial_failed",
-                used_fallback=True,
-                error_code="domain_inference_unavailable",
-                error_message="Q1 uncertainty projection used fallback because domain inference failed.",
-            )
-            persist_question_module_output(
-                context,
-                question_id="q1",
-                module_id="uncertainty_projection",
-                payload=uncertainty_run.get("data") or {},
-                status=str(uncertainty_run.get("status") or "degraded"),
-                output_kind="evidence",
-            )
+        llm_invocation_attempts: list[dict[str, Any]] = []
+        inference: WorkspaceDomainInference | None = None
+        upgrade_payload = None
 
-            state_write_run = start_module_run(
-                module_runs, "state_write", source="plugins.nine_questions.q1"
+        for attempt in range(1, MAX_Q1_LLM_ATTEMPTS + 1):
+            request_id = str(uuid4())
+            retry_hint = (
+                "\n\n上一次 Q1 输出未通过字段级审计。请严格返回只包含 "
+                "primary_domain、secondary_domains、confidence、reasoning_summary、"
+                "uncertainties、suggested_first_step 的 JSON 对象；不得输出额外字段。"
+                if attempt > 1
+                else ""
             )
-            state_write_run["data"] = {
-                "overall_authenticity": overall_authenticity,
-                "snapshot_fallback_used": True,
-                "producer_status": producer_status,
-                "failure_reason": failure_reason,
+            current_prompt = f"{system_prompt}\n\n{prompt}{retry_hint}"
+            attempt_started = perf_counter()
+            attempt_payload: dict[str, Any] = {
+                "attempt": attempt,
+                "request_id": request_id,
+                "decision_id": decision_id,
+                "question_ref": QUESTION_REF,
+                "provider_plugin_id": safe_provider_plugin_id(provider),
+                "caller_context": caller_context.model_dump(mode="json"),
+                "prompt": current_prompt,
+                "system_prompt": system_prompt,
+                "context": model_context,
             }
-            finish_module_run(
-                state_write_run,
-                status="partial_failed",
-                used_fallback=True,
-                error_code="domain_inference_unavailable",
-                error_message="Q1 state write completed with degraded fallback due domain inference failure.",
-            )
-            persist_question_module_output(
-                context,
-                question_id="q1",
-                module_id="state_write",
-                payload=state_write_run.get("data") or {},
-                status=str(state_write_run.get("status") or "degraded"),
-                output_kind="integration",
-            )
 
-        try:
-            raw = provider.generate_json(
-                prompt=f"{system_prompt}\n\n{prompt}",
-                context=model_context,
-                caller_context=caller_context,
-            )
-        except Exception as exc:
-            # 严禁吞掉模型调用异常并只返回一个无日志的 partial_failed。
-            # Q1 域推理后台失败必须留下异常堆栈，否则系统会把真实推理故障误判成普通数据缺失。
-            logger.exception(
-                "Q1 domain inference provider failed session=%s trace=%s",
-                session_id, trace_id,
-            )
-            record_model_failed(
+            try:
+                raw = provider.generate_json(
+                    prompt=current_prompt,
+                    context=model_context,
+                    caller_context=caller_context,
+                )
+                attempt_payload["raw_response"] = json_safe_payload(getattr(provider, "last_raw_response", None))
+                attempt_payload["token_usage"] = json_safe_payload(getattr(provider, "last_token_usage", {}))
+                attempt_payload["result"] = json_safe_payload(raw)
+                attempt_payload["elapsed_ms"] = int((perf_counter() - attempt_started) * 1000)
+            except Exception as exc:
+                logger.exception(
+                    "Q1 domain inference provider failed session=%s trace=%s",
+                    session_id, trace_id,
+                )
+                attempt_payload.update(
+                    {
+                        "error_type": exc.__class__.__name__,
+                        "error_message": str(exc),
+                        "elapsed_ms": int((perf_counter() - attempt_started) * 1000),
+                    }
+                )
+                llm_invocation_attempts.append(attempt_payload)
+                record_model_invoked(
+                    transcript_store,
+                    session_id=session_id,
+                    turn_id=turn_id,
+                    trace_id=trace_id,
+                    source="plugins.nine_questions.q1_where_am_i",
+                    payload=attempt_payload,
+                )
+                record_model_failed(
+                    transcript_store,
+                    session_id=session_id,
+                    turn_id=turn_id,
+                    trace_id=trace_id,
+                    source="plugins.nine_questions.q1_where_am_i",
+                    payload=attempt_payload,
+                )
+                if attempt >= MAX_Q1_LLM_ATTEMPTS:
+                    fail_module_run(
+                        domain_inference_run,
+                        status="partial_failed",
+                        error_code=exc.__class__.__name__,
+                        error_message=str(exc),
+                    )
+                    raise RuntimeError(f"Q1 model provider failed: {exc}") from exc
+                continue
+
+            logger.info("q1.domain_inference.started session=%s trace=%s", session_id, trace_id)
+            validated_inference, validation_errors = _validate_q1_llm_output(raw)
+            if validation_errors or validated_inference is None:
+                attempt_payload["validation_error"] = "; ".join(validation_errors)
+                llm_invocation_attempts.append(attempt_payload)
+                record_model_invoked(
+                    transcript_store,
+                    session_id=session_id,
+                    turn_id=turn_id,
+                    trace_id=trace_id,
+                    source="plugins.nine_questions.q1_where_am_i",
+                    payload=attempt_payload,
+                )
+                record_model_failed(
+                    transcript_store,
+                    session_id=session_id,
+                    turn_id=turn_id,
+                    trace_id=trace_id,
+                    source="plugins.nine_questions.q1_where_am_i",
+                    payload=attempt_payload,
+                )
+                if attempt >= MAX_Q1_LLM_ATTEMPTS:
+                    fail_module_run(
+                        domain_inference_run,
+                        status="partial_failed",
+                        error_code="q1_output_validation_failed",
+                        error_message="; ".join(validation_errors),
+                    )
+                    raise RuntimeError(f"Q1 domain inference validation failed: {'; '.join(validation_errors)}")
+                continue
+
+            try:
+                host_type, host_reason = infer_host_runtime_type(physical_host_state)
+                host_line = f"当前运行主机类型判断：{host_type}（{host_reason}）。"
+                updated_reasoning = f"{validated_inference.reasoning_summary.strip()}\n\n{host_line}".strip()
+                updated_uncertainties = list(validated_inference.uncertainties)
+                if host_type == "未知":
+                    updated_uncertainties.append("宿主机类型区分存在不确定性（server vs regular computer）")
+                inference = validated_inference.model_copy(
+                    update={
+                        "reasoning_summary": updated_reasoning,
+                        "uncertainties": updated_uncertainties,
+                        "host_runtime_type": host_type,
+                        "host_runtime_reason": host_reason,
+                    }
+                )
+                domain_inference_run["data"] = inference.model_dump(mode="json")
+                upgrade_payload = build_q1_upgrade_payload(
+                    baseline_version=self.version,
+                    inference=inference,
+                    upgrade_service=context.get("llm_upgrade_service"),
+                    enable_candidate_planning=bool(context.get("enable_llm_upgrade_planning")),
+                )
+            except Exception as exc:
+                logger.exception(
+                    "Q1 domain inference post-processing failed session=%s trace=%s",
+                    session_id, trace_id,
+                )
+                attempt_payload.update({"error_type": exc.__class__.__name__, "error_message": str(exc)})
+                llm_invocation_attempts.append(attempt_payload)
+                record_model_invoked(
+                    transcript_store,
+                    session_id=session_id,
+                    turn_id=turn_id,
+                    trace_id=trace_id,
+                    source="plugins.nine_questions.q1_where_am_i",
+                    payload=attempt_payload,
+                )
+                record_model_failed(
+                    transcript_store,
+                    session_id=session_id,
+                    turn_id=turn_id,
+                    trace_id=trace_id,
+                    source="plugins.nine_questions.q1_where_am_i",
+                    payload=attempt_payload,
+                )
+                fail_module_run(
+                    domain_inference_run,
+                    status="partial_failed",
+                    error_code=exc.__class__.__name__,
+                    error_message=str(exc),
+                )
+                raise RuntimeError(f"Q1 domain inference validation failed: {exc}") from exc
+
+            attempt_payload["result"] = json_safe_payload(inference.model_dump(mode="json"))
+            llm_invocation_attempts.append(attempt_payload)
+            record_model_invoked(
                 transcript_store,
                 session_id=session_id,
                 turn_id=turn_id,
                 trace_id=trace_id,
                 source="plugins.nine_questions.q1_where_am_i",
-                payload={
-                    "request_id": request_id,
-                    "decision_id": decision_id,
-                    "question_ref": QUESTION_REF,
-                    "caller_context": caller_context.model_dump(mode="json"),
-                    "error_type": exc.__class__.__name__,
-                    "error_message": str(exc),
-                },
+                payload=attempt_payload,
             )
+            break
+
+        if inference is None or upgrade_payload is None:
             fail_module_run(
                 domain_inference_run,
                 status="partial_failed",
-                error_code=exc.__class__.__name__,
-                error_message=str(exc),
-                used_fallback=True,
+                error_code="q1_output_validation_failed",
+                error_message="Q1 未通过 WorkspaceDomainInference 字段级校验。",
             )
-            _finalize_fallback_projection_modules(str(exc))
-            return _build_q1_partial_failure_result(
-                context=context,
-                error_code="model_provider_failed",
-                error_message=str(exc),
-                module_runs=module_runs,
-                plugin_runs=plugin_runs,
-                dependency_check=dependency_check,
-                functional_chain_status=functional_chain_status,
-                functional_chain_error=functional_chain_error,
-                environment_service_status=environment_service_status,
-                snapshot_fallback_used=snapshot_fallback_used,
-                overall_authenticity=overall_authenticity,
-                structure_snapshot=structure_snapshot,
-                samples_snapshot=samples_snapshot,
-                sampled_file_summaries=sampled_file_summaries,
-                log_anomaly_snippets=log_anomaly_snippets,
-                environment_event=environment_event,
-                physical_host_state=physical_host_state,
-                sensory_audit=sensory_audit,
-                compression_snapshot={
-                    "analysis_summary": compressed["analysis_summary"],
-                    "sample_summary": compressed["sample_summary"],
-                    "schema_summary": compressed["schema_summary"],
-                    "uncertainty_summary": compressed["uncertainty_summary"],
-                },
-            )
-
-        logger.info("q1.domain_inference.started session=%s trace=%s", session_id, trace_id)
-
-        try:
-            inference = WorkspaceDomainInference.model_validate(_normalize_inference_payload(raw))
-
-            host_type, host_reason = infer_host_runtime_type(physical_host_state)
-            host_line = f"当前运行主机类型判断：{host_type}（{host_reason}）。"
-            updated_reasoning = f"{inference.reasoning_summary.strip()}\n\n{host_line}".strip()
-            updated_uncertainties = list(inference.uncertainties)
-            if host_type == "未知":
-                updated_uncertainties.append("宿主机类型区分存在不确定性（server vs regular computer）")
-            inference = inference.model_copy(
-                update={
-                    "reasoning_summary": updated_reasoning,
-                    "uncertainties": updated_uncertainties,
-                    "host_runtime_type": host_type,
-                    "host_runtime_reason": host_reason,
-                }
-            )
-            domain_inference_run["data"] = inference.model_dump(mode="json")
-            upgrade_payload = build_q1_upgrade_payload(
-                baseline_version=self.version,
-                inference=inference,
-                upgrade_service=context.get("llm_upgrade_service"),
-                enable_candidate_planning=bool(context.get("enable_llm_upgrade_planning")),
-            )
-        except Exception as exc:
-            # 严禁吞掉域推理结果校验/后处理异常并假装 Q1 只是普通降级。
-            # 这里只要模型输出或后处理失败，就必须记录异常日志并显式 partial_failed。
-            logger.exception(
-                "Q1 domain inference post-processing failed session=%s trace=%s",
-                session_id, trace_id,
-            )
-            record_model_failed(
-                transcript_store,
-                session_id=session_id,
-                turn_id=turn_id,
-                trace_id=trace_id,
-                source="plugins.nine_questions.q1_where_am_i",
-                payload={
-                    "request_id": request_id,
-                    "decision_id": decision_id,
-                    "question_ref": QUESTION_REF,
-                    "caller_context": caller_context.model_dump(mode="json"),
-                    "error_type": exc.__class__.__name__,
-                    "error_message": str(exc),
-                },
-            )
-            fail_module_run(
-                domain_inference_run,
-                status="partial_failed",
-                error_code=exc.__class__.__name__,
-                error_message=str(exc),
-                used_fallback=True,
-            )
-            _finalize_fallback_projection_modules(str(exc))
-            return _build_q1_partial_failure_result(
-                context=context,
-                error_code="domain_inference_validation_failed",
-                error_message=str(exc),
-                module_runs=module_runs,
-                plugin_runs=plugin_runs,
-                dependency_check=dependency_check,
-                functional_chain_status=functional_chain_status,
-                functional_chain_error=functional_chain_error,
-                environment_service_status=environment_service_status,
-                snapshot_fallback_used=snapshot_fallback_used,
-                overall_authenticity=overall_authenticity,
-                structure_snapshot=structure_snapshot,
-                samples_snapshot=samples_snapshot,
-                sampled_file_summaries=sampled_file_summaries,
-                log_anomaly_snippets=log_anomaly_snippets,
-                environment_event=environment_event,
-                physical_host_state=physical_host_state,
-                sensory_audit=sensory_audit,
-                compression_snapshot={
-                    "analysis_summary": compressed["analysis_summary"],
-                    "sample_summary": compressed["sample_summary"],
-                    "schema_summary": compressed["schema_summary"],
-                    "uncertainty_summary": compressed["uncertainty_summary"],
-                },
-            )
+            raise RuntimeError("Q1 domain inference validation failed")
 
         finish_module_run(domain_inference_run)
         persist_question_module_output(
@@ -1310,6 +1537,7 @@ class Q1WhereAmIPlugin(BaseModel):
             output_kind="inference",
         )
 
+        latest_model_payload = llm_invocation_attempts[-1] if llm_invocation_attempts else {}
         record_model_completed(
             transcript_store,
             session_id=session_id,
@@ -1317,19 +1545,43 @@ class Q1WhereAmIPlugin(BaseModel):
             trace_id=trace_id,
             source="plugins.nine_questions.q1_where_am_i",
             payload={
-                "request_id": request_id,
+                "request_id": latest_model_payload.get("request_id", str(uuid4())),
                 "decision_id": decision_id,
                 "question_ref": QUESTION_REF,
                 "caller_context": caller_context.model_dump(mode="json"),
                 "result": inference.model_dump(mode="json"),
-                "raw_response": json_safe_payload(getattr(provider, "last_raw_response", None)),
-                "token_usage": json_safe_payload(getattr(provider, "last_token_usage", {})),
+                "raw_response": latest_model_payload.get("raw_response"),
+                "token_usage": latest_model_payload.get("token_usage"),
                 "model": json_safe_payload(
                     getattr(provider, "last_model_name", None) or getattr(provider, "default_model", None)
                 ),
                 "elapsed_ms": int((perf_counter() - started) * 1000),
+                "invocations": llm_invocation_attempts,
             },
         )
+        llm_trace_payload = {
+            "request_id": latest_model_payload.get("request_id", str(uuid4())),
+            "decision_id": decision_id,
+            "question_id": "q1",
+            "trace_id": trace_id,
+            "provider_name": safe_provider_plugin_id(provider),
+            "model": json_safe_payload(
+                getattr(provider, "last_model_name", None) or getattr(provider, "default_model", None)
+            ),
+            "system_prompt": system_prompt,
+            "prompt": prompt,
+            "source_module": "plugins.nine_questions.q1_where_am_i",
+            "invocation_phase": "nine_question_q1_where_am_i",
+            "question_driver_refs": caller_context.question_driver_refs,
+            "caller_context": caller_context.model_dump(mode="json"),
+            "context_data": model_context,
+            "raw_response": latest_model_payload.get("raw_response"),
+            "token_usage": latest_model_payload.get("token_usage") or {},
+            "elapsed_ms": int((perf_counter() - started) * 1000),
+            "invocations": llm_invocation_attempts,
+            "error_type": None,
+            "error_message": None,
+        }
 
         logger.info(
             "q1.domain_inference.completed session=%s trace=%s domain=%s confidence=%.2f",
@@ -1349,10 +1601,7 @@ class Q1WhereAmIPlugin(BaseModel):
         }
         finish_module_run(
             uncertainty_run,
-            status="partial_failed" if snapshot_fallback_used else "completed",
-            used_fallback=snapshot_fallback_used,
-            error_code="" if not snapshot_fallback_used else "snapshot_fallback_used",
-            error_message="" if not snapshot_fallback_used else "Q1 uncertainty profile was derived with snapshot fallback.",
+            status="completed",
         )
         persist_question_module_output(
             context,
@@ -1367,15 +1616,12 @@ class Q1WhereAmIPlugin(BaseModel):
         )
         state_write_run["data"] = {
             "overall_authenticity": overall_authenticity,
-            "snapshot_fallback_used": snapshot_fallback_used,
+            "snapshot_fallback_used": False,
             "producer_status": producer_status,
         }
         finish_module_run(
             state_write_run,
-            status="partial_failed" if snapshot_fallback_used else "completed",
-            used_fallback=snapshot_fallback_used,
-            error_code="" if not snapshot_fallback_used else "snapshot_fallback_used",
-            error_message="" if not snapshot_fallback_used else "Q1 state write completed with degraded authenticity.",
+            status="completed",
         )
         persist_question_module_output(
             context,
@@ -1393,23 +1639,20 @@ class Q1WhereAmIPlugin(BaseModel):
                 failed_module.get("error_message")
                 or f"Q1 module failed: {failed_module.get('module_id') or 'unknown_module'}"
             )
-        elif overall_authenticity == "real" and not snapshot_fallback_used:
+        elif overall_authenticity == "real":
             diagnosis_code = "completed"
             diagnosis_message = "Q1 completed with real environment evidence."
-        elif snapshot_fallback_used:
-            diagnosis_code = "q1_snapshot_fallback_degraded"
-            diagnosis_message = "Q1 completed with degraded authenticity because snapshot fallback was used."
         elif plugin_service is None:
-            diagnosis_code = "q1_authenticity_degraded"
-            diagnosis_message = "Q1 used snapshot fallback because the functional chain was unavailable."
+            diagnosis_code = "q1_authenticity_failed"
+            diagnosis_message = "Q1 functional chain is unavailable."
         else:
-            diagnosis_code = "q1_authenticity_degraded"
-            diagnosis_message = "Q1 completed with degraded authenticity because the functional chain was incomplete."
+            diagnosis_code = "q1_authenticity_failed"
+            diagnosis_message = "Q1 functional chain is incomplete."
 
         diagnosis = question_authenticity_judgment(
             module_runs=module_runs,
             upstream_dependencies=upstream_dependencies,
-            used_fallback=snapshot_fallback_used,
+            used_fallback=False,
             diagnosis_code=diagnosis_code,
             diagnosis_message=diagnosis_message,
             required_modules=[
@@ -1425,10 +1668,6 @@ class Q1WhereAmIPlugin(BaseModel):
         if failed_module is not None and diagnosis["authenticity_status"] != "partial_failed":
             # 严禁让“缺模块导致 degraded”覆盖掉真实的 failed 模块。
             # 只要后台已有模块失败，Q1 对外必须显式 partial_failed，不能再伪装成普通降级。
-            diagnosis["authenticity_status"] = "partial_failed"
-        if snapshot_fallback_used and diagnosis["authenticity_status"] != "partial_failed":
-            # 严禁把 fallback 运行伪装成 degraded/ready。
-            # 只要 Q1 使用了 snapshot fallback，对外状态必须明确为 partial_failed。
             diagnosis["authenticity_status"] = "partial_failed"
         diagnosis["plugin_runs"] = plugin_runs
         diagnosis["recovery_plan"] = build_recovery_plan(
@@ -1474,7 +1713,7 @@ class Q1WhereAmIPlugin(BaseModel):
             "functional_chain_status": functional_chain_status,
             "functional_chain_error": functional_chain_error,
             "environment_service_status": environment_service_status,
-            "snapshot_fallback_used": snapshot_fallback_used,
+            "snapshot_fallback_used": False,
             "overall_authenticity": overall_authenticity,
             "plugin_runs": plugin_runs,
             "producer_status": producer_status,
@@ -1493,7 +1732,7 @@ class Q1WhereAmIPlugin(BaseModel):
         logger.info(
             "q1.state_write.completed session=%s trace=%s status=%s authenticity=%s",
             session_id, trace_id,
-            "degraded" if snapshot_fallback_used else "completed",
+            "completed",
             overall_authenticity,
         )
 
@@ -1526,6 +1765,7 @@ class Q1WhereAmIPlugin(BaseModel):
                     "schema_summary": compressed["schema_summary"],
                     "uncertainty_summary": compressed["uncertainty_summary"],
                 },
+                "q1_workspace_policy": workspace_policy,
                 "q1_scene_model": {
                     "primary_domain": inference.primary_domain,
                     "secondary_domains": list(inference.secondary_domains),
@@ -1541,6 +1781,7 @@ class Q1WhereAmIPlugin(BaseModel):
                 "q1_llm_upgrade": upgrade_payload.model_dump(mode="json"),
                 "q1_execution_diagnosis": execution_diagnosis,
             },
+            "llm_trace_payload": llm_trace_payload,
             "confidence": float(inference.confidence),
             # 严禁在模块已经 failed 时还返回一个没有状态字段的“正常结果”。
             # Q1 必须把真实执行状态显式暴露出来，避免监控页和上游把后台故障误判成成功。
@@ -1554,16 +1795,18 @@ class Q1WhereAmIPlugin(BaseModel):
         q1_execution_diagnosis = result_payload["context_updates"]["q1_execution_diagnosis"]
         q1_module_runs = q1_execution_diagnosis.get("module_runs")
         q1_module_runs = q1_module_runs if isinstance(q1_module_runs, list) else []
+        q1_audit_provenance = _build_q1_audit_provenance(
+            trace_id=trace_id,
+            result_payload=result_payload,
+            llm_trace_payload=llm_trace_payload,
+        )
+        result_payload["context_updates"]["q1_audit_provenance"] = q1_audit_provenance
         run_audit_integration(
             context,
             question_id="q1",
             module_runs=q1_module_runs,
-            summary="Q1 场景识别审计已记录。",
-            payload={
-                "workspace_domain_inference": result_payload["context_updates"]["workspace_domain_inference"],
-                "q1_scene_model": result_payload["context_updates"]["q1_scene_model"],
-                "q1_sensory_audit": result_payload["context_updates"]["q1_sensory_audit"],
-            },
+            summary="Q1 场景识别 LLM 输入、输出、模型调用与结果保存链路已记录。",
+            payload=q1_audit_provenance,
         )
         run_memory_integration(
             context,
@@ -1605,7 +1848,39 @@ class Q1WhereAmIPlugin(BaseModel):
 
         return CognitiveToolResult(
             **result_payload,
-        )
+    )
+
+
+def _build_q1_audit_provenance(
+    *,
+    trace_id: str,
+    result_payload: dict[str, Any],
+    llm_trace_payload: dict[str, Any],
+) -> dict[str, Any]:
+    context_updates = result_payload.get("context_updates")
+    context_updates = context_updates if isinstance(context_updates, dict) else {}
+    invocations = llm_trace_payload.get("invocations")
+    invocations = invocations if isinstance(invocations, list) else []
+    return {
+        "question_id": "q1",
+        "trace_id": trace_id,
+        "source_module": "plugins.nine_questions.q1_where_am_i",
+        "source_of_truth": "nine_question_q1_snapshots.llm_output_json",
+        "save_flow": [
+            "Q1 LLM output",
+            "audit provenance payload",
+            "q1 llm_output table payload",
+            "service reads q1 table",
+            "frontend displays q1 table output",
+        ],
+        "llm_invocation_count": len(invocations),
+        "llm_invocations": invocations,
+        "workspace_domain_inference": context_updates.get("workspace_domain_inference") or {},
+        "q1_scene_model": context_updates.get("q1_scene_model") or {},
+        "q1_sensory_audit": context_updates.get("q1_sensory_audit") or {},
+        "q1_uncertainty_profile": context_updates.get("q1_uncertainty_profile") or {},
+        "token_usage": llm_trace_payload.get("token_usage") if isinstance(llm_trace_payload.get("token_usage"), dict) else {},
+    }
 
 
 def build_q1_where_am_i_plugin(

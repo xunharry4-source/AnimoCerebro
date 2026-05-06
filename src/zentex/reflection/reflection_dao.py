@@ -238,6 +238,87 @@ class ReflectionDAO(BaseDAO):
             logger.error(f"Failed to save reflection: {e}")
             return False
 
+    @staticmethod
+    def _append_reflection_filters(
+        query: str,
+        params: List[Any],
+        filters: Dict[str, Any],
+    ) -> tuple[str, List[Any]]:
+        if "reflection_type" in filters:
+            query += " AND reflection_type = ?"
+            value = filters["reflection_type"]
+            params.append(value.value if hasattr(value, "value") else value)
+
+        if "governance_status" in filters:
+            query += " AND governance_status = ?"
+            value = filters["governance_status"]
+            params.append(value.value if hasattr(value, "value") else value)
+
+        if "start_time" in filters:
+            query += " AND created_at >= ?"
+            value = filters["start_time"]
+            params.append(value.isoformat() if hasattr(value, "isoformat") else str(value))
+
+        if "end_time" in filters:
+            query += " AND created_at <= ?"
+            value = filters["end_time"]
+            params.append(value.isoformat() if hasattr(value, "isoformat") else str(value))
+
+        if "date" in filters:
+            query += " AND substr(created_at, 1, 10) = ?"
+            params.append(str(filters["date"]))
+
+        if "audit_id" in filters:
+            query += " AND audit_id = ?"
+            params.append(str(filters["audit_id"]))
+
+        if "trace_id" in filters:
+            query += " AND trace_id = ?"
+            params.append(str(filters["trace_id"]))
+
+        if "question_id" in filters:
+            query += " AND json_extract(context, '$.question_id') = ?"
+            params.append(str(filters["question_id"]))
+
+        if filters.get("question_scope") == "nine_questions":
+            query += " AND json_extract(context, '$.question_id') LIKE 'q%'"
+
+        if str(filters.get("source") or "").strip().lower() == "plugin":
+            query += """
+                AND (
+                    LOWER(COALESCE(json_extract(metadata, '$.source'), '')) LIKE '%plugin%'
+                    OR LOWER(COALESCE(json_extract(context, '$.source'), '')) LIKE '%plugin%'
+                    OR LOWER(COALESCE(json_extract(context, '$.source_module'), '')) LIKE '%plugin%'
+                    OR LOWER(COALESCE(json_extract(metadata, '$.module_id'), '')) LIKE '%plugin%'
+                    OR LOWER(COALESCE(subject, '')) LIKE '%plugin%'
+                )
+            """
+
+        return query, params
+
+    def count_reflections(self, filters: Dict[str, Any]) -> int:
+        query = "SELECT COUNT(*) AS count FROM reflections WHERE 1=1"
+        query, params = self._append_reflection_filters(query, [], filters)
+        rows = self.db.execute_query(query, tuple(params))
+        if not rows:
+            return 0
+        row = rows[0] if isinstance(rows, list) else rows
+        return int(row["count"] or 0)
+
+    def query_reflections_page(
+        self,
+        filters: Dict[str, Any],
+        *,
+        limit: int,
+        offset: int,
+    ) -> List[ReflectionRecord]:
+        query = "SELECT * FROM reflections WHERE 1=1"
+        query, params = self._append_reflection_filters(query, [], filters)
+        query += " ORDER BY created_at DESC LIMIT ? OFFSET ?"
+        params.extend([max(1, int(limit)), max(0, int(offset))])
+        rows = self.db.execute_query(query, tuple(params))
+        return [self._row_to_reflection(row) for row in rows]
+
     def save_overall_record(self, overall: ReflectionOverallRecord) -> bool:
         try:
             query = """
@@ -434,37 +515,7 @@ class ReflectionDAO(BaseDAO):
         try:
             query = "SELECT * FROM reflections WHERE 1=1"
             params = []
-
-            if "reflection_type" in filters:
-                query += " AND reflection_type = ?"
-                params.append(filters["reflection_type"].value if hasattr(filters["reflection_type"], 'value') else filters["reflection_type"])
-
-            if "governance_status" in filters:
-                query += " AND governance_status = ?"
-                params.append(filters["governance_status"].value if hasattr(filters["governance_status"], 'value') else filters["governance_status"])
-
-            if "start_time" in filters:
-                query += " AND created_at >= ?"
-                params.append(filters["start_time"].isoformat())
-
-            if "end_time" in filters:
-                query += " AND created_at <= ?"
-                params.append(filters["end_time"].isoformat())
-
-            if "audit_id" in filters:
-                query += " AND audit_id = ?"
-                params.append(str(filters["audit_id"]))
-
-            if "trace_id" in filters:
-                query += " AND trace_id = ?"
-                params.append(str(filters["trace_id"]))
-
-            if "question_id" in filters:
-                query += " AND json_extract(context, '$.question_id') = ?"
-                params.append(str(filters["question_id"]))
-
-            if filters.get("question_scope") == "nine_questions":
-                query += " AND json_extract(context, '$.question_id') LIKE 'q%'"
+            query, params = self._append_reflection_filters(query, params, filters)
 
             limit = int(filters.get("limit", 1000))
             query += " ORDER BY created_at DESC LIMIT ?"
