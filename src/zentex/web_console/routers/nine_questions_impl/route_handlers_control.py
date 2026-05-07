@@ -6,13 +6,6 @@ import time
 from typing import Any
 
 from fastapi import APIRouter, HTTPException, Query, Request
-from plugins.nine_questions.q3_role_inference.modules import build_q3_runtime_inventory_context
-from plugins.nine_questions.q9_how_should_i_act.modules import (
-    derive_posture_baseline,
-    normalize_functional_postures,
-    normalize_reasoning_budget,
-    normalize_self_model,
-)
 from zentex.common.flow_audit import FlowAudit
 from zentex.nine_questions.module_retry import (
     build_q9_question_snapshot,
@@ -124,7 +117,6 @@ async def _retry_q3_runtime_inventory_module(request: Request, module_id: str) -
         snapshot_map=snapshot_map,
         module_id=module_id,
         dependency_context=runtime_context,
-        build_runtime_inventory_context_fn=build_q3_runtime_inventory_context,
     )
 
 
@@ -181,26 +173,7 @@ async def _retry_q7_redline_module(request: Request) -> str:
 
 
 async def _retry_q9_posture_input_module(request: Request, module_id: str) -> str:
-    service = _get_nine_question_service(request)
-    snapshot_map = await service.get_snapshot_map()
-    dependency_context = await service.get_flat_dependency_context(upto_question_id="q9")
-    functional_context = inject_app_runtime_context(
-        request,
-        {**dependency_context, "session_id": "nq-baseline"},
-    )
-    return await retry_q9_posture_input_module(
-        service=service,
-        snapshot_map=snapshot_map,
-        module_id=module_id,
-        dependency_context=dependency_context,
-        functional_context=functional_context,
-        plugin_service=get_plugin_service(request),
-        functional_executor=execute_enabled_cognitive_plugin_functionals,
-        normalize_self_model_fn=normalize_self_model,
-        normalize_reasoning_budget_fn=normalize_reasoning_budget,
-        normalize_functional_postures_fn=normalize_functional_postures,
-        derive_posture_baseline_fn=derive_posture_baseline,
-    )
+    raise HTTPException(status_code=410, detail="q9_posture_input_module_removed")
 
 
 async def _retry_single_nine_question_module(

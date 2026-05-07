@@ -33,9 +33,17 @@ DOES NOT:
 
 import logging
 from dataclasses import dataclass
+from pathlib import Path
 from typing import Any, Dict, List, Optional, Union
 
+from zentex.common.prompt_template_files import render_prompt_template
+
 logger = logging.getLogger(__name__)
+_TEMPLATE_DIR = Path(__file__).resolve().with_name("prompt_templates")
+
+
+def _render_template(name: str, values: dict[str, str] | None = None) -> str:
+    return render_prompt_template(_TEMPLATE_DIR, name, values or {}, error_prefix="tasks_core")
 
 
 # ---------------------------------------------------------------------------
@@ -174,32 +182,12 @@ def build_decomposition_context_dict(
 
 def _build_role_segment() -> str:
     """Segment 1 — Role definition: who the LLM is and its top-level task."""
-    return (
-        f"你是 Zentex 的任务拆解引擎（Task Decomposer）。\n\n"
-        f"你的职责是把一个高层任务（mission）拆解为 "
-        f"{_MIN_SUBTASKS}–{_MAX_SUBTASKS} 个可直接执行的子任务（subtask）。"
-    )
+    return _render_template("decomposition_role.md", _subtask_template_values())
 
 
 def _build_constraints_segment() -> str:
     """Segment 2 — Hard output constraints the LLM must not violate."""
-    return (
-        "## 硬性约束（必须严格遵守）\n\n"
-        "- 输出必须是合法 JSON，顶层 key 为 `subtasks`（数组）\n"
-        f"- 子任务数量必须在 {_MIN_SUBTASKS}–{_MAX_SUBTASKS} 之间\n"
-        "- 每个子任务必须包含以下字段（缺一不可）：\n"
-        "  - `local_id`：唯一标识，格式 step-1, step-2, …（不可重复）\n"
-        "  - `title`：子任务标题（简洁，不超过 50 字）\n"
-        "  - `task_type`：枚举之一 — "
-        "Union[cognitive_step, Union[agent_delegation], Union[system_action], intervention] | mission\n"
-        "  - `content`：子任务描述（具体可执行，不超过 200 字）\n"
-        "  - `objective`：成功标准（不超过 100 字）\n"
-        "  - `requirements`：前置条件列表（字符串数组，可为空数组）\n"
-        "  - `depends_on`：依赖的 local_id 列表（只能引用本批次 local_id，可为空数组）\n"
-        "  - `coordination_mode`：枚举之一 — Union[parallel, bundle] | sequential\n"
-        "- 不得凭空发明能力；requirements 必须是可验证的具体条件\n"
-        "- 请直接返回 JSON，不要包含任何额外解释文字"
-    )
+    return _render_template("decomposition_constraints.md", _subtask_template_values())
 
 
 def _build_mission_segment(mission_title: str, mission_content: str) -> str:
@@ -248,25 +236,11 @@ def _build_requirements_segment(requirements: Optional[List[str]]) -> str:
 
 def _build_output_format_segment() -> str:
     """Segment 6 — JSON example showing the exact structure expected."""
-    return (
-        "## 输出格式示例\n\n"
-        "```json\n"
-        "{\n"
-        '  "subtasks": [\n'
-        "    {\n"
-        '      "local_id": "step-1",\n'
-        '      "title": "示例子任务标题",\n'
-        '      "task_type": "cognitive_step",\n'
-        '      "content": "具体执行内容描述（可操作）",\n'
-        '      "objective": "成功完成后的验收标准",\n'
-        '      "requirements": ["前置条件A"],\n'
-        '      "depends_on": [],\n'
-        '      "coordination_mode": "sequential"\n'
-        "    }\n"
-        "  ]\n"
-        "}\n"
-        "```"
-    )
+    return _render_template("decomposition_output_format.md")
+
+
+def _subtask_template_values() -> dict[str, str]:
+    return {"MIN_SUBTASKS": str(_MIN_SUBTASKS), "MAX_SUBTASKS": str(_MAX_SUBTASKS)}
 
 
 # ---------------------------------------------------------------------------

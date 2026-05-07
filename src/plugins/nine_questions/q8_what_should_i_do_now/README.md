@@ -30,6 +30,52 @@ Required files:
   - `q8_objective_profile`
   - `q8_task_queue`
 
+## Public Methods
+
+Q8 exposes two branch-specific public output methods on
+`WhatShouldIDoNowPlugin`. Downstream callers must use these methods when they
+need Q8 internal or external branch results. Do not consume raw branch runtime
+payloads directly.
+
+### `build_internal_public_output(internal_task_result)`
+
+- Input: the raw result returned by `internal_tasks.run_q8_internal_task_generation(...)`.
+- Output scope: `internal`.
+- Output shape:
+  - `scope`
+  - `objective_profile`
+  - `task_queue`
+  - `task_plan`
+- Meaning: internal cognitive work only. This method returns the usable public
+  internal plan and hides branch-local LLM request/response details.
+
+### `build_external_public_output(external_task_result)`
+
+- Input: the raw result returned by `external_tasks.run_q8_external_task_generation(...)`.
+- Output scope: `external`.
+- Output shape:
+  - `scope`
+  - `objective_profile`
+  - `task_queue`
+  - `task_plan`
+- Meaning: external execution-facing intent only. This method returns the usable
+  public external plan and hides branch-local LLM request/response details.
+
+### Public Output Boundary
+
+- These two methods must not merge internal and external outputs.
+- These two methods must not return raw branch internals such as `raw_result`,
+  `llm_input`, `llm_output`, `trace_payload`, `reasoning`,
+  `persistent_task_state`, `q8_priority_baseline`, `q8_functional_objectives`,
+  or `q8_staged_reasoning`.
+- Empty or meaningless branch output is a hard error:
+  - `q8_internal_public_output_empty`
+  - `q8_external_public_output_empty`
+- `q8_objective_and_queue` may include the two public branch results as
+  `q8_internal_result` and `q8_external_result`, but must not inline branch-local
+  LLM I/O or trace payloads. LLM trace data belongs only in the dedicated
+  `llm_trace_payload` field.
+
 ## Constraints
 
 - Functional plugin outputs must influence prioritization, not bypass Q1-Q7 constraints.

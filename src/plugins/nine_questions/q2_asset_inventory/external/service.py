@@ -74,6 +74,7 @@ def run_q2_external_llm_and_save(
     for attempt in range(1, MAX_Q2_EXTERNAL_LLM_ATTEMPTS + 1):
         attempt_started = perf_counter()
         attempt_prompt = prompt + _retry_hint(attempt, "ExternalAssetInventory")
+        llm_input = {"prompt": attempt_prompt}
         invocation_payload = {
             "request_id": f"q2-external-request:{uuid4().hex}",
             "decision_id": caller_context.decision_id,
@@ -82,19 +83,16 @@ def run_q2_external_llm_and_save(
             "max_attempts": MAX_Q2_EXTERNAL_LLM_ATTEMPTS,
             "provider_plugin_id": safe_provider_plugin_id(provider),
             "caller_context": caller_context.model_dump(mode="json"),
-            "system_prompt": request["system_prompt"],
-            "prompt": request["prompt"] + _retry_hint(attempt, "ExternalAssetInventory"),
-            "context": request["model_context"],
+            "llm_input": llm_input,
         }
+        context["_q2_external_tool_llm_input"] = llm_input
         _record_invoked(context, session_id=session_id, trace_id=trace_id, payload=invocation_payload)
         _log_llm_input(
             session_id=session_id,
             trace_id=trace_id,
             attempt=attempt,
             max_attempts=MAX_Q2_EXTERNAL_LLM_ATTEMPTS,
-            prompt=attempt_prompt,
-            model_context=request["model_context"],
-            caller_context=caller_context.model_dump(mode="json"),
+            llm_input=llm_input,
         )
         logger.info(
             "[Q2] external LLM request start attempt=%s/%s session_id=%s trace_id=%s",
@@ -106,7 +104,7 @@ def run_q2_external_llm_and_save(
         try:
             raw = provider.generate_json(
                 prompt=attempt_prompt,
-                context=request["model_context"],
+                context={},
                 caller_context=caller_context,
                 metadata={
                     "question_id": "q2",
@@ -308,12 +306,13 @@ def _trace_invocation(
         "max_attempts": invocation_payload.get("max_attempts"),
         "provider_name": invocation_payload.get("provider_plugin_id"),
         "model": completed_payload.get("model") or failed_payload.get("model"),
-        "system_prompt": invocation_payload.get("system_prompt"),
-        "prompt": invocation_payload.get("prompt"),
+        "prompt": (invocation_payload.get("llm_input") or {}).get("prompt")
+        if isinstance(invocation_payload.get("llm_input"), dict)
+        else "",
         "source_module": caller_context.get("source_module"),
         "invocation_phase": caller_context.get("invocation_phase"),
         "question_driver_refs": caller_context.get("question_driver_refs") or [],
-        "context_data": invocation_payload.get("context") if isinstance(invocation_payload.get("context"), dict) else {},
+        "context_data": {},
         "result": completed_payload.get("result") if isinstance(completed_payload.get("result"), dict) else None,
         "raw_response": completed_payload.get("raw_response") if isinstance(completed_payload.get("raw_response"), dict) else None,
         "token_usage": {
@@ -371,9 +370,7 @@ def _log_llm_input(
     trace_id: str,
     attempt: int,
     max_attempts: int,
-    prompt: str,
-    model_context: dict[str, Any],
-    caller_context: dict[str, Any],
+    llm_input: dict[str, Any],
 ) -> None:
     logger.warning(
         "[Q2_LLM_INPUT] scope=external_tools session_id=%s trace_id=%s payload=%s",
@@ -384,9 +381,7 @@ def _log_llm_input(
                 "scope": "external_tools",
                 "attempt": attempt,
                 "max_attempts": max_attempts,
-                "prompt": prompt,
-                "context": model_context,
-                "caller_context": caller_context,
+                "llm_input": llm_input,
             },
             ensure_ascii=False,
             default=str,

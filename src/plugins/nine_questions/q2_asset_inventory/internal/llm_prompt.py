@@ -1,52 +1,27 @@
 from __future__ import annotations
 
+import json
 import re
+from pathlib import Path
 from typing import Any
 
+from zentex.common.prompt_template_files import prompt_template_files, render_prompt_template
 from zentex.common.plugin_ids import NINE_QUESTION_Q2
 
 MAX_Q2_MEMORY_INPUTS = 10
+_TEMPLATE_DIR = Path(__file__).resolve().with_name("prompt_templates")
+_TEMPLATE_FILES = ["system_prompt.md", "user_prompt.md"]
 
 
-Q2_INTERNAL_PROMPT_IDENTITY_AND_BOUNDARY = """你是 Zentex Q2 内部资产盘点器。只盘点内部脑资产，禁止输出外部 CLI、MCP、Agent 或外接服务。"""
+def _render_template(name: str, values: dict[str, str] | None = None) -> str:
+    return render_prompt_template(_TEMPLATE_DIR, name, values or {}, error_prefix="q2_internal")
 
-Q2_INTERNAL_PROMPT_INPUTS = """必须同时读取 model_context 的三个输入：
-1. Internal_Cognitive_Tools：内部认知插件。
-2. Internal_Functional_Plugins：Q2 认知插件可调用的内部功能插件，这是认知插件背后的实际功能模块，必须单独盘点。
-3. Memory_&_Patches_Context：长期记忆和可复用策略补丁。"""
 
-Q2_INTERNAL_PROMPT_OUTPUT_SCHEMA = """只输出一个合法 JSON 对象，根节点必须是 InternalAssetInventory。不要 Markdown、解释、代码块或前后缀文本。
-输出字段固定为："""
+def _json_block(value: Any) -> str:
+    return json.dumps(value if value is not None else {}, ensure_ascii=False, indent=2, default=str)
 
-Q2_INTERNAL_PROMPT_JSON_EXAMPLE = """{
-  "InternalAssetInventory": {
-    "internal_cognitive_tools": [
-      {"name": "", "capability_summary": "", "task_routing_hints": "", "side_effects": "无外部副作用"}
-    ],
-    "internal_functional_plugins": [
-      {"name": "", "capability_summary": "", "task_routing_hints": "", "side_effects": "无外部副作用"}
-    ],
-    "long_term_memories": [
-      {"summary": "", "freshness": ""}
-    ],
-    "reusable_strategy_patches": [
-      {"name": "", "applicable_scenario": ""}
-    ]
-  }
-}"""
 
-Q2_INTERNAL_PROMPT_OUTPUT_CONSTRAINTS = """capability_summary 必须从用户视角说明工具本质和能解决的问题。不要复述内部工程代号。
-输出前必须在内部完成 JSON 自检：确认最终答案能被 json.loads 解析、根节点只有 InternalAssetInventory、所有必需字段都存在、没有 Markdown/解释/代码块/前后缀文本。自检过程禁止输出，最终只输出自检通过后的 JSON 对象。"""
-
-Q2_INTERNAL_SYSTEM_PROMPT = "\n\n".join(
-    [
-        Q2_INTERNAL_PROMPT_IDENTITY_AND_BOUNDARY,
-        Q2_INTERNAL_PROMPT_INPUTS,
-        Q2_INTERNAL_PROMPT_OUTPUT_SCHEMA,
-        Q2_INTERNAL_PROMPT_JSON_EXAMPLE,
-        Q2_INTERNAL_PROMPT_OUTPUT_CONSTRAINTS,
-    ]
-)
+Q2_INTERNAL_SYSTEM_PROMPT = _render_template("system_prompt.md")
 
 
 def build_q2_internal_system_prompt() -> str:
@@ -243,14 +218,16 @@ def build_q2_internal_llm_request(
         "Internal_Functional_Plugins": internal_functional_plugins,
         "Memory_&_Patches_Context": normalize_memory_and_patches_context(memory_and_patches_context),
     }
+    template_values = {
+        "INTERNAL_COGNITIVE_TOOLS_JSON": _json_block(model_context["Internal_Cognitive_Tools"]),
+        "INTERNAL_FUNCTIONAL_PLUGINS_JSON": _json_block(model_context["Internal_Functional_Plugins"]),
+        "MEMORY_AND_PATCHES_CONTEXT_JSON": _json_block(model_context["Memory_&_Patches_Context"]),
+    }
     return {
         "system_prompt": build_q2_internal_system_prompt(),
-        "prompt": (
-            "请严格基于 model_context 中的 [Internal_Cognitive_Tools]、"
-            "[Internal_Functional_Plugins] 与 "
-            "[Memory_&_Patches_Context] 输出 InternalAssetInventory 纯 JSON。"
-        ),
+        "prompt": _render_template("user_prompt.md", template_values),
         "model_context": model_context,
+        "template_files": prompt_template_files(_TEMPLATE_DIR, _TEMPLATE_FILES),
     }
 
 
@@ -294,9 +271,16 @@ def _deterministic_internal_tool(row: dict[str, Any], *, fallback_kind: str) -> 
     name = _text(row.get("name") or row.get("display_name") or row.get("purpose") or fallback_kind)
     description = _brief(row.get("basic_capability_description") or row.get("description") or row.get("purpose") or name)
     kind = _text(row.get("plugin_kind")) or fallback_kind
+    capability_summary = f"这是一个{kind}。其核心功能是：{description or name}。"
+    function_description = (
+        _text(row.get("task_routing_hints"))
+        or f"{name} 能执行其注册说明中声明的内部认知或功能操作。"
+    )
     return {
         "name": name,
-        "capability_summary": f"这是一个{kind}。其核心功能是：{description or name}。",
+        "capability_summary": capability_summary,
+        "description": capability_summary,
+        "function_description": function_description,
         "task_routing_hints": _text(row.get("task_routing_hints")) or f"适用于需要调用{name}能力的内部认知任务。",
         "side_effects": "无外部副作用",
     }

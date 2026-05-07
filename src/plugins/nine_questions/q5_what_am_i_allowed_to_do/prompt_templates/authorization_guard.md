@@ -1,5 +1,0 @@
-- `forbidden_operations` 是 Q5 主输出语义；所有未授权、需升级、缺证据、越租户、越联系边界的动作必须进入该字段。
-- `allowed_operations` 必须是 Q4 actionable_space 的子集；不得发明、扩写或改写 Q4 没有给出的动作。
-- 如果某动作物理可执行但没有明确授权，或命中 tenant_scope、contact_policy、agent_trust_policy、身份边界禁令，必须写入 `forbidden_operations`。
-- 如果 contact_policy、tenant_scope 或 agent_trust_policy 表明协作不可用或受限，必须在 `communication_policy` 和 `organizational_boundary` 中明确说明。
-- 禁止输出 `question_driver_refs` 或任何 schema 外字段；证据来源由运行时审计记录维护。

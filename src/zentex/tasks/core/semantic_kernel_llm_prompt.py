@@ -1,9 +1,17 @@
 from __future__ import annotations
 
 import json
-from typing import Any
+from pathlib import Path
+from typing import Any, Optional
 
+from zentex.common.prompt_template_files import render_prompt_template
 from zentex.common.prompt_sections import assemble_prompt_sections, build_prompt_section
+
+_TEMPLATE_DIR = Path(__file__).resolve().with_name("prompt_templates")
+
+
+def _render_template(name: str, values: dict[str, str] | None = None) -> str:
+    return render_prompt_template(_TEMPLATE_DIR, name, values or {}, error_prefix="tasks_semantic_kernel")
 
 
 _MAX_MISSION_TITLE = 200
@@ -27,7 +35,7 @@ def build_semantic_kernel_request(
             title="Role",
             intent="Define the Semantic Kernel decomposition role.",
             purpose="Keep the model focused on semantic analysis plus task planning.",
-            content="你是 Semantic Kernel 任务拆解专家。",
+            content=_render_template("semantic_role.md"),
         ),
         build_prompt_section(
             key="kernel_config",
@@ -56,41 +64,21 @@ def build_semantic_kernel_request(
             title="Analysis Intent",
             intent="Explain what the semantic analysis must cover.",
             purpose="Force semantic understanding before subtask generation.",
-            content=(
-                "1. 理解任务核心目标与约束。\n"
-                "2. 识别领域、复杂度、关键依赖和资源需求。\n"
-                "3. 根据指定策略生成执行顺序与协作模式。\n"
-                f"4. 策略补充要求: {_build_strategy_prompt(strategy)}"
-            ),
+            content=_render_template("semantic_analysis_intent.md", {"STRATEGY_PROMPT": _build_strategy_prompt(strategy)}),
         ),
         build_prompt_section(
             key="output_contract",
             title="Output Contract",
             intent="Define the required semantic analysis and subtask schema.",
             purpose="Prevent partial JSON and missing semantic fields.",
-            content=(
-                "返回严格 JSON，顶层必须包含 `semantic_analysis` 和 `subtasks`。\n"
-                "`semantic_analysis` 需要包含:\n"
-                "- `core_objective`\n- `domain`\n- `complexity_level`\n- `key_dependencies`\n"
-                "- `resource_requirements`\n- `risk_factors`\n- `success_criteria`\n"
-                "`subtasks` 中每个对象需要包含:\n"
-                "- `local_id`\n- `title`\n- `task_type`\n- `content`\n- `objective`\n"
-                "- `requirements`\n- `depends_on`\n- `coordination_mode`\n"
-                "- `estimated_duration`\n- `priority`\n- `semantic_tags`\n"
-                "- `risk_level`\n- `resource_impact`\n- `success_metrics`"
-            ),
+            content=_render_template("semantic_output_contract.md"),
         ),
         build_prompt_section(
             key="quality_rules",
             title="Quality Rules",
             intent="Constrain semantic depth and output quality.",
             purpose="Avoid shallow keyword matching and abstract subtasks.",
-            content=(
-                "1. 不得只做关键词匹配，必须体现语义理解。\n"
-                "2. 依赖关系、风险与资源影响必须具体。\n"
-                "3. 子任务必须可执行，不能只写抽象分析。\n"
-                "4. 只返回 JSON，不要额外解释。"
-            ),
+            content=_render_template("semantic_quality_rules.md"),
         ),
     ]
     return {
@@ -122,7 +110,7 @@ def build_semantic_analysis_request(
             title="Role",
             intent="Define the semantic analysis role.",
             purpose="Focus the model on semantic understanding rather than subtask generation.",
-            content="你是 Semantic Kernel 语义分析专家。",
+            content=_render_template("semantic_analysis_role.md"),
         ),
         build_prompt_section(
             key="kernel_config",
@@ -145,19 +133,14 @@ def build_semantic_analysis_request(
             title="Output Contract",
             intent="Define the semantic analysis schema.",
             purpose="Ensure the model returns a complete semantic analysis object.",
-            content=(
-                "返回严格 JSON，字段必须包含:\n"
-                "- `core_objective`\n- `domain`\n- `complexity_level`\n"
-                "- `key_dependencies`\n- `resource_requirements`\n"
-                "- `risk_factors`\n- `success_criteria`"
-            ),
+            content=_render_template("semantic_analysis_output_contract.md"),
         ),
         build_prompt_section(
             key="quality_rules",
             title="Quality Rules",
             intent="Constrain semantic analysis quality.",
             purpose="Avoid shallow analysis and extra free-form output.",
-            content="1. 体现真实语义分析，不要只做关键词匹配。\n2. 只返回 JSON，不要输出额外解释。",
+            content=_render_template("semantic_analysis_quality_rules.md"),
         ),
     ]
     return {

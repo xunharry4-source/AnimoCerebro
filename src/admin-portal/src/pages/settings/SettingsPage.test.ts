@@ -6,6 +6,11 @@ import { fileURLToPath } from "node:url";
 import zhCN from "../../locales/zh-CN.json";
 import enUS from "../../locales/en-US.json";
 import {
+  DEFAULT_LANGUAGE,
+  normalizeSupportedLanguage,
+  SUPPORTED_LANGUAGES,
+} from "../../i18nConfig";
+import {
   formatForbiddenActionsForEditor,
   formatTaskGoalsForEditor,
   formatTaskGoalsForList,
@@ -44,6 +49,14 @@ describe("/console/settings frontend contract", () => {
     expect(getValue(enUS, "settings.addTaskGoal")).toEqual(expect.any(String));
     expect(getValue(zhCN, "settings.removeTaskGoal")).toEqual(expect.any(String));
     expect(getValue(enUS, "settings.removeTaskGoal")).toEqual(expect.any(String));
+  });
+
+  it("keeps admin language configuration defaulted to Chinese and limited to Chinese/English", () => {
+    expect(DEFAULT_LANGUAGE).toBe("zh-CN");
+    expect(SUPPORTED_LANGUAGES).toEqual(["zh-CN", "en-US"]);
+    expect(normalizeSupportedLanguage("en")).toBe("en-US");
+    expect(normalizeSupportedLanguage("zh")).toBe("zh-CN");
+    expect(normalizeSupportedLanguage("fr-FR")).toBe("zh-CN");
   });
 
   it("normalizes task goals between stored JSON, editor text, and list state", () => {

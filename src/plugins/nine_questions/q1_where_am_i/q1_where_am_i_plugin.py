@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import logging
 import re
+import json
+import sqlite3
 from collections import Counter
 from datetime import datetime, timezone
 from pathlib import Path
@@ -13,6 +15,7 @@ from pydantic import BaseModel, ConfigDict
 
 from zentex.common.cognitive_result import CognitiveToolResult
 from zentex.common.plugin_ids import NINE_QUESTION_Q1
+from zentex.common.storage_paths import get_storage_paths
 from zentex.plugins.models import PluginLifecycleStatus
 
 from plugins.nine_questions.q1_where_am_i.compression_budget import LocalCompressionBudget
@@ -63,6 +66,7 @@ from zentex.common.nine_questions_shared import (
 )
 
 logger = logging.getLogger(__name__)
+Q1_SNAPSHOT_TABLE = "nine_question_q1_snapshots"
 
 TEXT_SAMPLE_SUFFIXES = {
     ".py", ".ts", ".tsx", ".js", ".jsx", ".json", ".jsonl", ".yaml", ".yml",
@@ -335,6 +339,58 @@ def _to_json_dict(value: Any) -> dict[str, Any]:
     if isinstance(value, dict):
         return dict(value)
     return {}
+
+
+def _save_q1_llm_io(
+    *,
+    session_id: str,
+    llm_input: dict[str, Any],
+    llm_output: dict[str, Any] | None = None,
+) -> None:
+    now = datetime.now(UTC).isoformat()
+    db_path = get_storage_paths().session_db
+    with sqlite3.connect(str(db_path)) as conn:
+        conn.row_factory = sqlite3.Row
+        row = conn.execute(
+            f"SELECT llm_output_json, created_at FROM {Q1_SNAPSHOT_TABLE} WHERE session_id = ?",
+            (session_id,),
+        ).fetchone()
+        payload: dict[str, Any] = {}
+        created_at = now
+        if row is not None:
+            created_at = str(row["created_at"] or now)
+            try:
+                loaded = json.loads(str(row["llm_output_json"] or "{}"))
+            except json.JSONDecodeError as exc:
+                raise RuntimeError("q1_llm_output_json_invalid") from exc
+            if isinstance(loaded, dict):
+                payload = loaded
+        payload["q1_llm_input"] = json_safe_payload(llm_input)
+        if llm_output is None:
+            payload.pop("q1_llm_output", None)
+        else:
+            payload["q1_llm_output"] = json_safe_payload(llm_output)
+            payload["workspace_domain_inference"] = json_safe_payload(llm_output)
+        conn.execute(
+            f"""
+            INSERT INTO {Q1_SNAPSHOT_TABLE}
+                (session_id, schema_version, record_version, snapshot_schema_version,
+                 snapshot_json, llm_output_json, llm_trace_json, result_json,
+                 context_updates_json, created_at, updated_at)
+            VALUES (?, 3, 1, 3, ?, ?, '{{}}', '{{}}', '{{}}', ?, ?)
+            ON CONFLICT(session_id) DO UPDATE SET
+                record_version = record_version + 1,
+                llm_output_json = excluded.llm_output_json,
+                updated_at = excluded.updated_at
+            """,
+            (
+                session_id,
+                json.dumps({"question_id": "q1"}, ensure_ascii=False, separators=(",", ":")),
+                json.dumps(payload, ensure_ascii=False, separators=(",", ":"), default=str),
+                created_at,
+                now,
+            ),
+        )
 
 
 def _normalize_inference_payload(raw: Any) -> dict[str, Any]:
@@ -1361,6 +1417,7 @@ class Q1WhereAmIPlugin(BaseModel):
             )
             current_prompt = f"{system_prompt}\n\n{prompt}{retry_hint}"
             attempt_started = perf_counter()
+            q1_llm_input = {"prompt": current_prompt}
             attempt_payload: dict[str, Any] = {
                 "attempt": attempt,
                 "request_id": request_id,
@@ -1368,15 +1425,22 @@ class Q1WhereAmIPlugin(BaseModel):
                 "question_ref": QUESTION_REF,
                 "provider_plugin_id": safe_provider_plugin_id(provider),
                 "caller_context": caller_context.model_dump(mode="json"),
-                "prompt": current_prompt,
-                "system_prompt": system_prompt,
-                "context": model_context,
+                "llm_input": q1_llm_input,
             }
+            _save_q1_llm_io(session_id=session_id, llm_input=q1_llm_input)
+            record_model_invoked(
+                transcript_store,
+                session_id=session_id,
+                turn_id=turn_id,
+                trace_id=trace_id,
+                source="plugins.nine_questions.q1_where_am_i",
+                payload=attempt_payload,
+            )
 
             try:
                 raw = provider.generate_json(
                     prompt=current_prompt,
-                    context=model_context,
+                    context={},
                     caller_context=caller_context,
                 )
                 attempt_payload["raw_response"] = json_safe_payload(getattr(provider, "last_raw_response", None))
@@ -1396,14 +1460,6 @@ class Q1WhereAmIPlugin(BaseModel):
                     }
                 )
                 llm_invocation_attempts.append(attempt_payload)
-                record_model_invoked(
-                    transcript_store,
-                    session_id=session_id,
-                    turn_id=turn_id,
-                    trace_id=trace_id,
-                    source="plugins.nine_questions.q1_where_am_i",
-                    payload=attempt_payload,
-                )
                 record_model_failed(
                     transcript_store,
                     session_id=session_id,
@@ -1427,14 +1483,6 @@ class Q1WhereAmIPlugin(BaseModel):
             if validation_errors or validated_inference is None:
                 attempt_payload["validation_error"] = "; ".join(validation_errors)
                 llm_invocation_attempts.append(attempt_payload)
-                record_model_invoked(
-                    transcript_store,
-                    session_id=session_id,
-                    turn_id=turn_id,
-                    trace_id=trace_id,
-                    source="plugins.nine_questions.q1_where_am_i",
-                    payload=attempt_payload,
-                )
                 record_model_failed(
                     transcript_store,
                     session_id=session_id,
@@ -1482,14 +1530,6 @@ class Q1WhereAmIPlugin(BaseModel):
                 )
                 attempt_payload.update({"error_type": exc.__class__.__name__, "error_message": str(exc)})
                 llm_invocation_attempts.append(attempt_payload)
-                record_model_invoked(
-                    transcript_store,
-                    session_id=session_id,
-                    turn_id=turn_id,
-                    trace_id=trace_id,
-                    source="plugins.nine_questions.q1_where_am_i",
-                    payload=attempt_payload,
-                )
                 record_model_failed(
                     transcript_store,
                     session_id=session_id,
@@ -1507,15 +1547,12 @@ class Q1WhereAmIPlugin(BaseModel):
                 raise RuntimeError(f"Q1 domain inference validation failed: {exc}") from exc
 
             attempt_payload["result"] = json_safe_payload(inference.model_dump(mode="json"))
-            llm_invocation_attempts.append(attempt_payload)
-            record_model_invoked(
-                transcript_store,
+            _save_q1_llm_io(
                 session_id=session_id,
-                turn_id=turn_id,
-                trace_id=trace_id,
-                source="plugins.nine_questions.q1_where_am_i",
-                payload=attempt_payload,
+                llm_input=q1_llm_input,
+                llm_output=inference.model_dump(mode="json"),
             )
+            llm_invocation_attempts.append(attempt_payload)
             break
 
         if inference is None or upgrade_payload is None:
@@ -1559,6 +1596,9 @@ class Q1WhereAmIPlugin(BaseModel):
                 "invocations": llm_invocation_attempts,
             },
         )
+        q1_llm_input_payload = latest_model_payload.get("llm_input")
+        q1_llm_input_payload = q1_llm_input_payload if isinstance(q1_llm_input_payload, dict) else {}
+        q1_llm_output_payload = inference.model_dump(mode="json")
         llm_trace_payload = {
             "request_id": latest_model_payload.get("request_id", str(uuid4())),
             "decision_id": decision_id,
@@ -1568,13 +1608,12 @@ class Q1WhereAmIPlugin(BaseModel):
             "model": json_safe_payload(
                 getattr(provider, "last_model_name", None) or getattr(provider, "default_model", None)
             ),
-            "system_prompt": system_prompt,
-            "prompt": prompt,
+            "prompt": q1_llm_input_payload.get("prompt") or "",
             "source_module": "plugins.nine_questions.q1_where_am_i",
             "invocation_phase": "nine_question_q1_where_am_i",
             "question_driver_refs": caller_context.question_driver_refs,
             "caller_context": caller_context.model_dump(mode="json"),
-            "context_data": model_context,
+            "context_data": {},
             "raw_response": latest_model_payload.get("raw_response"),
             "token_usage": latest_model_payload.get("token_usage") or {},
             "elapsed_ms": int((perf_counter() - started) * 1000),
@@ -1747,6 +1786,11 @@ class Q1WhereAmIPlugin(BaseModel):
                 }
             ],
             "uncertainties": [{"kind": "uncertainties", "items": inference.uncertainties}],
+            "llm_output": {
+                "q1_llm_input": q1_llm_input_payload,
+                "q1_llm_output": q1_llm_output_payload,
+                "workspace_domain_inference": q1_llm_output_payload,
+            },
             "context_updates": {
                 "nine_questions": {QUESTION_REF: inference.primary_domain},
                 "workspace_domain_inference": inference.model_dump(mode="json"),

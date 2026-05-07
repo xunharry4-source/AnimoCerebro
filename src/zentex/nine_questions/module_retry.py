@@ -8,27 +8,31 @@ from plugins.nine_questions.q2_asset_inventory.llm_output_table import (
     load_external_llm_output_from_table as load_q2_external_llm_output_from_table,
     load_internal_llm_output_from_table as load_q2_internal_llm_output_from_table,
 )
-from plugins.nine_questions.q3_role_inference.modules import build_q3_runtime_inventory_context
-from plugins.nine_questions.q4_what_can_i_do.modules import (
-    derive_capability_baseline,
-    derive_permission_profile,
-    normalize_functional_capabilities,
-)
-from plugins.nine_questions.q5_what_am_i_allowed_to_do.modules import (
-    derive_authorization_baseline,
-)
-from plugins.nine_questions.q6_what_should_i_not_do.modules import (
-    derive_forbidden_zone_baseline,
-    normalize_redline_inputs,
-)
-from plugins.nine_questions.q7_what_else_can_i_do.modules import (
-    derive_red_line_assessment_baseline,
-)
-from plugins.nine_questions.q9_how_should_i_act.modules import (
-    normalize_q8_profile,
-    normalize_snapshot_dict,
-)
 from zentex.common.plugin_ids import NINE_QUESTION_Q4, NINE_QUESTION_Q6
+
+
+def _removed_module_retry(*args: Any, **kwargs: Any) -> Any:
+    raise HTTPException(status_code=410, detail="legacy_question_module_retry_removed")
+
+
+derive_capability_baseline = _removed_module_retry
+derive_permission_profile = _removed_module_retry
+normalize_functional_capabilities = _removed_module_retry
+derive_authorization_baseline = _removed_module_retry
+derive_forbidden_zone_baseline = _removed_module_retry
+derive_red_line_assessment_baseline = _removed_module_retry
+
+
+def normalize_redline_inputs(raw: Any) -> list[Any]:
+    return deepcopy(raw) if isinstance(raw, list) else []
+
+
+def normalize_snapshot_dict(raw: Any) -> dict[str, Any]:
+    return deepcopy(raw) if isinstance(raw, dict) else {}
+
+
+def normalize_q8_profile(raw: Any) -> dict[str, Any]:
+    return deepcopy(raw) if isinstance(raw, dict) else {}
 
 
 def merge_q_module_recovery_actions(question_id: str, actions: list[dict[str, Any]]) -> list[dict[str, Any]]:
@@ -37,18 +41,7 @@ def merge_q_module_recovery_actions(question_id: str, actions: list[dict[str, An
         if isinstance(action, dict) and str(action.get("action_id") or "").strip():
             merged[str(action["action_id"])] = deepcopy(action)
 
-    if question_id == "q3":
-        merged["q3-refresh-runtime-inventory"] = {
-            "action_id": "q3-refresh-runtime-inventory",
-            "label": "刷新 Q3 运行态盘点模块",
-            "kind": "partial_retry",
-            "executable": True,
-            "scope": "module",
-            "target": "q3_runtime_inventory",
-            "reason": "仅刷新 Q3 runtime inventory 相关模块，不重跑 LLM。",
-            "path": "/api/web/nine-questions/q3/modules/q3_runtime_inventory/retry",
-        }
-    elif question_id == "q4":
+    if question_id == "q4":
         merged["q4-refresh-capability-inputs"] = {
             "action_id": "q4-refresh-capability-inputs",
             "label": "刷新 Q4 能力输入模块",
@@ -186,68 +179,8 @@ async def retry_q3_runtime_inventory_module(
     snapshot_map: dict[str, dict[str, Any]],
     module_id: str,
     dependency_context: dict[str, Any],
-    build_runtime_inventory_context_fn: Any = build_q3_runtime_inventory_context,
 ) -> str:
-    snapshot = snapshot_map.get("q3")
-    if not isinstance(snapshot, dict):
-        raise HTTPException(status_code=404, detail="Q3 snapshot missing; cannot retry runtime inventory module")
-
-    context_updates = deepcopy(snapshot.get("context_updates") if isinstance(snapshot.get("context_updates"), dict) else {})
-    runtime_context = {
-        **dependency_context,
-        **context_updates,
-        "trace_id": str(snapshot.get("trace_id") or "q3:module-retry"),
-        "session_id": "nq-baseline",
-    }
-    inventory_context = build_runtime_inventory_context_fn(
-        runtime_context,
-        include_resource_inference_gate=True,
-    )
-    context_updates.update(inventory_context["context_updates"])
-
-    existing_diagnosis = deepcopy(context_updates.get("q3_execution_diagnosis") or {})
-    module_runs = existing_diagnosis.get("module_runs")
-    module_runs = module_runs if isinstance(module_runs, list) else []
-    refreshed_runs: list[dict[str, Any]] = []
-    for run in inventory_context["module_runs"]:
-        if not isinstance(run, dict):
-            continue
-        refreshed_runs.append(run)
-        module_runs = upsert_module_run(
-            module_runs,
-            module_id=str(run.get("module_id") or ""),
-            status=str(run.get("status") or "missing"),
-            error_code=str(run.get("error_code") or ""),
-            error_message=str(run.get("error_message") or ""),
-            data=run.get("data") if isinstance(run.get("data"), dict) else None,
-        )
-    incomplete_runs = [
-        run
-        for run in refreshed_runs
-        if str(run.get("status") or "").lower() not in {"completed", "ready"}
-    ]
-    if incomplete_runs:
-        raise HTTPException(status_code=409, detail="Q3 runtime inventory module retry cannot save incomplete module outputs")
-    existing_diagnosis.update(
-        {
-            "authenticity_status": "completed",
-            "diagnosis_code": "runtime_inventory_refreshed",
-            "diagnosis_message": "Q3 runtime inventory modules were refreshed from real module outputs. Resource inference remains the last committed LLM output until Q3 is rerun.",
-            "module_runs": module_runs,
-            "recovery_plan": {
-                **deepcopy(existing_diagnosis.get("recovery_plan") or {}),
-                "actions": merge_q_module_recovery_actions("q3", list((existing_diagnosis.get("recovery_plan") or {}).get("actions") or [])),
-            },
-        }
-    )
-    context_updates["q3_execution_diagnosis"] = existing_diagnosis
-
-    await service.persist_question_snapshot_patch(
-        "q3",
-        {"context_updates": context_updates},
-        refresh_reason=f"question_module_retry:q3:{module_id}",
-    )
-    return f"single_nine_question_module_retried:q3:{module_id}"
+    raise HTTPException(status_code=410, detail="q3_runtime_inventory_removed")
 
 
 async def retry_q9_posture_input_module(

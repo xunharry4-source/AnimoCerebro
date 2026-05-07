@@ -7,11 +7,6 @@ from typing import Any
 
 from fastapi import APIRouter, HTTPException, Query, Request
 
-from plugins.nine_questions.q9_how_should_i_act.llm_output_table import (
-    build_llm_trace_payload_from_table as build_q9_llm_trace_payload_from_table,
-    load_q9_llm_task_detail,
-    load_q9_llm_tasks,
-)
 from zentex.nine_questions.objective_engine import NineQDrivenObjectiveEngine, ObjectiveProfileMissingError
 from zentex.kernel.prompt_contracts import build_contract_summary
 from zentex.nine_questions.q8_phase_a_observability import (
@@ -95,6 +90,26 @@ from .trace_builder import build_trace_detail
 
 router = APIRouter()
 logger = logging.getLogger(__name__)
+
+
+def _build_q9_llm_trace_payload_from_table(*, db_path: Any) -> dict[str, Any]:
+    from plugins.nine_questions.q9_how_should_i_act.llm_output_table import (
+        build_llm_trace_payload_from_table,
+    )
+
+    return build_llm_trace_payload_from_table(db_path=db_path)
+
+
+def _load_q9_llm_tasks(*, db_path: Any, session_id: str, include_payloads: bool) -> dict[str, Any]:
+    from plugins.nine_questions.q9_how_should_i_act.llm_output_table import load_q9_llm_tasks
+
+    return load_q9_llm_tasks(db_path=db_path, session_id=session_id, include_payloads=include_payloads)
+
+
+def _load_q9_llm_task_detail(*, db_path: Any, session_id: str, task_key: str) -> dict[str, Any]:
+    from plugins.nine_questions.q9_how_should_i_act.llm_output_table import load_q9_llm_task_detail
+
+    return load_q9_llm_task_detail(db_path=db_path, session_id=session_id, task_key=task_key)
 
 
 def _merge_trace_payloads(*payloads: Any) -> dict[str, Any]:
@@ -887,7 +902,7 @@ async def get_nine_question_trace_payload(request: Request, question_id: str):
     if question_id == "q9":
         get_db_path = getattr(service, "sqlite_db_path", None)
         db_path = get_db_path() if callable(get_db_path) else None
-        return build_q9_llm_trace_payload_from_table(db_path=db_path)
+        return _build_q9_llm_trace_payload_from_table(db_path=db_path)
 
     trace_payload = await service.get_question_trace(question_id)
     trace_payload = trace_payload if isinstance(trace_payload, dict) else {}
@@ -943,7 +958,7 @@ async def get_q9_llm_tasks(request: Request):
     db_path = _q9_state_db_path(request)
     last_payload: dict[str, Any] | None = None
     for session_id in _q9_session_candidates(str(session.session_id)):
-        payload = load_q9_llm_tasks(
+        payload = _load_q9_llm_tasks(
             db_path=db_path,
             session_id=session_id,
             include_payloads=False,
@@ -951,7 +966,7 @@ async def get_q9_llm_tasks(request: Request):
         last_payload = payload
         if payload.get("tasks"):
             return payload
-    return last_payload or load_q9_llm_tasks(db_path=db_path, session_id="nq-baseline", include_payloads=False)
+    return last_payload or _load_q9_llm_tasks(db_path=db_path, session_id="nq-baseline", include_payloads=False)
 
 
 @router.get("/nine-questions/q9/llm-tasks/{task_key}")
@@ -961,7 +976,7 @@ async def get_q9_llm_task_detail(request: Request, task_key: str):
     last_error: RuntimeError | None = None
     for session_id in _q9_session_candidates(str(session.session_id)):
         try:
-            return load_q9_llm_task_detail(
+            return _load_q9_llm_task_detail(
                 db_path=db_path,
                 session_id=session_id,
                 task_key=task_key,

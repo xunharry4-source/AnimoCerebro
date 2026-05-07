@@ -1,11 +1,13 @@
 from __future__ import annotations
 
+from pathlib import Path
 from typing import Any
 
 from pydantic import BaseModel, ConfigDict, Field
 
 from zentex.common.plugin_ids import REFLECTION_GENERATOR
 from zentex.common.nine_questions_shared import resolve_model_provider_key
+from zentex.common.prompt_template_files import render_prompt_template
 from zentex.foundation.specs.model_provider import ModelProviderCallerContext
 from zentex.plugins.service import execute_enabled_cognitive_plugin_functionals
 
@@ -65,9 +67,11 @@ class ReflectionGeneratorPlugin(BaseModel):
             decision_id=str(model_context.get("decision_id") or "reflection:generate"),
             trace_id=str(context.get("trace_id") or "reflection:generate"),
         )
-        prompt = (
-            "You are Zentex. Generate an auditable reflection for the current turn. "
-            "Return JSON with keys: summary, lessons, risks, next_improvements, confidence."
+        prompt = render_prompt_template(
+            Path(__file__).resolve().with_name("prompt_templates"),
+            "reflection_generate.md",
+            {},
+            error_prefix="reflection_generator",
         )
         if llm_service is not None and hasattr(llm_service, "generate_json"):
             gateway_call = llm_service.generate_json(

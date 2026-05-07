@@ -1,8 +1,10 @@
 from __future__ import annotations
 
 import json
+from pathlib import Path
 from typing import Any
 
+from zentex.common.prompt_template_files import prompt_template_files, render_prompt_template
 from zentex.common.nine_questions_prompts import (
     assemble_prompt_sections,
     build_prompt_section,
@@ -21,6 +23,13 @@ _TASK_STATE_ALLOWED_KEYS = {
 }
 
 _REQUIRED_Q8_UPSTREAMS = {"q4", "q5", "q6"}
+_TEMPLATE_DIR = Path(__file__).resolve().with_name("prompt_templates")
+_TEMPLATE_FILES = ["q5_dynamic_convergence_guard.md", "output_contract.md"]
+
+
+def _render_template(name: str, values: dict[str, str] | None = None) -> str:
+    return render_prompt_template(_TEMPLATE_DIR, name, values or {}, error_prefix="q8")
+
 _FORBIDDEN_RAW_KEYS = {
     "raw_output",
     "reasoning_trace",
@@ -327,13 +336,7 @@ def build_q8_llm_request(
             title="Q5 Dynamic Authorization Convergence Guard",
             intent="Force Q8 objectives to shrink when Q5 collaboration or authorization is limited.",
             purpose="Prevent high-permission or cross-brain objectives when Q5 forbids them.",
-            content=(
-                "如果 q1_q7_snapshot.q5.objective_scope 为 `single_brain_only`，"
-                "或 q1_q7_snapshot.q5.collaboration_available 为 false，"
-                "或 q1_q7_snapshot.q5.authorization_limited 为 true，"
-                "则 Q8 的 objective_profile 与 task_queue 必须收缩为单脑可完成目标，"
-                "不得生成跨脑委托、外部 Agent 求助或高权限执行任务。"
-            ),
+            content=_render_template("q5_dynamic_convergence_guard.md"),
         ),
         build_prompt_section(
             key="preprocessing_report",
@@ -347,35 +350,7 @@ def build_q8_llm_request(
             title="Output Contract",
             intent="Define the required final response shape.",
             purpose="Prevent summary-only output and enforce objective/task JSON.",
-            content=(
-                "综合判断，输出严格 JSON。\n"
-                "顶层只能包含：\n"
-                "- `objective_profile`\n"
-                "- `task_queue`\n\n"
-                "`objective_profile` 必须包含以下字段：\n"
-                "- `current_mission`\n"
-                "- `primary_objectives`\n"
-                "- `secondary_objectives`\n"
-                "- `completion_conditions`\n"
-                "- `pause_conditions`\n"
-                "- `escalation_conditions`\n"
-                "- `current_phase_tasks`\n"
-                "- `priority_order`\n\n"
-                "`task_queue` 必须是对象，且只能包含：\n"
-                "- `next_self_tasks`\n"
-                "- `blocked_self_tasks`\n"
-                "- `proactive_actions`\n\n"
-                "禁止返回旧字段或旧结构：\n"
-                "- 不要使用 `main_objective`\n"
-                "- 不要使用 `rationale`\n"
-                "- 不要使用 `constraints_adherence`\n"
-                "- 不要使用 `derived_capabilities`\n"
-                "- 不要把 `task_queue` 输出成数组\n"
-                "- 不要输出 Q9 的 `evaluation_profile`\n"
-                "- 不要输出 Q9 的 `evolution_profile`\n"
-                "- 不要输出 Q9 的 `escalation_profile`\n"
-                "- 不要输出任何解释文字、markdown、代码块"
-            ),
+            content=_render_template("output_contract.md"),
         ),
     ]
     user_prompt = assemble_prompt_sections(prompt_sections)
@@ -387,6 +362,7 @@ def build_q8_llm_request(
         "active_objectives": compact_active_objectives,
         "functional_objectives": compact_functional_objectives,
         "q8_prompt_preprocessing_report": preprocessing_report,
+        "template_files": prompt_template_files(_TEMPLATE_DIR, _TEMPLATE_FILES),
     }
     return {
         "system_prompt": assemble_prompt_sections(system_prompt_sections),

@@ -1,9 +1,9 @@
 from __future__ import annotations
 
-from plugins.nine_questions.q6_what_should_i_not_do.external.service import (
-    collect_external_redline_inputs,
-)
+from .llm_prompt import build_q6_external_llm_request
+from .service import run_q6_external_llm_and_save
 
 __all__ = [
-    "collect_external_redline_inputs",
+    "build_q6_external_llm_request",
+    "run_q6_external_llm_and_save",
 ]

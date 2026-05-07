@@ -6,14 +6,18 @@ import hashlib
 import re
 from collections import Counter, defaultdict
 from datetime import datetime, timezone
+from pathlib import Path
 from typing import Any
 from uuid import uuid4
 
+from zentex.common.prompt_template_files import render_prompt_template
 from zentex.tasks.maintenance.garbage_analysis_prompt import (
     build_task_creation_noise_scoring_context,
     build_task_creation_noise_scoring_prompt,
 )
 from zentex.tasks.models import TaskScope, TaskStatus, ZentexTask
+
+_TEMPLATE_DIR = Path(__file__).resolve().with_name("prompt_templates")
 
 
 ACTIVE_STATUSES = {
@@ -472,13 +476,11 @@ def _build_llm_semantic_evaluations(
             "cancel_garbage_noise_score": 0.85,
         },
     }
-    prompt = (
-        "You are the Zentex Task Garbage & Duplication Analyzer. "
-        "Score only semantic intent and task value; do not invent task IDs. "
-        "Return strict JSON: {\"evaluations\":[{\"group_id\":\"...\","
-        "\"semantic_duplicate_score\":0.0,\"garbage_noise_score\":0.0,"
-        "\"comprehensive_value_score\":0.0,\"evaluation_reason\":\"short reason\","
-        "\"target_merge_task_id\":\"task id or null\",\"final_decision\":\"allow|monitor|merge_and_drop|cancel_by_policy\"}]}."
+    prompt = render_prompt_template(
+        _TEMPLATE_DIR,
+        "garbage_semantic_scoring.md",
+        {},
+        error_prefix="tasks_garbage_analysis",
     )
     try:
         result = llm_service.generate_json(

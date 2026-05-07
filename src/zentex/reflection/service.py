@@ -50,6 +50,47 @@ class ReflectionMaintenanceResult(BaseModel):
     top_tags: List[str] = Field(default_factory=list)
     summary: str = Field(min_length=1)
 
+
+class ReflectionSystemFinding(BaseModel):
+    model_config = ConfigDict(extra="allow")
+
+    finding_id: str = Field(min_length=1)
+    finding_type: str = Field(min_length=1)
+    problem_scope: str = Field(default="unknown", min_length=1)
+    content: str = Field(min_length=1)
+    reflection_object: str = Field(default="")
+    failure_fact: str = Field(default="")
+    root_cause: str = Field(default="")
+    improvement_direction: str = Field(default="")
+    source_field: str = Field(min_length=1)
+    reflection_id: str = Field(min_length=1)
+    trace_id: Optional[str] = None
+    audit_id: Optional[str] = None
+    subject: str = Field(min_length=1)
+    reflection_type: str = Field(min_length=1)
+    quality: str = Field(min_length=1)
+    governance_status: str = Field(min_length=1)
+    priority: Optional[int] = None
+    created_at: datetime
+    tags: List[str] = Field(default_factory=list)
+    metadata: Dict[str, Any] = Field(default_factory=dict)
+
+
+class ReflectionSystemImprovementQueryResult(BaseModel):
+    model_config = ConfigDict(extra="allow")
+
+    database_backed: bool = True
+    source_table: str = Field(default="reflections", min_length=1)
+    problem_scope_filter: Optional[str] = None
+    total_problems: int = Field(ge=0)
+    total_improvements: int = Field(ge=0)
+    totals_by_scope: Dict[str, int] = Field(default_factory=dict)
+    current_problems: List[ReflectionSystemFinding] = Field(default_factory=list)
+    improvement_opportunities: List[ReflectionSystemFinding] = Field(default_factory=list)
+    queried_source_records: int = Field(ge=0)
+    generated_at: datetime
+
+
 class ReflectionService:
     
     def __init__(
@@ -206,6 +247,11 @@ class ReflectionService:
         now = datetime.now(timezone.utc)
         effective_context = {**context, **(audit.as_payload() if audit is not None else {})}
         summary = str(effective_context.get("summary") or subject)
+        item_fields = self._build_nine_question_reflection_item_fields(
+            subject=subject,
+            context=effective_context,
+            fallback_content=summary,
+        )
         record = ReflectionRecord(
             reflection_id=create_reflection_id(),
             trace_id=trace_id,
@@ -230,6 +276,7 @@ class ReflectionService:
                     content=summary,
                     category="insight",
                     priority=5,
+                    **item_fields,
                     metadata={
                         "source": "nine_question_integration",
                         "question_id": effective_context.get("question_id"),
@@ -250,6 +297,53 @@ class ReflectionService:
             raise RuntimeError(f"Failed to persist reflection: {record.reflection_id}")
         self._reflection_cache[record.reflection_id] = record
         return record
+
+    @staticmethod
+    def _build_nine_question_reflection_item_fields(
+        *,
+        subject: str,
+        context: Dict[str, Any],
+        fallback_content: str,
+    ) -> Dict[str, Optional[str]]:
+        metadata = {
+            "module_id": context.get("module_id"),
+            "question_id": context.get("question_id"),
+        }
+        reflection_object = ReflectionDAO._infer_reflection_target(
+            context=context,
+            metadata=metadata,
+            subject=subject,
+        )
+        failure_fact = ReflectionDAO._first_text(
+            context.get("failure_fact"),
+            context.get("problem_fact"),
+            context.get("problem"),
+            context.get("problems"),
+            context.get("risk"),
+            context.get("risks"),
+            fallback_content,
+        )
+        root_cause = ReflectionDAO._first_text(
+            context.get("root_cause"),
+            context.get("cause"),
+            context.get("reason"),
+            context.get("failure_reason"),
+        )
+        improvement_direction = ReflectionDAO._first_text(
+            context.get("improvement_direction"),
+            context.get("next_improvement"),
+            context.get("improvement"),
+            context.get("improvements"),
+            context.get("improvement_suggestions"),
+            context.get("recommended_improvements"),
+            context.get("actionable_adjustment"),
+        )
+        return {
+            "reflection_object": reflection_object or None,
+            "failure_fact": failure_fact or None,
+            "root_cause": root_cause or None,
+            "improvement_direction": improvement_direction or None,
+        }
     
     def register_expectation(self, target_state: str, criteria: List[str], confidence: float = 0.5) -> str:
         """注册期望 - 委托给OutcomeBinding"""
@@ -392,6 +486,35 @@ class ReflectionService:
         metrics = self._metrics_calculator.calculate_metrics(reflections)
         
         return metrics
+
+    def query_system_problems_and_improvements(
+        self,
+        *,
+        limit: int = 10,
+        max_source_records: int = 1000,
+        problem_scope: Optional[str] = None,
+    ) -> ReflectionSystemImprovementQueryResult:
+        """查询当前系统已反思出的真实问题与改进项。"""
+        result = self._dao.query_system_problem_improvement_findings(
+            limit=limit,
+            max_source_records=max_source_records,
+            problem_scope=problem_scope,
+        )
+        return ReflectionSystemImprovementQueryResult(**result)
+
+    def query_current_problem_contents(
+        self,
+        *,
+        limit: int = 10,
+        max_source_records: int = 1000,
+        problem_scope: Optional[str] = None,
+    ) -> Dict[str, Any]:
+        """查询当前问题内容字段，供提示词上游输入使用。"""
+        return self._dao.query_current_problem_contents(
+            limit=limit,
+            max_source_records=max_source_records,
+            problem_scope=problem_scope,
+        )
     
     def should_update_reflection_list(self, reflection: ReflectionRecord) -> bool:
         """判断是否更新反思列表 - 委托给update_policy"""

@@ -6,7 +6,6 @@ from typing import Any
 
 from fastapi import HTTPException, Request
 
-from plugins.nine_questions.q9_how_should_i_act.llm_output_table import load_llm_output_from_table
 from zentex.nine_questions.q9_tasks import sync_q9_tasks_to_task_service
 from zentex.web_console.dependencies import get_plugin_service
 from zentex.web_console.routers.nine_questions_impl.q_state import _get_nine_question_service
@@ -88,6 +87,12 @@ def _merge_q9_context_updates(
     snapshot_map["q9"] = q9_snapshot
 
 
+def _load_q9_llm_output_from_table(*, db_path: Any, session_id: str) -> dict[str, Any]:
+    from plugins.nine_questions.q9_how_should_i_act.llm_output_table import load_llm_output_from_table
+
+    return load_llm_output_from_table(db_path=db_path, session_id=session_id)
+
+
 async def sync_q9_postured_q8_tasks(
     request: Request,
     session_id: str,
@@ -114,7 +119,7 @@ async def sync_q9_postured_q8_tasks(
             snapshot_map["q9"] = merged_q9_snapshot
         state_manager = getattr(service, "_state_manager", None)
         store = getattr(state_manager, "_store", None)
-        q9_llm_output = load_llm_output_from_table(
+        q9_llm_output = _load_q9_llm_output_from_table(
             db_path=getattr(store, "db_path", None),
             session_id="nq-baseline",
         )

@@ -1,8 +1,16 @@
 from __future__ import annotations
 
-from typing import Any
+from pathlib import Path
+from typing import Any, Optional
 
+from zentex.common.prompt_template_files import render_prompt_template
 from zentex.common.prompt_sections import assemble_prompt_sections, build_prompt_section
+
+_TEMPLATE_DIR = Path(__file__).resolve().with_name("prompt_templates")
+
+
+def _render_template(name: str, values: dict[str, str] | None = None) -> str:
+    return render_prompt_template(_TEMPLATE_DIR, name, values or {}, error_prefix="tasks_verification")
 
 
 _MAX_TASK_REMARKS = 1500
@@ -30,7 +38,7 @@ def build_llm_evaluation_prompt(
             title="Role",
             intent="Define the evaluation task.",
             purpose="Keep the model focused on quality assessment instead of content generation.",
-            content="你是一个任务质量评估专家，需要基于任务要求和提交结果给出结构化评估。",
+            content=_render_template("evaluation_role.md"),
         )
     ]
     prompt_sections = [
@@ -64,23 +72,14 @@ def build_llm_evaluation_prompt(
             title="Output Contract",
             intent="Define the required JSON response.",
             purpose="Prevent missing fields and free-form text.",
-            content=(
-                "返回严格 JSON，字段必须包含：\n"
-                "- `passed`\n- `confidence`\n- `summary`\n- `reasoning`\n"
-                "- `criteria_met`\n- `criteria_failed`"
-            ),
+            content=_render_template("evaluation_output_contract.md"),
         ),
         build_prompt_section(
             key="quality_rules",
             title="Quality Rules",
             intent="Constrain evaluation quality.",
             purpose="Keep the judgment evidence-based and compact.",
-            content=(
-                "1. 结论必须与证据一致。\n"
-                "2. `summary` 控制在 50 字内。\n"
-                "3. `confidence` 必须是 0.0 到 1.0 的浮点数。\n"
-                "4. 不要输出 JSON 之外的解释。"
-            ),
+            content=_render_template("evaluation_quality_rules.md"),
         ),
     ]
     return {

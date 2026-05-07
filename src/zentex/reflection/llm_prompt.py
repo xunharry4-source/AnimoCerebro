@@ -34,9 +34,17 @@ DOES NOT:
 import json
 import logging
 from dataclasses import dataclass, field
+from pathlib import Path
 from typing import Any, Dict, List, Optional
 
+from zentex.common.prompt_template_files import render_prompt_template
+
 logger = logging.getLogger(__name__)
+_TEMPLATE_DIR = Path(__file__).resolve().with_name("prompt_templates")
+
+
+def _render_template(name: str, values: dict[str, str]) -> str:
+    return render_prompt_template(_TEMPLATE_DIR, name, values, error_prefix="reflection")
 
 
 # ---------------------------------------------------------------------------
@@ -140,28 +148,13 @@ def build_quality_audit_prompt(
     Returns:
         Complete audit prompt string.
     """
-    return (
-        "你是一个严苛的【认知质量审计师】。你的任务是评估以下生成的【反思内容】的质量。\n\n"
-        "## 反思主体\n"
-        f"{subject}\n\n"
-        "## 生成的反思内容（待审计）\n"
-        f"{json.dumps(reflection_content, ensure_ascii=False, indent=2)}\n\n"
-        "## 原始上下文（用于验证真实性）\n"
-        f"{json.dumps(_preprocess_context(context), ensure_ascii=False, indent=2)}\n\n"
-        "## 审计标准（严格执行）\n"
-        "1. **深度 (Depth)**: 分析是否触及系统性根因？是否停留在表面逻辑？\n"
-        "2. **行动性 (Actionability)**: 建议是否具备可立即执行的具体路径？\n"
-        "3. **真实性 (Groundedness)**: 内容是否基于上下文中的事实，还是 LLM 的幻觉或套话？\n"
-        "4. **相关性 (Relevance)**: 是否直接解决了反思主题中的核心矛盾？\n\n"
-        "## 返回格式（严格 JSON）\n"
-        "```json\n"
-        "{\n"
-        '  "quality_grade": "EXCELLENT/GOOD/FAIR/POOR",\n'
-        '  "depth_grade": "SYSTEMIC/STRATEGIC/ANALYTICAL",\n'
-        '  "audit_reason": "简短的审计理由，指出具体的加分项或缺陷项",\n'
-        '  "confidence_score": 0.0\n'
-        "}\n"
-        "```"
+    return _render_template(
+        "quality_audit.md",
+        {
+            "SUBJECT": subject,
+            "REFLECTION_CONTENT_JSON": json.dumps(reflection_content, ensure_ascii=False, indent=2),
+            "CONTEXT_JSON": json.dumps(_preprocess_context(context), ensure_ascii=False, indent=2),
+        },
     )
 
 
@@ -198,30 +191,15 @@ def build_maintenance_synthesis_prompt(
         else "（无压力数据）"
     )
 
-    return (
-        "你是一个【记忆治理分析师】。根据以下记忆统计摘要，生成有价值的认知洞察。\n\n"
-        "## 记忆状态摘要\n"
-        f"- 高频标签: {tag_block}\n"
-        f"- 代表性记忆标题: {title_block}\n"
-        f"- 分层分布: {layer_block}\n"
-        f"- 可信度: {unverified_line}\n\n"
-        f"- 压力信号: {pressure_block}\n\n"
-        "## 任务\n"
-        "1. 识别记忆中反复出现的主题或认知模式（insights）。\n"
-        "2. 提炼出可复用的经验教训（lessons）。\n"
-        "3. 提出具体可执行的记忆治理改进建议（improvements），例如哪些主题需要更多验证、\n"
-        "   哪些层级存在过多未整理内容等。\n"
-        "4. 用一句话总结当前记忆状态（summary）。\n\n"
-        "## 返回格式（严格 JSON）\n"
-        "```json\n"
-        "{\n"
-        '  "summary": "...",\n'
-        '  "insights": ["...", "..."],\n'
-        '  "lessons": ["..."],\n'
-        '  "improvements": ["...", "..."]\n'
-        "}\n"
-        "```\n"
-        "不得输出 JSON 以外的内容。每个数组至少含 1 条，最多 3 条。"
+    return _render_template(
+        "maintenance_synthesis.md",
+        {
+            "TAG_BLOCK": tag_block,
+            "TITLE_BLOCK": title_block,
+            "LAYER_BLOCK": layer_block,
+            "UNVERIFIED_LINE": unverified_line,
+            "PRESSURE_BLOCK": pressure_block,
+        },
     )
 
 

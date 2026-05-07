@@ -1,13 +1,9 @@
 from __future__ import annotations
 
-from plugins.nine_questions.q6_what_should_i_not_do.modules.baseline import (
-    derive_forbidden_zone_baseline,
-    merge_with_forbidden_baseline,
-    normalize_redline_inputs,
-)
+from .llm_prompt import build_q6_internal_llm_request
+from .service import run_q6_internal_llm_and_save
 
 __all__ = [
-    "derive_forbidden_zone_baseline",
-    "merge_with_forbidden_baseline",
-    "normalize_redline_inputs",
+    "build_q6_internal_llm_request",
+    "run_q6_internal_llm_and_save",
 ]

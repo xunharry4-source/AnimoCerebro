@@ -232,6 +232,8 @@ class ExecutionService:
         module_runs = deepcopy(module_runs) if isinstance(module_runs, list) else []
 
         result_for_patch = deepcopy(result_payload)
+        if isinstance(result_for_patch, dict) and isinstance(result_payload.get("llm_output"), dict):
+            result_for_patch.pop("llm_output", None)
 
         patch = {
             "tool_id": plugin_id,

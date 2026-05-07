@@ -1,11 +1,11 @@
 from __future__ import annotations
 
 from plugins.nine_questions.q5_what_am_i_allowed_to_do.external.service import (
-    load_q2_external_connected_agents,
-    run_external_authorization_inputs,
+    run_q5_external_llm_and_save,
 )
+from .llm_prompt import build_q5_external_llm_request
 
 __all__ = [
-    "load_q2_external_connected_agents",
-    "run_external_authorization_inputs",
+    "build_q5_external_llm_request",
+    "run_q5_external_llm_and_save",
 ]

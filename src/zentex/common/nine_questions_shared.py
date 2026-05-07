@@ -28,12 +28,16 @@ _QUALIFIED_SNAPSHOT_STATUSES = {"completed", "ready"}
 _UNQUALIFIED_MODULE_STATUSES = {"failed", "missing", "degraded", "partial", "partial_failed", "abnormal", "stopped"}
 _QUESTION_LLM_OUTPUT_KEYS: dict[str, tuple[str, ...]] = {
     "q1": (
+        "q1_llm_input",
+        "q1_llm_output",
         "workspace_domain_inference",
         "q1_scene_model",
         "q1_uncertainty_profile",
         "q1_llm_upgrade",
     ),
     "q2": (
+        "q2_internal_tool_llm_input",
+        "q2_external_tool_llm_input",
         "identity_kernel_snapshot",
         "identity_kernel",
         "asset_inventory",
@@ -47,32 +51,41 @@ _QUESTION_LLM_OUTPUT_KEYS: dict[str, tuple[str, ...]] = {
         "q2_resource_status_humanized",
     ),
     "q3": (
-        "identity_kernel_snapshot",
-        "identity_kernel",
-        "Q3InferenceResult",
-        "q3_role_profile",
-        "q3_mission_boundary",
-        "mission_continuity_projection",
+        "q3_external_llm_input",
+        "q3_external_llm_output",
+        "q3_external_role_posture",
     ),
     "q4": (
         "capability_boundary_profile",
         "permission_profile",
         "q4_capability_boundary_profile",
         "q4_permission_profile",
+        "q4_internal_llm_input",
+        "q4_internal_llm_output",
+        "q4_external_llm_input",
+        "q4_external_llm_output",
+        "q4_internal_objective_candidates",
+        "q4_external_objective_candidates",
+        "q4_objective_candidate_set",
     ),
     "q5": (
-        "authorization_boundary",
-        "q5_authorization_boundary",
-        "authorization_boundary_profile",
-        "q5_authorization_boundary_profile",
-        "q5_permission_boundary",
+        "q5_internal_cannot_do_boundary",
+        "q5_external_cannot_do_boundary",
+        "q5_internal_authorization_boundary",
+        "q5_external_authorization_boundary",
         "q5_objective_convergence_guard",
     ),
     "q6": (
+        "q6_internal_consequence_profile",
+        "q6_external_consequence_profile",
         "forbidden_zone_profile",
         "q6_forbidden_zone_profile",
     ),
     "q7": (
+        "q7_internal_creative_possibility_set",
+        "q7_internal_creative_possibilities",
+        "q7_internal_possibility_statuses",
+        "q7_internal_ready_for_q4_objective_candidates",
         "red_line_assessment",
         "q7_red_line_assessment",
         "q7_non_bypassable_constraints",
@@ -83,8 +96,6 @@ _QUESTION_LLM_OUTPUT_KEYS: dict[str, tuple[str, ...]] = {
         "task_queue",
         "q8_objective_profile",
         "q8_task_queue",
-        "q8_external_execution_tasks",
-        "q8_internal_cognitive_tasks",
     ),
     "q9": (
         "current_action_plan",
@@ -108,9 +119,7 @@ _QUESTION_LLM_OUTPUT_KEYS: dict[str, tuple[str, ...]] = {
         "q9_external_llm_output",
     ),
 }
-_PRESERVE_EMPTY_LLM_OUTPUT_KEYS: dict[str, set[str]] = {
-    "q8": {"q8_external_execution_tasks", "q8_internal_cognitive_tasks"},
-}
+_PRESERVE_EMPTY_LLM_OUTPUT_KEYS: dict[str, set[str]] = {}
 _LLM_OUTPUT_METADATA_KEYS = ("summary", "confidence", "trace_id", "tool_id", "timestamp")
 
 
@@ -499,15 +508,31 @@ def project_authoritative_question_llm_output(
         projected.setdefault("q4_capability_boundary_profile", projected.get("capability_boundary_profile"))
         projected.setdefault("q4_permission_profile", projected.get("permission_profile"))
     elif qid == "q5":
-        projected.setdefault("q5_authorization_boundary", projected.get("authorization_boundary"))
-        projected.setdefault(
+        for merged_key in (
+            "authorization_boundary",
+            "q5_authorization_boundary",
+            "authorization_boundary_profile",
             "q5_authorization_boundary_profile",
-            projected.get("authorization_boundary_profile") or projected.get("q5_permission_boundary"),
-        )
-        projected.setdefault("q5_permission_boundary", projected.get("q5_authorization_boundary_profile"))
+            "q5_permission_boundary",
+            "q5_internal_llm_input",
+            "q5_internal_llm_output",
+            "q5_external_llm_input",
+            "q5_external_llm_output",
+        ):
+            projected.pop(merged_key, None)
     elif qid == "q6":
+        projected.setdefault("q6_internal_consequence_profile", projected.get("q6_internal_consequence_profile"))
+        projected.setdefault("q6_external_consequence_profile", projected.get("q6_external_consequence_profile"))
         projected.setdefault("q6_forbidden_zone_profile", projected.get("forbidden_zone_profile"))
     elif qid == "q7":
+        possibility_set = _as_dict(projected.get("q7_internal_creative_possibility_set"))
+        if possibility_set:
+            projected.setdefault("q7_internal_creative_possibilities", possibility_set.get("creative_possibilities"))
+            projected.setdefault("q7_internal_possibility_statuses", possibility_set.get("possibility_statuses"))
+            projected.setdefault(
+                "q7_internal_ready_for_q4_objective_candidates",
+                possibility_set.get("ready_for_q4_objective_candidates"),
+            )
         projected.setdefault("q7_red_line_assessment", projected.get("red_line_assessment"))
         assessment = _as_dict(projected.get("q7_red_line_assessment") or projected.get("red_line_assessment"))
         if assessment:
@@ -879,6 +904,7 @@ def persist_question_module_output(
     trace_id: Optional[str] = None,
     extra: dict[str, Optional[Any]] = None,
 ) -> dict[str, Any]:
+    qid = str(question_id or "").strip().lower()
     committed_payload = {
         "question_id": question_id,
         "module_id": module_id,
@@ -891,6 +917,8 @@ def persist_question_module_output(
         "retry_available": retry_available,
         **(extra or {}),
     }
+    if qid in {"q1", "q2", "q3"}:
+        return committed_payload
     callback = context.get("module_output_persistor")
     if callable(callback):
         try:
@@ -1171,6 +1199,7 @@ def run_audit_integration(
     module_runs: list[dict[str, Any]],
     summary: str,
     payload: Any,
+    audit_id: Optional[str] = None,
 ) -> dict[str, Any]:
     trace_id = str(context.get("trace_id") or f"{question_id}:audit")
     session_id = str(context.get("session_id") or "zentex-default-session")
@@ -1189,10 +1218,20 @@ def run_audit_integration(
     audit_service = context.get("audit_service")
     if _is_real_service(audit_service) and callable(getattr(audit_service, "record_nine_question_audit", None)):
         try:
-            audit = FlowAudit.new(
-                "nine_questions",
-                source_module=source,
-                question_driver_refs=[question_id],
+            normalized_audit_id = str(audit_id or "").strip()
+            audit = (
+                FlowAudit(
+                    audit_id=normalized_audit_id,
+                    flow_type="nine_questions",
+                    source_module=source,
+                    question_driver_refs=[question_id],
+                )
+                if normalized_audit_id
+                else FlowAudit.new(
+                    "nine_questions",
+                    source_module=source,
+                    question_driver_refs=[question_id],
+                )
             )
             result = audit_service.record_nine_question_audit(
                 question_id=question_id,

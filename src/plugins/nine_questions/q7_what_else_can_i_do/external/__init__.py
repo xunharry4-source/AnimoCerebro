@@ -1,9 +1,9 @@
 from __future__ import annotations
 
-from plugins.nine_questions.q7_what_else_can_i_do.external.context import (
-    extract_safety_rejection_history,
-)
+from .llm_prompt import build_q7_external_llm_request
+from .service import run_q7_external_llm_and_save
 
 __all__ = [
-    "extract_safety_rejection_history",
+    "build_q7_external_llm_request",
+    "run_q7_external_llm_and_save",
 ]

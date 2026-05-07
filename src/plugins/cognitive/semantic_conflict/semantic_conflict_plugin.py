@@ -1,11 +1,13 @@
 from __future__ import annotations
 
+from pathlib import Path
 from typing import Any, Optional
 
 from pydantic import BaseModel, ConfigDict
 
 from zentex.common.plugin_ids import COGNITIVE_SEMANTIC_CONFLICT
 from zentex.common.nine_questions_shared import resolve_model_provider_key
+from zentex.common.prompt_template_files import render_prompt_template
 from zentex.foundation.specs.model_provider import ModelProviderCallerContext
 from zentex.plugins.service import execute_enabled_cognitive_plugin_functionals
 from zentex.safety.conflict_engine import CognitiveConflictReport
@@ -42,9 +44,11 @@ class SemanticConflictPlugin(BaseModel):
                 originator_id=str(context.get("session_id") or "semantic-conflict"),
                 caller_plugin_id=self.plugin_id,
             )
-        prompt = (
-            "Assess whether the proposed goal conflicts with identity constraints. "
-            "Return JSON with keys has_conflict, severity, suggested_resolution, rationale."
+        prompt = render_prompt_template(
+            Path(__file__).resolve().with_name("prompt_templates"),
+            "semantic_conflict.md",
+            {},
+            error_prefix="semantic_conflict",
         )
         llm_context = {
             **dict(context),

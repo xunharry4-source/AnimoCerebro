@@ -1,0 +1,24 @@
+返回严格 JSON，顶层必须包含 `semantic_analysis` 和 `subtasks`。
+`semantic_analysis` 需要包含:
+- `core_objective`
+- `domain`
+- `complexity_level`
+- `key_dependencies`
+- `resource_requirements`
+- `risk_factors`
+- `success_criteria`
+`subtasks` 中每个对象需要包含:
+- `local_id`
+- `title`
+- `task_type`
+- `content`
+- `objective`
+- `requirements`
+- `depends_on`
+- `coordination_mode`
+- `estimated_duration`
+- `priority`
+- `semantic_tags`
+- `risk_level`
+- `resource_impact`
+- `success_metrics`

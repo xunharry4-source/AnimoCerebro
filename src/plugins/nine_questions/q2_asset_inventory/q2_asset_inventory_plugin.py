@@ -118,6 +118,8 @@ class Q2AssetInventoryPlugin(BaseModel):
         llm_output_payload = {
             **result_payload,
             "q2_asset_inventory": result_payload,
+            "q2_internal_tool_llm_input": context.get("_q2_internal_tool_llm_input") or {},
+            "q2_external_tool_llm_input": context.get("_q2_external_tool_llm_input") or {},
         }
         llm_trace_payload = _build_q2_llm_trace_payload(context, trace_id=trace_id)
         audit_provenance = _build_q2_audit_provenance(
@@ -125,13 +127,16 @@ class Q2AssetInventoryPlugin(BaseModel):
             result_payload=result_payload,
             llm_trace_payload=llm_trace_payload,
         )
-        run_audit_integration(
+        audit_run = run_audit_integration(
             context,
             question_id="q2",
             module_runs=module_runs,
             summary="Q2 内外资产盘点 LLM 输入、输出、模型调用与结果保存链路已记录。",
             payload=audit_provenance,
         )
+        q2_audit_id = str(((audit_run.get("data") or {}).get("audit_id") or "")).strip()
+        if q2_audit_id:
+            audit_provenance["audit_id"] = q2_audit_id
         q2_execution_diagnosis = {
             "authenticity_status": "completed",
             "diagnosis_code": "completed",
@@ -139,6 +144,7 @@ class Q2AssetInventoryPlugin(BaseModel):
             "module_runs": list(module_runs),
             "upstream_dependencies": [],
             "asset_scopes": ["internal_tools", "external_tools"],
+            "audit_id": q2_audit_id,
         }
         summary = "Q2 资产盘点完成：内部插件、CLI、MCP、Agent、外接服务已分别查询并保存数量。"
         elapsed = perf_counter() - started
@@ -160,6 +166,7 @@ class Q2AssetInventoryPlugin(BaseModel):
                 "q2_internal_scoped_asset_inventory": {"InternalAssetInventory": internal_result},
                 "q2_external_scoped_asset_inventory": {"ExternalAssetInventory": external_result},
                 "q2_audit_provenance": audit_provenance,
+                "q2_audit_id": q2_audit_id,
                 "q2_execution_diagnosis": q2_execution_diagnosis,
                 "llm_trace_payload": llm_trace_payload,
             },

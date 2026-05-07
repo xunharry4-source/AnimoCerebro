@@ -41,9 +41,17 @@ DOES NOT:
 import logging
 import re
 from dataclasses import dataclass
+from pathlib import Path
 from typing import Dict, List, Optional
 
+from zentex.common.prompt_template_files import render_prompt_template
+
 logger = logging.getLogger(__name__)
+_TEMPLATE_DIR = Path(__file__).resolve().with_name("prompt_templates")
+
+
+def _render_template(name: str, values: dict[str, str]) -> str:
+    return render_prompt_template(_TEMPLATE_DIR, name, values, error_prefix="learning")
 
 
 # ---------------------------------------------------------------------------
@@ -313,27 +321,14 @@ def build_learning_maintenance_synthesis_prompt(
         else "（无跨模块压力数据）"
     )
 
-    return (
-        "你是一个【跨模块学习分析师】。根据以下来自记忆与反思模块的统计摘要，识别核心学习主题并提出学习方向建议。\n\n"
-        "## 输入摘要\n"
-        f"- 高频标签（来自记忆+反思）: {tag_block}\n"
-        f"- 近期反思关注主题: {topic_block}\n"
-        f"- 记忆分层分布: {layer_block}\n\n"
-        f"- 跨模块压力: {pressure_block}\n\n"
-        "## 任务\n"
-        "1. 识别跨记忆与反思的核心学习主题（top_learning_themes），最多 3 条。\n"
-        "2. 基于主题提出具体的下一步学习方向（recommended_directions），最多 3 条。\n"
-        "   方向必须具体可执行，例如「深入研究 X 模式以改进 Y 决策」而非「加强学习」。\n"
-        "3. 用一句话总结当前跨模块学习状态（summary）。\n\n"
-        "## 返回格式（严格 JSON）\n"
-        "```json\n"
-        "{\n"
-        '  "summary": "...",\n'
-        '  "top_learning_themes": ["...", "..."],\n'
-        '  "recommended_directions": ["...", "..."]\n'
-        "}\n"
-        "```\n"
-        "不得输出 JSON 以外的内容。每个数组 1–3 条。"
+    return _render_template(
+        "maintenance_synthesis.md",
+        {
+            "TAG_BLOCK": tag_block,
+            "TOPIC_BLOCK": topic_block,
+            "LAYER_BLOCK": layer_block,
+            "PRESSURE_BLOCK": pressure_block,
+        },
     )
 
 

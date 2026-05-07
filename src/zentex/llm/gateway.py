@@ -29,6 +29,54 @@ def _audit_dump(value: Any) -> str:
         return str(value)
 
 
+def _debug_log_llm_input(
+    *,
+    provider: str,
+    model: str,
+    trace: str,
+    source: str,
+    phase: str,
+    system_prompt: str,
+    prompt: str,
+    metadata: Optional[Dict[str, Any]] = None,
+) -> None:
+    logger.debug(
+        "[LLM DEBUG INPUT] provider=%s model=%s trace=%s source=%s phase=%s system_prompt=%s prompt=%s metadata=%s",
+        provider,
+        model,
+        trace,
+        source,
+        phase,
+        system_prompt,
+        prompt,
+        _audit_dump(metadata or {}),
+    )
+
+
+def _debug_log_llm_output(
+    *,
+    provider: str,
+    model: str,
+    trace: str,
+    source: str,
+    phase: str,
+    output_text: str,
+    parsed_output: Optional[Dict[str, Any]] = None,
+    raw_response: Optional[Dict[str, Any]] = None,
+) -> None:
+    logger.debug(
+        "[LLM DEBUG OUTPUT] provider=%s model=%s trace=%s source=%s phase=%s output_text=%s parsed_output=%s raw_response=%s",
+        provider,
+        model,
+        trace,
+        source,
+        phase,
+        output_text,
+        _audit_dump(parsed_output) if parsed_output is not None else "",
+        _audit_dump(raw_response or {}),
+    )
+
+
 @dataclass(frozen=True)
 class LLMTokenUsage:
     input_tokens: int = 0
@@ -306,9 +354,28 @@ class LLMGateway:
             max_output_tokens=max_output_tokens,
             metadata={**(metadata or {}), "require_json_format": True},
         )
+        _debug_log_llm_input(
+            provider=selected_provider_key,
+            model=selected_model,
+            trace=audit_trace_id,
+            source=audit_source,
+            phase=audit_phase,
+            system_prompt=invocation.system_prompt,
+            prompt=invocation.prompt,
+            metadata=invocation.metadata,
+        )
 
         try:
             response = tool.call(invocation)
+            _debug_log_llm_output(
+                provider=selected_provider_key,
+                model=selected_model,
+                trace=audit_trace_id,
+                source=audit_source,
+                phase=audit_phase,
+                output_text=response.output_text,
+                raw_response=response.raw_response,
+            )
             logger.info(
                 "[LLM AUDIT RAW OUTPUT] provider=%s model=%s trace=%s source=%s phase=%s output=%s raw_response=%s",
                 selected_provider_key,
@@ -331,6 +398,16 @@ class LLMGateway:
 
             try:
                 output = self._parse_json_output(response.output_text)
+                _debug_log_llm_output(
+                    provider=selected_provider_key,
+                    model=selected_model,
+                    trace=audit_trace_id,
+                    source=audit_source,
+                    phase=f"{audit_phase}:parsed",
+                    output_text=response.output_text,
+                    parsed_output=output,
+                    raw_response=response.raw_response,
+                )
                 logger.info(
                     "[LLM AUDIT PARSED OUTPUT] provider=%s model=%s trace=%s source=%s phase=%s output=%s",
                     selected_provider_key,
@@ -402,8 +479,27 @@ class LLMGateway:
                             "json_repair_attempt": attempt,
                         },
                     )
+                    _debug_log_llm_input(
+                        provider=selected_provider_key,
+                        model=selected_model,
+                        trace=audit_trace_id,
+                        source=audit_source,
+                        phase=f"json_repair:{attempt}",
+                        system_prompt=repair_invocation.system_prompt,
+                        prompt=repair_invocation.prompt,
+                        metadata=repair_invocation.metadata,
+                    )
                     try:
                         repair_response = tool.call(repair_invocation)
+                        _debug_log_llm_output(
+                            provider=selected_provider_key,
+                            model=selected_model,
+                            trace=audit_trace_id,
+                            source=audit_source,
+                            phase=f"json_repair:{attempt}",
+                            output_text=repair_response.output_text,
+                            raw_response=repair_response.raw_response,
+                        )
                         logger.info(
                             "[LLM AUDIT RAW OUTPUT] provider=%s model=%s trace=%s source=%s phase=json_repair attempt=%d output=%s raw_response=%s",
                             selected_provider_key,
@@ -429,6 +525,16 @@ class LLMGateway:
                             call_type="generate_json_repair",
                         )
                         output = self._parse_json_output(repair_response.output_text)
+                        _debug_log_llm_output(
+                            provider=selected_provider_key,
+                            model=selected_model,
+                            trace=audit_trace_id,
+                            source=audit_source,
+                            phase=f"json_repair:{attempt}:parsed",
+                            output_text=repair_response.output_text,
+                            parsed_output=output,
+                            raw_response=repair_response.raw_response,
+                        )
                         logger.info(
                             "[LLM AUDIT PARSED OUTPUT] provider=%s model=%s trace=%s source=%s phase=json_repair attempt=%d output=%s",
                             selected_provider_key,

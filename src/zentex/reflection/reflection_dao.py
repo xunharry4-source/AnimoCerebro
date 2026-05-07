@@ -13,6 +13,7 @@
 
 import json
 import logging
+import re
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Dict, List, Optional
@@ -545,6 +546,776 @@ class ReflectionDAO(BaseDAO):
         except Exception as e:
             logger.error(f"Failed to get reflections by audit_id: {e}")
             return []
+
+    def query_system_problem_improvement_findings(
+        self,
+        *,
+        limit: int = 10,
+        max_source_records: int = 1000,
+        problem_scope: Optional[str] = None,
+    ) -> Dict[str, Any]:
+        """Query persisted reflection evidence for current system problems and improvements."""
+        effective_limit = max(1, int(limit))
+        source_limit = max(effective_limit, int(max_source_records))
+        requested_scope = self._normalize_problem_scope(problem_scope)
+        rows = self.db.execute_query(
+            """
+            SELECT
+                reflection_id,
+                trace_id,
+                audit_id,
+                subject,
+                reflection_type,
+                quality,
+                governance_status,
+                suspect_reason,
+                context,
+                summary,
+                reflection_list,
+                tags,
+                metadata,
+                created_at
+            FROM reflections
+            WHERE governance_status NOT IN ('archived', 'deprecated', 'hidden')
+            ORDER BY created_at DESC
+            LIMIT ?
+            """,
+            (source_limit,),
+        )
+
+        problems: List[Dict[str, Any]] = []
+        improvements: List[Dict[str, Any]] = []
+        seen: set[tuple[str, str, str]] = set()
+
+        for row in rows:
+            base = {
+                "reflection_id": row["reflection_id"],
+                "trace_id": row["trace_id"],
+                "audit_id": row["audit_id"],
+                "subject": row["subject"],
+                "reflection_type": row["reflection_type"],
+                "quality": row["quality"],
+                "governance_status": row["governance_status"],
+                "created_at": row["created_at"],
+                "tags": self._loads_json(row["tags"], []),
+                "metadata": self._loads_json(row["metadata"], {}),
+            }
+            context = self._loads_json(row["context"], {})
+            reflection_items = self._loads_json(row["reflection_list"], [])
+            base["reflection_target"] = self._infer_reflection_target(
+                context=context,
+                metadata=base["metadata"],
+                subject=row["subject"],
+            )
+            base_scope = self._infer_problem_scope(
+                context=context,
+                metadata=base["metadata"],
+                tags=base["tags"],
+                subject=row["subject"],
+                reflection_type=row["reflection_type"],
+                source_field="reflection",
+                content=row["summary"],
+            )
+
+            def add_finding(
+                bucket: List[Dict[str, Any]],
+                finding_type: str,
+                content: Any,
+                *,
+                source_field: str,
+                priority: Optional[int] = None,
+                scope_hint: Optional[str] = None,
+                structured_source: Optional[Dict[str, Any]] = None,
+            ) -> None:
+                text = str(content or "").strip()
+                if not text:
+                    return
+                finding_scope = self._infer_problem_scope(
+                    context=context,
+                    metadata=base["metadata"],
+                    tags=base["tags"],
+                    subject=row["subject"],
+                    reflection_type=row["reflection_type"],
+                    source_field=source_field,
+                    content=text,
+                    explicit_scope=scope_hint or base_scope,
+                )
+                if requested_scope is not None and finding_scope != requested_scope:
+                    return
+                if not self._is_system_problem_improvement_text(text, finding_type=finding_type):
+                    return
+                dedup_text = self._normalized_finding_text(text)
+                if not dedup_text:
+                    return
+                key = (finding_type, finding_scope, dedup_text)
+                if key in seen:
+                    return
+                seen.add(key)
+                structured_fields = self._structured_reflection_problem_fields(
+                    source=structured_source or {},
+                    context=context,
+                    metadata=base["metadata"],
+                    subject=row["subject"],
+                    fallback_reflection_object=base["reflection_target"],
+                    fallback_failure_fact=text,
+                )
+                if requested_scope == "external" and self._is_internal_reflection_object(
+                    structured_fields.get("reflection_object")
+                ):
+                    return
+                bucket.append(
+                    {
+                        **base,
+                        "finding_id": (
+                            f"{finding_type}:{base['reflection_id']}:"
+                            f"{source_field}:{len(bucket) + 1}"
+                        ),
+                        "finding_type": finding_type,
+                        "problem_scope": finding_scope,
+                        "content": text,
+                        "source_field": source_field,
+                        "priority": priority,
+                        **structured_fields,
+                    }
+                )
+
+            for index, item in enumerate(reflection_items if isinstance(reflection_items, list) else []):
+                if not isinstance(item, dict):
+                    continue
+                category = str(item.get("category") or "").strip().lower()
+                priority = item.get("priority")
+                priority_value = int(priority) if isinstance(priority, int) else None
+                if category in {"risk", "problem", "issue"}:
+                    add_finding(
+                        problems,
+                        "problem",
+                        item.get("content"),
+                        source_field=f"reflection_list[{index}].{category}",
+                        priority=priority_value,
+                        scope_hint=item.get("problem_scope") or item.get("scope") or item.get("lane"),
+                        structured_source=item,
+                    )
+                elif category in {"improvement", "meta"}:
+                    add_finding(
+                        improvements,
+                        "improvement",
+                        item.get("content"),
+                        source_field=f"reflection_list[{index}].{category}",
+                        priority=priority_value,
+                        scope_hint=item.get("problem_scope") or item.get("scope") or item.get("lane"),
+                        structured_source=item,
+                    )
+
+            for source_field in ("risks", "problems", "issues"):
+                for value in self._iter_text_values(context.get(source_field)):
+                    add_finding(problems, "problem", value, source_field=f"context.{source_field}")
+
+            for source_field in (
+                "improvements",
+                "improvement_suggestions",
+                "recommended_improvements",
+                "actionable_adjustment",
+            ):
+                for value in self._iter_text_values(context.get(source_field)):
+                    add_finding(improvements, "improvement", value, source_field=f"context.{source_field}")
+
+            if row["governance_status"] == "suspect":
+                add_finding(
+                    problems,
+                    "problem",
+                    row["suspect_reason"] or row["summary"],
+                    source_field="governance_status.suspect",
+                )
+            if row["reflection_type"] == ReflectionType.ERROR_REFLECTION.value:
+                add_finding(
+                    problems,
+                    "problem",
+                    row["summary"],
+                    source_field="reflection_type.error_reflection",
+                )
+        all_findings = [*problems, *improvements]
+        totals_by_scope: Dict[str, int] = {"internal": 0, "external": 0, "unknown": 0}
+        for finding in all_findings:
+            scope = str(finding.get("problem_scope") or "unknown")
+            totals_by_scope[scope] = int(totals_by_scope.get(scope, 0)) + 1
+
+        return {
+            "database_backed": True,
+            "source_table": "reflections",
+            "problem_scope_filter": requested_scope,
+            "total_problems": len(problems),
+            "total_improvements": len(improvements),
+            "totals_by_scope": totals_by_scope,
+            "current_problems": problems[:effective_limit],
+            "improvement_opportunities": improvements[:effective_limit],
+            "queried_source_records": len(rows),
+            "generated_at": datetime.now(timezone.utc).isoformat(),
+        }
+
+    def query_current_problem_contents(
+        self,
+        *,
+        limit: int = 10,
+        max_source_records: int = 1000,
+        problem_scope: Optional[str] = None,
+    ) -> Dict[str, Any]:
+        """Return only current problem content for prompt consumers that need compact reflection input."""
+        result = self.query_system_problem_improvement_findings(
+            limit=limit,
+            max_source_records=max_source_records,
+            problem_scope=problem_scope,
+        )
+        current_problems = result.get("current_problems")
+        contents: List[Dict[str, str]] = []
+        for item in (current_problems if isinstance(current_problems, list) else []):
+            if not isinstance(item, dict):
+                continue
+            projected = {
+                "reflection_object": str(item.get("reflection_object") or "").strip(),
+                "failure_fact": str(item.get("failure_fact") or "").strip(),
+                "root_cause": str(item.get("root_cause") or "").strip(),
+                "improvement_direction": str(item.get("improvement_direction") or "").strip(),
+            }
+            if problem_scope == "external" and self._is_internal_reflection_object(
+                projected["reflection_object"]
+            ):
+                continue
+            if all(projected.values()) and all(
+                self._is_prompt_safe_reflection_field(value) for value in projected.values()
+            ):
+                contents.append(projected)
+        return {"current_problems": contents}
+
+    @staticmethod
+    def _loads_json(value: Any, default: Any) -> Any:
+        if not value:
+            return default
+        try:
+            return json.loads(value)
+        except (TypeError, ValueError):
+            return default
+
+    @classmethod
+    def _structured_reflection_problem_fields(
+        cls,
+        *,
+        source: Dict[str, Any],
+        context: Dict[str, Any],
+        metadata: Dict[str, Any],
+        subject: Any,
+        fallback_reflection_object: str,
+        fallback_failure_fact: str,
+    ) -> Dict[str, str]:
+        item_metadata = source.get("metadata") if isinstance(source.get("metadata"), dict) else {}
+        reflection_object = cls._first_text(
+            source.get("reflection_object"),
+            source.get("reflected_object"),
+            source.get("target_object"),
+            item_metadata.get("reflection_object"),
+            context.get("reflection_object"),
+            context.get("reflection_target"),
+            metadata.get("reflection_object"),
+            fallback_reflection_object,
+        )
+        reflection_object = (
+            cls._normalize_reflection_target(reflection_object, source_key="reflection_object")
+            or cls._infer_reflection_target(context=context, metadata=metadata, subject=subject)
+        )
+        failure_fact = cls._first_text(
+            source.get("failure_fact"),
+            source.get("problem_fact"),
+            source.get("fact"),
+            item_metadata.get("failure_fact"),
+            item_metadata.get("problem_fact"),
+            context.get("failure_fact"),
+            context.get("problem_fact"),
+            fallback_failure_fact,
+        )
+        root_cause = cls._first_text(
+            source.get("root_cause"),
+            source.get("cause"),
+            source.get("reason"),
+            item_metadata.get("root_cause"),
+            item_metadata.get("cause"),
+            context.get("root_cause"),
+            context.get("cause"),
+            context.get("reason"),
+        )
+        improvement_direction = cls._first_text(
+            source.get("improvement_direction"),
+            source.get("improvement"),
+            source.get("next_improvement"),
+            item_metadata.get("improvement_direction"),
+            item_metadata.get("improvement"),
+            context.get("improvement_direction"),
+            context.get("next_improvement"),
+            context.get("improvement"),
+        )
+        return {
+            "reflection_object": reflection_object,
+            "failure_fact": failure_fact,
+            "root_cause": root_cause,
+            "improvement_direction": improvement_direction,
+        }
+
+    @staticmethod
+    def _first_text(*values: Any) -> str:
+        for value in values:
+            if value is None:
+                continue
+            if isinstance(value, dict):
+                for key in (
+                    "reflection_object",
+                    "failure_fact",
+                    "root_cause",
+                    "improvement_direction",
+                    "content",
+                    "summary",
+                    "description",
+                    "text",
+                    "message",
+                    "name",
+                ):
+                    text = str(value.get(key) or "").strip()
+                    if text:
+                        return text
+                continue
+            if isinstance(value, list):
+                for item in value:
+                    text = ReflectionDAO._first_text(item)
+                    if text:
+                        return text
+                continue
+            text = str(value or "").strip()
+            if text:
+                return text
+        return ""
+
+    @staticmethod
+    def _is_prompt_safe_reflection_field(value: Any) -> bool:
+        text = str(value or "").strip()
+        if not text:
+            return False
+        return not re.fullmatch(r"[a-z0-9_.:-]+", text.lower())
+
+    @staticmethod
+    def _is_internal_reflection_object(value: Any) -> bool:
+        text = str(value or "").strip()
+        if not text:
+            return False
+        lower = text.lower()
+        if re.fullmatch(r"q[1-9]", lower):
+            return True
+        internal_object_markers = (
+            "九问第",
+            "模块「九问",
+            "nine questions",
+            "internal cognition",
+            "internal cognitive",
+            "memory governance",
+            "learning service",
+            "reflection service",
+            "内部认知",
+            "记忆治理",
+            "学习服务",
+            "反思服务",
+            "自我演化",
+        )
+        return any(marker in lower or marker in text for marker in internal_object_markers)
+
+    @staticmethod
+    def _iter_text_values(value: Any) -> List[str]:
+        if value is None:
+            return []
+        if isinstance(value, str):
+            return [value]
+        if isinstance(value, dict):
+            for key in ("content", "summary", "description", "text", "message"):
+                if value.get(key):
+                    return [str(value[key])]
+            return [json.dumps(value, ensure_ascii=False, sort_keys=True)]
+        if isinstance(value, list):
+            values: List[str] = []
+            for item in value:
+                values.extend(ReflectionDAO._iter_text_values(item))
+            return values
+        return [str(value)]
+
+    @staticmethod
+    def _normalize_problem_scope(value: Any) -> Optional[str]:
+        text = str(value or "").strip().lower()
+        if not text or text == "all":
+            return None
+        if text in {"internal", "inside", "inner", "cognitive", "内部", "内"}:
+            return "internal"
+        if text in {"external", "outside", "outer", "execution", "外部", "外"}:
+            return "external"
+        if text in {"unknown", "unclear", "未知"}:
+            return "unknown"
+        raise ValueError(f"invalid_problem_scope:{value}")
+
+    @staticmethod
+    def _normalized_finding_text(value: Any) -> str:
+        text = str(value or "").strip().lower()
+        if not text:
+            return ""
+        text = re.sub(r"\s+", " ", text)
+        text = re.sub(r"[\u200b-\u200d\ufeff]", "", text)
+        text = re.sub(r"[\"'`*_~#>\[\](){}<>，。！？、；：,.!?;:]+", "", text)
+        return text.strip()
+
+    @staticmethod
+    def _current_problem_content_for_prompt(
+        content: str,
+        problem_scope: Optional[str],
+        reflection_target: str = "",
+    ) -> str:
+        target_text = reflection_target.strip()
+        if problem_scope == "internal":
+            return f"内部认知轨反思对象：{target_text}；问题内容：{content}"
+        if problem_scope == "external":
+            return f"外部执行轨反思对象：{target_text}；问题内容：{content}"
+        return f"反思对象：{target_text}；问题内容：{content}"
+
+    @classmethod
+    def _infer_reflection_target(
+        cls,
+        *,
+        context: Dict[str, Any],
+        metadata: Dict[str, Any],
+        subject: Any,
+    ) -> str:
+        for source in (context, metadata):
+            if not isinstance(source, dict):
+                continue
+            for key in (
+                "reflection_target",
+                "target_subject",
+                "target_object",
+                "target_id",
+                "task_id",
+                "module_id",
+                "plugin_id",
+                "question_id",
+                "source_module",
+            ):
+                target = cls._normalize_reflection_target(source.get(key), source_key=key)
+                if target:
+                    return target
+        subject_target = cls._normalize_reflection_subject(subject)
+        return subject_target
+
+    @classmethod
+    def _normalize_reflection_target(cls, value: Any, *, source_key: str = "") -> str:
+        if isinstance(value, dict):
+            for key in ("reflection_target", "target_subject", "target_id", "task_id", "module_id", "plugin_id", "question_id", "name", "id"):
+                nested = cls._normalize_reflection_target(value.get(key), source_key=key)
+                if nested:
+                    return nested
+            return ""
+        if isinstance(value, list):
+            for item in value:
+                nested = cls._normalize_reflection_target(item, source_key=source_key)
+                if nested:
+                    return nested
+            return ""
+        text = str(value or "").strip()
+        if not text or text.lower() in {"none", "null", "unknown", "n/a"}:
+            return ""
+        key = source_key.strip().lower()
+        lower = text.lower()
+        if key == "question_id" and re.fullmatch(r"q[1-9]", lower):
+            return cls._question_reflection_target_name(lower)
+        if key == "module_id":
+            return cls._known_component_reflection_target(text)
+        if key == "plugin_id":
+            return cls._known_component_reflection_target(text)
+        if key == "task_id":
+            return cls._human_readable_target_name(text, prefix="任务")
+        if key == "target_id":
+            return cls._human_readable_target_name(text, prefix="目标")
+        if key == "source_module":
+            return cls._known_component_reflection_target(text)
+        return cls._normalize_reflection_subject(text)
+
+    @staticmethod
+    def _normalize_reflection_subject(value: Any) -> str:
+        text = str(value or "").strip()
+        if not text:
+            return ""
+        lower = text.lower()
+        generic_subjects = {
+            "ci-reflect",
+            "ci_reflect",
+            "reflect",
+            "reflection",
+            "internal-reflect",
+            "external-reflect",
+            "auto-reflect",
+            "scheduled-reflect",
+            "nine-question-reflect",
+        }
+        if lower in generic_subjects or lower.endswith("-reflect") or lower.endswith("_reflect"):
+            return ""
+        if re.fullmatch(r"[a-z0-9_.:-]+", lower):
+            return ""
+        return text
+
+    @staticmethod
+    def _question_reflection_target_name(question_id: str) -> str:
+        names = {
+            "q1": "模块「九问第一问：环境定位（我在哪里）」",
+            "q2": "模块「九问第二问：资产盘点（我有什么）」",
+            "q3": "模块「九问第三问：身份推断（我是谁）」",
+            "q4": "模块「九问第四问：目标候选生成（我能做什么）」",
+            "q5": "模块「九问第五问：授权边界判断（我可以做什么）」",
+            "q6": "模块「九问第六问：后果约束与禁区识别（我不应该做什么）」",
+            "q7": "模块「九问第七问：替代可能性探索（我还能做什么）」",
+            "q8": "模块「九问第八问：即时目标综合（我现在应该做什么）」",
+            "q9": "模块「九问第九问：行动方案设计（我应该怎么做）」",
+        }
+        return names.get(question_id.lower(), "")
+
+    @classmethod
+    def _known_component_reflection_target(cls, value: Any) -> str:
+        text = str(value or "").strip()
+        if not text:
+            return ""
+        lower = text.lower()
+        for question_id in ("q1", "q2", "q3", "q4", "q5", "q6", "q7", "q8", "q9"):
+            if re.search(rf"(?:^|[-_.]){question_id}(?:[-_.]|$)", lower):
+                return cls._question_reflection_target_name(question_id)
+        known = {
+            "memory_extractor": "功能「记忆候选提取：从运行时事件中提取可治理记忆」",
+            "reflection_generator": "功能「反思生成：生成反思与学习导向总结」",
+            "learning_service": "模块「学习服务：维护学习记录、策略补丁与学习任务」",
+            "zentex.learning.service": "模块「学习服务：维护学习记录、策略补丁与学习任务」",
+            "zentex.memory.service": "模块「记忆服务：维护长期记忆、检索与治理」",
+            "memory.consolidation": "模块「记忆合并：归并重复记忆并降低记忆噪音」",
+            "reflection_clusterer": "功能「反思聚类：归并相似反思记录」",
+            "semantic_clusterer": "功能「语义记忆聚类：按语义归并记忆记录」",
+        }
+        if lower in known:
+            return known[lower]
+        return ""
+
+    @staticmethod
+    def _human_readable_target_name(value: Any, *, prefix: str) -> str:
+        text = str(value or "").strip()
+        if not text:
+            return ""
+        lower = text.lower()
+        if re.fullmatch(r"[a-z0-9_.:-]+", lower):
+            return ""
+        return f"{prefix}「{text}」"
+
+    @staticmethod
+    def _is_system_problem_improvement_text(value: Any, *, finding_type: str) -> bool:
+        text = str(value or "").strip().lower()
+        if len(text) < 8:
+            return False
+        if re.fullmatch(r"[a-z0-9_.:-]+", text):
+            return False
+        if "self-audit" in text or "no significant drift detected" in text:
+            return False
+        non_reflection_seed_patterns = (
+            "reflection storage missing the real reflected object",
+            "reflection storage lost the real reflected object",
+            "internal reflection evidence missing owner attribution causes q4 input ambiguity",
+            "external execution reflection missing owner attribution causes q4 business gap ambiguity",
+            "internal system query seed",
+            "ci reflection channel seed",
+        )
+        if any(pattern in text for pattern in non_reflection_seed_patterns):
+            return False
+        generic_noise_patterns = (
+            r"^(?:internal cognitive|external connector|system)\s+problem\s+requires\s+attention\s+[0-9a-f]{8,}$",
+            r"^(?:internal reflection|external execution|system)\s+improvement\s+should\s+be\s+prioritized\s+[0-9a-f]{8,}$",
+        )
+        if any(re.search(pattern, text) for pattern in generic_noise_patterns):
+            return False
+        if "反思已记录" in text:
+            return False
+        problem_markers = (
+            "problem",
+            "issue",
+            "risk",
+            "error",
+            "failure",
+            "failed",
+            "missing",
+            "gap",
+            "defect",
+            "bug",
+            "regression",
+            "timeout",
+            "permission",
+            "denied",
+            "unavailable",
+            "invalid",
+            "inconsistent",
+            "stale",
+            "drift",
+            "duplicate",
+            "noise",
+            "violation",
+            "缺陷",
+            "缺失",
+            "缺少",
+            "缺口",
+            "问题",
+            "风险",
+            "错误",
+            "异常",
+            "失败",
+            "故障",
+            "不可用",
+            "无效",
+            "超时",
+            "权限",
+            "拒绝",
+            "不一致",
+            "重复",
+            "噪音",
+            "漂移",
+            "膨胀",
+            "违规",
+            "无法",
+            "不能",
+        )
+        improvement_markers = (
+            "improvement",
+            "improve",
+            "should",
+            "prioritized",
+            "recommend",
+            "optimize",
+            "repair",
+            "fix",
+            "reduce",
+            "upgrade",
+            "governance",
+            "补齐",
+            "补充",
+            "修复",
+            "改进",
+            "优化",
+            "治理",
+            "降低",
+            "压缩",
+            "提炼",
+            "增强",
+            "升级",
+            "防御",
+            "策略",
+            "需要",
+            "应当",
+            "必须",
+        )
+        if finding_type == "problem":
+            return any(marker in text for marker in problem_markers)
+        if finding_type == "improvement":
+            return any(marker in text for marker in (*problem_markers, *improvement_markers))
+        return False
+
+    @classmethod
+    def _infer_problem_scope(
+        cls,
+        *,
+        context: Dict[str, Any],
+        metadata: Dict[str, Any],
+        tags: List[Any],
+        subject: Any,
+        reflection_type: Any,
+        source_field: str,
+        content: Any,
+        explicit_scope: Optional[Any] = None,
+    ) -> str:
+        for candidate in (
+            explicit_scope,
+            context.get("problem_scope"),
+            context.get("issue_scope"),
+            context.get("task_scope"),
+            context.get("lane"),
+            context.get("source_chain"),
+            context.get("source_scope"),
+            metadata.get("problem_scope"),
+            metadata.get("issue_scope"),
+            metadata.get("task_scope"),
+            metadata.get("lane"),
+            metadata.get("source_chain"),
+            metadata.get("source_scope"),
+        ):
+            normalized = cls._scope_from_text(candidate)
+            if normalized:
+                return normalized
+
+        haystack = " ".join(
+            str(value or "")
+            for value in (
+                source_field,
+                content,
+                subject,
+                reflection_type,
+                json.dumps(tags, ensure_ascii=False),
+                json.dumps(metadata, ensure_ascii=False, default=str),
+                json.dumps(context, ensure_ascii=False, default=str),
+            )
+        ).lower()
+        external_markers = (
+            "external",
+            "外部",
+            "cli",
+            "mcp",
+            "agent",
+            "connector",
+            "browser",
+            "http",
+            "api",
+            "network",
+            "execution",
+            "shell",
+            "terminal",
+            "filesystem",
+            "file write",
+            "github",
+            "notion",
+            "reddit",
+        )
+        internal_markers = (
+            "internal",
+            "内部",
+            "cognitive",
+            "认知",
+            "memory",
+            "记忆",
+            "reflection",
+            "反思",
+            "learning",
+            "学习",
+            "strategy_patch",
+            "策略补丁",
+            "self_evolution",
+            "pure_cognitive",
+        )
+        if any(marker in haystack for marker in external_markers):
+            return "external"
+        if any(marker in haystack for marker in internal_markers):
+            return "internal"
+        return "unknown"
+
+    @staticmethod
+    def _scope_from_text(value: Any) -> Optional[str]:
+        if value is None:
+            return None
+        text = str(value).strip().lower()
+        if not text:
+            return None
+        if any(marker in text for marker in ("external", "外部", "execution", "external_q", "external_")):
+            return "external"
+        if any(marker in text for marker in ("internal", "内部", "cognitive", "internal_q", "internal_")):
+            return "internal"
+        return None
     
     # ===== 辅助方法 =====
     

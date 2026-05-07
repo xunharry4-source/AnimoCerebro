@@ -7,7 +7,7 @@ from typing import Any
 from fastapi import APIRouter, HTTPException, Query
 from pydantic import BaseModel, ConfigDict, Field
 
-from zentex.core.i18n import I18nCatalogError, I18nLocaleError, available_locales, translate
+from zentex.core.i18n import I18nCatalogError, I18nLocaleError, available_locales, default_locale, translate
 
 router = APIRouter(prefix="/i18n", tags=["i18n"])
 
@@ -18,8 +18,22 @@ class TranslationRequest(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     message_key: str = Field(min_length=1)
-    locale: str = "zh-CN"
+    locale: str | None = None
     params: dict[str, Any] = Field(default_factory=dict)
+
+
+@router.get("/config")
+def get_i18n_config() -> dict[str, object]:
+    """Return configured UI/API language settings."""
+
+    try:
+        return {
+            "language": default_locale(),
+            "supported_languages": available_locales(),
+            "fallback_language": "zh-CN",
+        }
+    except I18nLocaleError as exc:
+        raise HTTPException(status_code=500, detail={"error": "invalid_i18n_config", "message": str(exc)}) from exc
 
 
 @router.get("/locales")
@@ -45,7 +59,7 @@ def translate_message(payload: TranslationRequest) -> dict[str, str]:
 @router.get("/messages/{message_key}")
 def get_message(
     message_key: str,
-    locale: str = Query(default="zh-CN"),
+    locale: str | None = Query(default=None),
     status: str | None = Query(default=None),
     event_id: str | None = Query(default=None),
 ) -> dict[str, str]:

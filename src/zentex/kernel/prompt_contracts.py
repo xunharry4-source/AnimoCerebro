@@ -142,8 +142,8 @@ Q4_CONTRACT = QuestionContract(
         "不得推导权限或红线结论，权限交给 Q5，红线交给 Q6。",
         "actionable_space 必须是当前真实可做动作。",
     ),
-    prompt_builder_symbol="plugins.nine_questions.q4_what_can_i_do.llm_prompt.build_q4_llm_request",
-    prompt_file_path=_src_file("plugins/nine_questions/q4_what_can_i_do/llm_prompt.py"),
+    prompt_builder_symbol="plugins.nine_questions.q4_what_can_i_do.internal.llm_prompt.build_q4_internal_llm_request",
+    prompt_file_path=_src_file("plugins/nine_questions/q4_what_can_i_do/internal/llm_prompt.py"),
 )
 
 Q5_CONTRACT = QuestionContract(

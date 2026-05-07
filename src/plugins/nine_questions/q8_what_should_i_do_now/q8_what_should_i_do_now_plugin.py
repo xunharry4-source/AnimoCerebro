@@ -18,7 +18,8 @@ from plugins.nine_questions.q3_role_inference.llm_output_table import (
     load_llm_output_from_table as load_q3_llm_output_from_table,
 )
 from plugins.nine_questions.q4_what_can_i_do.llm_output_table import (
-    load_llm_output_from_table as load_q4_llm_output_from_table,
+    load_external_llm_output_from_table as load_q4_external_llm_output_from_table,
+    load_internal_llm_output_from_table as load_q4_internal_llm_output_from_table,
 )
 from plugins.nine_questions.q5_what_am_i_allowed_to_do.llm_output_table import (
     load_llm_output_from_table as load_q5_llm_output_from_table,
@@ -27,7 +28,8 @@ from plugins.nine_questions.q6_what_should_i_not_do.llm_output_table import (
     load_llm_output_from_table as load_q6_llm_output_from_table,
 )
 from plugins.nine_questions.q7_what_else_can_i_do.llm_output_table import (
-    load_llm_output_from_table as load_q7_llm_output_from_table,
+    load_external_llm_output_from_table as load_q7_external_llm_output_from_table,
+    load_internal_llm_output_from_table as load_q7_internal_llm_output_from_table,
 )
 from zentex.common.cognitive_result import CognitiveToolResult
 from zentex.common.plugin_ids import NINE_QUESTION_Q8
@@ -262,10 +264,16 @@ def _load_q8_upstream_llm_outputs(context: dict[str, Any]) -> dict[str, Any]:
                 "external_tool_llm_output": load_q2_external_llm_output_from_table(db_path=state_db_path),
             },
             "q3": load_q3_llm_output_from_table(db_path=state_db_path),
-            "q4": load_q4_llm_output_from_table(db_path=state_db_path),
+            "q4": {
+                "q4_internal_objective_candidates": load_q4_internal_llm_output_from_table(db_path=state_db_path),
+                "q4_external_objective_candidates": load_q4_external_llm_output_from_table(db_path=state_db_path),
+            },
             "q5": load_q5_llm_output_from_table(db_path=state_db_path),
             "q6": load_q6_llm_output_from_table(db_path=state_db_path),
-            "q7": load_q7_llm_output_from_table(db_path=state_db_path),
+            "q7": {
+                "internal_creative_possibility_set": load_q7_internal_llm_output_from_table(db_path=state_db_path),
+                "external_redline_llm_output": load_q7_external_llm_output_from_table(db_path=state_db_path),
+            },
         }
     )
 
@@ -297,13 +305,23 @@ def _build_q8_decision_digest(snapshot: dict[str, Any]) -> dict[str, Any]:
     q5_permission = _q8_dict(q5.get("q5_permission_boundary"))
     q5_convergence_guard = _q8_dict(q5.get("q5_objective_convergence_guard"))
     q6_profile = _q8_dict(
-        q6.get("q6_consequence_inference")
+        q6.get("q6_external_consequence_profile")
+        or q6.get("q6_consequence_inference")
         or q6.get("q6_cost_impact_profile")
         or q6.get("q6_consequence_assessment")
         or q6.get("q6_forbidden_zone_profile")
         or q6.get("q6_forbidden_zone_baseline")
     )
-    q7_profile = _q8_dict(q7.get("q7_red_line_assessment") or q7.get("red_line_assessment") or q7)
+    q7_internal_output = _q8_dict(q7.get("internal_creative_possibility_set"))
+    q7_external_output = _q8_dict(q7.get("external_redline_llm_output"))
+    q7_profile = _q8_dict(
+        q7_external_output.get("Q7ExternalRedLineAssessment")
+        or q7_external_output.get("ExternalRedLineAssessment")
+        or q7_external_output.get("RedLineAssessment")
+        or q7.get("q7_red_line_assessment")
+        or q7.get("red_line_assessment")
+        or q7
+    )
     q7_profile = _q8_dict(q7_profile.get("RedLineAssessment") or q7_profile)
 
     return {
@@ -386,6 +404,12 @@ def _build_q8_decision_digest(snapshot: dict[str, Any]) -> dict[str, Any]:
                 q7_profile.get("non_bypassable_constraints") or q7.get("q7_non_bypassable_constraints"),
             ),
             "question_driver_refs": _q8_list(q7_profile.get("question_driver_refs") or q7.get("q7_question_driver_refs")),
+            "internal_creative_possibilities": _q8_list(
+                q7_internal_output.get("creative_possibilities") or q7.get("q7_internal_creative_possibilities")
+            ),
+            "internal_possibility_statuses": _q8_list(
+                q7_internal_output.get("possibility_statuses") or q7.get("q7_internal_possibility_statuses")
+            ),
         },
     }
 
@@ -395,11 +419,157 @@ def _q8_json(value: Any) -> str:
 
 
 def _build_q8_llm_output_payload(result_payload: dict[str, Any]) -> dict[str, Any]:
+    """Root Q8 is an orchestrator; branch LLM I/O stays in branch modules."""
     return {
         "q8_objective_profile": result_payload.get("objective") or {},
         "q8_task_queue": result_payload.get("task_queue") or {},
-        "q8_external_execution_tasks": result_payload.get("external_execution_tasks") or [],
-        "q8_internal_cognitive_tasks": result_payload.get("internal_cognitive_tasks") or [],
+    }
+
+
+def _q8_public_task_rows(value: Any) -> list[dict[str, Any]]:
+    rows: list[dict[str, Any]] = []
+    allowed_keys = {
+        "task_id",
+        "id",
+        "title",
+        "task",
+        "status",
+        "reason",
+        "priority",
+        "task_scope",
+        "executor_type",
+        "target_id",
+        "required_capability",
+        "creation_rationale",
+        "task_goal",
+        "completion_condition",
+        "metadata",
+    }
+    for index, item in enumerate(value if isinstance(value, list) else []):
+        if isinstance(item, dict):
+            title = _q8_text(item.get("title") or item.get("task") or item.get("intent_name") or item.get("objective"))
+            if not title:
+                continue
+            row = {
+                str(key): json_safe_payload(val)
+                for key, val in item.items()
+                if key in allowed_keys and val not in (None, "", [], {})
+            }
+            row["title"] = title
+            row.setdefault("task_id", _q8_text(item.get("task_id") or item.get("id") or f"q8-task-{index}"))
+            rows.append(row)
+            continue
+        text = _q8_text(item)
+        if text:
+            rows.append({"task_id": f"q8-task-{index}", "title": text})
+    return rows
+
+
+def _q8_public_task_queue(value: Any) -> dict[str, list[dict[str, Any]]]:
+    queue = _q8_dict(value)
+    return {
+        "next_self_tasks": _q8_public_task_rows(queue.get("next_self_tasks")),
+        "blocked_self_tasks": _q8_public_task_rows(queue.get("blocked_self_tasks")),
+        "proactive_actions": _q8_public_task_rows(queue.get("proactive_actions")),
+    }
+
+
+def _q8_public_objective_profile(value: Any) -> dict[str, Any]:
+    objective = _q8_dict(value)
+    return {
+        "current_mission": _q8_text(objective.get("current_mission") or objective.get("current_primary_objective")),
+        "mission_rationale": _q8_text(objective.get("mission_rationale")),
+        "primary_objectives": _q8_string_list(objective.get("primary_objectives")),
+        "secondary_objectives": _q8_string_list(objective.get("secondary_objectives")),
+        "completion_conditions": _q8_string_list(objective.get("completion_conditions")),
+        "pause_conditions": _q8_string_list(objective.get("pause_conditions")),
+        "escalation_conditions": _q8_string_list(objective.get("escalation_conditions")),
+        "current_phase_tasks": _q8_string_list(objective.get("current_phase_tasks")),
+        "priority_order": _q8_string_list(objective.get("priority_order")),
+    }
+
+
+def _q8_branch_public_output(*, scope: str, task_result: dict[str, Any]) -> dict[str, Any]:
+    inference_payload = _q8_dict(task_result.get("inference_payload"))
+    objective_profile = _q8_public_objective_profile(inference_payload.get("objective_profile"))
+    task_queue = _q8_public_task_queue(inference_payload.get("task_queue"))
+    task_plan = _q8_dict(task_result.get("task_plan"))
+    generated = _q8_public_task_rows(task_plan.get("generated") or task_result.get("tasks"))
+    public_output = {
+        "scope": scope,
+        "objective_profile": objective_profile,
+        "task_queue": task_queue,
+        "task_plan": {
+            "planner": _q8_text(task_plan.get("planner")) or f"q8_{scope}_task_generation",
+            "generated": generated,
+        },
+    }
+    meaningful = (
+        objective_profile.get("current_mission")
+        or objective_profile.get("primary_objectives")
+        or objective_profile.get("priority_order")
+        or generated
+        or any(task_queue.values())
+    )
+    if not meaningful:
+        raise RuntimeError(f"q8_{scope}_public_output_empty")
+    return public_output
+
+
+def _merge_q8_public_branch_outputs(
+    *,
+    internal_output: dict[str, Any],
+    external_output: dict[str, Any],
+    fallback_mission: str,
+) -> dict[str, Any]:
+    internal_objective = _q8_dict(internal_output.get("objective_profile"))
+    external_objective = _q8_dict(external_output.get("objective_profile"))
+    internal_queue = _q8_public_task_queue(internal_output.get("task_queue"))
+    external_queue = _q8_public_task_queue(external_output.get("task_queue"))
+    current_mission = (
+        _q8_text(internal_objective.get("current_mission"))
+        or _q8_text(external_objective.get("current_mission"))
+        or fallback_mission
+    )
+    return {
+        "objective_profile": {
+            "current_mission": current_mission,
+            "mission_rationale": _q8_text(internal_objective.get("mission_rationale"))
+            or _q8_text(external_objective.get("mission_rationale")),
+            "primary_objectives": merge_string_lists(
+                _q8_string_list(internal_objective.get("primary_objectives")),
+                _q8_string_list(external_objective.get("primary_objectives")),
+            ) or ([current_mission] if current_mission else []),
+            "secondary_objectives": merge_string_lists(
+                _q8_string_list(internal_objective.get("secondary_objectives")),
+                _q8_string_list(external_objective.get("secondary_objectives")),
+            ),
+            "completion_conditions": merge_string_lists(
+                _q8_string_list(internal_objective.get("completion_conditions")),
+                _q8_string_list(external_objective.get("completion_conditions")),
+            ),
+            "pause_conditions": merge_string_lists(
+                _q8_string_list(internal_objective.get("pause_conditions")),
+                _q8_string_list(external_objective.get("pause_conditions")),
+            ),
+            "escalation_conditions": merge_string_lists(
+                _q8_string_list(internal_objective.get("escalation_conditions")),
+                _q8_string_list(external_objective.get("escalation_conditions")),
+            ),
+            "current_phase_tasks": merge_string_lists(
+                _q8_string_list(internal_objective.get("current_phase_tasks")),
+                _q8_string_list(external_objective.get("current_phase_tasks")),
+            ),
+            "priority_order": merge_string_lists(
+                _q8_string_list(internal_objective.get("priority_order")),
+                _q8_string_list(external_objective.get("priority_order")),
+            ) or ([current_mission] if current_mission else []),
+        },
+        "task_queue": {
+            "next_self_tasks": internal_queue["next_self_tasks"] + external_queue["next_self_tasks"],
+            "blocked_self_tasks": internal_queue["blocked_self_tasks"] + external_queue["blocked_self_tasks"],
+            "proactive_actions": internal_queue["proactive_actions"] + external_queue["proactive_actions"],
+        },
     }
 
 
@@ -469,6 +639,12 @@ class WhatShouldIDoNowPlugin(BaseModel):
     side_effect_free: bool = True
     is_default_version: bool = True
     is_official_release: bool = True
+
+    def build_internal_public_output(self, internal_task_result: dict[str, Any]) -> dict[str, Any]:
+        return _q8_branch_public_output(scope="internal", task_result=internal_task_result)
+
+    def build_external_public_output(self, external_task_result: dict[str, Any]) -> dict[str, Any]:
+        return _q8_branch_public_output(scope="external", task_result=external_task_result)
 
     def execute(self, context: Dict[str, Any], trace_id: str = "") -> Dict[str, Any]:
         """
@@ -748,35 +924,13 @@ class WhatShouldIDoNowPlugin(BaseModel):
             internal_cognitive_tasks = list(internal_task_result.get("tasks") or [])
             external_execution_tasks = list(external_task_result.get("tasks") or [])
             q3_current_mission = _q8_current_mission_from_q3(question_snapshot)
-            result_raw = {
-                "objective_profile": {
-                    "current_mission": q3_current_mission,
-                    "primary_objectives": [
-                        q3_current_mission,
-                        "internal_tasks completed its own Q8 cognitive task generation",
-                        "external_tasks completed its own Q8 external task generation",
-                    ],
-                    "secondary_objectives": [],
-                    "completion_conditions": [
-                        "Internal and external Q8 task outputs are saved by their owning modules."
-                    ],
-                    "pause_conditions": [],
-                    "escalation_conditions": priority_baseline.get("escalation_conditions", []) or [],
-                    "current_phase_tasks": [
-                        "q8_internal_task_generation",
-                        "q8_external_task_generation",
-                    ],
-                    "priority_order": [
-                        "q8_internal_task_generation",
-                        "q8_external_task_generation",
-                    ],
-                },
-                "task_queue": {
-                    "next_self_tasks": [],
-                    "blocked_self_tasks": [],
-                    "proactive_actions": [],
-                },
-            }
+            internal_public_output = self.build_internal_public_output(internal_task_result)
+            external_public_output = self.build_external_public_output(external_task_result)
+            result_raw = _merge_q8_public_branch_outputs(
+                internal_output=internal_public_output,
+                external_output=external_public_output,
+                fallback_mission=q3_current_mission,
+            )
             validate_q8_output_boundary(result_raw)
             staged_reasoning = {
                 "execution_order": ["internal_tasks", "external_tasks"],
@@ -795,14 +949,8 @@ class WhatShouldIDoNowPlugin(BaseModel):
             objective = inferred_objective
             queue = inferred_queue
             separated_task_plan = {
-                "internal": internal_task_result.get("task_plan") or {
-                    "generated": internal_cognitive_tasks,
-                    "planner": "q8_internal_task_generation",
-                },
-                "external": external_task_result.get("task_plan") or {
-                    "generated": external_execution_tasks,
-                    "planner": "q8_external_task_generation",
-                },
+                "internal": internal_public_output["task_plan"],
+                "external": external_public_output["task_plan"],
             }
             _q8_realtime_log(
                 "END validate Q8 module orchestration result "
@@ -867,15 +1015,8 @@ class WhatShouldIDoNowPlugin(BaseModel):
             result_payload = {
                 "objective": objective.model_dump(mode="json"),
                 "task_queue": queue.model_dump(mode="json"),
-                "q1_q7_snapshot": question_snapshot,
-                "persistent_task_state": normalized_task_state,
-                "q8_priority_baseline": priority_baseline,
-                "q8_configured_extra_goals": configured_extra_goals,
-                "q8_functional_objectives": normalized_functional_objectives,
-                "external_execution_tasks": external_execution_tasks,
-                "internal_cognitive_tasks": internal_cognitive_tasks,
-                "q8_staged_reasoning": staged_reasoning,
-                "llm_trace_payload": llm_trace_payload,
+                "q8_internal_result": internal_public_output,
+                "q8_external_result": external_public_output,
                 "q8_separated_task_plan": {
                     "internal": {
                         "generated": separated_task_plan["internal"]["generated"],
@@ -907,14 +1048,8 @@ class WhatShouldIDoNowPlugin(BaseModel):
                     "q8_objective_and_queue": result_payload,
                     "q8_objective_profile": result_payload.get("objective"),
                     "q8_task_queue": result_payload.get("task_queue"),
-                    "q8_q1_q7_snapshot": result_payload.get("q1_q7_snapshot") or {},
-                    "q8_persistent_task_state": result_payload.get("persistent_task_state") or {},
-                    "q8_priority_baseline": result_payload.get("q8_priority_baseline") or {},
-                    "q8_configured_extra_goals": result_payload.get("q8_configured_extra_goals") or [],
-                    "q8_functional_objectives": result_payload.get("q8_functional_objectives") or [],
-                    "q8_external_execution_tasks": result_payload.get("external_execution_tasks") or [],
-                    "q8_internal_cognitive_tasks": result_payload.get("internal_cognitive_tasks") or [],
-                    "q8_staged_reasoning": result_payload.get("q8_staged_reasoning") or {},
+                    "q8_internal_result": internal_public_output,
+                    "q8_external_result": external_public_output,
                     "q8_separated_task_plan": result_payload.get("q8_separated_task_plan") or {},
                     "q8_execution_diagnosis": diagnosis,
                     "llm_trace_payload": llm_trace_payload,
@@ -982,14 +1117,8 @@ class WhatShouldIDoNowPlugin(BaseModel):
                 "q8_objective_and_queue": result,
                 "q8_objective_profile": result.get("objective"),
                 "q8_task_queue": result.get("task_queue"),
-                "q8_q1_q7_snapshot": result.get("q1_q7_snapshot") or {},
-                "q8_persistent_task_state": result.get("persistent_task_state") or {},
-                "q8_priority_baseline": result.get("q8_priority_baseline") or {},
-                "q8_configured_extra_goals": result.get("q8_configured_extra_goals") or [],
-                "q8_functional_objectives": result.get("q8_functional_objectives") or [],
-                "q8_external_execution_tasks": result.get("external_execution_tasks") or [],
-                "q8_internal_cognitive_tasks": result.get("internal_cognitive_tasks") or [],
-                "q8_staged_reasoning": result.get("q8_staged_reasoning") or {},
+                "q8_internal_result": result.get("q8_internal_result") or {},
+                "q8_external_result": result.get("q8_external_result") or {},
                 "q8_separated_task_plan": result.get("q8_separated_task_plan") or {},
                 "q8_execution_diagnosis": q8_execution_diagnosis,
                 "llm_trace_payload": llm_trace_payload,

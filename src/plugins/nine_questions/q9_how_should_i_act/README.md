@@ -10,6 +10,82 @@ Required files:
 - register.py
 - README.md
 
+## Public Methods
+
+Q9 exposes two lane-specific public methods. Callers must choose the lane they need and must not ask downstream code to split, normalize, or clean a mixed Q9 payload.
+
+### `run_internal_action_design(context)`
+
+Use this method for internal cognition, memory, reasoning, safety-module, and verification planning only.
+
+Returns a `CognitiveToolResult` with:
+
+- `tool_id`: `<q9_plugin_id>:internal`
+- `llm_output`:
+  - `q9_internal_llm_input`
+  - `q9_internal_llm_output`
+- `context_updates`:
+  - `q9_internal_action_design`
+  - `q9_internal_execution_diagnosis`
+- `proposals`:
+  - one `q9_internal_action_design` proposal
+
+The meaningful business contract is `q9_internal_action_design`. It is already validated by Q9 and has exactly this shape:
+
+- `action_objective`
+- `internal_steps`
+- `required_internal_resources`
+- `verification_checks`
+- `stop_conditions`
+- `evidence_refs`
+
+If the LLM returns a missing `Q9InternalActionDesign`, unknown keys, empty strings, empty list fields, or otherwise meaningless content, Q9 raises an error. Downstream must not be responsible for interpreting raw LLM garbage.
+
+### `run_external_action_design(context)`
+
+Use this method for external execution, connector, CLI, MCP, browser, API, tenant, contact, and side-effect action design only.
+
+Returns a `CognitiveToolResult` with:
+
+- `tool_id`: `<q9_plugin_id>:external`
+- `llm_output`:
+  - `q9_external_llm_input`
+  - `q9_external_llm_output`
+- `context_updates`:
+  - `q9_external_action_design`
+  - `q9_external_execution_diagnosis`
+- `proposals`:
+  - one `q9_external_action_design` proposal
+
+The meaningful business contract is `q9_external_action_design`. It is already validated by Q9 and has exactly this shape:
+
+- `action_objective`
+- `external_steps`
+- `required_external_resources`
+- `verification_checks`
+- `stop_conditions`
+- `evidence_refs`
+
+If the LLM returns a missing `Q9ExternalActionDesign`, unknown keys, empty strings, empty list fields, or otherwise meaningless content, Q9 raises an error. Downstream must not be responsible for interpreting raw LLM garbage.
+
+### `run_tool(context)`
+
+`run_tool(context)` exists only as a compatibility orchestrator for callers that still execute Q9 as one cognitive plugin. It calls `run_internal_action_design(context)` and `run_external_action_design(context)` separately, then returns both lane results side by side.
+
+`run_tool(context)` must not merge internal and external semantics into one action object. Its `context_updates` may contain both lane outputs, but the meaningful action designs remain:
+
+- `q9_internal_action_design`
+- `q9_external_action_design`
+
+`run_tool(context)` also preserves the four separate raw LLM I/O fields in `context_updates` for audit/readback only:
+
+- `q9_internal_llm_input`
+- `q9_internal_llm_output`
+- `q9_external_llm_input`
+- `q9_external_llm_output`
+
+Downstream code must consume those lane-specific fields directly. It must not parse raw `q9_*_llm_input`, raw `q9_*_llm_output`, or legacy merged fields as the business result.
+
 ## Functional Plugin Expansion Rules
 
 - This cognitive plugin may discover and execute bound functional plugins only through `src/zentex/plugins/service.py`.

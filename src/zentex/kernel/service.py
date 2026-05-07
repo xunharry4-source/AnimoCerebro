@@ -1547,6 +1547,8 @@ class KernelService:
         question_id = str(getattr(response, "question_id", "") or "").strip().lower()
         if not question_id:
             return
+        if question_id in {"q1", "q2", "q3"}:
+            return
         context_updates = getattr(response, "context_updates", None)
         if not isinstance(context_updates, dict):
             result_payload = getattr(response, "result_payload", None)
@@ -1566,6 +1568,8 @@ class KernelService:
         question_id: str,
         module_runs: list[dict[str, Any]],
     ) -> None:
+        if str(question_id or "").strip().lower() in {"q1", "q2", "q3"}:
+            return
         session_id = self._NINE_QUESTION_BASELINE_SESSION_ID
         now = datetime.now(UTC).isoformat()
         db_path = get_storage_paths().session_db
@@ -1617,6 +1621,8 @@ class KernelService:
         module_id: str,
         payload: dict[str, Any],
     ) -> None:
+        if str(question_id or "").strip().lower() in {"q1", "q2", "q3"}:
+            return
         if not isinstance(payload, dict):
             return
         status = str(payload.get("status") or "").strip().lower()

@@ -194,6 +194,34 @@ class NineQuestionService:
 
         return pruned
 
+    @staticmethod
+    def _is_q3_external_lane_snapshot(snapshot: dict[str, Any]) -> bool:
+        llm_output = snapshot.get("llm_output")
+        if not isinstance(llm_output, dict):
+            return False
+        return (
+            isinstance(llm_output.get("q3_external_llm_input"), dict)
+            and bool(llm_output.get("q3_external_llm_input"))
+            and isinstance(llm_output.get("q3_external_llm_output"), dict)
+            and bool(llm_output.get("q3_external_llm_output"))
+        )
+
+    @staticmethod
+    def _is_q4_dual_lane_llm_snapshot(snapshot: dict[str, Any]) -> bool:
+        llm_output = snapshot.get("llm_output")
+        if not isinstance(llm_output, dict):
+            return False
+        return (
+            isinstance(llm_output.get("q4_internal_llm_input"), dict)
+            and bool(llm_output.get("q4_internal_llm_input"))
+            and isinstance(llm_output.get("q4_internal_llm_output"), dict)
+            and bool(llm_output.get("q4_internal_llm_output"))
+            and isinstance(llm_output.get("q4_external_llm_input"), dict)
+            and bool(llm_output.get("q4_external_llm_input"))
+            and isinstance(llm_output.get("q4_external_llm_output"), dict)
+            and bool(llm_output.get("q4_external_llm_output"))
+        )
+
     @classmethod
     def _append_question_history_version(
         cls,
@@ -233,6 +261,8 @@ class NineQuestionService:
         current_snapshot: dict[str, Any],
         reason: str,
     ) -> dict[str, Any]:
+        if str(question_id or "").strip().lower() in {"q1", "q2", "q3"}:
+            return {}
         if not self.snapshot_has_usable_data(current_snapshot):
             return {}
         append_history = getattr(self._state_manager, "append_question_snapshot_history", None)
@@ -385,6 +415,41 @@ class NineQuestionService:
             return []
         return [f"q{i}" for i in range(1, current_order)]
 
+    @classmethod
+    def _snapshot_gate_upstream_questions(cls, question_id: str) -> list[str]:
+        required = cls._required_upstream_questions(question_id)
+        qid = str(question_id or "").strip().lower()
+        if qid in {"q3", "q4"}:
+            return [upstream_q for upstream_q in required if upstream_q != "q2"]
+        return required
+
+    def _state_db_path(self) -> Path | None:
+        store = getattr(self._state_manager, "_store", None)
+        db_path = getattr(store, "db_path", None)
+        if db_path in (None, "", [], {}):
+            return None
+        return Path(str(db_path))
+
+    def _validate_llm_table_upstreams(self, question_id: str) -> list[str]:
+        qid = str(question_id or "").strip().lower()
+        if qid not in {"q3", "q4"}:
+            return []
+
+        failures: list[str] = []
+        db_path = self._state_db_path()
+        try:
+            from plugins.nine_questions.q2_asset_inventory.llm_output_table import (
+                load_external_llm_output_from_table as load_q2_external_llm_output_from_table,
+                load_internal_llm_output_from_table as load_q2_internal_llm_output_from_table,
+            )
+
+            load_q2_external_llm_output_from_table(db_path=db_path)
+            if qid == "q4":
+                load_q2_internal_llm_output_from_table(db_path=db_path)
+        except Exception as exc:
+            failures.append(f"q2:llm_output_not_qualified:{exc}")
+        return failures
+
     @staticmethod
     def _snapshot_generated_at_epoch(snapshot: dict[str, Any]) -> float:
         for key in ("updated_at", "generated_at", "timestamp"):
@@ -449,14 +514,15 @@ class NineQuestionService:
         return True, "qualified"
 
     async def assert_latest_qualified_upstreams(self, question_id: str) -> dict[str, Any]:
-        """Validate that QN can only read upstream latest qualified snapshots.
+        """Validate that QN can only read its authoritative upstream sources.
 
-        Raises RuntimeError when any required upstream snapshot is missing,
-        dirty, fallback-based, or non-completed.
+        Snapshot-backed upstreams must be latest-qualified. Q2 LLM-backed
+        upstreams are validated from the persisted LLM output table.
         """
         qid = str(question_id or "").strip().lower()
-        required = self._required_upstream_questions(qid)
-        if not required:
+        required = self._snapshot_gate_upstream_questions(qid)
+        llm_table_failures = self._validate_llm_table_upstreams(qid)
+        if not required and not llm_table_failures:
             state = await self.get_state()
             return self._build_scoped_upstream_state_payload(
                 state,
@@ -466,7 +532,7 @@ class NineQuestionService:
 
         state = await self.get_state()
         snapshot_map = self.get_question_snapshot_map(state)
-        failures: list[str] = []
+        failures: list[str] = list(llm_table_failures)
         for upstream_q in required:
             snapshot = snapshot_map.get(upstream_q)
             qualified, reason = self._evaluate_snapshot_qualification(
@@ -1692,7 +1758,22 @@ class NineQuestionService:
             )
             return merged_snapshot
 
-        decision = self._should_accept_new_snapshot(current_snapshot, patch)
+        if question_id == "q3" and self._is_q3_external_lane_snapshot(patch):
+            decision = {
+                "accept_snapshot": True,
+                "merge_diagnostics_only": False,
+                "preserve_previous_success": False,
+                "reason": "q3_external_lane_snapshot_accepted",
+            }
+        elif question_id == "q4" and self._is_q4_dual_lane_llm_snapshot(patch):
+            decision = {
+                "accept_snapshot": True,
+                "merge_diagnostics_only": False,
+                "preserve_previous_success": False,
+                "reason": "q4_dual_lane_llm_snapshot_accepted",
+            }
+        else:
+            decision = self._should_accept_new_snapshot(current_snapshot, patch)
         if decision["accept_snapshot"]:
             merged_snapshot = self._merge_snapshot_patch(current_snapshot, patch)
         else:
@@ -1749,7 +1830,7 @@ class NineQuestionService:
         module_id: str,
         payload: dict[str, Any],
     ) -> dict[str, Any]:
-        if question_id == "q3":
+        if str(question_id or "").strip().lower() in {"q1", "q2", "q3"}:
             return await self.rebuild_question_record(question_id)
         state = await self.get_state()
         snapshot_map = self.get_question_snapshot_map(state)
@@ -1784,7 +1865,7 @@ class NineQuestionService:
         module_id: str,
         payload: dict[str, Any],
     ) -> dict[str, Any]:
-        if question_id == "q3":
+        if str(question_id or "").strip().lower() in {"q1", "q2", "q3"}:
             return await self.rebuild_question_record(question_id)
         state = await self.get_state()
         snapshot_map = self.get_question_snapshot_map(state)

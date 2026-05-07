@@ -1,8 +1,16 @@
 from __future__ import annotations
 
-from typing import Any
+from pathlib import Path
+from typing import Any, Optional
 
+from zentex.common.prompt_template_files import render_prompt_template
 from zentex.common.prompt_sections import assemble_prompt_sections, build_prompt_section
+
+_TEMPLATE_DIR = Path(__file__).resolve().with_name("prompt_templates")
+
+
+def _render_template(name: str, values: dict[str, str] | None = None) -> str:
+    return render_prompt_template(_TEMPLATE_DIR, name, values or {}, error_prefix="tasks_simple")
 
 
 _MAX_MISSION_TITLE = 200
@@ -26,7 +34,7 @@ def build_simple_decomposition_request(
             title="Role",
             intent="Define the decomposition responsibility.",
             purpose="Keep the model focused on executable subtask planning.",
-            content="你是一个专业的任务管理专家，擅长将复杂任务拆解为可执行的子任务。",
+            content=_render_template("simple_role.md"),
         )
     ]
     prompt_sections = [
@@ -54,28 +62,14 @@ def build_simple_decomposition_request(
             title="Output Contract",
             intent="Define the required JSON output structure.",
             purpose="Prevent free-form output and missing fields.",
-            content=(
-                "返回严格 JSON，顶层必须包含 `subtasks` 数组。\n"
-                "每个子任务必须包含:\n"
-                "- `local_id`\n- `title`\n- `task_type`\n- `content`\n- `objective`\n"
-                "- `requirements`\n- `depends_on`\n- `coordination_mode`\n"
-                "- `estimated_duration`\n- `priority`"
-            ),
+            content=_render_template("simple_output_contract.md"),
         ),
         build_prompt_section(
             key="quality_rules",
             title="Quality Rules",
             intent="Constrain the quality of generated subtasks.",
             purpose="Ensure decomposed tasks remain executable and internally consistent.",
-            content=(
-                "1. 每个子任务必须是可执行动作，不得空泛。\n"
-                "2. `task_type` 固定为 `cognitive_step`。\n"
-                "3. 依赖关系必须合理，不得循环依赖。\n"
-                "4. `estimated_duration` 必须在 30-240 分钟之间。\n"
-                "5. `priority` 只能是 `high`、`medium`、`low`。\n"
-                "6. `coordination_mode` 必须与执行方式匹配。\n"
-                "7. 只返回 JSON，不要输出额外解释。"
-            ),
+            content=_render_template("simple_quality_rules.md"),
         ),
     ]
     return {

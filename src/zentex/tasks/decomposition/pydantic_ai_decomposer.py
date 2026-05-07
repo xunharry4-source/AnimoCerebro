@@ -3,6 +3,7 @@ from __future__ import annotations
 import logging
 import os
 from datetime import datetime, timezone
+from pathlib import Path
 from typing import Any, Dict, List, Literal, Optional
 from uuid import uuid4
 
@@ -10,10 +11,16 @@ from pydantic import BaseModel, ConfigDict, Field, ValidationError, field_valida
 
 from zentex.kernel import AuditEventType
 from zentex.llm.providers.config import get_default_provider_key, load_provider_tool_configs, resolve_env_value
+from zentex.common.prompt_template_files import render_prompt_template
 from zentex.tasks.models import CoordinationMode, DecompositionContext, TaskStatus, TaskType
 from zentex.tasks.decomposition.reviewer import PydanticAIAtomicSubtaskReviewer
 
 logger = logging.getLogger(__name__)
+_TEMPLATE_DIR = Path(__file__).resolve().with_name("prompt_templates")
+
+
+def _render_template(name: str, values: dict[str, str]) -> str:
+    return render_prompt_template(_TEMPLATE_DIR, name, values, error_prefix="task_pydantic_ai")
 
 
 class PydanticAIAtomicSubtask(BaseModel):
@@ -238,16 +245,14 @@ class PydanticAITaskDecomposerPlugin:
         from pydantic_ai import Agent, ModelSettings, PromptedOutput
 
         q9_contract = self._q9_contract_from_context(context)
-        prompt = "\n".join(
-            [
-                "审核 PydanticAI 生成的子任务是否严格继承 Q9 输出。",
-                "必须检查：任务目标一致、要求完整覆盖、禁止事项没有被触碰或绕开。",
-                "只要任何子任务扩大目标、遗漏验收要求、触碰禁止项，accepted 必须为 false。",
-                f"mission_title: {mission_title}",
-                f"mission_content: {mission_content}",
-                f"q9_contract: {q9_contract}",
-                f"generated_breakdown: {breakdown.model_dump(mode='json')}",
-            ]
+        prompt = _render_template(
+            "q9_alignment_review.md",
+            {
+                "MISSION_TITLE": mission_title,
+                "MISSION_CONTENT": mission_content,
+                "Q9_CONTRACT": str(q9_contract),
+                "GENERATED_BREAKDOWN": str(breakdown.model_dump(mode="json")),
+            },
         )
         self._write_transcript(
             turn_id=turn_id,
@@ -361,20 +366,14 @@ class PydanticAITaskDecomposerPlugin:
         context: Optional[DecompositionContext],
     ) -> str:
         memory_text = str(context.memory_text or "").strip() if context else ""
-        parts = [
-            "将下面 mission 拆成任务中心可落库执行的最小颗粒度子任务。",
-            "每个子任务必须只包含一个不可再拆的动作；不能把“分析并执行并验证”合并在一个子任务里。",
-            "每个子任务必须带验收条件 acceptance_criteria；如果需要资源，写入 required_resources。",
-            "task_type 只能使用 cognitive_step、agent_delegation、system_action、intervention。",
-            "coordination_mode 只能使用 sequential、parallel、bundle。",
-            f"mission_title: {str(mission_title or '').strip()}",
-            f"mission_content: {str(mission_content or '').strip()}",
-            "输出示例：",
-            '{"decomposition_goal":"检查 CSV 表头","granularity_policy":"single_atomic_operation_per_subtask","subtasks":[{"local_id":"step-1","title":"检查文件存在","task_type":"system_action","content":"确认目标 CSV 文件路径存在。","objective":"获得文件存在性的证据。","acceptance_criteria":["公开查询或执行回执证明文件存在"],"required_resources":["local_file_read"],"depends_on":[],"coordination_mode":"sequential"},{"local_id":"step-2","title":"读取表头","task_type":"system_action","content":"读取 CSV 文件第一行表头。","objective":"获得字段名列表。","acceptance_criteria":["执行回执包含表头字段列表"],"required_resources":["local_file_read"],"depends_on":["step-1"],"coordination_mode":"sequential"}]}',
-        ]
-        if memory_text:
-            parts.append(f"memory_context: {memory_text[-1500:]}")
-        return "\n".join(parts)
+        return _render_template(
+            "pydantic_ai_user_prompt.md",
+            {
+                "MISSION_TITLE": str(mission_title or "").strip(),
+                "MISSION_CONTENT": str(mission_content or "").strip(),
+                "MEMORY_CONTEXT": f"memory_context: {memory_text[-1500:]}" if memory_text else "",
+            },
+        )
 
     def _to_task_payload(self, item: PydanticAIAtomicSubtask, *, trace_id: str) -> Dict[str, Any]:
         required_resources = list(item.required_resources)

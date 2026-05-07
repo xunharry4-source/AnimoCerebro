@@ -3,7 +3,7 @@ from __future__ import annotations
 import re
 from pathlib import Path
 
-_PLACEHOLDER_RE = re.compile(r"{{\s*([A-Z0-9_]+)\s*}}")
+_PLACEHOLDER_RE = re.compile(r"{{\s*([A-Za-z0-9_]+)\s*}}")
 
 
 def read_prompt_template(template_dir: Path, name: str, *, error_prefix: str) -> str:

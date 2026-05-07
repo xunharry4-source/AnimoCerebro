@@ -878,85 +878,86 @@ class SQLiteStateStore:
             ),
         )
 
-        for run in self._extract_module_runs(snapshot):
-            module_id = str(run.get("module_id") or "").strip()
-            if not module_id:
-                continue
-            existing_run = conn.execute(
-                """
-                SELECT run_version, created_at
-                FROM nine_question_module_runs
-                WHERE session_id = ? AND question_id = ? AND module_id = ?
-                """,
-                (session_id, question_id, module_id),
-            ).fetchone()
-            run_version = int(existing_run["run_version"]) + 1 if existing_run else 1
-            run_created_at = str(existing_run["created_at"]) if existing_run else now
-            conn.execute(
-                """
-                INSERT INTO nine_question_module_runs
-                (session_id, question_id, module_id, schema_version, run_version, status, run_json, created_at, updated_at)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
-                ON CONFLICT(session_id, question_id, module_id) DO UPDATE SET
-                    schema_version = excluded.schema_version,
-                    run_version = excluded.run_version,
-                    status = excluded.status,
-                    run_json = excluded.run_json,
-                    updated_at = excluded.updated_at
-                """,
-                (
-                    session_id,
-                    question_id,
-                    module_id,
-                    1,
-                    run_version,
-                    str(run.get("status") or ""),
-                    _json_dumps(run),
-                    run_created_at,
-                    now,
-                ),
-            )
+        if question_id not in {"q1", "q2", "q3"}:
+            for run in self._extract_module_runs(snapshot):
+                module_id = str(run.get("module_id") or "").strip()
+                if not module_id:
+                    continue
+                existing_run = conn.execute(
+                    """
+                    SELECT run_version, created_at
+                    FROM nine_question_module_runs
+                    WHERE session_id = ? AND question_id = ? AND module_id = ?
+                    """,
+                    (session_id, question_id, module_id),
+                ).fetchone()
+                run_version = int(existing_run["run_version"]) + 1 if existing_run else 1
+                run_created_at = str(existing_run["created_at"]) if existing_run else now
+                conn.execute(
+                    """
+                    INSERT INTO nine_question_module_runs
+                    (session_id, question_id, module_id, schema_version, run_version, status, run_json, created_at, updated_at)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    ON CONFLICT(session_id, question_id, module_id) DO UPDATE SET
+                        schema_version = excluded.schema_version,
+                        run_version = excluded.run_version,
+                        status = excluded.status,
+                        run_json = excluded.run_json,
+                        updated_at = excluded.updated_at
+                    """,
+                    (
+                        session_id,
+                        question_id,
+                        module_id,
+                        1,
+                        run_version,
+                        str(run.get("status") or ""),
+                        _json_dumps(run),
+                        run_created_at,
+                        now,
+                    ),
+                )
 
-        for module_id, output in self._extract_module_outputs(snapshot).items():
-            if not isinstance(output, dict):
-                continue
-            module_text = str(module_id or output.get("module_id") or "").strip()
-            if not module_text:
-                continue
-            existing_output = conn.execute(
-                """
-                SELECT output_version, created_at
-                FROM nine_question_module_outputs
-                WHERE session_id = ? AND question_id = ? AND module_id = ?
-                """,
-                (session_id, question_id, module_text),
-            ).fetchone()
-            output_version = int(existing_output["output_version"]) + 1 if existing_output else 1
-            output_created_at = str(existing_output["created_at"]) if existing_output else now
-            conn.execute(
-                """
-                INSERT INTO nine_question_module_outputs
-                (session_id, question_id, module_id, schema_version, output_version, status,
-                 output_kind, output_json, created_at, updated_at)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-                ON CONFLICT(session_id, question_id, module_id) DO UPDATE SET
-                    schema_version = excluded.schema_version,
-                    output_version = excluded.output_version,
-                    status = excluded.status,
-                    output_kind = excluded.output_kind,
-                    output_json = excluded.output_json,
-                    updated_at = excluded.updated_at
-                """,
-                (
-                    session_id,
-                    question_id,
-                    module_text,
-                    1,
-                    output_version,
-                    str(output.get("status") or ""),
-                    str(output.get("output_kind") or ""),
-                    _json_dumps(output),
-                    output_created_at,
-                    now,
-                ),
-            )
+            for module_id, output in self._extract_module_outputs(snapshot).items():
+                if not isinstance(output, dict):
+                    continue
+                module_text = str(module_id or output.get("module_id") or "").strip()
+                if not module_text:
+                    continue
+                existing_output = conn.execute(
+                    """
+                    SELECT output_version, created_at
+                    FROM nine_question_module_outputs
+                    WHERE session_id = ? AND question_id = ? AND module_id = ?
+                    """,
+                    (session_id, question_id, module_text),
+                ).fetchone()
+                output_version = int(existing_output["output_version"]) + 1 if existing_output else 1
+                output_created_at = str(existing_output["created_at"]) if existing_output else now
+                conn.execute(
+                    """
+                    INSERT INTO nine_question_module_outputs
+                    (session_id, question_id, module_id, schema_version, output_version, status,
+                     output_kind, output_json, created_at, updated_at)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    ON CONFLICT(session_id, question_id, module_id) DO UPDATE SET
+                        schema_version = excluded.schema_version,
+                        output_version = excluded.output_version,
+                        status = excluded.status,
+                        output_kind = excluded.output_kind,
+                        output_json = excluded.output_json,
+                        updated_at = excluded.updated_at
+                    """,
+                    (
+                        session_id,
+                        question_id,
+                        module_text,
+                        1,
+                        output_version,
+                        str(output.get("status") or ""),
+                        str(output.get("output_kind") or ""),
+                        _json_dumps(output),
+                        output_created_at,
+                        now,
+                    ),
+                )

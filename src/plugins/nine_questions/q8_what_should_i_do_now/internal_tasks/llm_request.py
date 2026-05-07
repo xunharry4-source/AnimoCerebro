@@ -1,8 +1,17 @@
 from __future__ import annotations
 
+from pathlib import Path
 from typing import Any
 
+from zentex.common.prompt_template_files import prompt_template_files, render_prompt_template
 from ..objective_profile_contract import build_q8_internal_objective_profile_prompt
+
+_TEMPLATE_DIR = Path(__file__).resolve().with_name("prompt_templates")
+_TEMPLATE_FILES = ["final_stage.md"]
+
+
+def _render_template(name: str, values: dict[str, str] | None = None) -> str:
+    return render_prompt_template(_TEMPLATE_DIR, name, values or {}, error_prefix="q8_internal")
 
 
 def _text(value: object) -> str:
@@ -87,28 +96,9 @@ def build_q8_internal_staged_llm_request(
     q7_redlines: dict[str, Any] | None = None,
     q1_q7_snapshot: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
-    final_stage_prompt = (
-        "Final stage: synthesize Q8 internal ObjectiveProfile only. "
-        f"{build_q8_internal_objective_profile_prompt()} "
-        "Return strict JSON with exactly one top-level key: `ObjectiveProfile`. "
-        "If the strategic mission is unavailable or too vague, still return `ObjectiveProfile` and put the uncertainty in "
-        "`pause_conditions`; do not invent unrelated internal work. "
-        "`current_mission` must inherit context.Strategic_Mission_&_User_Intent.current_total_goal when it is available. "
-        "`basis_and_traceability` must keep Q1, Q2, Q4, and Q5/Q6/Q7 in their own isolated arrays; do not merge evidence from different questions. "
-        "Q2 traceability may name the concrete cognitive or functional assets found in the inventory, but "
-        "`primary_objectives` and `secondary_objectives` must stay pure abstract business intent and must not name concrete tools. "
-        "Use context.Environment_State and context.Role_Profile only as background, and treat "
-        "context.Internal_Cognitive_Assets and context.Internal_Brain_Organs_State as the only internal objects that may be optimized. "
-        "`primary_objectives`, `secondary_objectives`, `completion_conditions`, `pause_conditions`, and "
-        "`escalation_conditions` must all be arrays of strings. "
-        "Every objective must remain read_only=True and side_effect_free=True in meaning, and must stay in pure cognitive domains "
-        "such as memory organization, reflection, root-cause reasoning, strategy patch synthesis, conflict audit, or safe planning. "
-        "Q8 internal generation only decides what internal cognition should happen; downstream decomposition, persistence, "
-        "and scheduling are owned by the 任务中心 after this LLM output is stored. "
-        "Do not output `internal_cognitive_tasks`, `task_name`, `task_description`, `task_goal`, "
-        "`task_creation_reason_and_basis`, `target_engine_or_organ`, `cognitive_plugin_ref`, `execution_parameters`, "
-        "`expected_receipt_type`, `internal_objectives`, `objective_profile`, `task_queue`, `executor_type`, `target_id`, "
-        "`required_capabilities`, `ActionExecutionReceipt`, markdown, or explanatory prose."
+    final_stage_prompt = _render_template(
+        "final_stage.md",
+        {"OBJECTIVE_PROFILE_PROMPT": build_q8_internal_objective_profile_prompt()},
     )
     q2_cognitive_plugins = [
         str(item or "").strip()
@@ -159,21 +149,15 @@ def build_q8_internal_staged_llm_request(
             "q2_cognitive_capabilities": q2_cognitive_plugins,
         },
         "Internal_Brain_Organs_State": self_state_and_memory,
-        "Q1_Workspace_Domain_Inference": q1_payload,
-        "Q2_AssetInventory": q2_payload,
-        "Q3_RoleProfile": q3_payload,
         "Q4_Capabilities": q4_payload,
         "Q5_AuthorizationBoundary": q5_payload,
         "Q6_ConsequenceProfile": q6_payload,
         "Q7_Redlines": q7_payload or q7_redlines,
         "Q2_Cognitive_Capabilities": q2_cognitive_plugins,
-        "Self_State_And_Memory": self_state_and_memory,
         "Q7_Redlines_Converted": q7_redlines_converted,
         "q8_priority_baseline": priority_baseline if isinstance(priority_baseline, dict) else {},
         "allowed_tasks": allowed_tasks,
         "blocked_tasks": blocked_tasks,
-        "q7_red_line_assessment": {"q7": q7_snapshot if isinstance(q7_snapshot, dict) else {}},
-        "q7_alternatives": {"q7": q7_snapshot if isinstance(q7_snapshot, dict) else {}},
         "task_state": normalized_task_state if isinstance(normalized_task_state, dict) else {},
         "q8_request_scope": "internal",
     }
@@ -183,4 +167,5 @@ def build_q8_internal_staged_llm_request(
         "stage_prompt": final_stage_prompt,
         "context": context,
         "scope": "internal",
+        "template_files": prompt_template_files(_TEMPLATE_DIR, _TEMPLATE_FILES),
     }

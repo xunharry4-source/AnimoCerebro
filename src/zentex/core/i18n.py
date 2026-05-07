@@ -4,6 +4,8 @@ from __future__ import annotations
 
 import argparse
 from dataclasses import dataclass
+from pathlib import Path
+import tomllib
 from typing import Mapping, Sequence
 
 
@@ -30,6 +32,9 @@ CATALOG: dict[str, dict[str, str]] = {
     },
 }
 
+DEFAULT_LOCALE = "zh-CN"
+_CONFIG_PATH = Path("config/i18n.toml")
+
 LOCALE_ALIASES: dict[str, str] = {
     "zh": "zh-CN",
     "zh-cn": "zh-CN",
@@ -50,23 +55,66 @@ class LocaleTranslation:
     message: str
 
 
+def _load_i18n_config() -> dict[str, object]:
+    if not _CONFIG_PATH.exists():
+        return {}
+    with _CONFIG_PATH.open("rb") as handle:
+        payload = tomllib.load(handle)
+    raw_config = payload.get("i18n", {})
+    if not isinstance(raw_config, dict):
+        raise I18nLocaleError("config/i18n.toml [i18n] must be a table")
+    return raw_config
+
+
 def available_locales() -> list[str]:
     """Return all supported locale identifiers."""
 
-    return sorted(CATALOG)
+    raw_supported = _load_i18n_config().get("supported_languages")
+    if raw_supported is None:
+        return list(CATALOG)
+    if not isinstance(raw_supported, list):
+        raise I18nLocaleError("config/i18n.toml i18n.supported_languages must be a list")
+
+    resolved: list[str] = []
+    for raw_locale in raw_supported:
+        locale = _normalize_locale_value(str(raw_locale))
+        if locale not in CATALOG:
+            raise I18nLocaleError(f"Unsupported locale in config/i18n.toml: {raw_locale}")
+        if locale not in resolved:
+            resolved.append(locale)
+    if not resolved:
+        raise I18nLocaleError("config/i18n.toml i18n.supported_languages must not be empty")
+    return resolved
+
+
+def default_locale() -> str:
+    """Return configured default locale, defaulting to Chinese."""
+
+    raw_locale = _load_i18n_config().get("language", DEFAULT_LOCALE)
+    locale = _normalize_locale_value(str(raw_locale))
+    if locale not in available_locales():
+        raise I18nLocaleError(
+            f"Configured i18n language must be one of {available_locales()}: {raw_locale}"
+        )
+    return locale
+
+
+def _normalize_locale_value(locale: str | None) -> str:
+    raw = str(locale or DEFAULT_LOCALE).strip()
+    return LOCALE_ALIASES.get(raw.lower(), raw)
 
 
 def normalize_locale(locale: str | None) -> str:
     """Normalize a locale alias to a supported catalog locale."""
 
-    raw = str(locale or "zh-CN").strip()
-    normalized = LOCALE_ALIASES.get(raw.lower(), raw)
-    if normalized not in CATALOG:
+    raw = str(locale or default_locale()).strip()
+    normalized = _normalize_locale_value(raw)
+    if normalized not in available_locales():
         raise I18nLocaleError(f"Unsupported locale: {raw}")
     return normalized
 
 
-def translate(message_key: str, *, locale: str | None = "zh-CN", params: Mapping[str, object] | None = None) -> LocaleTranslation:
+def translate(message_key: str, *, locale: str | None = None, params: Mapping[str, object] | None = None) -> LocaleTranslation:
     """Translate a message key with strict parameter interpolation."""
 
     resolved_locale = normalize_locale(locale)
@@ -84,7 +132,7 @@ def render_cli_translation(argv: Sequence[str]) -> LocaleTranslation:
     """Render a translation from CLI-style arguments including ``--locale``."""
 
     parser = argparse.ArgumentParser(prog="zentex-i18n")
-    parser.add_argument("--locale", default="zh-CN")
+    parser.add_argument("--locale", default=None)
     parser.add_argument("--key", required=True)
     parser.add_argument("--param", action="append", default=[])
     namespace = parser.parse_args(list(argv))
