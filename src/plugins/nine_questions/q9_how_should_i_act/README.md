@@ -110,9 +110,24 @@ Downstream code must consume those lane-specific fields directly. It must not pa
 ## Constraints
 
 - Functional plugin outputs are action-planning evidence and must not bypass the final Q8 decision context.
-- Q9 must read authoritative Q1-Q8 LLM outputs from the SQLite nine-question snapshot tables before ActionPlan synthesis.
-- Q9 requires completed Q1-Q8 upstream snapshots, real self-model input, real reasoning budget input, and at least one successful posture plugin result.
+- Q9 must read authoritative Q1/Q2/Q3/Q8 LLM outputs from the SQLite nine-question snapshot tables before ActionPlan synthesis.
+- Q9 requires completed Q1/Q2/Q3/Q8 upstream snapshots, real self-model input, real reasoning budget input, and at least one successful posture plugin result.
 - Q9 must persist only its own successful module outputs into the SQLite module-output tables.
-- Q9 must persist functional posture evidence, Q1-Q8 validation, self-model validation, reasoning-budget validation, posture baseline, and LLM ActionPlan projection as separate module records.
+- Q9 must persist functional posture evidence, Q1/Q2/Q3/Q8 validation, self-model validation, reasoning-budget validation, posture baseline, and LLM ActionPlan projection as separate module records.
 - Every persisted Q9 table row is versioned and timestamped by the shared SQLite nine-question store.
 - Q9 must not return substitute, legacy, or incomplete responses. Exceptions propagate and failed exception payloads are not saved.
+
+## Data Acquisition Enforcement
+
+为了确保因果审计链（Causal Audit Chain）的完整性，Q9 **必须** 遵循以下数据获取规范：
+
+1. **禁止手动提取 (No Manual Extraction)**:
+   - 严禁使用 `context.get("q8_...")` 等方式获取 Q8 结果。
+   - 严禁从 `nine_question_state` 的 `context_updates` 中直接读取上游数据。
+
+2. **官方加载器路径 (Official Loader Methods)**:
+   - 必须通过上游 Q8 提供的官方加载器从 SQLite 权威状态库中读取数据。
+   - 核心方法：`from plugins.nine_questions.q8_what_should_i_do_now.llm_output_table import load_llm_output_from_table`
+
+3. **因果处理**:
+   - 加载器会自动处理数据清洗、空值过滤及结构化校验，确保进入 LLM Prompt 的上下文是经过因果验证的最新快照。

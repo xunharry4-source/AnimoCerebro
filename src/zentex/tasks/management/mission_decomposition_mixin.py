@@ -8,6 +8,22 @@ class TaskServiceMissionDecompositionMixin:
         """
         Step 2 & 3: Mission Decomposition & Dispatch.
         """
+        current_mission = self.get_task(mission_task.task_id)
+        if current_mission is not None:
+            existing_decomposition = current_mission.metadata.get("g31a_decomposition") if isinstance(current_mission.metadata, dict) else {}
+            if (
+                isinstance(existing_decomposition, dict)
+                and existing_decomposition.get("status") == "completed"
+                and current_mission.subtask_ids
+            ):
+                existing_children = [
+                    child
+                    for child in (self.get_task(subtask_id) for subtask_id in current_mission.subtask_ids)
+                    if child is not None
+                ]
+                if len(existing_children) == len(current_mission.subtask_ids):
+                    return existing_children
+
         try:
             decomposition_context = DecompositionContext(
                 mission_query=" ".join(
@@ -80,6 +96,7 @@ class TaskServiceMissionDecompositionMixin:
             raise TaskStateError(mission_task.last_error)
         
         logger.info(f"Dispatching {len(subtask_data)} subtasks for mission {mission_task.task_id}")
+        assignment_router = self._build_assignment_router()
         
         local_id_map: Dict[str, str] = {} # local step id -> physical task_id
 
@@ -90,6 +107,7 @@ class TaskServiceMissionDecompositionMixin:
             item["parent_task_id"] = mission_task.task_id
             item["originator_id"] = mission_task.originator_id
             item["idempotency_key"] = f"sub-{mission_task.task_id}-{local_id}"
+            item.setdefault("task_scope", mission_task.task_scope)
             item.setdefault("status", TaskStatus.ASSIGNMENT_PENDING)
             item.setdefault("metadata", {})
             item["metadata"] = {
@@ -100,6 +118,13 @@ class TaskServiceMissionDecompositionMixin:
             }
             acceptance_criteria = list(item["metadata"].get("acceptance_criteria") or [])
             required_resources = list(item["metadata"].get("required_resources") or item.get("requirements") or [])
+            required_capabilities = list(item["metadata"].get("required_capabilities") or item.get("capabilities") or [])
+            designated_owner = str(
+                item.get("target_id")
+                or item["metadata"].get("q9_proposed_owner_ref")
+                or item["metadata"].get("owner_ref")
+                or ""
+            ).strip()
             
             # Subtask contract enforcement
             contract = TaskContract(
@@ -117,6 +142,19 @@ class TaskServiceMissionDecompositionMixin:
             )
             
             st = await self.create_task({**item, "contract": contract})
+            if st.status == TaskStatus.ASSIGNMENT_PENDING:
+                st = await assignment_router.route_assignment_pending_task(
+                    self,
+                    st,
+                    required_capabilities=required_capabilities,
+                    required_resources=required_resources,
+                    designated_owner=designated_owner,
+                    target_status=TaskStatus.QUEUED,
+                )
+            refreshed_st = self.get_task(st.task_id)
+            if refreshed_st is None:
+                raise TaskStateError(f"Failed to read back subtask {st.task_id}")
+            st = refreshed_st
             local_id_map[local_id] = st.task_id
             mission_task.subtask_ids.append(st.task_id)
 

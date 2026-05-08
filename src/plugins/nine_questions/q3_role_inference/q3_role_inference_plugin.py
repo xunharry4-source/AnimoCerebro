@@ -94,58 +94,11 @@ def _has_real_audit_service(context: dict[str, Any]) -> bool:
 
 
 def _extract_q2_audit_id(context: dict[str, Any], *, session_id: str) -> str:
-    for candidate in _iter_q2_audit_id_candidates(context):
-        value = str(candidate or "").strip()
-        if value:
-            return value
+    db_path = context.get("nine_question_state_db_path")
     try:
-        return load_q2_audit_id_from_table(session_id=session_id)
+        return load_q2_audit_id_from_table(db_path=db_path, session_id=session_id)
     except RuntimeError as exc:
         raise RuntimeError("q3_q2_audit_id_missing") from exc
-
-
-def _iter_q2_audit_id_candidates(context: dict[str, Any]):
-    yield context.get("q2_audit_id")
-
-    q2_audit_provenance = context.get("q2_audit_provenance")
-    if isinstance(q2_audit_provenance, dict):
-        yield q2_audit_provenance.get("audit_id")
-
-    yield from _iter_module_run_audit_ids(context.get("q2_execution_diagnosis"))
-
-    snapshots = context.get("question_snapshots")
-    q2_snapshot = snapshots.get("q2") if isinstance(snapshots, dict) else None
-    if isinstance(q2_snapshot, dict):
-        for key in ("context_updates", "result", "execution_result"):
-            payload = q2_snapshot.get(key)
-            if not isinstance(payload, dict):
-                continue
-            yield payload.get("q2_audit_id")
-            provenance = payload.get("q2_audit_provenance")
-            if isinstance(provenance, dict):
-                yield provenance.get("audit_id")
-            yield from _iter_module_run_audit_ids(payload.get("q2_execution_diagnosis"))
-            nested_updates = payload.get("context_updates")
-            if isinstance(nested_updates, dict):
-                yield nested_updates.get("q2_audit_id")
-                nested_provenance = nested_updates.get("q2_audit_provenance")
-                if isinstance(nested_provenance, dict):
-                    yield nested_provenance.get("audit_id")
-                yield from _iter_module_run_audit_ids(nested_updates.get("q2_execution_diagnosis"))
-
-
-def _iter_module_run_audit_ids(diagnosis: Any):
-    if not isinstance(diagnosis, dict):
-        return
-    module_runs = diagnosis.get("module_runs")
-    if not isinstance(module_runs, list):
-        return
-    for module in module_runs:
-        if not isinstance(module, dict):
-            continue
-        data = module.get("data")
-        if isinstance(data, dict):
-            yield data.get("audit_id")
 
 
 def _build_q3_audit_provenance(
@@ -161,7 +114,7 @@ def _build_q3_audit_provenance(
         "source_of_truth": "nine_question_q3_snapshots.llm_output_json",
         "audit_chain_rule": "reuse_q2_audit_id",
         "save_flow": [
-            "read q2 audit_id from upstream context or nine_question_q2_snapshots.context_updates_json",
+            "read q2 audit_id through load_q2_audit_id_from_table",
             "run q3 external role LLM",
             "save q3 llm input and output",
             "append q3 audit entry with q2 audit_id",

@@ -22,9 +22,9 @@ _TASK_STATE_ALLOWED_KEYS = {
     "queue_name",
 }
 
-_REQUIRED_Q8_UPSTREAMS = {"q4", "q5", "q6"}
+_REQUIRED_Q8_UPSTREAMS = {"q1", "q2", "q3", "q7"}
 _TEMPLATE_DIR = Path(__file__).resolve().with_name("prompt_templates")
-_TEMPLATE_FILES = ["q5_dynamic_convergence_guard.md", "output_contract.md"]
+_TEMPLATE_FILES = ["output_contract.md"]
 
 
 def _render_template(name: str, values: dict[str, str] | None = None) -> str:
@@ -77,42 +77,6 @@ _Q8_FIELD_INTENT_MAP: dict[str, Any] = {
         "functional_plugins": ("list", 12, 180),
         "cognitive_plugins": ("list", 12, 180),
         "accessible_workspace_zones": ("list", 6, 140),
-    },
-    "q4": {
-        "status": ("text", 80),
-        "actionable_space": ("list", 8, 180),
-        "executable_strategies": ("list", 8, 180),
-        "capability_upper_limits": ("list", 8, 180),
-        "permission_profile": {
-            "mode": ("text", 80),
-            "is_read_only": ("bool",),
-            "tenant_permissions": ("list", 6, 140),
-            "execution_tokens": ("list", 6, 140),
-            "accessible_workspace_zones": ("list", 6, 140),
-        },
-    },
-    "q5": {
-        "status": ("text", 80),
-        "current_authorization_scope": ("text", 180),
-        "contact_policies": ("list", 6, 180),
-        "organizational_boundaries": ("text", 180),
-        "allowed_action_space": ("list", 8, 180),
-        "forbidden_action_space": ("list", 8, 180),
-        "requires_escalation_actions": ("list", 6, 180),
-        "authorized_actions": ("list", 8, 160),
-        "unauthorized_actions": ("list", 8, 180),
-        "conditional_actions": ("list", 8, 180),
-        "objective_scope": ("text", 80),
-        "collaboration_available": ("bool",),
-        "authorization_limited": ("bool",),
-    },
-    "q6": {
-        "status": ("text", 80),
-        "absolute_red_lines": ("list", 10, 200),
-        "performance_tradeoff_bans": ("list", 8, 180),
-        "prohibited_strategies": ("list", 8, 180),
-        "contamination_risks": ("list", 8, 180),
-        "audit_rules": ("list", 4, 160),
     },
     "q7": {
         "status": ("text", 80),
@@ -304,9 +268,9 @@ def build_q8_llm_request(
     ]
     prompt_sections = [
         build_prompt_section(
-            key="snapshot_q1_q7",
-            title="Cognitive Snapshot Q1-Q7",
-            intent="Provide the audited field-intent subset of upstream Q1-Q7 state.",
+            key="snapshot_q1_q2_q3_q7",
+            title="Cognitive Snapshot Q1/Q2/Q3/Q7",
+            intent="Provide the audited field-intent subset of upstream Q1/Q2/Q3/Q7 state.",
             purpose="Ground Q8 without leaking raw outputs, traces, or unrelated metadata.",
             content=_json(compact_snapshot),
         ),
@@ -330,13 +294,6 @@ def build_q8_llm_request(
             intent="Provide baseline prioritization signals.",
             purpose="Constrain decisions to the validated Q8 prioritization frame.",
             content=_json(compact_priority_baseline),
-        ),
-        build_prompt_section(
-            key="q5_dynamic_convergence_guard",
-            title="Q5 Dynamic Authorization Convergence Guard",
-            intent="Force Q8 objectives to shrink when Q5 collaboration or authorization is limited.",
-            purpose="Prevent high-permission or cross-brain objectives when Q5 forbids them.",
-            content=_render_template("q5_dynamic_convergence_guard.md"),
         ),
         build_prompt_section(
             key="preprocessing_report",

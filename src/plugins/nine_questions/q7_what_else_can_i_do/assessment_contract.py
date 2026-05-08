@@ -131,6 +131,7 @@ def _normalize_internal_creative_possibility(item: object, index: int) -> dict[s
         raise Q7CreativePossibilityError(f"q7_internal_creative_possibility_{index}_macro_variable_leaked")
 
     return {
+        "objective_number": _text(possibility.get("objective_number")),
         "category": category,
         "description": description,
         "rationale": rationale,
@@ -162,6 +163,7 @@ def _normalize_external_creative_possibility(item: object, index: int) -> dict[s
         raise Q7CreativePossibilityError(f"q7_external_creative_possibility_{index}_platform_abuse_pattern")
 
     return {
+        "objective_number": _text(possibility.get("objective_number")),
         "possibility_type": possibility_type,
         "possibility_description": description,
         "possibility_status": status,
@@ -170,20 +172,17 @@ def _normalize_external_creative_possibility(item: object, index: int) -> dict[s
 
 
 def normalize_q7_internal_creative_possibility_set(llm_output: dict[str, Any]) -> dict[str, Any]:
-    payload = _as_dict(llm_output)
-    body = _first_dict(payload, ("InternalCreativePossibilitySet", "Q7InternalCreativePossibilitySet")) or payload
-    body = deepcopy(_as_dict(body))
-    if body.get("type") != "InternalCreativePossibilitySet":
-        raise Q7CreativePossibilityError("q7_internal_creative_possibility_set_type_invalid")
-    raw_possibilities = body.get("creative_possibilities")
-    if not isinstance(raw_possibilities, list):
-        raise Q7CreativePossibilityError("q7_internal_creative_possibilities_not_list")
-    normalized_possibilities = [
-        _normalize_internal_creative_possibility(item, index)
-        for index, item in enumerate(raw_possibilities)
-    ]
-    if not normalized_possibilities:
-        raise Q7CreativePossibilityError("q7_internal_creative_possibilities_empty")
+    from plugins.nine_questions.q7_what_else_can_i_do.internal.instructor_contract import (
+        InternalCreativePossibilitySet,
+    )
+
+    try:
+        validated = InternalCreativePossibilitySet.model_validate(llm_output)
+    except Exception as exc:
+        raise Q7CreativePossibilityError(f"q7_internal_instructor_validation_failed:{exc}") from exc
+
+    data = validated.model_dump(mode="json")
+    normalized_possibilities = data["creative_possibilities"]
 
     categories = list(dict.fromkeys(item["category"] for item in normalized_possibilities))
     statuses = list(dict.fromkeys(item["possibility_status"] for item in normalized_possibilities))
@@ -202,24 +201,19 @@ def normalize_q7_internal_creative_possibility_set(llm_output: dict[str, Any]) -
 
 
 def normalize_q7_external_creative_possibility_set(llm_output: dict[str, Any]) -> dict[str, Any]:
-    payload = _as_dict(llm_output)
-    body = _first_dict(payload, ("ExternalCreativePossibilitySet", "Q7ExternalCreativePossibilitySet")) or payload
-    body = deepcopy(_as_dict(body))
-    if body.get("type") != "ExternalCreativePossibilitySet":
-        raise Q7CreativePossibilityError("q7_external_creative_possibility_set_type_invalid")
-    raw_possibilities = body.get("creative_possibilities")
-    if not isinstance(raw_possibilities, list):
-        raise Q7CreativePossibilityError("q7_external_creative_possibilities_not_list")
-    normalized_possibilities = [
-        _normalize_external_creative_possibility(item, index)
-        for index, item in enumerate(raw_possibilities)
-    ]
-    if len(normalized_possibilities) < 3:
-        raise Q7CreativePossibilityError("q7_external_creative_possibilities_minimum_3_required")
+    from plugins.nine_questions.q7_what_else_can_i_do.external.instructor_contract import (
+        ExternalCreativePossibilitySet,
+    )
+
+    try:
+        validated = ExternalCreativePossibilitySet.model_validate(llm_output)
+    except Exception as exc:
+        raise Q7CreativePossibilityError(f"q7_external_instructor_validation_failed:{exc}") from exc
+
+    data = validated.model_dump(mode="json")
+    normalized_possibilities = data["creative_possibilities"]
 
     possibility_types = list(dict.fromkeys(item["possibility_type"] for item in normalized_possibilities))
-    if len(possibility_types) < 3:
-        raise Q7CreativePossibilityError("q7_external_creative_possibilities_distinct_type_minimum_3_required")
     statuses = list(dict.fromkeys(item["possibility_status"] for item in normalized_possibilities))
     return {
         "type": "ExternalCreativePossibilitySet",

@@ -57,7 +57,7 @@ Q4 must produce objective candidates split by lane:
   - information acquisition objectives
   - external problem-solving objectives
 
-Each candidate must carry source/evidence references, including objective-signal refs and capability-boundary evidence refs. Internal lane output must never create external read/write actions, Agent delegation, CLI/MCP/Connector calls, real task IDs, or state-machine transitions. External lane output must remain a candidate objective and must not invoke tools directly.
+Each candidate must carry a unique Q4-local `objective_number` plus source/evidence references, including objective-signal refs and capability-boundary evidence refs. Internal lane output must never create external read/write actions, Agent delegation, CLI/MCP/Connector calls, real task IDs, or state-machine transitions. External lane output must remain a candidate objective and must not invoke tools directly.
 
 The Q4 internal and external lanes use Instructor/Pydantic v2 contracts before persistence. The contracts reject non-schema analysis fields, unexpanded prompt variable names, empty capability evidence refs, tool-call descriptions, step-like outputs, nested compatibility output shapes, and candidate descriptions that start as analysis/assessment/checking instead of a lane-specific objective.
 

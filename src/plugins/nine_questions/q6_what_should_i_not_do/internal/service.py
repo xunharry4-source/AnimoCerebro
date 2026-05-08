@@ -51,6 +51,7 @@ def run_q6_internal_llm_and_save(context: dict[str, Any]) -> dict[str, Any]:
     provider = require_model_provider(context)
     transcript_store = require_transcript_store(context)
     request = build_q6_internal_llm_request(context=dict(context))
+    _require_q5_allowed_internal_objectives(request)
     caller_context = build_caller_context(
         source_module=__name__,
         invocation_phase="nine_question_q6_internal_consequence",
@@ -89,7 +90,12 @@ def run_q6_internal_llm_and_save(context: dict[str, Any]) -> dict[str, Any]:
         trace_id=trace_id,
     )
     try:
-        raw_output = provider.generate_json(
+        from plugins.nine_questions.q6_what_should_i_not_do.internal.instructor_contract import (
+            generate_internal_plan_constraint_set_with_instructor_contract,
+        )
+
+        llm_output = generate_internal_plan_constraint_set_with_instructor_contract(
+            provider,
             prompt=f"{request['system_prompt']}\n\n{request['prompt']}",
             context=request["model_context"],
             caller_context=caller_context,
@@ -100,10 +106,7 @@ def run_q6_internal_llm_and_save(context: dict[str, Any]) -> dict[str, Any]:
                 "output_truncation_forbidden": True,
             },
         )
-        llm_output = raw_output if isinstance(raw_output, dict) else {}
-        if not llm_output:
-            raise RuntimeError("q6_internal_llm_output_empty")
-        internal_result = _extract_internal_result(llm_output)
+        internal_result = llm_output
         logger.info("[Q6 INTERNAL LLM OUTPUT] trace_id=%s payload=%s", trace_id, json_safe_payload(llm_output))
         persist_question_module_output(
             context,
@@ -169,6 +172,14 @@ def _extract_internal_result(llm_output: dict[str, Any]) -> dict[str, Any]:
         "type": _Q6_INTERNAL_ROOT_KEY,
         "constraints_by_objective": normalized_constraints,
     }
+
+
+def _require_q5_allowed_internal_objectives(request: dict[str, Any]) -> None:
+    model_context = request.get("model_context")
+    prompt_context = model_context.get("context") if isinstance(model_context, dict) else None
+    objectives = prompt_context.get("Q5_AllowedInternalObjectives") if isinstance(prompt_context, dict) else None
+    if not isinstance(objectives, list) or not objectives:
+        raise RuntimeError("q6_internal_upstream_missing:q5_allowed_internal_objectives")
 
 
 def _normalize_constraint(value: Any) -> dict[str, Any]:

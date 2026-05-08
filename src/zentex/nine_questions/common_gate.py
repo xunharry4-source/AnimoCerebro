@@ -171,8 +171,7 @@ def _derive_common_gate_snapshots(
     q9_q1_q8 = {
         "q1": q1_result,
         "q2": q2_result,
-        "q5": q5_result,
-        "q6": q6_result,
+        "q3": q3_result,
         "q8": {"objective_profile": objective_profile, "task_queue": task_queue},
     }
     q9_result = {
@@ -180,7 +179,7 @@ def _derive_common_gate_snapshots(
         "action_rhythm_hint": "steady_incremental",
         "dispatch_gate": "confirm_before_commit_when_risk_or_authority_boundary_requires_it",
         "conservative_mode_triggered": True,
-        "q9_evaluation_profile": {"risk_sources": ["q2", "q5", "q6", "q8"], "posture": "steady_fail_closed"},
+        "q9_evaluation_profile": {"risk_sources": ["q2", "q3", "q8"], "posture": "steady_fail_closed"},
     }
     return {
         "q1": _question_snapshot(trace_id=trace_id, summary="Workspace, session and runtime context captured for the common gate.", result=q1_result),
@@ -192,7 +191,7 @@ def _derive_common_gate_snapshots(
         "q7": _question_snapshot(trace_id=trace_id, summary="Alternatives, fallback policy and recovery actions captured.", result=q7_result),
         "q8": _question_snapshot(
             trace_id=trace_id,
-            summary="Q8 generated task queue from Q1-Q7 causal snapshot.",
+            summary="Q8 generated task queue from Q1/Q2/Q3/Q7 causal snapshot.",
             result=q8_result,
             context_updates={
                 "q8_objective_profile": objective_profile,

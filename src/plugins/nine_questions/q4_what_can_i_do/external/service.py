@@ -20,7 +20,7 @@ from plugins.nine_questions.q4_what_can_i_do.external.llm_prompt import (
     build_q4_external_llm_request,
 )
 from plugins.nine_questions.q4_what_can_i_do.external.instructor_contract import (
-    validate_external_objective_candidate_set,
+    generate_external_objective_candidate_set_with_instructor_contract,
 )
 from plugins.nine_questions.q4_what_can_i_do.semantic_guard import (
     run_q4_objective_generation_with_semantic_guard,
@@ -55,7 +55,7 @@ def run_q4_external_llm_and_save(context: dict[str, Any]) -> dict[str, Any]:
             provider=provider,
             lane="external",
             prompt=request["full_prompt"],
-            validate_candidate_set=validate_external_objective_candidate_set,
+            generate_candidate_set=generate_external_objective_candidate_set_with_instructor_contract,
             trace_id=trace_id,
             source_module=__name__,
             invocation_phase="nine_question_q4_external_objective_candidates",

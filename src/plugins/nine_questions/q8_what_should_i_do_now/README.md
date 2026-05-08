@@ -78,11 +78,29 @@ payloads directly.
 
 ## Constraints
 
-- Functional plugin outputs must influence prioritization, not bypass Q1-Q7 constraints.
+- Functional plugin outputs must influence prioritization, not bypass Q1/Q2/Q3/Q7 constraints.
 - Do not create a separate top-level Q8 output branch for this feature.
-- Q8 must read the authoritative Q1-Q7 LLM outputs from the SQLite nine-question snapshot tables before synthesis.
-- Q8 requires Q1-Q7 upstream snapshots to be completed. Any incomplete upstream is a hard error.
+- Q8 must read the authoritative Q1/Q2/Q3/Q7 LLM outputs from the SQLite nine-question snapshot tables before synthesis.
+- Q8 requires Q1/Q2/Q3/Q7 upstream snapshots to be completed. Any incomplete upstream is a hard error.
 - Q8 must persist only its own successful module outputs into the SQLite module-output tables.
 - Q8 must persist the LLM decision projection and task persistence outputs as separate module records; do not combine them into a single table-shaped blob.
 - Every persisted Q8 table row is versioned and timestamped by the shared SQLite nine-question store.
 - Q8 must not return substitute or legacy responses. Exceptions propagate and failed exception payloads are not saved.
+
+## Data Acquisition Enforcement
+
+为了确保因果审计链（Causal Audit Chain）的完整性，Q8 **必须** 遵循以下数据获取规范：
+
+1. **禁止手动提取 (No Manual Extraction)**:
+   - 严禁使用 `context.get("q4_...")`, `context.get("q5_...")`, `context.get("q6_...")`, `context.get("q7_...")` 等方式获取上游结果。
+   - 严禁从 `nine_question_state` 的 `context_updates` 中直接读取上游数据。
+
+2. **官方加载器路径 (Official Loader Methods)**:
+   - 必须通过上游插件提供的官方加载器从 SQLite 权威状态库中读取数据。
+   - Q4 目标：`from plugins.nine_questions.q4_what_can_i_do.llm_output_table import load_llm_output_from_table` (Wait, Q4 should have this unified one)
+   - Q5 安全：`from plugins.nine_questions.q5_what_am_i_allowed_to_do.llm_output_table import load_llm_output_from_table`
+   - Q6 限制：`from plugins.nine_questions.q6_what_should_i_not_do.llm_output_table import load_internal_llm_output_from_table, load_external_llm_output_from_table`
+   - Q7 探索：`from plugins.nine_questions.q7_what_else_can_i_do.llm_output_table import load_internal_llm_output_from_table, load_external_llm_output_from_table`
+
+3. **因果处理**:
+   - 加载器会自动处理数据清洗、空值过滤及结构化校验，确保进入 LLM Prompt 的上下文是经过因果验证的最新快照。

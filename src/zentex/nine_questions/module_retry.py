@@ -144,6 +144,11 @@ def build_q9_question_snapshot(dependency_context: dict[str, Any]) -> dict[str, 
     raw = dependency_context.get("q1_q8_snapshot") or dependency_context.get("q1_q8") or {}
     question_snapshot = normalize_snapshot_dict(raw)
     if question_snapshot:
+        question_snapshot = {
+            key: question_snapshot[key]
+            for key in ("q1", "q2", "q3", "q8")
+            if key in question_snapshot
+        }
         question_snapshot["q8"] = normalize_q8_profile(question_snapshot.get("q8"))
         return question_snapshot
     q8_raw = (
@@ -165,12 +170,7 @@ def build_q9_question_snapshot(dependency_context: dict[str, Any]) -> dict[str, 
             "q2_external_tool_asset_inventory": q2_external_output,
         },
         "q3": dependency_context.get("q3_role_profile") or {},
-        "q4": dependency_context.get("q4_capability_boundary_profile") or {},
-        "q5": dependency_context.get("q5_authorization_boundary_profile") or dependency_context.get("q5_permission_boundary") or {},
-        "q6": dependency_context.get("q6_forbidden_zone_profile") or {},
-        "q7": dependency_context.get("q7_red_line_assessment") or dependency_context.get("red_line_assessment") or {},
         "q8": normalize_q8_profile(q8_raw),
-        "summaries": dependency_context.get("nine_questions") or {},
     }
 
 async def retry_q3_runtime_inventory_module(

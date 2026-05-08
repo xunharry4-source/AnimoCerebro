@@ -2,6 +2,12 @@ from __future__ import annotations
 
 from typing import Any
 
+from plugins.nine_questions.q2_asset_inventory.llm_output_table import (
+    load_external_llm_output_from_table as load_q2_external,
+)
+from plugins.nine_questions.q4_what_can_i_do.llm_output_table import (
+    load_external_llm_output_from_table as load_q4_external,
+)
 from plugins.nine_questions.q5_what_am_i_allowed_to_do.forbidden_items import (
     query_nine_question_forbidden_items,
 )
@@ -20,11 +26,25 @@ EXTERNAL_REDLINES = {
 def query_q5_external_lane_data(context: dict[str, Any] | None = None) -> dict[str, Any]:
     """Collect the External Lane data Q5 needs before auditing external objectives."""
     payload = context if isinstance(context, dict) else {}
+    session_id = payload.get("session_id", "nq-baseline")
+    db_path = payload.get("nine_question_state_db_path")
+    
+    # 强制通过上游提供的方法获取，上游会对数据进行脱敏/清洗/格式化处理
+    try:
+        q2_llm_output = load_q2_external(session_id=session_id, db_path=db_path)
+    except Exception:
+        q2_llm_output = {}
+        
+    try:
+        q4_llm_output = load_q4_external(session_id=session_id, db_path=db_path)
+    except Exception:
+        q4_llm_output = {}
+
     forbidden_items = query_nine_question_forbidden_items(payload)
-    execution_rights = _query_execution_rights_matrix(payload)
+    execution_rights = _query_execution_rights_matrix(payload, q2_llm_output=q2_llm_output, q4_llm_output=q4_llm_output)
     safety_redlines = _query_safety_gate_external_redlines(forbidden_items)
     cloud_audit = _query_cloud_audit_policies(payload)
-    q4_candidates = _query_q4_external_objective_candidates(payload)
+    q4_candidates = _query_q4_external_objective_candidates(q4_llm_output=q4_llm_output)
     return {
         "Execution_Rights_Matrix": execution_rights,
         "SafetyGate_Redlines_External": safety_redlines,
@@ -41,19 +61,14 @@ def query_q5_external_lane_data(context: dict[str, Any] | None = None) -> dict[s
         },
     }
 
-
-def _query_execution_rights_matrix(context: dict[str, Any]) -> dict[str, Any]:
-    q4_permission = _dict(context.get("q4_permission_profile") or context.get("permission_profile"))
+def _query_execution_rights_matrix(context: dict[str, Any], *, q2_llm_output: dict[str, Any], q4_llm_output: dict[str, Any]) -> dict[str, Any]:
+    q4_permission = _dict(q4_llm_output.get("permission_profile"))
     workspace_permission = _dict(
         context.get("workspaces_and_permissions")
         or context.get("workspace_permission_inventory")
         or context.get("workspace_permission")
     )
-    q2_external_inventory = _dict(
-        context.get("q2_external_tool_asset_inventory")
-        or context.get("q2_external_asset_inventory")
-        or context.get("q2_external_tool_llm_output")
-    )
+    q2_external_inventory = _dict(q2_llm_output)
     return {
         "filesystem": {
             "accessible_workspace_zones": _list(q4_permission.get("accessible_workspace_zones")),
@@ -73,9 +88,8 @@ def _query_execution_rights_matrix(context: dict[str, Any]) -> dict[str, Any]:
             "permission_boundaries": _list(q2_external_inventory.get("permission_boundaries")),
         },
         "source": [
-            "context.q4_permission_profile",
-            "context.workspaces_and_permissions",
-            "context.q2_external_tool_asset_inventory",
+            "database.q4_snapshots.permission_profile",
+            "database.q2_snapshots.external_asset_inventory",
         ],
     }
 
@@ -132,16 +146,21 @@ def _query_cloud_audit_policies(context: dict[str, Any]) -> dict[str, Any]:
     }
 
 
-def _query_q4_external_objective_candidates(context: dict[str, Any]) -> dict[str, Any]:
-    candidates = (
-        context.get("Q4_ExternalObjectiveCandidates")
-        or context.get("q4_external_objective_candidates")
-        or _nested_get(context, "q4", "q4_external_objective_candidates")
-        or _nested_get(context, "q4_external_llm_output", "ExternalObjectiveCandidateSet")
-        or context.get("q4_external_llm_output")
-    )
-    source = "context.q4_external_objective_candidates" if candidates is not None else "missing"
-    return {"candidate_set": _jsonable(candidates or {}), "source": source}
+def _query_q4_external_objective_candidates(*, q4_llm_output: dict[str, Any]) -> dict[str, Any]:
+    # 严格遵循架构原则：仅允许从上游 Loader 获取数据，禁止从 context 或 fallback 获取
+    # Q4 Loader 返回的是 ExternalObjectiveCandidateSet 模型字典
+    if q4_llm_output and q4_llm_output.get("type") == "ExternalObjectiveCandidateSet":
+        candidates = q4_llm_output
+        source = "database.q4_snapshots.external_objective_candidates"
+    else:
+        candidates = {"type": "ExternalObjectiveCandidateSet", "objective_candidates": []}
+        source = "database.q4_snapshots.missing"
+        
+    return {"candidate_set": _jsonable(candidates), "source": source}
+
+
+def _text(value: Any) -> str:
+    return str(value or "").strip()
 
 
 def _dict(value: Any) -> dict[str, Any]:

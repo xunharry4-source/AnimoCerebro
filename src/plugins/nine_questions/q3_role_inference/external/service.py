@@ -34,8 +34,8 @@ def _load_identity_kernel_snapshot(context: dict[str, Any]) -> dict[str, Any]:
     return json_safe_payload(payload)
 
 
-def _load_q1_llm_analysis_result(*, session_id: str) -> dict[str, Any]:
-    q1_llm_output = load_q1_llm_output_from_table(session_id=session_id)
+def _load_q1_llm_analysis_result(*, db_path: Any, session_id: str) -> dict[str, Any]:
+    q1_llm_output = load_q1_llm_output_from_table(db_path=db_path, session_id=session_id)
     q1_analysis_result = q1_llm_output.get("workspace_domain_inference")
     if not isinstance(q1_analysis_result, dict) or not q1_analysis_result:
         raise RuntimeError("q3_q1_llm_analysis_result_missing")
@@ -43,10 +43,11 @@ def _load_q1_llm_analysis_result(*, session_id: str) -> dict[str, Any]:
 
 
 def _load_q3_external_prompt_context(context: dict[str, Any], *, session_id: str) -> dict[str, Any]:
+    db_path = context.get("nine_question_state_db_path")
     return {
         "identity_kernel_snapshot": _load_identity_kernel_snapshot(context),
-        "q1_environment_confirmation": _load_q1_llm_analysis_result(session_id=session_id),
-        "q2_external_llm_output": load_q2_external_llm_output_from_table(session_id=session_id),
+        "q1_environment_confirmation": _load_q1_llm_analysis_result(db_path=db_path, session_id=session_id),
+        "q2_external_llm_output": load_q2_external_llm_output_from_table(db_path=db_path, session_id=session_id),
     }
 
 
@@ -121,7 +122,12 @@ def run_q3_external_llm_and_save(context: dict[str, Any]) -> dict[str, Any]:
     }
     logger.info("[Q3 EXTERNAL LLM INPUT] trace_id=%s payload=%s", trace_id, json_safe_payload(llm_input))
     _save_q3_llm_io(session_id=session_id, llm_input=llm_input)
-    raw_output = provider.generate_json(
+    from plugins.nine_questions.q3_role_inference.external.instructor_contract import (
+        generate_external_execution_identity_hypothesis_set_with_instructor_contract,
+    )
+
+    llm_output = generate_external_execution_identity_hypothesis_set_with_instructor_contract(
+        provider,
         prompt=request["full_prompt"],
         context={},
         caller_context=caller_context,
@@ -132,9 +138,6 @@ def run_q3_external_llm_and_save(context: dict[str, Any]) -> dict[str, Any]:
             "output_truncation_forbidden": True,
         },
     )
-    llm_output = raw_output if isinstance(raw_output, dict) else {}
-    if not llm_output:
-        raise RuntimeError("q3_external_llm_output_empty")
     logger.info("[Q3 EXTERNAL LLM OUTPUT] trace_id=%s payload=%s", trace_id, json_safe_payload(llm_output))
     _save_q3_llm_io(session_id=session_id, llm_input=llm_input, llm_output=llm_output)
     return {

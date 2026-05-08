@@ -471,8 +471,8 @@ def _normalize_external_asset_summaries(rows: list[dict[str, Any]]) -> list[dict
             "operation_object_capability": _operation_object_capability(row, usage_profile),
             "description": _text(row.get("function_introduction")),
             "status": _text(row.get("status")),
-            "task_routing_hints": _external_task_routing_hints(row, usage_profile),
-            "side_effects": _external_side_effects(row, usage_profile),
+            "task_routing_hints": "；".join(_external_task_routing_hints(row, usage_profile)) or "未声明，需要在外部任务调度前验证。",
+            "side_effects": "；".join(_external_side_effects(row, usage_profile)) or "副作用未知，需要在外部任务调度前验证。",
             "verification_status": _verification_status(row, usage_profile),
         }
         server_name = _text(row.get("server_name"))

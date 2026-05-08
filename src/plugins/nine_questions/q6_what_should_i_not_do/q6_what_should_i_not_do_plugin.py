@@ -12,6 +12,10 @@ from plugins.nine_questions.q6_what_should_i_not_do.external.service import (
 from plugins.nine_questions.q6_what_should_i_not_do.internal.service import (
     run_q6_internal_llm_and_save,
 )
+from plugins.nine_questions.q5_what_am_i_allowed_to_do.llm_output_table import (
+    load_external_llm_output_from_table as load_q5_external_llm_output_from_table,
+    load_internal_llm_output_from_table as load_q5_internal_llm_output_from_table,
+)
 from zentex.common.cognitive_result import CognitiveToolResult
 from zentex.common.nine_questions_shared import (
     bind_module_runs,
@@ -37,15 +41,54 @@ class Q6WhatShouldINotDoPlugin(BaseModel):
     health_status: str = "healthy"
     operational_status: str = "enabled"
 
-    def run_internal_consequence_profile(self, context: dict[str, Any]) -> dict[str, Any]:
-        return run_q6_internal_llm_and_save(context)["result"]
+    def run_internal_consequence_profile(self, context: dict[str, Any], q5_result: dict[str, Any]) -> dict[str, Any]:
+        q6_res = run_q6_internal_llm_and_save(context)["result"]
+        q5_allowed = q5_result.get("allowed_internal_objectives_with_conditions", [])
+        if not isinstance(q5_allowed, list):
+            return q6_res
 
-    def run_external_consequence_profile(self, context: dict[str, Any]) -> dict[str, Any]:
-        return run_q6_external_llm_and_save(context)["result"]
+        q5_map = {item.get("objective_number"): item for item in q5_allowed if item.get("objective_number")}
+        q6_constraints = q6_res.get("constraints_by_objective", [])
+        if not isinstance(q6_constraints, list):
+            return q6_res
+
+        merged = []
+        for q6_item in q6_constraints:
+            num = q6_item.get("objective_number")
+            if num and num in q5_map:
+                merged.append({**q5_map[num], **q6_item})
+            else:
+                merged.append(q6_item)
+        return {**q6_res, "constraints_by_objective": merged}
+
+    def run_external_consequence_profile(self, context: dict[str, Any], q5_result: dict[str, Any]) -> dict[str, Any]:
+        q6_res = run_q6_external_llm_and_save(context)["result"]
+        q5_allowed = q5_result.get("allowed_external_objectives_with_conditions", [])
+        if not isinstance(q5_allowed, list):
+            return q6_res
+
+        q5_map = {item.get("objective_number"): item for item in q5_allowed if item.get("objective_number")}
+        q6_constraints = q6_res.get("objective_constraints", [])
+        if not isinstance(q6_constraints, list):
+            return q6_res
+
+        merged = []
+        for q6_item in q6_constraints:
+            num = q6_item.get("objective_number")
+            if num and num in q5_map:
+                merged.append({**q5_map[num], **q6_item})
+            else:
+                merged.append(q6_item)
+        return {**q6_res, "objective_constraints": merged}
 
     def run_tool(self, context: dict[str, Any]) -> CognitiveToolResult:
         started = perf_counter()
         module_runs = bind_module_runs(context, "q6")
+
+        state_db_path = context.get("nine_question_state_db_path")
+        session_id = str(context.get("session_id") or "nq-baseline")
+        q5_internal = load_q5_internal_llm_output_from_table(db_path=state_db_path, session_id=session_id)
+        q5_external = load_q5_external_llm_output_from_table(db_path=state_db_path, session_id=session_id)
 
         internal_run = start_module_run(
             module_runs,
@@ -53,7 +96,7 @@ class Q6WhatShouldINotDoPlugin(BaseModel):
             source="plugins.nine_questions.q6.internal",
         )
         try:
-            internal_profile = self.run_internal_consequence_profile(context)
+            internal_profile = self.run_internal_consequence_profile(context, q5_internal)
             finish_module_run(internal_run)
         except Exception as exc:
             fail_module_run(internal_run, error_code="q6_internal_consequence_failed", error_message=str(exc))
@@ -65,7 +108,7 @@ class Q6WhatShouldINotDoPlugin(BaseModel):
             source="plugins.nine_questions.q6.external",
         )
         try:
-            external_profile = self.run_external_consequence_profile(context)
+            external_profile = self.run_external_consequence_profile(context, q5_external)
             finish_module_run(external_run)
         except Exception as exc:
             fail_module_run(external_run, error_code="q6_external_consequence_failed", error_message=str(exc))
@@ -73,7 +116,7 @@ class Q6WhatShouldINotDoPlugin(BaseModel):
 
         return CognitiveToolResult(
             tool_id=self.plugin_id,
-            summary="Q6 internal/external consequence LLM inputs and outputs saved separately.",
+            summary="Q6 internal/external consequence combined with Q5 authorization by objective_number.",
             context_updates={
                 "q6_internal_consequence_profile": internal_profile,
                 "q6_external_consequence_profile": external_profile,
@@ -85,7 +128,7 @@ class Q6WhatShouldINotDoPlugin(BaseModel):
                 },
                 "q6_execution_diagnosis": {
                     "authenticity_status": "completed",
-                    "diagnosis_code": "internal_external_llm_saved",
+                    "diagnosis_code": "internal_external_llm_merged_with_q5",
                     "module_runs": list(module_runs),
                     "elapsed_ms": int((perf_counter() - started) * 1000),
                 },

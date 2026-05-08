@@ -3,6 +3,12 @@ from __future__ import annotations
 import importlib.util
 from typing import Any
 
+from plugins.nine_questions.q2_asset_inventory.llm_output_table import (
+    load_internal_llm_output_from_table as load_q2_internal,
+)
+from plugins.nine_questions.q4_what_can_i_do.llm_output_table import (
+    load_internal_llm_output_from_table as load_q4_internal,
+)
 from plugins.nine_questions.q5_what_am_i_allowed_to_do.forbidden_items import (
     query_nine_question_forbidden_items,
 )
@@ -21,13 +27,32 @@ PROTECTED_INTERNAL_MODULES: tuple[tuple[str, str], ...] = (
 def query_q5_internal_lane_data(context: dict[str, Any] | None = None) -> dict[str, Any]:
     """Collect the Internal Lane data Q5 needs before auditing internal objectives."""
     payload = context if isinstance(context, dict) else {}
+    session_id = payload.get("session_id", "nq-baseline")
+    db_path = payload.get("nine_question_state_db_path")
+
+    # 强制通过上游提供的方法获取
+    try:
+        q2_internal_output = load_q2_internal(session_id=session_id, db_path=db_path)
+    except Exception:
+        q2_internal_output = {}
+
+    try:
+        q4_internal_output = load_q4_internal(session_id=session_id, db_path=db_path)
+    except Exception:
+        q4_internal_output = {}
+
     forbidden_items = query_nine_question_forbidden_items(payload)
-    identity = _query_identity_kernel_constraints(payload, forbidden_items)
-    memory_rules = _query_memory_integrity_and_continuity_rules(payload)
+    identity_constraints = _query_identity_kernel_constraints(q2_internal_output=q2_internal_output)
+    if not identity_constraints.get("configured_forbidden_actions"):
+        identity_constraints["configured_forbidden_actions"] = _list(forbidden_items.get("user_forbidden_actions"))
+    if not identity_constraints.get("combined_forbidden_actions"):
+        identity_constraints["combined_forbidden_actions"] = _list(forbidden_items.get("combined_forbidden_actions"))
+    memory_rules = _query_memory_integrity_and_continuity_rules(q2_internal_output=q2_internal_output)
     protected_modules = _query_protected_modules_state(payload)
-    q4_candidates = _query_q4_internal_objective_candidates(payload)
+    q4_candidates = _query_q4_internal_objective_candidates(q4_internal_output=q4_internal_output)
+
     return {
-        "IdentityKernel_NonBypassableConstraints": identity,
+        "IdentityKernel_NonBypassableConstraints": identity_constraints,
         "MemoryIntegrity_And_ContinuityRules": memory_rules,
         "ProtectedModules_State": protected_modules,
         "Q4_InternalObjectiveCandidates": q4_candidates,
@@ -38,61 +63,35 @@ def query_q5_internal_lane_data(context: dict[str, Any] | None = None) -> dict[s
                 "ProtectedModules_State",
             ],
             "collision_test_inputs": ["Q4_InternalObjectiveCandidates"],
-            "release_contract": "allowed_objectives_with_conditions",
+            "release_contract": "allowed_internal_objectives_with_conditions",
         },
     }
 
 
-def _query_identity_kernel_constraints(
-    context: dict[str, Any],
-    forbidden_items: dict[str, Any],
-) -> dict[str, Any]:
-    snapshot = (
-        _dict(context.get("identity_kernel_snapshot"))
-        or _dict(context.get("identity_kernel"))
-        or _dict(_nested_get(context, "system_identity", "identity_kernel_snapshot"))
-        or _dict(context.get("q2_identity_kernel_snapshot"))
-    )
+def _query_identity_kernel_constraints(*, q2_internal_output: dict[str, Any]) -> dict[str, Any]:
+    snapshot = _dict(q2_internal_output)
     return {
-        "non_bypassable_constraints": list(forbidden_items.get("system_identity_constraints") or []),
-        "configured_forbidden_actions": list(forbidden_items.get("user_forbidden_actions") or []),
-        "combined_forbidden_actions": list(forbidden_items.get("combined_forbidden_actions") or []),
-        "role_name": snapshot.get("role_name") or snapshot.get("role") or context.get("identity_role"),
-        "mission": snapshot.get("mission") or snapshot.get("meta_motivation"),
+        "non_bypassable_constraints": _list(snapshot.get("non_bypassable_internal_constraints")),
+        "self_binding_constraints": _list(snapshot.get("self_binding_constraints")),
+        "role_name": _text(snapshot.get("role_name")),
+        "mission": snapshot.get("mission"),
         "meta_drives": _list(snapshot.get("meta_drives")),
         "continuity_lock": _dict(snapshot.get("continuity_lock")),
-        "self_binding_constraints": _list(snapshot.get("self_binding_constraints")),
-        "source": {
-            "identity_constraints": forbidden_items.get("sources", {}).get("system_identity_constraints") or [],
-            "configured_forbidden_actions": forbidden_items.get("sources", {}).get("user_settings") or {},
-        },
+        "configured_forbidden_actions": _list(snapshot.get("configured_forbidden_actions")),
+        "combined_forbidden_actions": _list(snapshot.get("combined_forbidden_actions")),
+        "source": snapshot.get("source") or "database.q2_snapshots.internal_asset_inventory",
     }
 
 
-def _query_memory_integrity_and_continuity_rules(context: dict[str, Any]) -> dict[str, Any]:
-    explicit = (
-        context.get("MemoryIntegrity_And_ContinuityRules")
-        or context.get("memory_integrity_and_continuity_rules")
-        or context.get("memory_integrity_rules")
-        or context.get("memory_continuity_rules")
-    )
-    if isinstance(explicit, dict):
-        return {"rules": explicit, "source": "context.memory_integrity_and_continuity_rules"}
-
-    identity = _dict(context.get("identity_kernel_snapshot") or context.get("identity_kernel"))
+def _query_memory_integrity_and_continuity_rules(*, q2_internal_output: dict[str, Any]) -> dict[str, Any]:
     rules = {
-        "continuity_lock": _dict(identity.get("continuity_lock")),
-        "self_binding_constraints": _list(identity.get("self_binding_constraints")),
-        "core_memory_anchors": _list(context.get("core_memory_anchors") or context.get("identity_memory_anchors")),
-        "unrecoverable_experience_refs": _list(context.get("unrecoverable_experience_refs")),
+        "continuity_lock": _dict(q2_internal_output.get("continuity_lock")),
+        "self_binding_constraints": _list(q2_internal_output.get("self_binding_constraints")),
+        "long_term_memories": _list(q2_internal_output.get("long_term_memories")),
+        "reusable_strategy_patches": _list(q2_internal_output.get("reusable_strategy_patches")),
+        "unrecoverable_experience_refs": _list(q2_internal_output.get("unrecoverable_experience_refs")),
     }
-    memory_service = context.get("memory_service")
-    list_main_memory = getattr(memory_service, "list_main_memory", None)
-    if callable(list_main_memory):
-        records = list_main_memory()
-        rules["main_memory_records"] = _jsonable(records)
-        return {"rules": rules, "source": "memory_service.list_main_memory"}
-    return {"rules": rules, "source": "context.identity_and_memory_anchor_fields", "memory_service_available": False}
+    return {"rules": rules, "source": "database.q2_snapshots.internal_asset_inventory"}
 
 
 def _query_protected_modules_state(context: dict[str, Any]) -> dict[str, Any]:
@@ -119,16 +118,21 @@ def _query_protected_modules_state(context: dict[str, Any]) -> dict[str, Any]:
     }
 
 
-def _query_q4_internal_objective_candidates(context: dict[str, Any]) -> dict[str, Any]:
-    candidates = (
-        context.get("Q4_InternalObjectiveCandidates")
-        or context.get("q4_internal_objective_candidates")
-        or _nested_get(context, "q4", "q4_internal_objective_candidates")
-        or _nested_get(context, "q4_internal_llm_output", "InternalObjectiveCandidateSet")
-        or context.get("q4_internal_llm_output")
-    )
-    source = "context.q4_internal_objective_candidates" if candidates is not None else "missing"
-    return {"candidate_set": _jsonable(candidates or {}), "source": source}
+def _query_q4_internal_objective_candidates(*, q4_internal_output: dict[str, Any]) -> dict[str, Any]:
+    # 严格遵循架构原则：仅允许从上游 Loader 获取数据，禁止从 context 或 fallback 获取
+    # Q4 Loader 返回的是 InternalObjectiveCandidateSet 模型字典
+    if q4_internal_output and q4_internal_output.get("type") == "InternalObjectiveCandidateSet":
+        candidates = q4_internal_output
+        source = "database.q4_snapshots.internal_objective_candidates"
+    else:
+        candidates = {"type": "InternalObjectiveCandidateSet", "objective_candidates": []}
+        source = "database.q4_snapshots.missing"
+        
+    return {"candidate_set": _jsonable(candidates), "source": source}
+
+
+def _text(value: Any) -> str:
+    return str(value or "").strip()
 
 
 def _dict(value: Any) -> dict[str, Any]:

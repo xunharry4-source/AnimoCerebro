@@ -16,6 +16,9 @@ Q6_EXTERNAL_INPUT_MODULE_ID = "q6_external_llm_request"
 Q6_EXTERNAL_OUTPUT_MODULE_ID = "q6_external_consequence_llm"
 
 
+Q6_SNAPSHOT_TABLE = "nine_question_q6_snapshots"
+
+
 def _resolve_q6_state_db_path(db_path: str | Path | None = None) -> Path:
     if db_path not in (None, "", [], {}):
         return Path(str(db_path))
@@ -27,7 +30,31 @@ def load_llm_output_from_table(
     db_path: str | Path | None = None,
     session_id: str = NQ_BASELINE_SESSION_ID,
 ) -> dict[str, Any]:
-    raise RuntimeError("q6_combined_internal_external_llm_output_forbidden")
+    resolved_db_path = _resolve_q6_state_db_path(db_path)
+    if not resolved_db_path.exists():
+        raise RuntimeError(f"q6_llm_output_table_missing: {resolved_db_path}")
+    try:
+        with sqlite3.connect(str(resolved_db_path)) as conn:
+            conn.row_factory = sqlite3.Row
+            row = conn.execute(
+                f"""
+                SELECT llm_output_json
+                FROM {Q6_SNAPSHOT_TABLE}
+                WHERE session_id = ?
+                """,
+                (session_id,),
+            ).fetchone()
+    except sqlite3.OperationalError as exc:
+        raise RuntimeError("q6_llm_output_table_missing") from exc
+    if row is None:
+        raise RuntimeError("q6_llm_output_row_missing")
+    try:
+        llm_output = json.loads(str(row["llm_output_json"] or "{}"))
+    except json.JSONDecodeError as exc:
+        raise RuntimeError("q6_llm_output_json_invalid") from exc
+    if not isinstance(llm_output, dict):
+        raise RuntimeError("q6_llm_output_json_not_object")
+    return llm_output
 
 
 def _load_q6_module_data_from_table(

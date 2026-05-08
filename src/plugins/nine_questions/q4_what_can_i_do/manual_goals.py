@@ -213,7 +213,12 @@ def run_q4_manual_task_goal_lane_analysis_and_save(context: dict[str, Any]) -> d
     prompt = build_manual_task_goal_lane_analysis_prompt(goals=goals)
     llm_input = {"prompt": prompt}
     _save_q4_manual_task_goal_lane_analysis_io(session_id=session_id, llm_input=llm_input)
-    raw_output = provider.generate_json(
+    from plugins.nine_questions.q4_what_can_i_do.manual_goals_instructor_contract import (
+        generate_manual_task_goal_lane_analysis_set_with_instructor_contract,
+    )
+
+    llm_output = generate_manual_task_goal_lane_analysis_set_with_instructor_contract(
+        provider,
         prompt=prompt,
         context={},
         caller_context=build_caller_context(
@@ -231,11 +236,8 @@ def run_q4_manual_task_goal_lane_analysis_and_save(context: dict[str, Any]) -> d
             "max_json_repair_attempts": 0,
             "output_truncation_forbidden": True,
         },
+        expected_goals=goals,
     )
-    llm_output_raw = raw_output if isinstance(raw_output, dict) else {}
-    if not llm_output_raw:
-        raise RuntimeError("q4_manual_task_goal_lane_analysis_llm_output_empty")
-    llm_output = validate_manual_task_goal_lane_analysis_set(llm_output_raw, expected_goals=goals)
     _save_q4_manual_task_goal_lane_analysis_io(
         session_id=session_id,
         llm_input=llm_input,

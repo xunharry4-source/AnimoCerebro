@@ -26,7 +26,11 @@ from plugins.nine_questions.q1_where_am_i.modules import (
     normalize_list_of_dicts,
 )
 from plugins.nine_questions.q1_where_am_i.llm_upgrade import build_q1_upgrade_payload
-from plugins.nine_questions.q1_where_am_i.models import WorkspaceDomainInference
+from plugins.nine_questions.q1_where_am_i.instructor_contract import (
+    WorkspaceDomainInference,
+    generate_workspace_domain_inference_with_instructor_contract,
+    validate_workspace_domain_inference,
+)
 from zentex.kernel.workspace_policy import (
     build_q1_workspace_policy_snapshot,
     resolve_q1_workspace_root,
@@ -407,30 +411,9 @@ def _normalize_inference_payload(raw: Any) -> dict[str, Any]:
 
 
 def _validate_q1_llm_output(raw: Any) -> tuple[WorkspaceDomainInference | None, list[str]]:
-    if not isinstance(raw, dict):
-        return None, ["Q1 LLM 输出必须是 JSON 对象。"]
-    raw_keys = set(raw.keys())
-    missing = sorted(Q1_INFERENCE_REQUIRED_KEYS - raw_keys)
-    extra = sorted(raw_keys - Q1_INFERENCE_REQUIRED_KEYS)
-    issues: list[str] = []
-    if missing:
-        issues.append(f"缺少 required 字段: {missing}")
-    if extra:
-        issues.append(f"输出包含未授权字段: {extra}")
-
-    for key in ("secondary_domains", "uncertainties"):
-        value = raw.get(key)
-        if not isinstance(value, list):
-            issues.append(f"{key} 必须是 string[]。")
-        elif any(not isinstance(item, str) or not item.strip() for item in value):
-            issues.append(f"{key} 中必须只包含非空字符串。")
-    if isinstance(raw.get("uncertainties"), list) and not raw.get("uncertainties"):
-        issues.append("uncertainties 不得为空。")
-
-    if issues:
-        return None, issues
     try:
-        return WorkspaceDomainInference.model_validate(raw), []
+        validated_dict = validate_workspace_domain_inference(raw)
+        return WorkspaceDomainInference.model_validate(validated_dict), []
     except Exception as exc:
         return None, [str(exc)]
 
@@ -873,11 +856,11 @@ class Q1WhereAmIPlugin(BaseModel):
                 error_message="Q1 functional plugin chain not started because plugin_service is missing.",
             )
         elif dependency_check["functional_bindings_missing"]:
-            fail_module_run(
+            finish_module_run(
                 dependency_run,
-                status="failed",
-                error_code="functional_bindings_missing",
-                error_message="Q1 has no enabled functional bindings.",
+                status="completed",
+                error_code="",
+                error_message="Q1 functional bindings missing (optional baseline mode).",
             )
         else:
             finish_module_run(dependency_run)
@@ -1135,11 +1118,11 @@ class Q1WhereAmIPlugin(BaseModel):
                         error_message="Q1 functional chain produced only partial sensory evidence.",
                     )
                 elif functional_chain_status == "no_bindings":
-                    fail_module_run(
+                    finish_module_run(
                         chain_run,
-                        status="missing",
-                        error_code="functional_bindings_missing",
-                        error_message="Q1 functional plugin chain found no enabled bindings.",
+                        status="completed",
+                        error_code="",
+                        error_message="Q1 functional plugin chain found no enabled bindings (baseline mode).",
                     )
                 else:
                     fail_module_run(
@@ -1438,10 +1421,18 @@ class Q1WhereAmIPlugin(BaseModel):
             )
 
             try:
-                raw = provider.generate_json(
+                raw = generate_workspace_domain_inference_with_instructor_contract(
+                    provider,
                     prompt=current_prompt,
                     context={},
                     caller_context=caller_context,
+                    metadata={
+                        "question_id": "q1",
+                        "scope": "workspace_domain_inference",
+                        "output_schema": "WorkspaceDomainInference",
+                        "max_json_repair_attempts": 0,
+                        "output_truncation_forbidden": True,
+                    },
                 )
                 attempt_payload["raw_response"] = json_safe_payload(getattr(provider, "last_raw_response", None))
                 attempt_payload["token_usage"] = json_safe_payload(getattr(provider, "last_token_usage", {}))

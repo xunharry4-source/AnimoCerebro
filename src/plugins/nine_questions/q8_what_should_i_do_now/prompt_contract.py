@@ -15,7 +15,7 @@ def get_prompt_upgrade_contract() -> NineQuestionPromptUpgradeContract:
         prompt_builder_name="build_q8_llm_request",
         prompt_builder_symbol="plugins.nine_questions.q8_what_should_i_do_now.llm_prompt.build_q8_llm_request",
         target_component="nine-question.q8.prompt",
-        immutable_intent="Q8 must decide what should be done now by synthesizing Q1-Q7 and the current task state.",
+        immutable_intent="Q8 must decide what should be done now by synthesizing Q1/Q2/Q3/Q7 and the current task state.",
         expected_output_key="objective_profile",
         allowed_prompt_change_scope=[
             "tighten objective prioritization instructions",
@@ -24,7 +24,7 @@ def get_prompt_upgrade_contract() -> NineQuestionPromptUpgradeContract:
         ],
         forbidden_prompt_changes=[
             "must not change Q8 into posture selection or self-reflection",
-            "must not ignore Q1-Q7 dependencies",
+            "must not ignore Q1/Q2/Q3/Q7 dependencies",
             "must not remove task queue output",
         ],
         editable_prompt_sections=[
@@ -46,7 +46,7 @@ def get_prompt_upgrade_contract() -> NineQuestionPromptUpgradeContract:
             build_section_policy(
                 section_key="snapshot_q1_q7",
                 mutable=True,
-                intent="Provide upstream Q1-Q7 synthesis.",
+                intent="Provide upstream Q1/Q2/Q3/Q7 synthesis.",
                 purpose="Allow better compression of multi-question context.",
                 allowed_operations=["compress evidence", "reorder emphasis"],
                 forbidden_operations=["drop required dependencies", "invent upstream state"],

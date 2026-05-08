@@ -11,7 +11,7 @@ inference path to fail when upgrade planning is not configured.
 import logging
 from typing import Any
 
-from plugins.nine_questions.q1_where_am_i.models import WorkspaceDomainInference
+from plugins.nine_questions.q1_where_am_i.instructor_contract import WorkspaceDomainInference
 from plugins.nine_questions.q1_where_am_i.upgrade_models import (
     Q1LLMUpgradePlanPayload,
     Q1LLMUpgradeProfile,

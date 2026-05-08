@@ -1,12 +1,15 @@
 from __future__ import annotations
 
 import json
+import logging
 import re
 from pathlib import Path
 from typing import Any
 
 from zentex.common.prompt_template_files import prompt_template_files, render_prompt_template
 from zentex.common.plugin_ids import NINE_QUESTION_Q2
+
+logger = logging.getLogger(__name__)
 
 MAX_Q2_MEMORY_INPUTS = 10
 _TEMPLATE_DIR = Path(__file__).resolve().with_name("prompt_templates")
@@ -98,9 +101,9 @@ def collect_internal_functional_plugins(plugin_service: Any) -> list[dict[str, A
             continue
         functional_plugins.append(_plugin_asset_row(row, plugin_kind="functional"))
     if not functional_plugins:
-        raise RuntimeError(
-            "Q2 内部资产盘点功能插件查询为空：Internal_Functional_Plugins 不能为空，"
-            "禁止只把认知插件交给内部 LLM 分析。"
+        logger.warning(
+            "Q2 内部资产盘点功能插件查询为空：Internal_Functional_Plugins 为空。"
+            "允许在基准模式下继续，仅使用已发现的认知资产。"
         )
     return functional_plugins
 

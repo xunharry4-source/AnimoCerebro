@@ -3,6 +3,7 @@
   "type": "InternalPlanConstraintSet",
   "constraints_by_objective": [
     {
+      "objective_number": "填入对应的 Q5 目标编号（如 T1）",
       "objective_reference": "提取传入的 Q5 放行目标原文",
       "cognitive_cost": "评估执行该认知任务的算力和注意力开销预估",
       "memory_impact": "评估对热/温/冷层记忆空间及检索信噪比可能造成的影响",
@@ -28,3 +29,5 @@
 - rollback_requirements、pause_conditions、stop_conditions 必须是具体安全约束，不能敷衍。
 - must_avoid 必须包含 1 到 3 条，且每条必须是后续计划生成时要避开的错误做法。
 - 禁止输出 task_id、subtask_id、资源锁、执行步骤、实现计划或任何物理执行动作。
+
+*(工程强校验：后端 Instructor/Pydantic v2 模型会拒绝 JSON 外层多余字段、字段名错误、空必填项或非 JSON 输出。)*

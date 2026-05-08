@@ -242,15 +242,14 @@ _LEGACY_OBJECTIVE_PROFILE_KEYS = {
 _BASIS_AND_TRACEABILITY_KEYS = {
     "q1_environment_bases": ("environment_signal_name", "trigger_reason"),
     "q2_asset_support_bases": ("asset_function_name", "support_logic"),
-    "q5_authorization_checks": ("checked_action", "compliance_reason"),
-    "q6_consequence_checks": ("action_under_review", "compliance_reason"),
-    "q7_redline_checks": ("checked_risk", "compliance_reason"),
+    "q3_role_alignment": ("capability_name", "posture_adjustment"),
+    "q7_boundary_checks": ("checked_risk_point", "compliance_reason"),
 }
 _EXTERNAL_BASIS_AND_TRACEABILITY_KEYS = {
     "q1_environment_bases": ("environment_signal_name", "trigger_reason"),
     "q2_asset_support_bases": ("asset_function_name", "support_logic"),
-    "q4_capability_confidence": ("capability_name", "posture_adjustment"),
-    "q5_q6_q7_boundary_checks": ("checked_risk_point", "compliance_reason"),
+    "q3_role_alignment": ("capability_name", "posture_adjustment"),
+    "q7_boundary_checks": ("checked_risk_point", "compliance_reason"),
 }
 _BASIS_AND_TRACEABILITY_SCHEMAS = (
     _BASIS_AND_TRACEABILITY_KEYS,

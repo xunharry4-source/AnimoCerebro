@@ -3,6 +3,10 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Any
 
+from plugins.nine_questions.q5_what_am_i_allowed_to_do.llm_output_table import (
+    load_external_llm_output_from_table as load_q5_external_llm_output_from_table,
+    load_llm_output_from_table as load_q5_llm_io_from_table,
+)
 from zentex.common.scoped_llm_prompt import build_scoped_llm_request
 
 _TEMPLATE_DIR = Path(__file__).resolve().with_name("prompt_templates")
@@ -42,24 +46,13 @@ def build_q6_external_llm_request(*, context: dict[str, Any]) -> dict[str, Any]:
 
 
 def _extract_q5_allowed_external_objectives(context: dict[str, Any]) -> Any:
-    explicit = (
-        context.get("Q5_AllowedExternalObjectives_WithConditions")
-        or context.get("q5_allowed_external_objectives")
+    q5_output = load_q5_external_llm_output_from_table(
+        db_path=context.get("nine_question_state_db_path"),
+        session_id=str(context.get("session_id") or "nq-baseline"),
     )
-    if explicit not in (None, "", [], {}):
-        return explicit
-
-    boundary = context.get("q5_external_cannot_do_boundary")
-    if isinstance(boundary, dict):
-        allowed = boundary.get("allowed_external_objectives_with_conditions")
-        if allowed not in (None, "", [], {}):
-            return allowed
-
-    q5_output = context.get("q5_external_llm_output")
-    if isinstance(q5_output, dict):
-        allowed = q5_output.get("allowed_external_objectives_with_conditions")
-        if allowed not in (None, "", [], {}):
-            return allowed
+    allowed = q5_output.get("allowed_external_objectives_with_conditions")
+    if allowed not in (None, "", [], {}):
+        return allowed
     return []
 
 
@@ -73,10 +66,12 @@ def _extract_physical_host_state_external(context: dict[str, Any]) -> Any:
 
 
 def _extract_execution_rights_matrix(context: dict[str, Any]) -> Any:
-    return (
-        context.get("Execution_Rights_Matrix")
-        or context.get("execution_rights_matrix")
-        or context.get("q4_permission_profile")
-        or context.get("permission_profile")
-        or {}
+    q5_io = load_q5_llm_io_from_table(
+        db_path=context.get("nine_question_state_db_path"),
+        session_id=str(context.get("session_id") or "nq-baseline"),
     )
+    q5_input = q5_io.get("q5_external_llm_input")
+    model_context = q5_input.get("context") if isinstance(q5_input, dict) else {}
+    prompt_context = model_context.get("context") if isinstance(model_context, dict) else {}
+    execution_rights = prompt_context.get("Execution_Rights_Matrix") if isinstance(prompt_context, dict) else {}
+    return execution_rights if isinstance(execution_rights, dict) else {}

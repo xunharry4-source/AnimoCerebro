@@ -57,6 +57,14 @@ def _require_dict(llm_output: dict[str, Any], key: str) -> dict[str, Any]:
     return payload
 
 
+def load_llm_output_from_table(
+    *,
+    db_path: str | Path | None = None,
+    session_id: str = NQ_BASELINE_SESSION_ID,
+) -> dict[str, Any]:
+    return _load_q4_llm_output_json_from_table(db_path=db_path, session_id=session_id)
+
+
 def load_internal_llm_io_from_table(
     *,
     db_path: str | Path | None = None,

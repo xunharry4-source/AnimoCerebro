@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import re
 from dataclasses import dataclass, field
 from typing import Iterable, Mapping, Sequence
 
@@ -44,6 +45,59 @@ class PydanticAIAtomicSubtaskReviewer:
         " then ",
         " & ",
     )
+    _STRONG_VERIFICATION_TOKENS = (
+        "hash",
+        "mtime",
+        "read-after-write",
+        "read after write",
+        "exit_code",
+        "stdout",
+        "stderr",
+        "sqlite",
+        "select",
+        "query",
+        "readback",
+        "checksum",
+        "diff",
+        "sha",
+        "写后查询",
+        "读回",
+        "回查",
+        "数据库",
+        "退出码",
+        "执行输出",
+        "文件",
+        "标记文件",
+        "修改时间",
+        "哈希",
+        "行数",
+        "记录",
+        "回执",
+        "审计",
+    )
+    _WEAK_VERIFICATION_PATTERNS = (
+        r"观察.*成功",
+        r"等待.*执行完毕",
+        r"是否成功",
+        r"返回\s*success",
+        r"返回.*成功",
+        r"检查.*success",
+        r"确认.*成功$",
+        r"http\s*200$",
+        r"\b200\s*ok$",
+    )
+    _WEAK_RESOURCE_PATTERNS = (
+        r"^executor$",
+        r"^tool$",
+        r"^resource$",
+        r"^执行方$",
+        r"^工具$",
+        r"^资源$",
+        r"^appropriate\s+(executor|tool|resource)s?$",
+        r"^suitable\s+(executor|tool|resource)s?$",
+        r"^合适的\s*(执行方|工具|资源)$",
+        r"^适当的\s*(执行方|工具|资源)$",
+    )
 
     _LEGAL_STATUS_TRANSITIONS = {
         TaskStatus.TODO.value: {TaskStatus.QUEUED.value, TaskStatus.IN_PROGRESS.value, TaskStatus.BLOCKED.value, TaskStatus.CANCELLED.value},
@@ -67,6 +121,7 @@ class PydanticAIAtomicSubtaskReviewer:
             title = str(getattr(item, "title", "") or "")
             content = str(getattr(item, "content", "") or "")
             criteria = list(getattr(item, "acceptance_criteria", []) or [])
+            required_resources = [str(resource or "").strip() for resource in list(getattr(item, "required_resources", []) or []) if str(resource or "").strip()]
             depends_on = [str(dep or "").strip() for dep in list(getattr(item, "depends_on", []) or [])]
             retry_count = int(getattr(item, "retry_count", 0) or 0)
             retry_budget = int(getattr(item, "retry_budget", 3) or 3)
@@ -75,6 +130,37 @@ class PydanticAIAtomicSubtaskReviewer:
                 findings.append(AtomicSubtaskReviewFinding("missing_local_id", "subtask local_id is required", local_id))
             if not criteria:
                 findings.append(AtomicSubtaskReviewFinding("missing_acceptance_criteria", "subtask must include acceptance criteria", local_id))
+            if not required_resources:
+                findings.append(AtomicSubtaskReviewFinding("missing_required_resources", "subtask must include at least one concrete required resource", local_id))
+
+            criteria_text = " ".join(criteria).lower()
+            if criteria and not any(token in criteria_text for token in self._STRONG_VERIFICATION_TOKENS):
+                findings.append(
+                    AtomicSubtaskReviewFinding(
+                        "weak_acceptance_criteria",
+                        "subtask acceptance criteria must include objective physical evidence such as read-after-write, exit_code, stdout/stderr, hash, mtime, or database/query readback",
+                        local_id,
+                    )
+                )
+            weak_verification_hits = [pattern for pattern in self._WEAK_VERIFICATION_PATTERNS if re.search(pattern, criteria_text, re.IGNORECASE)]
+            if weak_verification_hits:
+                findings.append(
+                    AtomicSubtaskReviewFinding(
+                        "weak_acceptance_criteria",
+                        f"subtask acceptance criteria use vague verification language: {weak_verification_hits}",
+                        local_id,
+                    )
+                )
+
+            resource_hits = [pattern for pattern in self._WEAK_RESOURCE_PATTERNS if any(re.search(pattern, resource, re.IGNORECASE) for resource in required_resources)]
+            if resource_hits:
+                findings.append(
+                    AtomicSubtaskReviewFinding(
+                        "fake_execution_party",
+                        f"subtask required_resources contain vague executor placeholders: {resource_hits}",
+                        local_id,
+                    )
+                )
 
             multi_action_hits = [marker for marker in self._MULTI_ACTION_MARKERS if marker in f" {title} {content} ".lower()]
             if multi_action_hits:

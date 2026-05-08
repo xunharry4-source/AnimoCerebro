@@ -35,7 +35,6 @@ def build_q8_external_staged_llm_request(
         for item in (q2_functional_plugins or [])
         if str(item or "").strip()
     ]
-    q4_external_capabilities = q4_external_capabilities if isinstance(q4_external_capabilities, dict) else {}
     q7_redlines = q7_redlines if isinstance(q7_redlines, dict) else {}
     snapshot = q1_q7_snapshot if isinstance(q1_q7_snapshot, dict) else {}
     q1_payload = snapshot.get("q1") if isinstance(snapshot.get("q1"), dict) else {}
@@ -43,11 +42,6 @@ def build_q8_external_staged_llm_request(
         q1_payload = q1_llm_output
     q2_payload = snapshot.get("q2") if isinstance(snapshot.get("q2"), dict) else {}
     q3_payload = snapshot.get("q3") if isinstance(snapshot.get("q3"), dict) else {}
-    q4_payload = snapshot.get("q4") if isinstance(snapshot.get("q4"), dict) else {}
-    if not q4_payload:
-        q4_payload = q4_external_capabilities
-    q5_payload = snapshot.get("q5") if isinstance(snapshot.get("q5"), dict) else {}
-    q6_payload = snapshot.get("q6") if isinstance(snapshot.get("q6"), dict) else {}
     q7_payload = snapshot.get("q7") if isinstance(snapshot.get("q7"), dict) else {}
     if not q7_payload and isinstance(q7_snapshot, dict):
         q7_payload = q7_snapshot
@@ -56,9 +50,6 @@ def build_q8_external_staged_llm_request(
         "Q1_Workspace_Domain_Inference": q1_payload,
         "Q2_AssetInventory": q2_payload,
         "Q3_RoleProfile": q3_payload,
-        "Q4_External_Capabilities": q4_payload,
-        "Q5_AuthorizationBoundary": q5_payload,
-        "Q6_ConsequenceProfile": q6_payload,
         "Q7_Redlines": q7_payload or q7_redlines,
         "Q2_Functional_Capabilities": q2_functional_plugins,
         "q8_priority_baseline": priority_baseline if isinstance(priority_baseline, dict) else {},

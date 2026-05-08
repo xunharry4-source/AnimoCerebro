@@ -8,6 +8,9 @@ from uuid import uuid4
 from plugins.nine_questions.q7_what_else_can_i_do.external.llm_prompt import (
     build_q7_external_llm_request,
 )
+from plugins.nine_questions.q6_what_should_i_not_do.llm_output_table import (
+    load_external_llm_output_from_table as load_q6_external_llm_output_from_table,
+)
 from plugins.nine_questions.q7_what_else_can_i_do.assessment_contract import (
     normalize_q7_external_creative_possibility_set,
 )
@@ -35,7 +38,7 @@ def run_q7_external_llm_and_save(context: dict[str, Any]) -> dict[str, Any]:
     started = perf_counter()
     provider = require_model_provider(context)
     transcript_store = require_transcript_store(context)
-    request = build_q7_external_llm_request(context=dict(context))
+    request = build_q7_external_llm_request(context=_build_q7_external_upstream_context(context))
     caller_context = build_caller_context(
         source_module=__name__,
         invocation_phase="nine_question_q7_external_creativity",
@@ -63,7 +66,12 @@ def run_q7_external_llm_and_save(context: dict[str, Any]) -> dict[str, Any]:
         payload={"q7_external_llm_input": llm_input},
     )
     try:
-        raw_output = provider.generate_json(
+        from plugins.nine_questions.q7_what_else_can_i_do.external.instructor_contract import (
+            generate_external_creative_possibility_set_with_instructor_contract,
+        )
+
+        llm_output = generate_external_creative_possibility_set_with_instructor_contract(
+            provider,
             prompt=f"{request['system_prompt']}\n\n{request['prompt']}",
             context=request["model_context"],
             caller_context=caller_context,
@@ -74,9 +82,6 @@ def run_q7_external_llm_and_save(context: dict[str, Any]) -> dict[str, Any]:
                 "output_truncation_forbidden": True,
             },
         )
-        llm_output = raw_output if isinstance(raw_output, dict) else {}
-        if not llm_output:
-            raise RuntimeError("q7_external_llm_output_empty")
         logger.info("[Q7 EXTERNAL LLM OUTPUT] trace_id=%s payload=%s", trace_id, json_safe_payload(llm_output))
         persist_question_module_output(
             context,
@@ -106,7 +111,7 @@ def run_q7_external_llm_and_save(context: dict[str, Any]) -> dict[str, Any]:
         return {
             "llm_input": llm_input,
             "llm_output": llm_output,
-            "result": _extract_external_result(llm_output),
+            "result": llm_output,
         }
     except Exception as exc:
         record_model_failed(
@@ -129,3 +134,16 @@ def run_q7_external_llm_and_save(context: dict[str, Any]) -> dict[str, Any]:
 
 def _extract_external_result(llm_output: dict[str, Any]) -> dict[str, Any]:
     return normalize_q7_external_creative_possibility_set(llm_output)
+
+
+def _build_q7_external_upstream_context(context: dict[str, Any]) -> dict[str, Any]:
+    upstream = {
+        key: context[key]
+        for key in ("question_id", "question_text", "trace_id", "turn_id", "request_id", "question_driver_refs")
+        if context.get(key) not in (None, "", [], {})
+    }
+    upstream["Q6_ExternalPlanConstraintSet"] = load_q6_external_llm_output_from_table(
+        db_path=context.get("nine_question_state_db_path"),
+        session_id=str(context.get("session_id") or "nq-baseline"),
+    )
+    return upstream

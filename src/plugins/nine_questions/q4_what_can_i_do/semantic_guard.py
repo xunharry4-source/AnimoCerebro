@@ -194,7 +194,12 @@ def run_q4_objective_semantic_guard(
     question_driver_refs: Any = None,
 ) -> dict[str, Any]:
     prompt = build_q4_objective_semantic_guard_prompt(lane=lane, candidate_set=candidate_set)
-    raw_output = provider.generate_json(
+    from plugins.nine_questions.q4_what_can_i_do.semantic_guard_instructor_contract import (
+        generate_q4_objective_semantic_guard_result_with_instructor_contract,
+    )
+
+    guard = generate_q4_objective_semantic_guard_result_with_instructor_contract(
+        provider,
         prompt=prompt,
         context={},
         caller_context=build_caller_context(
@@ -212,12 +217,6 @@ def run_q4_objective_semantic_guard(
             "max_json_repair_attempts": 0,
             "output_truncation_forbidden": True,
         },
-    )
-    raw_payload = raw_output if isinstance(raw_output, dict) else {}
-    if not raw_payload:
-        raise Q4ObjectiveSemanticGuardReviewFailed(lane=lane, reason="llm_output_empty")
-    guard = validate_q4_objective_semantic_guard_result(
-        raw_payload,
         lane=lane,
         candidate_set=candidate_set,
     )
@@ -264,7 +263,7 @@ def run_q4_objective_generation_with_semantic_guard(
     provider: Any,
     lane: Q4ObjectiveLane,
     prompt: str,
-    validate_candidate_set: Callable[[dict[str, Any]], dict[str, Any]],
+    generate_candidate_set: Callable[..., dict[str, Any]],
     trace_id: str,
     source_module: str,
     invocation_phase: str,
@@ -278,27 +277,27 @@ def run_q4_objective_generation_with_semantic_guard(
     last_error: Exception | None = None
     for attempt in range(1, max_attempts + 1):
         attempt_prompt = _prompt_with_semantic_retry_feedback(base_prompt=prompt, failures=failures)
-        raw_output = provider.generate_json(
+        caller_context = build_caller_context(
+            source_module=source_module,
+            invocation_phase=invocation_phase,
+            question_ref=question_ref,
+            question_driver_refs=question_driver_refs,
+            decision_id=f"{decision_id_prefix}:attempt-{attempt}:{uuid4().hex}",
+            trace_id=f"{trace_id}:attempt-{attempt}",
+        )
+        candidate_set = generate_candidate_set(
+            provider,
             prompt=attempt_prompt,
             context={},
-            caller_context=build_caller_context(
-                source_module=source_module,
-                invocation_phase=invocation_phase,
-                question_ref=question_ref,
-                question_driver_refs=question_driver_refs,
-                decision_id=f"{decision_id_prefix}:attempt-{attempt}:{uuid4().hex}",
-                trace_id=f"{trace_id}:attempt-{attempt}",
-            ),
+            caller_context=caller_context,
             metadata={
                 **metadata,
                 "semantic_guard_attempt": attempt,
                 "semantic_guard_max_attempts": max_attempts,
             },
         )
-        raw_payload = raw_output if isinstance(raw_output, dict) else {}
-        if not raw_payload:
+        if not candidate_set:
             raise RuntimeError(f"q4_{lane}_llm_output_empty")
-        candidate_set = validate_candidate_set(raw_payload)
         try:
             guard_result = run_q4_objective_semantic_guard(
                 provider=provider,

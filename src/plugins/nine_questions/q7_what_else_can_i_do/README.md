@@ -256,8 +256,23 @@ Q7 must not suggest platform governance evasion, vote manipulation, ban evasion,
 - Q7 must not present unregistered agents, unknown CLI tools, new MCP servers, new connectors, browser/SaaS automations, or external services as current executable capabilities.
 - Q7 must not bypass Q5 `hard_blocked` decisions or downgrade Q6 constraints.
 - Q7 executable discoveries must return to Q4 for objective expression, then pass Q5 and Q6 before execution.
-- Q7 must receive upstream Q1/Q2/Q3/Q4/Q5/Q6 content through upstream-owned public read methods and pass that content directly into its LLM request. It must not read legacy response blobs, MongoDB snapshots, or non-SQLite compatibility data.
+- Q7 must receive only upstream Q6 content through upstream-owned public read methods and pass that content directly into its LLM request. It must not read legacy response blobs, MongoDB snapshots, or non-SQLite compatibility data.
 - Q7 must persist successful question output, LLM output, trace data, context updates, module runs, and module outputs through the split SQLite nine-question tables. These tables must keep schema version and timestamps.
 - Q7 must not use fallback, degradation, compatibility, static baseline replacement, or synthesized redline data when upstream context, functional discovery, LLM invocation, or LLM output validation fails.
 - On exception, Q7 must raise the error and must not save a Q7 question snapshot. Only module outputs that completed successfully before the exception may be saved.
 - A module retry may save only the module data it actually reran. It must not rewrite Q7 as a fallback/degraded answer and must not fabricate a new LLM output.
+
+## Data Acquisition Enforcement
+
+为了确保因果审计链（Causal Audit Chain）的完整性，Q7 **必须** 遵循以下数据获取规范：
+
+1. **禁止手动提取 (No Manual Extraction)**:
+   - 严禁使用 `context.get("q6_...")` 等方式获取 Q6 结果。
+   - 严禁从 `nine_question_state` 的 `context_updates` 中直接读取上游数据。
+
+2. **官方加载器路径 (Official Loader Methods)**:
+   - 必须通过上游 Q6 提供的官方加载器从 SQLite 权威状态库中读取数据。
+   - 核心方法：`from plugins.nine_questions.q6_what_should_i_not_do.llm_output_table import load_internal_llm_output_from_table, load_external_llm_output_from_table`
+
+3. **因果处理**:
+   - 加载器会自动处理数据清洗、空值过滤及结构化校验，确保进入 LLM Prompt 的上下文是经过因果验证的最新快照。

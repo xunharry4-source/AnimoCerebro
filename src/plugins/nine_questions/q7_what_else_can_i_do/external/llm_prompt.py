@@ -15,7 +15,7 @@ def build_q7_external_llm_request(*, context: dict[str, Any]) -> dict[str, Any]:
         template_dir=_TEMPLATE_DIR,
         context=context,
         title="Q7 External Creative Exploration",
-        intent="Generate nonlinear external creative possibilities beyond current tools, assets, and Q4 objectives.",
-        purpose="Keep Q7 external as creative exploration only; executable discoveries must return to Q4 before Q5/Q6.",
+        intent="Generate nonlinear external creative possibilities from Q6 consequence and constraint results.",
+        purpose="Keep Q7 external as creative exploration only; Q7 receives only Q6 output and must not reopen Q4 or Q5.",
         error_prefix="q7_external",
     )

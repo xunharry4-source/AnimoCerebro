@@ -74,12 +74,20 @@ _QUESTION_LLM_OUTPUT_KEYS: dict[str, tuple[str, ...]] = {
         "q5_internal_authorization_boundary",
         "q5_external_authorization_boundary",
         "q5_objective_convergence_guard",
+        "q5_internal_llm_input",
+        "q5_internal_llm_output",
+        "q5_external_llm_input",
+        "q5_external_llm_output",
     ),
     "q6": (
         "q6_internal_consequence_profile",
         "q6_external_consequence_profile",
         "forbidden_zone_profile",
         "q6_forbidden_zone_profile",
+        "q6_internal_llm_input",
+        "q6_internal_llm_output",
+        "q6_external_llm_input",
+        "q6_external_llm_output",
     ),
     "q7": (
         "q7_internal_creative_possibility_set",
@@ -90,12 +98,20 @@ _QUESTION_LLM_OUTPUT_KEYS: dict[str, tuple[str, ...]] = {
         "q7_red_line_assessment",
         "q7_non_bypassable_constraints",
         "q7_current_red_line_hits",
+        "q7_internal_llm_input",
+        "q7_internal_llm_output",
+        "q7_external_llm_input",
+        "q7_external_llm_output",
     ),
     "q8": (
         "objective_profile",
         "task_queue",
         "q8_objective_profile",
         "q8_task_queue",
+        "q8_internal_llm_input",
+        "q8_internal_llm_output",
+        "q8_external_llm_input",
+        "q8_external_llm_output",
     ),
     "q9": (
         "current_action_plan",
@@ -455,6 +471,9 @@ def project_authoritative_question_llm_output(
     preserve_empty_keys = _PRESERVE_EMPTY_LLM_OUTPUT_KEYS.get(qid, set())
     table_llm_output = snapshot.get("llm_output")
     projected: dict[str, Any] = {}
+    if qid == "q5":
+        llm_out = snapshot.get("llm_output")
+        logger.info("[DEBUG Q5 SNAPSHOT LLM_OUTPUT] keys=%s type=%s", sorted(llm_out.keys()) if isinstance(llm_out, dict) else "N/A", type(llm_out))
     if isinstance(table_llm_output, dict):
         projected = {
             key: deepcopy(value)
@@ -508,18 +527,7 @@ def project_authoritative_question_llm_output(
         projected.setdefault("q4_capability_boundary_profile", projected.get("capability_boundary_profile"))
         projected.setdefault("q4_permission_profile", projected.get("permission_profile"))
     elif qid == "q5":
-        for merged_key in (
-            "authorization_boundary",
-            "q5_authorization_boundary",
-            "authorization_boundary_profile",
-            "q5_authorization_boundary_profile",
-            "q5_permission_boundary",
-            "q5_internal_llm_input",
-            "q5_internal_llm_output",
-            "q5_external_llm_input",
-            "q5_external_llm_output",
-        ):
-            projected.pop(merged_key, None)
+        pass
     elif qid == "q6":
         projected.setdefault("q6_internal_consequence_profile", projected.get("q6_internal_consequence_profile"))
         projected.setdefault("q6_external_consequence_profile", projected.get("q6_external_consequence_profile"))
@@ -571,6 +579,8 @@ def project_authoritative_question_llm_output(
     diagnosis = _compact_snapshot_diagnosis_for_upstream(snapshot)
     if diagnosis:
         projected[f"{qid}_execution_diagnosis"] = diagnosis
+    if qid == "q5":
+        logger.info("[DEBUG Q5 PROJECTED] keys=%s", sorted(projected.keys()))
     return {
         key: value
         for key, value in projected.items()

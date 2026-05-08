@@ -13,3 +13,8 @@ runtime_data_dir = "data/runtime"
 nine_questions_dir = "data/runtime/nine_questions"
 core_db = "data/runtime/zentex_core.db"
 mcp_audit_db = "data/mcp_audit.sqlite3"
+
+[workspace]
+# Q1 analysis must never fall back to the repository/process working directory.
+# If this directory does not exist, the backend creates it automatically.
+q1_default_analysis_dir = "~/.zentex/q1_analysis_workspace"

@@ -300,3 +300,18 @@ The external execution lane must still reason about:
 - Q6 must keep internal and external lane outputs separate in public methods, context updates, module outputs, logs, and readback helpers.
 - On exception, Q6 must raise the error and must not save a Q6 question snapshot. Only module outputs that completed successfully before the exception may be saved.
 - A module retry may save only the module data it actually reran. It must not rewrite Q6 as a fallback/degraded answer and must not fabricate a new LLM output.
+
+## Data Acquisition Enforcement
+
+为了确保因果审计链（Causal Audit Chain）的完整性，Q6 **必须** 遵循以下数据获取规范：
+
+1. **禁止手动提取 (No Manual Extraction)**:
+   - 严禁使用 `context.get("q5_...")` 等方式获取 Q5 结果。
+   - 严禁从 `nine_question_state` 的 `context_updates` 中直接读取上游数据。
+
+2. **官方加载器路径 (Official Loader Methods)**:
+   - 必须通过上游 Q5 提供的官方加载器从 SQLite 权威状态库中读取数据。
+   - 核心方法：`from plugins.nine_questions.q5_what_am_i_allowed_to_do.llm_output_table import load_llm_output_from_table`
+
+3. **因果处理**:
+   - 加载器会自动处理数据清洗、空值过滤及结构化校验，确保进入 LLM Prompt 的上下文是经过因果验证的最新快照。

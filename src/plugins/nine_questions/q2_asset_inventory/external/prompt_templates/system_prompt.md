@@ -79,3 +79,5 @@
 ## 📝 四、 输出约束补充
 必须只输出一个合法 JSON 对象，根节点只能是 `ExternalAssetInventory`。所有数组元素必须严格来自输入的 [CLI_Tools]、[MCP_Tools]、[Agents]、[External_Services]，禁止复制示例资产、禁止输出 Markdown、禁止添加解释性前后缀。
 输出前必须在内部完成 JSON 自检：确认最终答案能被 json.loads 解析、根节点只有 ExternalAssetInventory、所有必需字段都存在、所有资产都来自输入、没有 Markdown/解释/代码块/前后缀文本。自检过程禁止输出，最终只输出自检通过后的 JSON 对象。
+
+*(工程强校验：后端 Instructor/Pydantic v2 模型会拒绝 JSON 外层多余字段、字段名错误、空必填项或非 JSON 输出。)*

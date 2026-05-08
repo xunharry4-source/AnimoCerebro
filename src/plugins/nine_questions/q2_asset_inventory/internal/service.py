@@ -112,7 +112,12 @@ def run_q2_internal_llm_and_save(
             trace_id,
         )
         try:
-            raw = provider.generate_json(
+            from plugins.nine_questions.q2_asset_inventory.internal.instructor_contract import (
+                generate_internal_asset_inventory_set_with_instructor_contract,
+            )
+
+            raw = generate_internal_asset_inventory_set_with_instructor_contract(
+                provider,
                 prompt=attempt_prompt,
                 context={},
                 caller_context=caller_context,
@@ -123,9 +128,8 @@ def run_q2_internal_llm_and_save(
                     "output_truncation_forbidden": True,
                 },
             )
-            result = _root_payload(raw, "InternalAssetInventory")
-            if not result:
-                raise RuntimeError("q2_internal_empty_asset_inventory")
+            validated_set = raw
+            result = validated_set["InternalAssetInventory"]
             logger.info(
                 "[Q2] internal LLM request completed attempt=%s/%s session_id=%s trace_id=%s",
                 attempt,

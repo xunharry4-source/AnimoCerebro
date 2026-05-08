@@ -67,7 +67,7 @@ _SINGLE_QUESTION_TIMEOUT_SECONDS_BY_ID = {
     # inference. The clinical acceptance path regularly exceeds 300s on local
     # providers, so the web route must not keep the old generic 90s budget.
     "q3": 480.0,
-    # Q9 now carries full Q1-Q8 upstream LLM outputs into internal and external
+    # Q9 now carries Q1/Q2/Q3/Q8 upstream LLM outputs into internal and external
     # LLM calls before persisting readback IO, so the old generic 90s budget can
     # time out the HTTP request while the provider thread is still writing.
     "q9": 7200.0,

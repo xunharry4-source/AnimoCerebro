@@ -419,6 +419,14 @@ class NineQuestionService:
     def _snapshot_gate_upstream_questions(cls, question_id: str) -> list[str]:
         required = cls._required_upstream_questions(question_id)
         qid = str(question_id or "").strip().lower()
+        if qid == "q6":
+            return ["q5"]
+        if qid == "q7":
+            return ["q6"]
+        if qid == "q8":
+            return ["q1", "q2", "q3", "q7"]
+        if qid == "q9":
+            return ["q1", "q2", "q3", "q8"]
         if qid in {"q3", "q4"}:
             return [upstream_q for upstream_q in required if upstream_q != "q2"]
         return required

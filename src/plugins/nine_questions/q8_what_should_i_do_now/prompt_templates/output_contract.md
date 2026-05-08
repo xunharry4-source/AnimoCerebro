@@ -28,3 +28,5 @@
 - 不要输出 Q9 的 `evolution_profile`
 - 不要输出 Q9 的 `escalation_profile`
 - 不要输出任何解释文字、markdown、代码块
+
+*(工程强校验：后端 Instructor/Pydantic v2 模型会拒绝 JSON 外层多余字段、字段名错误、空必填项或非 JSON 输出。)*

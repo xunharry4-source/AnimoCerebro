@@ -248,10 +248,12 @@ def get_service() -> TaskManagementService:
     global _default_service
     if _default_service is None:
         from zentex.tasks.registry import TaskRegistry
-        from zentex.tasks.core.decomposer import TaskDecomposerPlugin
+        from zentex.kernel.state_domain.transcript import NullTranscriptStore
         _default_service = TaskManagementService(
             registry=TaskRegistry(),
-            transcript_store=None,  # Will be set by kernel
-            decomposer=TaskDecomposerPlugin(),
+            transcript_store=NullTranscriptStore(session_id="task-management"),
+            decomposer=PydanticAITaskDecomposerPlugin(
+                transcript_store=NullTranscriptStore(session_id="task-management"),
+            ),
         )
     return _default_service

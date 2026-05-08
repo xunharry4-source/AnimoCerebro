@@ -286,3 +286,19 @@ Each lane result must be meaningful before leaving Q5. Both lanes preserve the s
 - Q5 must not use fallback, degradation, compatibility, synthesized policy, or snapshot-only replacement data when Q4 objectives, tenant scope, contact policy, agent trust policy, functional authorization execution, LLM invocation, LLM output validation, or SafetyGate validation fails.
 - On exception, Q5 must raise the error and must not save a Q5 question snapshot. Only module outputs that completed successfully before the exception may be saved.
 - A module retry may save only the module data it actually reran. It must not rewrite Q5 as a fallback/degraded answer and must not fabricate a new LLM output.
+
+## Data Acquisition Enforcement
+
+为了确保因果审计链（Causal Audit Chain）的完整性，Q5 **必须** 遵循以下数据获取规范：
+
+1. **禁止手动提取 (No Manual Extraction)**:
+   - 严禁使用 `context.get("q4_...")` 等方式获取 Q4 结果。
+   - 严禁从 `nine_question_state` 的 `context_updates` 中直接读取上游数据。
+
+2. **官方加载器路径 (Official Loader Methods)**:
+   - 必须通过上游 Q4 提供的官方加载器从 SQLite 权威状态库中读取数据。
+   - 内部轨 (Internal Lane) 数据获取：`from plugins.nine_questions.q4_what_can_i_do.llm_output_table import load_internal_llm_output_from_table`
+   - 外部轨 (External Lane) 数据获取：`from plugins.nine_questions.q4_what_can_i_do.llm_output_table import load_external_llm_output_from_table`
+
+3. **因果处理**:
+   - 加载器会自动处理数据清洗、空值过滤及结构化校验，确保进入 LLM Prompt 的上下文是经过因果验证的最新快照。

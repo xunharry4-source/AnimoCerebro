@@ -300,12 +300,23 @@ def run_q8_internal_task_generation(
             model_name or "unknown",
             _json(llm_input),
         )
-        raw_result = provider.generate_json(
+        from plugins.nine_questions.q8_what_should_i_do_now.internal_tasks.instructor_contract import (
+            generate_internal_objective_profile_with_instructor_contract,
+        )
+
+        raw_result = generate_internal_objective_profile_with_instructor_contract(
+            provider,
             prompt=request_payload["prompt"],
             context=request_payload["context"],
             caller_context=caller_context,
+            metadata={
+                "question_id": "q8",
+                "scope": "internal",
+                "output_schema": "InternalObjectiveProfileRoot",
+                "max_json_repair_attempts": 0,
+                "output_truncation_forbidden": True,
+            },
         )
-        raw_result = dict(raw_result) if isinstance(raw_result, dict) else {}
         logger.error(
             "[Q8 INTERNAL LLM OUTPUT] trace_id=%s provider=%s model=%s output=%s",
             scoped_trace_id,

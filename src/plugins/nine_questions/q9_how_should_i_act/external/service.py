@@ -8,6 +8,9 @@ from uuid import uuid4
 from plugins.nine_questions.q9_how_should_i_act.external.llm_prompt import (
     build_q9_external_llm_request,
 )
+from plugins.nine_questions.q8_what_should_i_do_now.llm_output_table import (
+    load_external_llm_output_from_table as load_q8_external_llm_output_from_table,
+)
 from zentex.common.nine_questions_shared import (
     build_caller_context,
     json_safe_payload,
@@ -48,7 +51,7 @@ def run_q9_external_llm_and_save(context: dict[str, Any]) -> dict[str, Any]:
     started = perf_counter()
     provider = require_model_provider(context)
     transcript_store = require_transcript_store(context)
-    request = build_q9_external_llm_request(context=dict(context))
+    request = build_q9_external_llm_request(context=_build_q9_external_upstream_context(context))
     caller_context = build_caller_context(
         source_module=__name__,
         invocation_phase="nine_question_q9_external_action",
@@ -76,7 +79,12 @@ def run_q9_external_llm_and_save(context: dict[str, Any]) -> dict[str, Any]:
     )
     logger.info("[Q9 EXTERNAL LLM INPUT] trace_id=%s payload=%s", trace_id, json_safe_payload(llm_input))
     try:
-        raw_output = provider.generate_json(
+        from plugins.nine_questions.q9_how_should_i_act.external.instructor_contract import (
+            generate_external_action_design_with_instructor_contract,
+        )
+
+        llm_output = generate_external_action_design_with_instructor_contract(
+            provider,
             prompt=f"{request['system_prompt']}\n\n{request['prompt']}",
             context=request["model_context"],
             caller_context=caller_context,
@@ -87,9 +95,6 @@ def run_q9_external_llm_and_save(context: dict[str, Any]) -> dict[str, Any]:
                 "output_truncation_forbidden": True,
             },
         )
-        llm_output = raw_output if isinstance(raw_output, dict) else {}
-        if not llm_output:
-            raise RuntimeError("q9_external_llm_output_empty")
         logger.info("[Q9 EXTERNAL LLM OUTPUT] trace_id=%s payload=%s", trace_id, json_safe_payload(llm_output))
         persist_question_module_output(
             context,
@@ -98,6 +103,7 @@ def run_q9_external_llm_and_save(context: dict[str, Any]) -> dict[str, Any]:
             payload={
                 "q9_external_llm_input": llm_input,
                 "q9_external_llm_output": llm_output,
+                "q9_external_action_design": llm_output,
             },
             status="completed",
             output_kind="inference",
@@ -119,7 +125,7 @@ def run_q9_external_llm_and_save(context: dict[str, Any]) -> dict[str, Any]:
         return {
             "llm_input": llm_input,
             "llm_output": llm_output,
-            "result": _extract_external_result(llm_output),
+            "result": llm_output,
         }
     except Exception as exc:
         record_model_failed(
@@ -171,3 +177,16 @@ def _extract_external_result(llm_output: dict[str, Any]) -> dict[str, Any]:
         "stop_conditions": normalized["stop_conditions"],
         "evidence_refs": normalized["evidence_refs"],
     }
+
+
+def _build_q9_external_upstream_context(context: dict[str, Any]) -> dict[str, Any]:
+    upstream = {
+        key: context[key]
+        for key in ("question_id", "question_text", "trace_id", "turn_id", "request_id", "question_driver_refs")
+        if context.get(key) not in (None, "", [], {})
+    }
+    upstream["Q8_ExternalObjectiveProfile"] = load_q8_external_llm_output_from_table(
+        db_path=context.get("nine_question_state_db_path"),
+        session_id=str(context.get("session_id") or "nq-baseline"),
+    )
+    return upstream

@@ -41,7 +41,10 @@ logger = logging.getLogger(__name__)
 def build_default_episode_graph_adapter() -> EpisodeGraphMemoryAdapter:
     db_path = get_storage_paths().runtime_data_dir / "memory" / "kuzu_db"
     db_path.parent.mkdir(parents=True, exist_ok=True)
-    return EpisodeGraphMemoryAdapter(graph_client=KuzuGraphMemoryClient(db_path=str(db_path)))
+    print(f">>> [DIAGNOSTIC] Initializing KuzuGraphMemoryClient at {db_path}...")
+    client = KuzuGraphMemoryClient(db_path=str(db_path))
+    print(">>> [DIAGNOSTIC] KuzuGraphMemoryClient initialized.")
+    return EpisodeGraphMemoryAdapter(graph_client=client)
 
 
 class MemoryService:
@@ -60,6 +63,7 @@ class MemoryService:
                 storage_root = get_storage_paths().app_data_dir / "memory"
         
         self.storage_root = Path(storage_root)
+        print(f">>> [DIAGNOSTIC] MemoryService storage_root: {self.storage_root}")
         try:
             self.storage_root.mkdir(parents=True, exist_ok=True)
         except Exception as exc:
@@ -67,6 +71,7 @@ class MemoryService:
             raise RuntimeError(f"MemoryService storage root unavailable: {self.storage_root}") from exc
         
         # Initialize the target internal service with standard path conventions
+        print(">>> [DIAGNOSTIC] Initializing EnhancedMemoryService (SQLite backends)...")
         self._internal_service = EnhancedMemoryService(
             semantic_store_path=self.storage_root / "semantic.sqlite3",
             procedural_store_path=self.storage_root / "procedural.sqlite3",
@@ -75,6 +80,7 @@ class MemoryService:
             audit_store_path=self.storage_root / "audit.sqlite3",
             cold_storage_path=self.storage_root / "cold_archive.sqlite3"
         )
+        print(">>> [DIAGNOSTIC] EnhancedMemoryService initialized.")
         self._asset_stores: dict[Path, AssetDatabaseStore] = {}
         self._consolidation_lock = threading.Lock()
         self._consolidation_bridge: Any = None

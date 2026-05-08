@@ -102,7 +102,12 @@ def run_q2_external_llm_and_save(
             trace_id,
         )
         try:
-            raw = provider.generate_json(
+            from plugins.nine_questions.q2_asset_inventory.external.instructor_contract import (
+                generate_external_asset_inventory_set_with_instructor_contract,
+            )
+
+            raw = generate_external_asset_inventory_set_with_instructor_contract(
+                provider,
                 prompt=attempt_prompt,
                 context={},
                 caller_context=caller_context,
@@ -113,9 +118,8 @@ def run_q2_external_llm_and_save(
                     "output_truncation_forbidden": True,
                 },
             )
-            result = _root_payload(raw, "ExternalAssetInventory")
-            if not result:
-                raise RuntimeError("q2_external_empty_asset_inventory")
+            validated_set = raw
+            result = validated_set["ExternalAssetInventory"]
             _validate_external_inventory_result(request["model_context"], result)
             logger.info(
                 "[Q2] external LLM request completed attempt=%s/%s session_id=%s trace_id=%s",

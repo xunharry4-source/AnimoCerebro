@@ -94,7 +94,12 @@ def run_q6_external_llm_and_save(context: dict[str, Any]) -> dict[str, Any]:
         trace_id=trace_id,
     )
     try:
-        raw_output = provider.generate_json(
+        from plugins.nine_questions.q6_what_should_i_not_do.external.instructor_contract import (
+            generate_external_plan_constraint_set_with_instructor_contract,
+        )
+
+        llm_output = generate_external_plan_constraint_set_with_instructor_contract(
+            provider,
             prompt=f"{request['system_prompt']}\n\n{request['prompt']}",
             context=request["model_context"],
             caller_context=caller_context,
@@ -105,10 +110,7 @@ def run_q6_external_llm_and_save(context: dict[str, Any]) -> dict[str, Any]:
                 "output_truncation_forbidden": True,
             },
         )
-        llm_output = raw_output if isinstance(raw_output, dict) else {}
-        if not llm_output:
-            raise RuntimeError("q6_external_llm_output_empty")
-        external_result = _extract_external_result(llm_output)
+        external_result = llm_output
         logger.info("[Q6 EXTERNAL LLM OUTPUT] trace_id=%s payload=%s", trace_id, json_safe_payload(llm_output))
         persist_question_module_output(
             context,

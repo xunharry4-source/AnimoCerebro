@@ -126,9 +126,6 @@ def build_q8_internal_staged_llm_request(
         q1_payload = q1_llm_output
     q2_payload = snapshot.get("q2") if isinstance(snapshot.get("q2"), dict) else {}
     q3_payload = snapshot.get("q3") if isinstance(snapshot.get("q3"), dict) else {}
-    q4_payload = snapshot.get("q4") if isinstance(snapshot.get("q4"), dict) else {}
-    q5_payload = snapshot.get("q5") if isinstance(snapshot.get("q5"), dict) else {}
-    q6_payload = snapshot.get("q6") if isinstance(snapshot.get("q6"), dict) else {}
     q7_payload = snapshot.get("q7") if isinstance(snapshot.get("q7"), dict) else {}
     if not q7_payload and isinstance(q7_snapshot, dict):
         q7_payload = q7_snapshot
@@ -149,9 +146,6 @@ def build_q8_internal_staged_llm_request(
             "q2_cognitive_capabilities": q2_cognitive_plugins,
         },
         "Internal_Brain_Organs_State": self_state_and_memory,
-        "Q4_Capabilities": q4_payload,
-        "Q5_AuthorizationBoundary": q5_payload,
-        "Q6_ConsequenceProfile": q6_payload,
         "Q7_Redlines": q7_payload or q7_redlines,
         "Q2_Cognitive_Capabilities": q2_cognitive_plugins,
         "Q7_Redlines_Converted": q7_redlines_converted,

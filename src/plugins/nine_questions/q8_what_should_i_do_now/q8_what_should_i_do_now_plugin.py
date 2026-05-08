@@ -17,16 +17,6 @@ from plugins.nine_questions.q1_where_am_i.llm_output_table import (
 from plugins.nine_questions.q3_role_inference.llm_output_table import (
     load_llm_output_from_table as load_q3_llm_output_from_table,
 )
-from plugins.nine_questions.q4_what_can_i_do.llm_output_table import (
-    load_external_llm_output_from_table as load_q4_external_llm_output_from_table,
-    load_internal_llm_output_from_table as load_q4_internal_llm_output_from_table,
-)
-from plugins.nine_questions.q5_what_am_i_allowed_to_do.llm_output_table import (
-    load_llm_output_from_table as load_q5_llm_output_from_table,
-)
-from plugins.nine_questions.q6_what_should_i_not_do.llm_output_table import (
-    load_llm_output_from_table as load_q6_llm_output_from_table,
-)
 from plugins.nine_questions.q7_what_else_can_i_do.llm_output_table import (
     load_external_llm_output_from_table as load_q7_external_llm_output_from_table,
     load_internal_llm_output_from_table as load_q7_internal_llm_output_from_table,
@@ -264,12 +254,6 @@ def _load_q8_upstream_llm_outputs(context: dict[str, Any]) -> dict[str, Any]:
                 "external_tool_llm_output": load_q2_external_llm_output_from_table(db_path=state_db_path),
             },
             "q3": load_q3_llm_output_from_table(db_path=state_db_path),
-            "q4": {
-                "q4_internal_objective_candidates": load_q4_internal_llm_output_from_table(db_path=state_db_path),
-                "q4_external_objective_candidates": load_q4_external_llm_output_from_table(db_path=state_db_path),
-            },
-            "q5": load_q5_llm_output_from_table(db_path=state_db_path),
-            "q6": load_q6_llm_output_from_table(db_path=state_db_path),
             "q7": {
                 "internal_creative_possibility_set": load_q7_internal_llm_output_from_table(db_path=state_db_path),
                 "external_redline_llm_output": load_q7_external_llm_output_from_table(db_path=state_db_path),
@@ -282,9 +266,6 @@ def _build_q8_decision_digest(snapshot: dict[str, Any]) -> dict[str, Any]:
     q1 = _q8_dict(snapshot.get("q1"))
     q2 = _q8_dict(snapshot.get("q2"))
     q3 = _q8_dict(snapshot.get("q3"))
-    q4 = _q8_dict(snapshot.get("q4"))
-    q5 = _q8_dict(snapshot.get("q5"))
-    q6 = _q8_dict(snapshot.get("q6"))
     q7 = _q8_dict(snapshot.get("q7"))
 
     q1_scene = _q8_dict(q1.get("q1_scene_model") or q1.get("workspace_domain_inference"))
@@ -297,21 +278,6 @@ def _build_q8_decision_digest(snapshot: dict[str, Any]) -> dict[str, Any]:
     q2_external_tools = _q8_list(q2_external_output.get("available_external_tools"))
     q3_role = _q8_dict(q3.get("q3_role_profile") or q3.get("identity_kernel_snapshot"))
     q3_mission = _q8_dict(q3.get("q3_mission_boundary") or q3.get("mission_continuity_projection"))
-    q4_profile = _q8_dict(q4.get("q4_capability_boundary_profile") or q4.get("q4_capability_baseline"))
-    q4_permission = _q8_dict(q4.get("q4_permission_profile"))
-    q5_boundary = _q8_dict(q5.get("q5_authorization_boundary") or q5.get("authorization_boundary"))
-    q5_boundary = _q8_dict(q5_boundary.get("AuthorizationBoundary") or q5_boundary)
-    q5_profile = _q8_dict(q5.get("q5_authorization_boundary_profile") or q5.get("q5_authorization_baseline"))
-    q5_permission = _q8_dict(q5.get("q5_permission_boundary"))
-    q5_convergence_guard = _q8_dict(q5.get("q5_objective_convergence_guard"))
-    q6_profile = _q8_dict(
-        q6.get("q6_external_consequence_profile")
-        or q6.get("q6_consequence_inference")
-        or q6.get("q6_cost_impact_profile")
-        or q6.get("q6_consequence_assessment")
-        or q6.get("q6_forbidden_zone_profile")
-        or q6.get("q6_forbidden_zone_baseline")
-    )
     q7_internal_output = _q8_dict(q7.get("internal_creative_possibility_set"))
     q7_external_output = _q8_dict(q7.get("external_redline_llm_output"))
     q7_profile = _q8_dict(
@@ -358,42 +324,6 @@ def _build_q8_decision_digest(snapshot: dict[str, Any]) -> dict[str, Any]:
                 "priority_duties": _q8_list(q3_mission.get("priority_duties")),
                 "continuity_boundaries": _q8_list(q3_mission.get("continuity_boundaries")),
             },
-        },
-        "q4": {
-            "status": _q8_diagnosis_status(q4, "q4_execution_diagnosis"),
-            "actionable_space": _q8_list(q4_profile.get("actionable_space")),
-            "executable_strategies": _q8_list(q4_profile.get("executable_strategies")),
-            "capability_upper_limits": _q8_list(q4_profile.get("capability_upper_limits")),
-            "permission_profile": {
-                "mode": _q8_text(q4_permission.get("mode")),
-                "is_read_only": bool(q4_permission.get("is_read_only")),
-                "tenant_permissions": _q8_list(q4_permission.get("tenant_permissions")),
-                "execution_tokens": _q8_list(q4_permission.get("execution_tokens")),
-                "accessible_workspace_zones": _q8_list(q4_permission.get("accessible_workspace_zones")),
-            },
-        },
-        "q5": {
-            "status": _q8_diagnosis_status(q5, "q5_execution_diagnosis"),
-            "current_authorization_scope": _q8_text(q5_boundary.get("current_authorization_scope") or q5_profile.get("current_authorization_scope")),
-            "contact_policies": _q8_list(q5_boundary.get("contact_policies") or q5_boundary.get("communication_policy") or q5_profile.get("contact_policies")),
-            "organizational_boundaries": _q8_text(q5_boundary.get("organizational_boundaries") or q5_boundary.get("organizational_boundary") or q5_profile.get("organizational_boundaries")),
-            "allowed_action_space": _q8_list(q5_profile.get("allowed_action_space") or q5_boundary.get("allowed_operations") or q5_boundary.get("allowed_actions")),
-            "forbidden_action_space": _q8_list(q5_profile.get("forbidden_action_space") or q5_boundary.get("forbidden_operations") or q5_boundary.get("forbidden_actions")),
-            "requires_escalation_actions": _q8_list(q5_profile.get("requires_escalation_actions")),
-            "authorized_actions": _q8_list(q5_permission.get("authorized_actions")),
-            "unauthorized_actions": _q8_list(q5_permission.get("unauthorized_actions")),
-            "conditional_actions": _q8_list(q5_permission.get("conditional_actions")),
-            "objective_scope": _q8_text(q5_convergence_guard.get("objective_scope")),
-            "collaboration_available": bool(q5_convergence_guard.get("collaboration_available", True)),
-            "authorization_limited": bool(q5_convergence_guard.get("authorization_limited", False)),
-        },
-        "q6": {
-            "status": _q8_diagnosis_status(q6, "q6_execution_diagnosis"),
-            "absolute_red_lines": _q8_list(q6_profile.get("absolute_red_lines")),
-            "performance_tradeoff_bans": _q8_list(q6_profile.get("performance_tradeoff_bans")),
-            "prohibited_strategies": _q8_list(q6_profile.get("prohibited_strategies")),
-            "contamination_risks": _q8_list(q6_profile.get("contamination_risks")),
-            "audit_rules": _q8_list(q6.get("global_audit_rules")),
         },
         "q7": {
             "status": _q8_diagnosis_status(q7, "q7_execution_diagnosis"),
@@ -587,36 +517,12 @@ def _q8_current_mission_from_q3(question_snapshot: dict[str, Any]) -> str:
     raise RuntimeError("Q8 requires Q3 MissionContinuityBoundary.current_mission before objective synthesis.")
 
 
-def _existing_q8_committed_result(context: dict[str, Any]) -> CognitiveToolResult | None:
-    state = _q8_dict(context.get("nine_question_state"))
-    snapshots = _q8_dict(state.get("question_snapshots"))
-    snapshot = _q8_dict(snapshots.get("q8"))
-    context_updates = _q8_dict(snapshot.get("context_updates"))
-    result_payload = _q8_dict(snapshot.get("result"))
-    q8_result = _build_q8_llm_output_payload({**result_payload, **context_updates})
-    if not any(q8_result.values()):
-        return None
-    return CognitiveToolResult(
-        tool_id=str(snapshot.get("tool_id") or NINE_QUESTION_Q8),
-        summary=str(snapshot.get("summary") or "Preserved committed Q8 objective and task queue"),
-        llm_output=_build_q8_llm_output_payload(q8_result),
-        proposals=[
-            {
-                "kind": "nine_question_q8_decision",
-                "result": q8_result,
-            }
-        ],
-        context_updates=context_updates,
-        confidence=float(snapshot.get("confidence") or 0.8),
-    )
-
-
 class WhatShouldIDoNowPlugin(BaseModel):
     model_config = ConfigDict(extra="allow")
 
     """
     [LLM MANDATORY] Q8 Phase Plugin.
-    Synopsizes Q1-Q7 to generate the current focus and task queue.
+    Synopsizes Q1/Q2/Q3/Q7 to generate the current focus and task queue.
     The core decision hub for the Zentex autonomous controller.
     """
     plugin_id: str = NINE_QUESTION_Q8
@@ -629,7 +535,7 @@ class WhatShouldIDoNowPlugin(BaseModel):
     rollback_conditions: List[str] = ["unhandled_llm_failure"]
     revocation_reasons: List[str] = []
     tool_type: str = "nine_question"
-    purpose: str = "Synthesize current primary objective and task queue under Q1-Q7 constraints."
+    purpose: str = "Synthesize current primary objective and task queue under Q1/Q2/Q3/Q7 constraints."
     input_schema: Dict[str, Any] = {"type": "object"}
     output_schema: Dict[str, Any] = {"type": "object"}
     required_context: List[str] = ["nine_questions", "persistent_task_state", "plugin_service", "transcript_store", "llm_service"]
@@ -675,7 +581,7 @@ class WhatShouldIDoNowPlugin(BaseModel):
         snapshot_validation_run = start_module_run(
             module_runs, "q8_snapshot_validation", source="plugins.nine_questions.q8"
         )
-        for dependency_id in ("q1", "q2", "q3", "q4", "q5", "q6", "q7"):
+        for dependency_id in ("q1", "q2", "q3", "q7"):
             upstream_dependencies.append(
                 build_question_dependency(
                     dependency_id,
@@ -693,10 +599,10 @@ class WhatShouldIDoNowPlugin(BaseModel):
                 snapshot_validation_run,
                 status="failed",
                 error_code="upstream_dependency_invalid",
-                error_message=f"Q8 requires completed upstream Q1-Q7 LLM outputs: {invalid_dependencies}",
+                error_message=f"Q8 requires completed upstream Q1/Q2/Q3/Q7 LLM outputs: {invalid_dependencies}",
             )
             raise RuntimeError(
-                f"Q8 requires completed upstream Q1-Q7 LLM outputs: {invalid_dependencies}"
+                f"Q8 requires completed upstream Q1/Q2/Q3/Q7 LLM outputs: {invalid_dependencies}"
             )
         finish_module_run(snapshot_validation_run)
 
@@ -827,8 +733,7 @@ class WhatShouldIDoNowPlugin(BaseModel):
         priority_baseline = {
             **priority_baseline,
             "priority_factors": [
-                {"factor": "redline_pressure", "count": len(question_snapshot.get("q6", {}).get("absolute_red_lines", []) or [])},
-                {"factor": "authorization_pressure", "count": len(question_snapshot.get("q5", {}).get("explicitly_forbidden_actions", []) or [])},
+                {"factor": "q7_constraint_pressure", "count": len(question_snapshot.get("q7", {}).get("non_bypassable_constraints", []) or [])},
                 {"factor": "resource_gap_pressure", "count": len(question_snapshot.get("q3", {}).get("missing_critical_assets", []) or [])},
                 {"factor": "active_task_pressure", "count": sum(len(v) for v in normalized_task_state.values())},
                 {"factor": "configured_extra_goal_pressure", "count": len(configured_extra_goals)},

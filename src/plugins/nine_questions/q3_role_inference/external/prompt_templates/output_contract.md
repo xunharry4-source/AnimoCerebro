@@ -23,6 +23,8 @@
 }
 ```
 
+*(工程强校验：后端 Instructor/Pydantic v2 模型会拒绝 JSON 外层多余字段、字段名错误、空必填项或非 JSON 输出。)*
+
 ---
 
 ### 📑 字段说明规范 (Field Specifications)

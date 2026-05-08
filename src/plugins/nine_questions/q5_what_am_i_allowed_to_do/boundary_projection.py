@@ -128,13 +128,18 @@ def _blocked_objective_list(value: Any, *, error_prefix: str) -> list[dict[str, 
     for raw in value:
         if not isinstance(raw, dict):
             raise RuntimeError(f"{error_prefix}_blocked_objective_invalid")
+        objective_number = str(raw.get("objective_number") or "").strip()
         objective = str(raw.get("objective") or "").strip()
         violation_reason = str(raw.get("violation_reason") or "").strip()
         if not objective or not violation_reason:
             raise RuntimeError(f"{error_prefix}_blocked_objective_incomplete")
-        key = (objective, violation_reason)
+        key = (objective_number, objective, violation_reason)
         if key not in seen:
-            items.append({"objective": objective, "violation_reason": violation_reason})
+            items.append({
+                "objective_number": objective_number,
+                "objective": objective,
+                "violation_reason": violation_reason
+            })
             seen.add(key)
     return items
 
@@ -149,13 +154,18 @@ def _objective_condition_list(value: Any, *, error_prefix: str) -> list[dict[str
     for raw in value:
         if not isinstance(raw, dict):
             raise RuntimeError(f"{error_prefix}_allowed_objective_invalid")
+        objective_number = str(raw.get("objective_number") or "").strip()
         objective = str(raw.get("objective") or "").strip()
         compliance_condition = str(raw.get("compliance_condition") or "").strip()
         if not objective or not compliance_condition:
             raise RuntimeError(f"{error_prefix}_allowed_objective_incomplete")
-        key = (objective, compliance_condition)
+        key = (objective_number, objective, compliance_condition)
         if key not in seen:
-            items.append({"objective": objective, "compliance_condition": compliance_condition})
+            items.append({
+                "objective_number": objective_number,
+                "objective": objective,
+                "compliance_condition": compliance_condition
+            })
             seen.add(key)
     return items
 

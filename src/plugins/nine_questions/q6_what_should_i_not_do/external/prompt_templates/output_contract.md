@@ -3,6 +3,7 @@
   "type": "ExternalPlanConstraintSet",
   "objective_constraints": [
     {
+      "objective_number": "填入对应的 Q5 目标编号（如 T1）",
       "objective_ref": "原样提取 Q5 放行的具体目标名称或描述摘要",
       "consequence_and_cost": {
         "physical_side_effects": "描述对外部世界或宿主产生的具体物理副作用",
@@ -42,3 +43,5 @@
 - halt_conditions.pause_conditions 和 halt_conditions.stop_conditions 必须是具体刹车条件，不能敷衍。
 - 如果 file_or_remote_mutation_risk 或 rollback_difficulty 暗示高风险、不可逆、删除、覆盖或回滚极难，则 execution_safeguards 必须至少开启 backup_required、dry_run_first 或 sandbox_first 中的一个。
 - 禁止输出 task_id、subtask_id、资源锁、执行步骤、实现计划或任何物理执行动作。
+
+*(工程强校验：后端 Instructor/Pydantic v2 模型会拒绝 JSON 外层多余字段、字段名错误、空必填项或非 JSON 输出。)*

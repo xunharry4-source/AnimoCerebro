@@ -80,6 +80,12 @@ def _contains_plan_step_markup(value: str) -> bool:
 class ExternalObjectiveCandidate(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
+    objective_number: str = Field(
+        ...,
+        min_length=1,
+        pattern=r"^Q4-E-\d{3}$",
+        description="Stable external Q4 objective identifier, e.g. Q4-E-001. Must not be objective_type or task_id.",
+    )
     objective_type: ExternalObjectiveType
     capability_evidence_refs: list[str] = Field(default_factory=list)
     signal_or_gap_addressed: str
@@ -109,6 +115,17 @@ class ExternalObjectiveCandidate(BaseModel):
     def _validate_trace_fields(cls, value: str, info: Any) -> str:
         return _reject_placeholder(value, field_name=str(info.field_name))
 
+    @field_validator("objective_number")
+    @classmethod
+    def _validate_objective_number(cls, value: str) -> str:
+        text = _reject_placeholder(value, field_name="objective_number")
+        lowered = text.lower()
+        if any(identifier in lowered for identifier in _FORBIDDEN_EXECUTION_IDENTIFIERS):
+            raise ValueError("objective_number_contains_execution_identifier")
+        if text in ExternalObjectiveType.__args__:
+            raise ValueError("objective_number_must_not_be_objective_type")
+        return text
+
     @field_validator("candidate_description")
     @classmethod
     def _validate_candidate_description(cls, value: str) -> str:
@@ -137,6 +154,13 @@ class ExternalObjectiveCandidateSet(BaseModel):
         description="强制红线：必须包含至少 5 个以上的宏观业务目标候选。如果生成数量少于 5 个，系统将直接拦截并判定为推理不合格。",
     )
 
+    @model_validator(mode="after")
+    def _validate_objective_numbers_unique(self) -> ExternalObjectiveCandidateSet:
+        numbers = [candidate.objective_number for candidate in self.objective_candidates]
+        if len(numbers) != len(set(numbers)):
+            raise ValueError("objective_number_duplicate")
+        return self
+
 
 def validate_external_objective_candidate_set(raw_output: dict[str, Any]) -> dict[str, Any]:
     _require_instructor_runtime()
@@ -146,3 +170,25 @@ def validate_external_objective_candidate_set(raw_output: dict[str, Any]) -> dic
     except ValidationError as exc:
         raise RuntimeError(f"q4_external_instructor_validation_failed:{exc}") from exc
     return validated.model_dump(mode="json")
+
+
+def generate_external_objective_candidate_set_with_instructor_contract(
+    provider: Any,
+    *,
+    prompt: str,
+    context: dict[str, Any],
+    caller_context: Any,
+    metadata: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    _require_instructor_runtime()
+    raw_output = provider.generate_json(
+        prompt=prompt,
+        context=context,
+        caller_context=caller_context,
+        metadata={
+            **(metadata or {}),
+            "instructor_contract": "ExternalObjectiveCandidateSet",
+            "response_model": "ExternalObjectiveCandidateSet",
+        },
+    )
+    return validate_external_objective_candidate_set(raw_output)

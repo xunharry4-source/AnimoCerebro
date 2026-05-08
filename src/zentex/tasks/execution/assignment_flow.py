@@ -17,6 +17,7 @@ from zentex.tasks.models import TaskStatus
 
 
 UTC = timezone.utc
+_OWNER_PREFIXES = ("internal:", "cli:", "mcp:", "agent:", "external_connector:")
 
 
 @dataclass(frozen=True)
@@ -74,22 +75,55 @@ class ResourceMatcher:
         required_resources: Iterable[str],
         designated_owner: str = "",
     ) -> AssignmentDecision:
+        task_scope = _task_scope_value(task)
         required = _dedupe([*required_capabilities, *_resource_tokens(required_resources)])
         designated_owner = str(designated_owner or "").strip()
         candidates = self._collect_candidates()
+        if task_scope == "internal":
+            candidates = [item for item in candidates if item.executor_type == "internal"]
+        elif task_scope == "external":
+            candidates = [item for item in candidates if item.executor_type in {"cli", "mcp", "external_connector", "agent"}]
+        required_owner_refs = _required_owner_refs(required_resources, task_scope=task_scope)
         evidence = {
             "matched_by": "G31A.ResourceMatcher",
             "required_capabilities": required,
             "required_resources": list(required_resources or []),
             "designated_owner": designated_owner,
-            "searched_asset_libraries": ["internal_plugin", "cli", "mcp", "external_connector", "agent"],
+            "task_scope": task_scope,
+            "searched_asset_libraries": _searched_asset_libraries(task_scope),
             "candidate_counts_by_registry": self._candidate_counts_by_registry(candidates),
             "candidate_count": len(candidates),
             "candidate_owners": [item.owner_ref for item in candidates],
+            "required_owner_refs": required_owner_refs,
         }
 
+        if required_owner_refs:
+            candidate_owners = {item.owner_ref for item in candidates}
+            missing_owner_refs = [owner for owner in required_owner_refs if owner not in candidate_owners]
+            if missing_owner_refs:
+                return self._unassigned(
+                    required=required,
+                    missing=[*missing_owner_refs, *required],
+                    candidates=candidates,
+                    evidence={**evidence, "failure_reason": "required_owner_ref_not_available"},
+                )
+
         if designated_owner:
-            normalized_owner = _normalize_owner_ref(designated_owner)
+            normalized_owner = _normalize_owner_ref(designated_owner, task_scope=task_scope)
+            if task_scope == "internal" and not normalized_owner.startswith("internal:"):
+                return self._unassigned(
+                    required=required,
+                    missing=[normalized_owner, *required],
+                    candidates=candidates,
+                    evidence={**evidence, "failure_reason": "designated_owner_scope_mismatch"},
+                )
+            if task_scope == "external" and normalized_owner.startswith("internal:"):
+                return self._unassigned(
+                    required=required,
+                    missing=[normalized_owner, *required],
+                    candidates=candidates,
+                    evidence={**evidence, "failure_reason": "designated_owner_scope_mismatch"},
+                )
             exact = [item for item in candidates if item.owner_ref == normalized_owner or item.executor_id == normalized_owner]
             if exact:
                 selected = exact[0]
@@ -603,7 +637,7 @@ def _resource_tokens(resources: Iterable[str]) -> list[str]:
     return _dedupe(tokens)
 
 
-def _normalize_owner_ref(value: str) -> str:
+def _normalize_owner_ref(value: str, *, task_scope: str = "") -> str:
     text = str(value or "").strip()
     lowered = text.lower()
     if lowered.startswith("connector:"):
@@ -612,7 +646,48 @@ def _normalize_owner_ref(value: str) -> str:
         return text
     if lowered.startswith("b4") or "sandbox" in lowered or "沙盒" in lowered:
         return "internal:thought_sandbox"
+    if task_scope == "internal":
+        return f"internal:{text}"
     return f"external_connector:{text}"
+
+
+def _task_scope_value(task: Any) -> str:
+    raw = getattr(getattr(task, "task_scope", None), "value", getattr(task, "task_scope", ""))
+    value = str(raw or "").strip().lower()
+    return value if value in {"internal", "external"} else ""
+
+
+def _is_owner_ref(value: str) -> bool:
+    return str(value or "").strip().startswith(_OWNER_PREFIXES)
+
+
+def _required_owner_refs(required_resources: Iterable[str], *, task_scope: str) -> list[str]:
+    refs: list[str] = []
+    for item in required_resources or []:
+        text = str(item or "").strip()
+        if not text:
+            continue
+        owner_text = ""
+        for prefix in ("执行方钦定：", "执行方钦定:"):
+            if text.startswith(prefix):
+                owner_text = text[len(prefix):].strip()
+                break
+        if not owner_text and text.startswith(("internal:", "cli:", "mcp:", "agent:", "external_connector:", "connector:")):
+            owner_text = text
+        if not owner_text:
+            continue
+        normalized = _normalize_owner_ref(owner_text, task_scope=task_scope)
+        if _is_owner_ref(normalized):
+            refs.append(normalized)
+    return _dedupe(refs)
+
+
+def _searched_asset_libraries(task_scope: str) -> list[str]:
+    if task_scope == "internal":
+        return ["internal_plugin"]
+    if task_scope == "external":
+        return ["cli", "mcp", "external_connector", "agent"]
+    return ["internal_plugin", "cli", "mcp", "external_connector", "agent"]
 
 
 def _capability_match(required: list[str], candidate: list[str]) -> bool:

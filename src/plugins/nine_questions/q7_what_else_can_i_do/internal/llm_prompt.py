@@ -15,7 +15,7 @@ def build_q7_internal_llm_request(*, context: dict[str, Any]) -> dict[str, Any]:
         template_dir=_TEMPLATE_DIR,
         context=context,
         title="Q7 Internal Creative Exploration",
-        intent="Generate nonlinear internal creative possibilities beyond the current objective path.",
-        purpose="Keep Q7 internal as creative exploration only; execution candidates must return to Q4 before Q5/Q6/Q8/Q9.",
+        intent="Generate nonlinear internal creative possibilities from Q6 consequence and constraint results.",
+        purpose="Keep Q7 internal as creative exploration only; Q7 receives only Q6 output and must not reopen Q4 or Q5.",
         error_prefix="q7_internal",
     )

@@ -4,6 +4,9 @@ import json
 import re
 from typing import Any
 
+from plugins.nine_questions.q2_asset_inventory.llm_output_table import (
+    load_internal_llm_output_from_table as load_q2_internal,
+)
 from zentex.safety.safety_gate import SafetyGate
 
 
@@ -79,20 +82,17 @@ def _resolve_workspace_config(context: dict[str, Any]) -> Any:
 
 
 def _query_identity_constraints(context: dict[str, Any]) -> tuple[list[str], list[str]]:
-    candidates = [
-        ("identity_kernel_snapshot", context.get("identity_kernel_snapshot")),
-        ("identity_kernel", context.get("identity_kernel")),
-        ("system_identity.identity_kernel_snapshot", _nested_get(context, "system_identity", "identity_kernel_snapshot")),
-        ("q2_identity_kernel_snapshot", context.get("q2_identity_kernel_snapshot")),
-    ]
-    constraints: list[str] = []
-    sources: list[str] = []
-    for source, payload in candidates:
-        values = _string_list(_get_field(payload, "non_bypassable_constraints"))
-        if values:
-            constraints.extend(values)
-            sources.append(source)
-    return _dedupe(constraints), sources
+    session_id = context.get("session_id", "nq-baseline")
+    db_path = context.get("nine_question_state_db_path")
+    try:
+        q2_internal_output = load_q2_internal(session_id=session_id, db_path=db_path)
+    except Exception:
+        q2_internal_output = {}
+    values = _string_list(_get_field(q2_internal_output, "non_bypassable_internal_constraints"))
+    if not values:
+        values = _string_list(_get_field(q2_internal_output, "non_bypassable_constraints"))
+    sources = ["database.q2_snapshots.internal_asset_inventory"] if values else []
+    return _dedupe(values), sources
 
 
 def _query_system_safety_redlines() -> list[dict[str, Any]]:
