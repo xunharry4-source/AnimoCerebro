@@ -317,15 +317,24 @@ Good instruments and safety equipment are important, but cannot replace the driv
 
 **Q1-Q9 are not formalistic checklists, but real cognitive processes**:
 
-1. **Q1 Where am I?** - Environmental awareness, avoid blind action
-2. **Q2 Who am I?** - Role positioning, ensure behavioral consistency
-3. **Q3 What do I have?** - Resource inventory, make feasible decisions
-4. **Q4 What can I do?** - Capability boundaries, avoid overcommitment
-5. **Q5 What should I do?** - Strategic priorities, focus on high-value tasks
-6. **Q6 What are the risks?** - Risk assessment, prevent potential problems
-7. **Q7 What is the plan?** - Path planning, improve success rate
-8. **Q8 What is the action?** - Specific execution, ensure operability
-9. **Q9 What did I learn?** - Reflective learning, continuous improvement
+**🔄 Note**: The Nine Questions framework has undergone major refactoring (v2.1.0-alpha). The descriptions below reflect the **new architecture** with enhanced modularity and dual planning systems.
+
+1. **Q1 Where am I?** (Environmental Awareness) - Enhanced evidence collection with better validation and sanitization
+2. **Q2 Who am I?** (Role Inference) - Semantic analysis improvements in progress (40% complete)
+3. **Q3 What do I have?** (Runtime Inventory) - **Major Refactoring**: Split into internal/external task modules with dedicated planners, validators, and context builders
+4. **Q4 What can I do?** (Capability Assessment) - Dynamic capability registration with instructor contracts (35% complete)
+5. **Q5 What am I allowed to do?** (Authorization Boundaries) - Boundary projection and constraint analysis enhancements (20% complete)
+6. **Q6 What should I not do?** (Risk Prevention) - Enhanced risk identification with improved output contracts (20% complete)
+7. **Q7 What else can I do?** (Alternative Exploration) - Assessment contracts for alternative evaluation (20% complete)
+8. **Q8 What should I do now?** (Task Planning) - **Major Refactoring**: Dual planning architecture separating internal tasks (core operations) from external tasks (third-party connectors)
+9. **Q9 How should I act?** (Action Execution) - Enhanced action planning with better context awareness and separate execution paths
+
+**Key Architectural Improvements**:
+- ✅ Separated internal/external processing for Q3, Q8, Q9
+- ✅ Instructor contracts for structured outputs across all questions
+- ✅ Enhanced prompt templates and output contracts
+- ✅ Better modularity and reduced redundancy
+- ✅ Improved proactivity and flexibility
 
 **This is not a "safety check", this is a "thinking process"**.
 
