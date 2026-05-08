@@ -20,21 +20,21 @@ Please select your preferred language version to read.
 - 📊 [查看详细进度报告](docs/NINE_QUESTIONS_REFACTORING_PROGRESS.md)
 
 ### Core Philosophy | 核心哲学
-- [四大支柱 / Four Pillars](AGENTS_ZH.md#-核心哲学) | [English](AGENTS_EN.md#-core-philosophy)
+- [四大支柱 / Four Pillars](AGENTS_ZH.md#四大支柱) | [English](AGENTS_EN.md#four-pillars)
 - [九问重构说明 / Nine Questions Refactoring](AGENTS_ZH.md#41-九问框架重构v210-alpha) | [English](AGENTS_EN.md#41-nine-questions-framework-refactoring-v210-alpha)
 
 ### Brain & Tools | 大脑与工具
-- [工具性与大脑的关系 / Instrumentality vs. Brain](AGENTS_ZH.md#-️-工具性与大脑的关系) | [English](AGENTS_EN.md#-️-instrumentality-vs-brain)
+- [工具性与大脑的关系 / Instrumentality vs. Brain](AGENTS_ZH.md#️-工具性与大脑的关系) | [English](AGENTS_EN.md#️-instrumentality-vs-brain)
 
 ### Co-Evolution | 联合进化
-- [AI 与人类的联合升级 / AI-Human Co-Evolution](AGENTS_ZH.md#-ai-与人类的联合升级) | [English](AGENTS_EN.md#-ai-human-co-evolution)
+- [AI 与人类的联合升级 / AI-Human Co-Evolution](AGENTS_ZH.md#ai-与人类的联合升级) | [English](AGENTS_EN.md#ai-human-co-evolution)
 
 ### Important Clarifications | 重要澄清
 - [大脑 vs Agent调度中心 / Brain vs Agent Orchestrator](AGENTS_ZH.md#️-重要澄清大脑-vs-agent调度中心) | [English](AGENTS_EN.md#️-critical-clarification-brain-vs-agent-orchestrator)
-- [为什么需要显式认知循环 / Why Explicit Cognitive Loops](AGENTS_ZH.md#-设计哲学澄清为什么需要显式认知循环) | [English](AGENTS_EN.md#-design-philosophy-why-explicit-cognitive-loops)
+- [为什么需要显式认知循环 / Why Explicit Cognitive Loops](AGENTS_ZH.md#设计哲学澄清为什么需要显式认知循环) | [English](AGENTS_EN.md#design-philosophy-why-explicit-cognitive-loops)
 
 ### Join Us | 邀请参与
-- [一起构建有灵魂的大脑 / Build a Brain with Soul Together](AGENTS_ZH.md#-邀请参与) | [English](AGENTS_EN.md#-join-us)
+- [一起构建有灵魂的大脑 / Build a Brain with Soul Together](AGENTS_ZH.md#邀请参与) | [English](AGENTS_EN.md#join-us)
 
 ### Engineering Standards | 工程标准
 - [核心执行规则 / Core Enforcement Rules](AGENTS_ZH.md#核心执行规则非协商) | [English](AGENTS_EN.md#core-enforcement-rules-non-negotiable)
