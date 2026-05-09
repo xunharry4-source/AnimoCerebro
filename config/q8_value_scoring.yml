@@ -1,0 +1,27 @@
+enabled: true
+scorer_version: "phase-b-rule-v1"
+minimum_overall_score: 0.75
+required_lenses:
+  - accuracy
+  - risk_control
+  - continuity
+dimension_weights:
+  outcome_verification: 0.40
+  evidence_completeness: 0.25
+  risk_control_alignment: 0.20
+  lens_activation: 0.15
+llm_scoring:
+  enabled: true
+  scorer_version: "phase-b-llm-v1"
+  default_provider: "ollama"
+  default_model: "deepseek-r1:14b"
+  sample_count: 3
+  minimum_semantic_score: 0.70
+  minimum_confidence: 0.50
+  require_generation_provider_isolation: true
+manual_review:
+  enabled: true
+  review_version: "phase-b-manual-review-v1"
+  minimum_review_ratio: 0.01
+  minimum_review_count: 1
+  minimum_agreement_rate: 0.75

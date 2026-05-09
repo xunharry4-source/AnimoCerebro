@@ -1,0 +1,5 @@
+{
+  "plugin_id": "task_constraint_checker",
+  "name": "Task Constraint Checker",
+  "description": "Evaluate task execution constraints and return a deterministic allow or block decision."
+}

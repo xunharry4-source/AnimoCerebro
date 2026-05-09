@@ -1,0 +1,5 @@
+{
+  "plugin_id": "nine_question_q9_posture",
+  "name": "Q9 How Should I Act",
+  "description": "Answer the ninth nine-question prompt with a concrete ten-field ActionPlan."
+}

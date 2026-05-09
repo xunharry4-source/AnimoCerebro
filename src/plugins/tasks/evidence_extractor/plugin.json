@@ -1,0 +1,5 @@
+{
+  "plugin_id": "task_evidence_extractor",
+  "name": "Task Evidence Extractor",
+  "description": "Extract structured evidence, summaries, and signals from raw task execution results."
+}

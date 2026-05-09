@@ -1,0 +1,5 @@
+{
+  "plugin_id": "task_verification_rule_based",
+  "name": "Task Rule-Based Verification",
+  "description": "Validate structured task execution results against deterministic rules."
+}

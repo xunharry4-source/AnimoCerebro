@@ -1,0 +1,5 @@
+{
+  "plugin_id": "sensory_injection_sanitizer",
+  "name": "Prompt Injection Sanitizer",
+  "description": "Detect and redact prompt injection patterns."
+}

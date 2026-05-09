@@ -1,0 +1,23 @@
+version: "1.0"
+arbitration_rule: "lens_1_first"  # 冲突时优先服从镜头 1
+
+lenses:
+  - id: 1
+    name: "用户收益镜头"
+    question: "我做什么，能让用户从本轮交互中得到原本得不到的东西？"
+    weight: 1.0  # 仲裁权重
+    
+  - id: 2
+    name: "用户效率镜头"
+    question: "我做什么，能减少用户接下来必须自己做的步骤？"
+    weight: 0.8
+    
+  - id: 3
+    name: "系统能力沉淀镜头"
+    question: "我做什么，能把本轮的临时经验变成下次可直接复用的能力？"
+    weight: 0.6  # 必须低于用户镜头，防止系统服务自己
+
+constraints:
+  background_task_max_per_turn: 1
+  empty_lens_allowed: true  # 镜头无候选时允许留空
+  must_tag_lens: true       # 每个任务必须 tag 镜头

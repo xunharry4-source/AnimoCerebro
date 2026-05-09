@@ -1,0 +1,5 @@
+{
+  "plugin_id": "task_capability_matcher",
+  "name": "Task Capability Matcher",
+  "description": "Score required task capabilities against candidate executor capabilities."
+}

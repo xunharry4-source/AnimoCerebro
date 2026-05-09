@@ -1,0 +1,5 @@
+{
+  "plugin_id": "document_router",
+  "name": "Document Router",
+  "description": "Route documents to appropriate task generation pipeline based on task category."
+}

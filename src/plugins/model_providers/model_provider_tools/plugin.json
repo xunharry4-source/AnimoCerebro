@@ -1,0 +1,5 @@
+{
+  "plugin_id": "model_provider_tools",
+  "name": "Provider Tools Model Adapter",
+  "description": "Exposes configured LLM providers and delegates real requests to the unified LLM gateway."
+}
