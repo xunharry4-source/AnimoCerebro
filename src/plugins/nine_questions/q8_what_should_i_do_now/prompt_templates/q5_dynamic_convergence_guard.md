@@ -1,1 +1,0 @@
-如果 q1_q7_snapshot.q5.objective_scope 为 `single_brain_only`，或 q1_q7_snapshot.q5.collaboration_available 为 false，或 q1_q7_snapshot.q5.authorization_limited 为 true，则 Q8 的 objective_profile 与 task_queue 必须收缩为单脑可完成目标，不得生成跨脑委托、外部 Agent 求助或高权限执行任务。

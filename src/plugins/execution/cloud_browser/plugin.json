@@ -1,5 +1,0 @@
-{
-  "plugin_id": "execution_cloud_browser",
-  "name": "Cloud Browser Executor",
-  "description": "Execute browser/cloud interaction tasks in controlled runtime."
-}

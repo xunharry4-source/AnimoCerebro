@@ -1,5 +1,0 @@
-{
-  "plugin_id": "cognitive_semantic_conflict",
-  "name": "Semantic Conflict Checker",
-  "description": "Detect semantic conflicts in plans and outputs."
-}

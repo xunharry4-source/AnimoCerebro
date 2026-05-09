@@ -1,5 +1,0 @@
-[credential_vault]
-# Local encryption key used to store MCP/CLI API keys in the credential vault.
-# Copy this file to config/security.local.toml and replace the value once.
-# Keep the value stable; changing it can make previously saved credentials unreadable.
-master_key = "changeme-generate-a-stable-random-value"

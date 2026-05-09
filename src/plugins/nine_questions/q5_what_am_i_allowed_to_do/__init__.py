@@ -1,3 +1,0 @@
-from plugins.nine_questions.q5_what_am_i_allowed_to_do.q5_what_am_i_allowed_to_do_plugin import build_q5_what_am_i_allowed_to_do_plugin
-
-__all__ = ["build_q5_what_am_i_allowed_to_do_plugin"]

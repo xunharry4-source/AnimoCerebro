@@ -1,5 +1,0 @@
-{
-  "plugin_id": "memory_extractor",
-  "name": "Memory Extractor",
-  "description": "Extract memory candidates from runtime events."
-}

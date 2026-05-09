@@ -1,5 +1,0 @@
-{
-  "plugin_id": "cognitive_budget_conflict",
-  "name": "Budget Conflict Checker",
-  "description": "Detect budget and resource allocation conflicts."
-}

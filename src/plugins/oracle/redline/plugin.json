@@ -1,5 +1,0 @@
-{
-  "plugin_id": "oracle_redline",
-  "name": "Redline Oracle",
-  "description": "Provide redline and hard-constraint warnings."
-}

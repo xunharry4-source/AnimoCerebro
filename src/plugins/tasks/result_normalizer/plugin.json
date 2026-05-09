@@ -1,5 +1,0 @@
-{
-  "plugin_id": "task_result_normalizer",
-  "name": "Task Result Normalizer",
-  "description": "Normalize heterogeneous task executor outputs into a stable result envelope."
-}

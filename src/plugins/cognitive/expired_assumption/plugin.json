@@ -1,5 +1,0 @@
-{
-  "plugin_id": "cognitive_expired_assumption",
-  "name": "Expired Assumption Cleaner",
-  "description": "Detect and clean stale assumptions."
-}

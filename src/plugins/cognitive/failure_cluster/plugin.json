@@ -1,5 +1,0 @@
-{
-  "plugin_id": "cognitive_failure_cluster",
-  "name": "Failure Cluster Analyzer",
-  "description": "Group and analyze repeated failure modes."
-}

@@ -1,6 +1,0 @@
-nine_questions:
-  execute_all:
-    # When true, non-forced POST /nine-questions/run-all reuses existing
-    # nine-question data unless Q1-Q3 are marked dirty. Full refresh is reserved
-    # for scheduled jobs or explicit force_refresh=true clicks.
-    skip_refresh_when_q1_q3_unchanged: true

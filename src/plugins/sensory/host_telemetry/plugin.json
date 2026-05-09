@@ -1,5 +1,0 @@
-{
-  "plugin_id": "sensory_telemetry",
-  "name": "Host Telemetry",
-  "description": "Collect local host telemetry snapshots."
-}

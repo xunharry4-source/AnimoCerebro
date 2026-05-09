@@ -1,4 +1,0 @@
-[i18n]
-# Default UI/API locale. Supported values: "zh-CN", "en-US".
-language = "zh-CN"
-supported_languages = ["zh-CN", "en-US"]
