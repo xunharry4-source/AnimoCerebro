@@ -343,9 +343,9 @@ export const AgentAssetManager: React.FC = () => {
             <Button
               variant="outlined"
               startIcon={<LogsIcon />}
-              onClick={() => navigate('/console/module-logs/agents')}
+              onClick={() => navigate('/console/agents/function-logs')}
             >
-              {t("moduleLogs.view")}
+              功能运行日志
             </Button>
             <Button
               variant="contained"
@@ -494,6 +494,16 @@ export const AgentAssetManager: React.FC = () => {
                     {t('agents.inbox')}: {agent.inbox.length} | {t('agents.receipts')}: {agent.receipts.length}
                   </Typography>
                   <Stack direction="row" spacing={1} sx={{ mt: 1 }} useFlexGap flexWrap="wrap">
+                    <Button
+                      size="small"
+                      startIcon={<LogsIcon />}
+                      onClick={(event) => {
+                        event.stopPropagation();
+                        navigate(`/console/agents/function-logs?function_prefix=${encodeURIComponent(agent.agent_id)}`);
+                      }}
+                    >
+                      查看日志
+                    </Button>
                     <Button
                       size="small"
                       startIcon={<PowerSettingsNewIcon />}

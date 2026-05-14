@@ -45,7 +45,7 @@ class CliIntegrationService:
         self._transcript_store = transcript_store
         self._task_service = task_service
         self._documentation_learning_service = documentation_learning_service or ToolDocumentationLearningService(
-            llm_service=llm_service,
+            llm_service=llm_service
         )
         self._usage_profiles: Dict[str, Any] = {}
         self._registry_path = Path(registry_path) if registry_path is not None else get_storage_paths().runtime_data_dir / "cli_tools.json"
@@ -57,24 +57,6 @@ class CliIntegrationService:
 
     def list_tools(self) -> List[CliToolRuntimeState]:
         return self._adapter.list_tool_states()
-
-    def get_cli_tool_statistics(self) -> Dict[str, Any]:
-        tools = self.list_tools()
-        status_counts: Dict[str, int] = {}
-        for tool in tools:
-            status_counts[tool.status] = status_counts.get(tool.status, 0) + 1
-        return {
-            "asset_type": "cli",
-            "total_tools": len(tools),
-            "active_tools": status_counts.get("active", 0),
-            "degraded_tools": status_counts.get("degraded", 0),
-            "stopped_tools": status_counts.get("stopped", 0),
-            "revoked_tools": status_counts.get("revoked", 0),
-            "read_only_tools": sum(1 for tool in tools if tool.read_only),
-            "mutating_tools": sum(1 for tool in tools if tool.mutates_state or not tool.read_only),
-            "learned_profiles": len(self._usage_profiles),
-            "status_counts": status_counts,
-        }
 
     def register_tool(self, config: CliToolRegistrationConfig) -> ServiceResponse:
         try:
@@ -146,14 +128,12 @@ class CliIntegrationService:
         *,
         config: CliToolRegistrationConfig,
         state: CliToolRuntimeState,
-        documentation_learning_service: Optional[ToolDocumentationLearningService] = None,
     ) -> None:
         if not config.documentation_learning_required:
             return
-        learning_service = documentation_learning_service or self._documentation_learning_service
         try:
-            doc_input = learning_service.collect_cli_input(config)
-            profile = learning_service.learn_cli_usage_profile(doc_input)
+            doc_input = self._documentation_learning_service.collect_cli_input(config)
+            profile = self._documentation_learning_service.learn_cli_usage_profile(doc_input)
         except Exception as exc:
             if state.mutates_state or not state.read_only:
                 self._adapter.delete_tool(config.tool_name)
@@ -405,11 +385,6 @@ class CliIntegrationService:
                 continue
             try:
                 state = self._adapter.register_tool(config)
-                self._learn_usage_profile_after_registration(
-                    config=config,
-                    state=state,
-                    documentation_learning_service=ToolDocumentationLearningService(allow_heuristic_fallback=True),
-                )
                 if not db_rows:
                     self._registry_store.upsert_current(
                         "cli",

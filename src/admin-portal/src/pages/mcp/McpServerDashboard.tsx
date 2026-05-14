@@ -426,10 +426,22 @@ export default function McpServerDashboard() {
     {
       field: "actions",
       headerName: copy.actions,
-      minWidth: 260,
+      minWidth: 360,
       sortable: false,
       renderCell: (params) => (
         <Stack direction="row" spacing={1}>
+          <Button
+            size="small"
+            startIcon={<ArticleIcon />}
+            onClick={(event) => {
+              event.stopPropagation();
+              navigate(
+                `/console/mcp-servers/function-logs?function_prefix=${encodeURIComponent((params.row as McpServerItem).server_id)}`,
+              );
+            }}
+          >
+            查看日志
+          </Button>
           <Button size="small" startIcon={<PowerSettingsNewIcon />} onClick={(event) => {
             event.stopPropagation();
             void updateServerActivation(params.row as McpServerItem, "activate");
@@ -478,11 +490,11 @@ export default function McpServerDashboard() {
         <Stack direction="row" spacing={1}>
           <Button
             component={RouterLink}
-            to="/console/module-logs/mcp-servers"
+            to="/console/mcp-servers/function-logs"
             variant="outlined"
             startIcon={<ArticleIcon />}
           >
-            {t("moduleLogs.view")}
+            功能运行日志
           </Button>
           <Button
             variant="contained"

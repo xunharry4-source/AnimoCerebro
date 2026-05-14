@@ -40,6 +40,7 @@ from zentex.external_connectors.models import (
 )
 from zentex.common.storage_paths import get_storage_paths
 from zentex.external_capabilities import ExternalCapabilityRegistryStore
+from zentex.module_logs import get_module_log_service, record_module_log
 
 logger = logging.getLogger(__name__)
 
@@ -135,6 +136,7 @@ class ExternalConnectorService:
         self._transcript_store = transcript_store
         self._registry_path = Path(registry_path) if registry_path is not None else get_storage_paths().runtime_data_dir / "external_connectors.json"
         self._registry_store = registry_store or ExternalCapabilityRegistryStore()
+        self._module_log_service = get_module_log_service()
         self._restore_connectors()
         logger.info(
             "[external-connectors] service initialized connectors=%d registry_path=%s elapsed=%.3fs",
@@ -145,6 +147,9 @@ class ExternalConnectorService:
 
     def attach_transcript_store(self, transcript_store: Any) -> None:
         self._transcript_store = transcript_store
+
+    def attach_module_log_service(self, module_log_service: Any) -> None:
+        self._module_log_service = module_log_service
 
     def register_connector(self, payload: ConnectorRegistrationRequest) -> ExternalConnectorRecord:
         if payload.connector_id in self._connectors:
@@ -246,8 +251,9 @@ class ExternalConnectorService:
 
     def list_connectors(self) -> list[ExternalConnectorRecord]:
         started = time.monotonic()
+        self._refresh_connectors_from_registry_store()
         records = sorted(self._connectors.values(), key=lambda item: item.created_at)
-        logger.info(
+        logger.debug(
             "[external-connectors] list_connectors count=%d elapsed=%.3fs",
             len(records),
             time.monotonic() - started,
@@ -286,6 +292,7 @@ class ExternalConnectorService:
         }
 
     def get_connector(self, connector_id: str) -> ExternalConnectorRecord:
+        self._refresh_connectors_from_registry_store()
         try:
             return self._connectors[connector_id]
         except KeyError as exc:
@@ -414,6 +421,24 @@ class ExternalConnectorService:
             len(self._connectors),
             time.monotonic() - started,
         )
+
+    def _refresh_connectors_from_registry_store(self) -> None:
+        db_rows = self._registry_store.list_current("external_connector")
+        if not db_rows:
+            if self._connectors:
+                self._connectors = {}
+                self._history = {}
+            return
+        refreshed: dict[str, ExternalConnectorRecord] = {}
+        for row in db_rows:
+            record = ExternalConnectorRecord.model_validate(row["payload"])
+            refreshed[record.connector_id] = record
+        self._connectors = refreshed
+        for connector_id in refreshed:
+            self._history.setdefault(connector_id, [])
+        for connector_id in list(self._history.keys()):
+            if connector_id not in refreshed:
+                self._history.pop(connector_id, None)
 
     def _persist_connectors(self) -> None:
         self._registry_path.parent.mkdir(parents=True, exist_ok=True)
@@ -572,10 +597,10 @@ class ExternalConnectorService:
             and capability.risk_level != ConnectorRiskLevel.READ_ONLY
             and profile_level in {ConnectorProfileLevel.VERIFIABLE, ConnectorProfileLevel.GOVERNED}
         )
-        if not requires_verified_evidence:
-            return "not_required"
         if result.get("evidence_refs") and result.get("after_evidence"):
             return "present"
+        if not requires_verified_evidence:
+            return "not_required"
         raise ConnectorError(
             error_code="CONNECTOR_EVIDENCE_REQUIRED",
             error_stage="post_validation",
@@ -1013,6 +1038,36 @@ class ExternalConnectorService:
             error_message=invocation.operator_message,
             trace_id=invocation.trace_id,
             started_at=invocation.created_at.isoformat(),
+        )
+        record_module_log(
+            self._module_log_service,
+            source_module="connector",
+            module_label="外部连接器",
+            action="runtime_invocation",
+            action_label="能力调用成功" if invocation.status == "success" else "能力调用失败",
+            object_id=invocation.connector_id,
+            object_label=invocation.connector_id,
+            before_status=None,
+            after_status=invocation.status,
+            reason="外部连接器运行时能力调用已记录，供模块日志页查询",
+            details={
+                "invocation_id": invocation.invocation_id,
+                "trace_id": invocation.trace_id,
+                "target_app": invocation.target_app,
+                "capability": invocation.capability,
+                "profile_level": invocation.profile_level.value,
+                "risk_level": invocation.risk_level.value,
+                "verification_mode": invocation.verification_mode.value,
+                "evidence_validation_status": invocation.evidence_validation_status,
+                "evidence_refs": invocation.evidence_refs,
+                "error_code": invocation.error_code,
+                "error_stage": invocation.error_stage,
+                "operator_message": invocation.operator_message,
+                "recovery_hint": invocation.recovery_hint,
+            },
+            operator_id="task-worker",
+            status=invocation.status,
+            source="zentex.external_connectors.service",
         )
         transcript_store = self._transcript_store
         if transcript_store is None or not callable(getattr(transcript_store, "write_entry", None)):

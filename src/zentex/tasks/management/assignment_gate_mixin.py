@@ -33,6 +33,14 @@ class TaskServiceAssignmentGateMixin:
         return q9_executor_for_capability(capability, plan_type)
 
     @staticmethod
+    def _q9_effective_step_capability(
+        step_record: Dict[str, Any],
+        fallback_capability: str,
+        plan_type: str = "external",
+    ) -> str:
+        return q9_effective_step_capability(step_record, fallback_capability, plan_type)
+
+    @staticmethod
     def _q9_executor_runtime_metadata(
         *,
         executor_type: str,

@@ -3,6 +3,40 @@ from __future__ import annotations
 from typing import Any, Dict, List
 
 from zentex.tasks.models import TaskContract, TaskStatus, TaskType
+from zentex.tasks.verification.models import VerificationConfig, VerificationStrategy, VerificationType, VerifierConfig
+
+
+def _q9_subtask_verification_config(*, plan_type: str, executor_type: str) -> dict[str, Any]:
+    rules = [
+        {"type": "required_field", "field": "actual_outcome.status"},
+        {"type": "required_field", "field": "external_execution.executor_type"},
+        {"type": "required_field", "field": "evidence.evidence_ref"},
+    ]
+    if plan_type == "external" and executor_type == "external_connector":
+        rules.extend(
+            [
+                {"type": "enum_value", "field": "actual_outcome.status", "allowed_values": ["success"]},
+                {"type": "required_field", "field": "actual_outcome.output_summary"},
+                {"type": "required_field", "field": "actual_outcome.evidence_refs"},
+            ]
+        )
+    return VerificationConfig(
+        enabled=True,
+        strategy=VerificationStrategy.ALL_MUST_PASS,
+        verifiers=[
+            VerifierConfig(
+                verifier_id="q9_subtask_external_execution_evidence",
+                verifier_type=VerificationType.RULE_BASED,
+                required=True,
+                retry_on_failure=False,
+                max_retries=0,
+                config={"rules": rules},
+            )
+        ],
+        auto_trigger=True,
+        fallback_action="fail",
+        max_total_retries=0,
+    ).model_dump(mode="json")
 
 
 def build_q9_child_payload(
@@ -22,6 +56,12 @@ def build_q9_child_payload(
     designated_executor: str,
 ) -> Dict[str, Any]:
     line = step_record["line"]
+    q9_verification_hint = str(step_record.get("q9_verification_hint") or step_record.get("verification_method") or "").strip()
+    internal_verification_contract = (
+        "g31a_executor_bound_subtask_contract: require objective physical evidence "
+        "including read-after-write/readback, exit_code, stdout/stderr, hash, mtime, "
+        "or persisted audit record query."
+    )
     return {
         "idempotency_key": f"sub-{q9_task.task_id}-q9-{plan_type}-{index}",
         "title": str(step_record["title"])[:160],
@@ -50,6 +90,8 @@ def build_q9_child_payload(
             "q9_blueprint_parent_task_id": q9_task.task_id,
             "q9_blueprint_step_index": index,
             "q9_blueprint_step": line,
+            "q9_verification_hint": q9_verification_hint,
+            "internal_verification_contract": internal_verification_contract,
             "objective": step_record["objective"],
             "acceptance_criteria": step_record["acceptance_criteria"],
             "required_resources": step_record["required_resources"],
@@ -87,9 +129,9 @@ def build_q9_child_payload(
             },
             "q9_designated_executor": designated_executor,
             "subtask_registered_by": "G31A.SubtaskRegistry",
-            "q9_executor_designation_source": "ActionPlan.required_resources",
+            "q9_executor_designation_source": "ActionPlan.required_resources" if designated_executor else "capability_registry_match",
             "q9_plugin_binding_source": "pending_g31a_validation",
-            "q9_execution_parameters_source": "forbidden",
+            "q9_execution_parameters_source": runtime_metadata.get("q9_execution_parameters_source") or "forbidden",
         },
         "contract": TaskContract(
             expected_outcome={
@@ -107,11 +149,8 @@ def build_q9_child_payload(
                 "required_capabilities are present or a query-visible G9 resource-gap negotiation is persisted.",
                 "task outcome evidence contains objective physical proof such as read-after-write, exit_code, stdout/stderr, hash, mtime, or audit record readback.",
             ],
-            verification_method=(
-                "g31a_executor_bound_subtask_contract: require objective physical evidence "
-                "including read-after-write/readback, exit_code, stdout/stderr, hash, mtime, "
-                "or persisted audit record query."
-            ),
+            verification_method=q9_verification_hint,
+            verification=_q9_subtask_verification_config(plan_type=plan_type, executor_type=executor_type),
         ),
     }
 

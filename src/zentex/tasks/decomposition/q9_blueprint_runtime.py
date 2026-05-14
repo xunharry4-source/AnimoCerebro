@@ -11,6 +11,74 @@ _EXTERNAL_Q9_MODULE_OWNER_ALIASES: Dict[str, tuple[str, str]] = {
 }
 
 
+def q9_g31a_verification_method(plan_type: str) -> str:
+    lane = "external" if plan_type == "external" else "internal"
+    return (
+        f"G31A task-center {lane} subtask verification: execute through the assigned real executor, "
+        "then read back child task status=done, task_outcome.overall_passed=true, non-empty actual_outcome, "
+        "and objective executor evidence such as read-after-write/readback, exit_code, stdout/stderr, hash, "
+        "mtime, or persisted audit/query records."
+    )
+
+
+def q9_g31a_acceptance_criteria(plan_type: str) -> List[str]:
+    lane = "external" if plan_type == "external" else "internal"
+    return [
+        f"G31A must read back the {lane} child task and confirm status=done.",
+        "G31A must read back task_outcome and confirm overall_passed=true with non-empty actual_outcome.",
+        "G31A must verify objective executor evidence, not planner self-analysis or success text.",
+    ]
+
+
+def _internal_owner_capability(value: str) -> str:
+    text = str(value or "").strip()
+    if text.lower().startswith("internal:"):
+        return text.split(":", 1)[1].strip()
+    return text
+
+
+def _is_owner_ref(value: str) -> bool:
+    return str(value or "").strip().startswith(("internal:", "cli:", "mcp:", "agent:", "external_connector:", "connector:"))
+
+
+def _strip_resource_prefix(value: Any) -> str:
+    text = str(value or "").strip()
+    for prefix in (
+        "功能：",
+        "功能:",
+        "任务资源：",
+        "任务资源:",
+        "能力需求：",
+        "能力需求:",
+        "Functional plugin:",
+        "功能插件：",
+        "Cognitive plugin:",
+        "认知插件：",
+        "归属器官：",
+        "归属器官:",
+        "执行方钦定：",
+        "执行方钦定:",
+    ):
+        if text.startswith(prefix):
+            return text[len(prefix):].strip()
+    return text
+
+
+def q9_effective_step_capability(step_record: Dict[str, Any], fallback_capability: str, plan_type: str = "external") -> str:
+    """Choose an explicitly declared capability without guessing from task prose."""
+    if plan_type != "external":
+        return fallback_capability
+
+    for raw in [
+        fallback_capability,
+        *[str(item) for item in step_record.get("required_resources") or []],
+    ]:
+        text = _strip_resource_prefix(raw)
+        if text and not _is_owner_ref(text):
+            return text
+    return fallback_capability
+
+
 def q9_blueprint_lines(blueprint: Dict[str, Any], plan_type: str) -> List[str]:
     return [record["line"] for record in q9_blueprint_step_records(blueprint, plan_type)]
 
@@ -50,7 +118,7 @@ def q9_blueprint_step_records(blueprint: Dict[str, Any], plan_type: str) -> List
         if isinstance(item, dict):
             step_description = str(item.get("step_description") or "").strip()
             step_objective = str(item.get("step_objective") or "").strip()
-            verification_method = str(item.get("verification_method") or "").strip()
+            q9_verification_hint = str(item.get("verification_method") or "").strip()
             modules = item.get("involved_modules")
             involved_modules = [
                 str(module or "").strip()
@@ -63,20 +131,21 @@ def q9_blueprint_step_records(blueprint: Dict[str, Any], plan_type: str) -> List
                 for part in (
                     f"步骤说明：{step_description}",
                     f"步骤目标：{step_objective}",
-                    f"验证方式：{verification_method}",
+                    f"Q9检查提示：{q9_verification_hint}",
                     f"涉及模块：{modules_text}" if modules_text else "",
                 )
                 if part and not part.endswith("：")
             )
             title = step_description or text
             objective = step_objective or text
-            acceptance_criteria = [verification_method] if verification_method else []
+            acceptance_criteria = q9_g31a_acceptance_criteria(plan_type)
             required_resources = involved_modules
         else:
             text = str(item or "").strip()
             title = text
             objective = text
-            acceptance_criteria = []
+            q9_verification_hint = ""
+            acceptance_criteria = q9_g31a_acceptance_criteria(plan_type)
             required_resources = []
         if text:
             records.append(
@@ -85,6 +154,8 @@ def q9_blueprint_step_records(blueprint: Dict[str, Any], plan_type: str) -> List
                     "title": title,
                     "objective": objective,
                     "acceptance_criteria": acceptance_criteria,
+                    "verification_method": q9_g31a_verification_method(plan_type),
+                    "q9_verification_hint": q9_verification_hint,
                     "required_resources": required_resources,
                 }
             )
@@ -101,25 +172,11 @@ def q9_blueprint_capabilities(blueprint: Dict[str, Any], plan_type: str) -> List
         text = str(item or "").strip()
         if not text:
             continue
-        for prefix in (
-            "功能：",
-            "功能:",
-            "任务资源：",
-            "任务资源:",
-            "能力需求：",
-            "能力需求:",
-            "Functional plugin:",
-            "功能插件：",
-            "Cognitive plugin:",
-            "认知插件：",
-            "归属器官：",
-            "归属器官:",
-        ):
-            if text.startswith(prefix):
-                text = text[len(prefix):].strip()
-                break
+        text = _strip_resource_prefix(text)
         if str(item or "").strip().startswith(("执行方钦定：", "执行方钦定:")):
             continue
+        if plan_type == "internal":
+            text = _internal_owner_capability(text)
         if text:
             capabilities.append(text)
     return list(dict.fromkeys(capabilities))
@@ -127,7 +184,7 @@ def q9_blueprint_capabilities(blueprint: Dict[str, Any], plan_type: str) -> List
 
 def q9_blueprint_designated_executors(blueprint: Dict[str, Any]) -> List[str]:
     execution_target = str(blueprint.get("execution_target") or "").strip()
-    if execution_target.startswith(("cli:", "mcp:", "agent:", "external_connector:", "connector:")):
+    if execution_target.startswith(("internal:", "cli:", "mcp:", "agent:", "external_connector:", "connector:")):
         return [execution_target]
     value = blueprint.get("required_resources")
     if not isinstance(value, list):
@@ -141,16 +198,21 @@ def q9_blueprint_designated_executors(blueprint: Dict[str, Any]) -> List[str]:
                 if executor:
                     executors.append(executor)
                 break
+        if text.startswith(("internal:", "cli:", "mcp:", "agent:", "external_connector:", "connector:")):
+            executors.append(text)
     return list(dict.fromkeys(executors))
 
 
 def q9_executor_for_designation(designation: str, plan_type: str, capability: str = "") -> Dict[str, Any]:
     normalized = str(designation or "").strip()
     lowered = normalized.lower()
+    capability = _internal_owner_capability(capability) if plan_type == "internal" else str(capability or "").strip()
     if not normalized:
         return q9_executor_for_capability(capability, plan_type)
     if plan_type == "internal":
-        if "thoughtsandbox" in lowered or lowered.startswith("b4") or "sandbox" in lowered or "沙盒" in lowered:
+        if lowered.startswith("internal:"):
+            target_id = normalized
+        elif "thoughtsandbox" in lowered or lowered.startswith("b4") or "sandbox" in lowered or "沙盒" in lowered:
             target_id = "internal:thought_sandbox"
         elif "memory" in lowered or "记忆" in lowered:
             target_id = "internal:memory_engine"
@@ -196,8 +258,19 @@ def q9_executor_for_designation(designation: str, plan_type: str, capability: st
 def q9_executor_for_capability(capability: str, plan_type: str) -> Dict[str, Any]:
     normalized = str(capability or "").strip()
     lowered = normalized.lower()
+    if lowered == "execution_local_system" or "local_system" in lowered or "本地系统" in lowered:
+        return {
+            "task_scope": TaskScope.INTERNAL,
+            "target_id": "internal:execution_local_system",
+            "executor_type": "internal",
+            "required_capabilities": ["execution_local_system"],
+        }
     if plan_type == "internal":
-        if "semantic" in lowered or "cluster" in lowered or "聚类" in lowered:
+        if lowered.startswith("internal:"):
+            target_id = normalized
+            normalized = _internal_owner_capability(normalized)
+            lowered = normalized.lower()
+        elif "semantic" in lowered or "cluster" in lowered or "聚类" in lowered:
             target_id = "internal:semantic_clusterer"
         elif "sandbox" in lowered or "thought" in lowered or "b4" in lowered or "沙盒" in lowered:
             target_id = "internal:thought_sandbox"
@@ -236,7 +309,7 @@ def q9_executor_for_capability(capability: str, plan_type: str) -> Dict[str, Any
         executor_type = "external_connector"
     else:
         target_id = ""
-        executor_type = ""
+        executor_type = "external_connector"
     return {
         "task_scope": TaskScope.EXTERNAL,
         "target_id": target_id,
@@ -271,8 +344,14 @@ def q9_executor_runtime_metadata(
     elif executor_type == "external_connector":
         connector_id = target_id.removeprefix("external_connector:") if target_id.startswith("external_connector:") else target_id
         metadata["external_connector_id"] = connector_id
-        if required_capabilities:
-            metadata["external_connector_capability"] = required_capabilities[0]
+        connector_owner_ref = f"external_connector:{connector_id}"
+        explicit_capabilities = [
+            item
+            for item in required_capabilities
+            if item and item != connector_owner_ref and not str(item).startswith("external_connector:")
+        ]
+        if explicit_capabilities:
+            metadata["external_connector_capability"] = explicit_capabilities[0]
     elif executor_type == "agent":
         metadata["agent_id"] = target_id.removeprefix("agent:") if target_id.startswith("agent:") else target_id
     return metadata
@@ -280,6 +359,9 @@ def q9_executor_runtime_metadata(
 
 __all__ = [
     "q9_blueprint_lines",
+    "q9_g31a_verification_method",
+    "q9_g31a_acceptance_criteria",
+    "q9_effective_step_capability",
     "dependency_graph_is_dag",
     "q9_blueprint_step_records",
     "q9_blueprint_capabilities",

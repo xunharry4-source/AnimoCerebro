@@ -38,6 +38,7 @@ import {
   canRetryTask,
   formatBlockedReason,
   formatExecutionParty,
+  formatTaskExceptionReason,
   formatTaskVerificationMethod,
   formatTaskDateTime,
   taskEndTime,
@@ -56,6 +57,7 @@ interface TaskDetailData {
     completed_subtasks: number;
     in_progress_subtasks: number;
     pending_subtasks: number;
+    suspended_subtasks?: number;
     failed_subtasks: number;
   };
 }
@@ -126,23 +128,6 @@ const formatSubtaskObjective = (subtask: ZentexTask): string => {
     metadata.intent_objective,
     expectedOutcome.objective,
     subtask.remarks,
-  );
-};
-
-const formatSubtaskExceptionReason = (subtask: ZentexTask): string => {
-  const metadata = subtask.metadata || {};
-  const dispatchFailure = isRecord(metadata.dispatch_failure) ? metadata.dispatch_failure : {};
-  const timeoutRecovery = isRecord(metadata.timeout_recovery) ? metadata.timeout_recovery : {};
-  return firstReadableValue(
-    subtask.last_error,
-    dispatchFailure.message,
-    dispatchFailure.reason,
-    timeoutRecovery.message,
-    timeoutRecovery.recovery_error,
-    metadata.blocked_reason,
-    metadata.block_reason,
-    metadata.error_reason,
-    metadata.failure_reason,
   );
 };
 
@@ -452,7 +437,7 @@ const TaskDetailPage: React.FC = () => {
                     </Typography>
                   ) : null}
                 </Box>
-                {task.status === 'blocked' ? (
+                {['blocked', 'suspended', 'failed'].includes(task.status) ? (
                   <Box>
                     <Typography variant="subtitle2" color="text.secondary">{t('tasks.blockedReason')}</Typography>
                     <Typography variant="body1" sx={{ whiteSpace: 'pre-wrap', wordBreak: 'break-word' }}>
@@ -494,6 +479,7 @@ const TaskDetailPage: React.FC = () => {
               <Chip label={`${t('tasks.completed')}: ${statistics.completed_subtasks}`} color="success" size="small" />
               <Chip label={`${t('tasks.inProgress')}: ${statistics.in_progress_subtasks}`} color="primary" size="small" />
               <Chip label={`${t('tasks.pending')}: ${statistics.pending_subtasks}`} color="warning" size="small" />
+              <Chip label={`${t('tasks.statuses.suspended')}: ${statistics.suspended_subtasks || 0}`} color="info" size="small" />
               <Chip label={`${t('tasks.failed')}: ${statistics.failed_subtasks}`} color="error" size="small" />
             </Box>
 
@@ -567,7 +553,7 @@ const TaskDetailPage: React.FC = () => {
                           <StatusChip status={subtask.status} />
                         </TableCell>
                         <TableCell sx={{ whiteSpace: 'pre-wrap', wordBreak: 'break-word' }}>
-                          {formatSubtaskExceptionReason(subtask)}
+                          {formatTaskExceptionReason(subtask, t)}
                         </TableCell>
                       </TableRow>
                     ))}

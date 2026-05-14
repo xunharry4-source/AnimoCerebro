@@ -53,6 +53,7 @@ const TaskDetailPage = lazy(() => import("./pages/tasks/TaskDetailPage"));
 const TaskLogsPage = lazy(() => import("./pages/tasks/TaskLogsPage"));
 const TaskWorkflowPage = lazy(() => import("./pages/tasks/TaskWorkflowPage"));
 const ModuleLogsPage = lazy(() => import("./pages/module-logs/ModuleLogsPage"));
+const FunctionRuntimeLogsPage = lazy(() => import("./pages/function-logs/FunctionRuntimeLogsPage"));
 const PluginManagement = lazy(() => import("./pages/plugins/PluginManagement"));
 const CognitivePluginDetailPage = lazy(() => import("./pages/plugins/CognitivePluginDetailPage"));
 const FunctionalPluginDetailPage = lazy(() => import("./pages/plugins/FunctionalPluginDetailPage"));
@@ -78,6 +79,12 @@ const NAV_ITEMS = (t: any) => [
     matchPrefix: "/console/dashboard",
     title: t("app.nav.dashboard.title"),
     subtitle: t("app.nav.dashboard.subtitle"),
+  },
+  {
+    path: "/console/core/function-logs",
+    matchPrefix: "/console/core",
+    title: "核心",
+    subtitle: "核心功能运行日志",
   },
   {
     path: "/console/nine-questions",
@@ -254,6 +261,8 @@ export default function App() {
           >
           <Routes>
           <Route path="/" element={<Navigate to="/console/dashboard" replace />} />
+          <Route path="/console/core" element={<Navigate to="/console/core/function-logs" replace />} />
+          <Route path="/console/core/function-logs" element={<FunctionRuntimeLogsPage />} />
           <Route path="/console/dashboard" element={<RealtimeDashboard />} />
           <Route path="/console/nine-questions" element={<NineQuestionsReport />} />
           
@@ -292,6 +301,7 @@ export default function App() {
           <Route path="/console/nine-questions/:q_id" element={<NineQuestionDetailPage />} />
           <Route path="/console/nine-questions/:q_id/sandbox" element={<NineQuestionSandboxPage />} />
           <Route path="/console/agents" element={<AgentAssetManager />} />
+          <Route path="/console/agents/function-logs" element={<FunctionRuntimeLogsPage />} />
           <Route path="/console/module-logs" element={<ModuleLogsPage />} />
           <Route path="/console/module-logs/:moduleId" element={<ModuleLogsPage />} />
           <Route path="/console/agents/:agentId" element={<AgentDetail />} />
@@ -303,15 +313,19 @@ export default function App() {
           <Route path="/console/memory" element={<MemoryReasoning />} />
           <Route path="/console/simulation" element={<SimulationExplorer />} />
           <Route path="/console/plugins" element={<PluginManagement />} />
+          <Route path="/console/plugins/function-logs" element={<FunctionRuntimeLogsPage />} />
           <Route path="/console/plugins/cognitive/:pluginId" element={<CognitivePluginDetailPage />} />
           <Route path="/console/plugins/functional/:pluginId" element={<FunctionalPluginDetailPage />} />
           <Route path="/console/upgrades" element={<UpgradeManagement />} />
           <Route path="/console/upgrades/:record_id" element={<UpgradeDetailPage />} />
           <Route path="/console/cli-tools" element={<CliAssetManager />} />
+          <Route path="/console/cli-tools/function-logs" element={<FunctionRuntimeLogsPage />} />
           <Route path="/console/cli-tools/:toolName" element={<CliToolDetailPage />} />
           <Route path="/console/mcp-servers" element={<McpServerDashboard />} />
+          <Route path="/console/mcp-servers/function-logs" element={<FunctionRuntimeLogsPage />} />
           <Route path="/console/mcp-servers/:server_id" element={<McpServerDetail />} />
           <Route path="/console/external-connectors" element={<ExternalConnectorCenter />} />
+          <Route path="/console/external-connectors/function-logs" element={<FunctionRuntimeLogsPage />} />
           <Route path="/console/audit" element={<AuditTraceCenterPage />} />
           <Route path="/console/audit/model-provider" element={<AuditReplay />} />
           <Route path="/console/audit/review-ledger" element={<AuditReviewLedgerPage />} />

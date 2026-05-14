@@ -945,7 +945,7 @@ def _q9_state_db_path(request: Request) -> Any:
 
 def _q9_session_candidates(session_id: str) -> list[str]:
     candidates: list[str] = []
-    for candidate in ("nq-baseline", session_id, "zentex-default-session"):
+    for candidate in (session_id, "zentex-default-session", "nq-baseline"):
         text = str(candidate or "").strip()
         if text and text not in candidates:
             candidates.append(text)

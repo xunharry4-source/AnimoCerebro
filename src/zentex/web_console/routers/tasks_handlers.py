@@ -146,6 +146,24 @@ def _serialize_task_log_row(row: Dict[str, Any]) -> Dict[str, Any]:
     return payload
 
 
+def _task_detail_payload(task: ZentexTask, service: TaskManagementService) -> Dict[str, Any]:
+    payload = task.model_dump(mode="json")
+    suspended = service.get_suspended_task(task.task_id)
+    if suspended is None:
+        return payload
+
+    suspension_payload = suspended.model_dump(mode="json")
+    metadata = payload.get("metadata") if isinstance(payload.get("metadata"), dict) else {}
+    metadata = dict(metadata)
+    metadata["suspension"] = suspension_payload
+    metadata["suspension_reason"] = suspended.suspension_reason
+    metadata["recovery_conditions"] = list(suspended.recovery_conditions or [])
+    metadata["suspension_context"] = dict(suspended.suspension_context or {})
+    payload["metadata"] = metadata
+    payload["suspension"] = suspension_payload
+    return payload
+
+
 def handle_list_task_logs(
     service: TaskManagementService,
     *,
@@ -212,7 +230,7 @@ def handle_get_task_detail(
     for subtask_id in task.subtask_ids:
         subtask = service.get_task(subtask_id)
         if subtask:
-            subtasks.append(subtask.model_dump(mode="json"))
+            subtasks.append(_task_detail_payload(subtask, service))
     
     dependencies = []
     for dep_id in task.depends_on:
@@ -237,7 +255,7 @@ def handle_get_task_detail(
     ]
     
     return {
-        "task": task.model_dump(mode="json"),
+        "task": _task_detail_payload(task, service),
         "subtasks": subtasks,
         "subtask_count": len(subtasks),
         "dependencies": dependencies,
@@ -248,6 +266,7 @@ def handle_get_task_detail(
             "completed_subtasks": sum(1 for st in subtasks if st["status"] == "done"),
             "in_progress_subtasks": sum(1 for st in subtasks if st["status"] == "in_progress"),
             "pending_subtasks": sum(1 for st in subtasks if st["status"] in ["todo", "blocked"]),
+            "suspended_subtasks": sum(1 for st in subtasks if st["status"] == "suspended"),
             "failed_subtasks": sum(1 for st in subtasks if st["status"] == "failed")
         }
     }
@@ -288,7 +307,7 @@ def handle_get_subtasks(
     
     return {
         "parent_task_id": task_id,
-        "subtasks": [st.model_dump(mode="json") for st in subtasks],
+        "subtasks": [_task_detail_payload(st, service) for st in subtasks],
         "statistics": stats
     }
 
@@ -306,7 +325,7 @@ def handle_get_execution_history(
     for subtask_id in task.subtask_ids:
         subtask = service.get_task(subtask_id)
         if subtask:
-            subtasks.append(subtask.model_dump(mode="json"))
+            subtasks.append(_task_detail_payload(subtask, service))
     
     interventions = [
         receipt for receipt in service._intervention_receipts.values()
@@ -314,7 +333,7 @@ def handle_get_execution_history(
     ]
     
     return {
-        "task": task.model_dump(mode="json"),
+        "task": _task_detail_payload(task, service),
         "subtasks": subtasks,
         "interventions": interventions,
         "audit_trail": {

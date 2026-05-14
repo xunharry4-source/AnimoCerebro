@@ -19,10 +19,21 @@ from zentex.common.nine_questions_shared import (
     finish_module_run,
     start_module_run,
 )
+from zentex.common.observable_logging import observable_event
 from zentex.common.plugin_ids import NINE_QUESTION_Q9
 from zentex.plugins.models import PluginLifecycleStatus
 
 logger = logging.getLogger(__name__)
+
+
+def _q9_log(event: str, **fields: Any) -> None:
+    observable_event(
+        logger,
+        event,
+        component="nine_questions.q9.orchestrator",
+        question_id="q9",
+        **fields,
+    )
 
 
 class Q9HowShouldIActPlugin(BaseModel):
@@ -39,6 +50,13 @@ class Q9HowShouldIActPlugin(BaseModel):
 
     def run_internal_action_design(self, context: dict[str, Any]) -> CognitiveToolResult:
         started = perf_counter()
+        _q9_log(
+            "q9_internal_action_design_start",
+            session_id=str(context.get("session_id") or "unknown-session"),
+            turn_id=str(context.get("turn_id") or "unknown-turn"),
+            trace_id=str(context.get("trace_id") or ""),
+            scope="internal",
+        )
         module_runs = bind_module_runs(context, "q9")
         internal_run = start_module_run(
             module_runs,
@@ -50,7 +68,24 @@ class Q9HowShouldIActPlugin(BaseModel):
             finish_module_run(internal_run)
         except Exception as exc:
             fail_module_run(internal_run, error_code="q9_internal_action_failed", error_message=str(exc))
+            _q9_log(
+                "q9_internal_action_design_failed",
+                session_id=str(context.get("session_id") or "unknown-session"),
+                turn_id=str(context.get("turn_id") or "unknown-turn"),
+                trace_id=str(context.get("trace_id") or ""),
+                scope="internal",
+                error_type=exc.__class__.__name__,
+                error_message=str(exc),
+            )
             raise
+        _q9_log(
+            "q9_internal_action_design_completed",
+            session_id=str(context.get("session_id") or "unknown-session"),
+            turn_id=str(context.get("turn_id") or "unknown-turn"),
+            trace_id=str(context.get("trace_id") or ""),
+            scope="internal",
+            elapsed_ms=int((perf_counter() - started) * 1000),
+        )
 
         return CognitiveToolResult(
             tool_id=f"{self.plugin_id}:internal",
@@ -77,6 +112,13 @@ class Q9HowShouldIActPlugin(BaseModel):
 
     def run_external_action_design(self, context: dict[str, Any]) -> CognitiveToolResult:
         started = perf_counter()
+        _q9_log(
+            "q9_external_action_design_start",
+            session_id=str(context.get("session_id") or "unknown-session"),
+            turn_id=str(context.get("turn_id") or "unknown-turn"),
+            trace_id=str(context.get("trace_id") or ""),
+            scope="external",
+        )
         module_runs = bind_module_runs(context, "q9")
         external_run = start_module_run(
             module_runs,
@@ -88,7 +130,24 @@ class Q9HowShouldIActPlugin(BaseModel):
             finish_module_run(external_run)
         except Exception as exc:
             fail_module_run(external_run, error_code="q9_external_action_failed", error_message=str(exc))
+            _q9_log(
+                "q9_external_action_design_failed",
+                session_id=str(context.get("session_id") or "unknown-session"),
+                turn_id=str(context.get("turn_id") or "unknown-turn"),
+                trace_id=str(context.get("trace_id") or ""),
+                scope="external",
+                error_type=exc.__class__.__name__,
+                error_message=str(exc),
+            )
             raise
+        _q9_log(
+            "q9_external_action_design_completed",
+            session_id=str(context.get("session_id") or "unknown-session"),
+            turn_id=str(context.get("turn_id") or "unknown-turn"),
+            trace_id=str(context.get("trace_id") or ""),
+            scope="external",
+            elapsed_ms=int((perf_counter() - started) * 1000),
+        )
 
         return CognitiveToolResult(
             tool_id=f"{self.plugin_id}:external",
@@ -115,6 +174,12 @@ class Q9HowShouldIActPlugin(BaseModel):
 
     def run_tool(self, context: dict[str, Any]) -> CognitiveToolResult:
         started = perf_counter()
+        _q9_log(
+            "q9_run_tool_start",
+            session_id=str(context.get("session_id") or "unknown-session"),
+            turn_id=str(context.get("turn_id") or "unknown-turn"),
+            trace_id=str(context.get("trace_id") or ""),
+        )
         internal_result = self.run_internal_action_design(context)
         external_result = self.run_external_action_design(context)
         internal_runs = (
@@ -131,6 +196,14 @@ class Q9HowShouldIActPlugin(BaseModel):
             **internal_result.llm_output,
             **external_result.llm_output,
         }
+        _q9_log(
+            "q9_run_tool_completed",
+            session_id=str(context.get("session_id") or "unknown-session"),
+            turn_id=str(context.get("turn_id") or "unknown-turn"),
+            trace_id=str(context.get("trace_id") or ""),
+            elapsed_ms=int((perf_counter() - started) * 1000),
+            proposal_count=len(internal_result.proposals) + len(external_result.proposals),
+        )
         return CognitiveToolResult(
             tool_id=self.plugin_id,
             summary="Q9 internal/external action designs are validated and exposed separately.",

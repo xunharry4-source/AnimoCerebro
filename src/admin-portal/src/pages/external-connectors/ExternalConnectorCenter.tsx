@@ -23,7 +23,7 @@ import DescriptionIcon from "@mui/icons-material/Description";
 import PowerSettingsNewIcon from "@mui/icons-material/PowerSettingsNew";
 import BlockIcon from "@mui/icons-material/Block";
 import ArticleIcon from "@mui/icons-material/Article";
-import { Link as RouterLink } from "react-router-dom";
+import { Link as RouterLink, useNavigate } from "react-router-dom";
 import { Trash2 } from "lucide-react";
 
 type ConnectorType = "api_app" | "desktop_app" | "browser_app" | "file_app" | "service_bridge" | "sdk_app";
@@ -59,6 +59,7 @@ const TYPE_OPTIONS: ConnectorType[] = ["api_app", "desktop_app", "browser_app", 
 
 export default function ExternalConnectorCenter() {
   const { t } = useTranslation();
+  const navigate = useNavigate();
   const [rows, setRows] = useState<ConnectorRecord[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
@@ -265,10 +266,21 @@ export default function ExternalConnectorCenter() {
     {
       field: "actions",
       headerName: t("common.actions"),
-      minWidth: 470,
+      minWidth: 570,
       sortable: false,
       renderCell: (params) => (
         <Stack direction="row" spacing={1}>
+          <Button
+            size="small"
+            startIcon={<ArticleIcon />}
+            onClick={() =>
+              navigate(
+                `/console/external-connectors/function-logs?function_prefix=${encodeURIComponent(params.row.connector_id)}`,
+              )
+            }
+          >
+            查看日志
+          </Button>
           <Button size="small" startIcon={<PowerSettingsNewIcon />} onClick={() => void updateConnectorActivation(params.row, "activate")}>
             激活
           </Button>
@@ -312,11 +324,11 @@ export default function ExternalConnectorCenter() {
           <Stack direction="row" spacing={1}>
             <Button
               component={RouterLink}
-              to="/console/module-logs/external-connectors"
+              to="/console/external-connectors/function-logs"
               variant="outlined"
               startIcon={<ArticleIcon />}
             >
-              {t("moduleLogs.view")}
+              功能运行日志
             </Button>
             <Button variant="contained" startIcon={<AddIcon />} onClick={() => setOpenRegister(true)}>
               {t("externalConnectors.register")}

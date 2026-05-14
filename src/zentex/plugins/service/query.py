@@ -177,7 +177,7 @@ class QueryService:
                 "is_instantiated": record.get("plugin_id") in self._plugin_instances,
             })
         
-        logger.info(f"[Query] Found {len(results)} plugins in category '{category}'")
+        logger.debug(f"[Query] Found {len(results)} plugins in category '{category}'")
         return results
 
     def query_plugins_by_lifecycle(

@@ -30,6 +30,7 @@ import useTaskManagement from './useTaskManagement';
 import StatusChip from './TaskStatusChip';
 import TaskTabPanel from './TaskTabPanel';
 import { ZentexTask } from './types';
+import { formatTaskDateTime } from './taskDisplay';
 
 const TASK_SOURCE_FILTERS = ['nine_questions', 'nine_questions.q8', 'nine_questions.q9', 'reflection', 'learning', 'upgrade', 'manual'];
 const taskSourceModuleLabelKey = (source: string) => `tasks.sourceModules.${source.replace(/\./g, '_')}`;
@@ -132,6 +133,12 @@ const ZentexTaskManager: React.FC = () => {
   const columns: GridColDef[] = [
     { field: 'task_id', headerName: t('tasks.taskId'), width: 120 },
     { field: 'title', headerName: t('tasks.title'), flex: 1, minWidth: 220 },
+    {
+      field: 'created_at',
+      headerName: t('tasks.createdAt'),
+      width: 180,
+      valueGetter: (_value, row: ZentexTask) => formatTaskDateTime(row.created_at),
+    },
     {
       field: 'objective',
       headerName: t('tasks.metadataFields.objective'),

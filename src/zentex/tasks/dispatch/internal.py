@@ -51,6 +51,17 @@ class InternalPluginExecutor:
         """Update the plugin layer reference (for late dependency injection)."""
         self.plugin_layer = plugin_layer
         logger.debug("InternalPluginExecutor: plugin_layer updated.")
+
+    def _resolve_plugin_service(self) -> Any:
+        if self.plugin_layer is not None:
+            return self.plugin_layer
+        from zentex.plugins.service import get_service as get_plugin_service
+
+        service = get_plugin_service()
+        if service is None or not callable(getattr(service, "get_plugin", None)):
+            raise RuntimeError("zentex.plugins.service.get_service() did not return a plugin service")
+        self.plugin_layer = service
+        return service
     
     async def get_matching_plugins_for_subtask(
         self,
@@ -78,14 +89,16 @@ class InternalPluginExecutor:
         """
         candidates = []
         
-        if not self.plugin_layer:
-            logger.warning("InternalPluginExecutor: No plugin_layer configured; returning empty candidates")
+        try:
+            plugin_service = self._resolve_plugin_service()
+        except Exception as exc:
+            logger.warning("InternalPluginExecutor: plugin service unavailable through service.py: %s", exc)
             return candidates
         
         try:
             # Get all internal functional and cognitive plugins.
-            functional_plugins = list(self.plugin_layer.get_plugins(category="FUNCTIONAL") or [])
-            cognitive_plugins = list(self.plugin_layer.get_plugins(category="COGNITIVE") or [])
+            functional_plugins = list(plugin_service.get_plugins(category="FUNCTIONAL") or [])
+            cognitive_plugins = list(plugin_service.get_plugins(category="COGNITIVE") or [])
             plugins_by_id: Dict[str, Dict[str, Any]] = {}
             for plugin in functional_plugins + cognitive_plugins:
                 plugin_id = plugin.get("id") or plugin.get("plugin_id")
@@ -177,8 +190,10 @@ class InternalPluginExecutor:
             "failure_classification": None,
         }
         
-        if not self.plugin_layer:
-            result["error"] = "No plugin_layer configured"
+        try:
+            plugin_service = self._resolve_plugin_service()
+        except Exception as exc:
+            result["error"] = f"Plugin service unavailable through service.py: {exc}"
             result["failure_classification"] = "system_error"
             return result
         
@@ -187,7 +202,7 @@ class InternalPluginExecutor:
             start = time.time()
             
             # Get plugin
-            plugin = self.plugin_layer.get_plugin(plugin_id, category="FUNCTIONAL")
+            plugin = plugin_service.get_plugin(plugin_id, category="FUNCTIONAL")
             if not plugin:
                 result["error"] = f"Plugin {plugin_id} not found"
                 result["failure_classification"] = "plugin_not_found"

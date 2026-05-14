@@ -90,6 +90,7 @@ function PluginTable({
   emptyText,
   locale,
   onOpenDetail,
+  onViewLogs,
   onForceEnable,
   onForceDisable,
   actionLoadingToolId,
@@ -99,6 +100,7 @@ function PluginTable({
   emptyText: string;
   locale: Locale;
   onOpenDetail: (plugin: PluginRow) => void;
+  onViewLogs: (plugin: PluginRow) => void;
   onForceEnable: (plugin: PluginRow) => void;
   onForceDisable: (plugin: PluginRow) => void;
   actionLoadingToolId: string | null;
@@ -164,6 +166,12 @@ function PluginTable({
                           onOpenDetail(row);
                         }}>
                           {locale === "zh-CN" ? "查看" : "View"}
+                        </Button>
+                        <Button size="small" variant="outlined" startIcon={<ArticleIcon />} onClick={(event) => {
+                          event.stopPropagation();
+                          onViewLogs(row);
+                        }}>
+                          查看日志
                         </Button>
                         {showLifecycleActions && actionState.canShowForceEnable ? (
                           <Button
@@ -281,6 +289,10 @@ export default function PluginManagement() {
     navigate(`/console/plugins/${activeTab}/${encodeURIComponent(plugin.tool_id)}`);
   };
 
+  const viewLogs = (plugin: PluginRow) => {
+    navigate(`/console/plugins/function-logs?function_prefix=${encodeURIComponent(plugin.tool_id)}`);
+  };
+
   const handleForceEnable = async (plugin: PluginRow) => {
     const reason = window.prompt(pluginManagementCopy[locale].auditReasonPrompt);
     if (!reason || !reason.trim()) {
@@ -346,8 +358,8 @@ export default function PluginManagement() {
               <MenuItem value="en-US">English</MenuItem>
             </Select>
           </FormControl>
-          <Button variant="outlined" startIcon={<ArticleIcon />} onClick={() => navigate("/console/module-logs/plugins")}>
-            {t("moduleLogs.view")}
+          <Button variant="outlined" startIcon={<ArticleIcon />} onClick={() => navigate("/console/plugins/function-logs")}>
+            功能运行日志
           </Button>
           <Button variant="contained" onClick={() => void loadPlugins(activeTab)} disabled={loading}>
             {loading ? t("common.refreshing") : t("common.refresh")}
@@ -408,6 +420,7 @@ export default function PluginManagement() {
           emptyText={text.empty}
           locale={locale}
           onOpenDetail={openDetail}
+          onViewLogs={viewLogs}
           onForceEnable={handleForceEnable}
           onForceDisable={handleForceDisable}
           actionLoadingToolId={actionLoadingToolId}
@@ -419,6 +432,7 @@ export default function PluginManagement() {
           emptyText={text.functionalEmpty}
           locale={locale}
           onOpenDetail={openDetail}
+          onViewLogs={viewLogs}
           onForceEnable={handleForceEnable}
           onForceDisable={handleForceDisable}
           actionLoadingToolId={actionLoadingToolId}

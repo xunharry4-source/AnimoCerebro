@@ -34,6 +34,13 @@ def _string_list(value: Any) -> list[str]:
     return []
 
 
+def _internal_owner_ref_to_plugin_id(value: Any) -> str:
+    text = str(value or "").strip()
+    if text.lower().startswith("internal:"):
+        return text.split(":", 1)[1].strip()
+    return text
+
+
 def _external_executor_metadata(task_data: dict[str, Any], metadata: dict[str, Any], target_id: str, executor_type: str) -> dict[str, Any]:
     if executor_type == "connector":
         executor_type = "external_connector"
@@ -210,12 +217,20 @@ class TaskPersistenceService:
         if task_scope == "internal" and not required_capabilities:
             required_capabilities = ["task.constraint_checking"]
         if task_scope == "internal":
+            required_capabilities = list(
+                dict.fromkeys(
+                    item
+                    for item in (_internal_owner_ref_to_plugin_id(value) for value in required_capabilities)
+                    if item
+                )
+            )
             internal_executor_plugin_id = str(
                 metadata.get("internal_executor_plugin_id")
                 or metadata.get("executor_id")
                 or (target_id.removeprefix("internal:") if target_id.startswith("internal:") else "")
                 or "task_constraint_checker"
             ).strip()
+            internal_executor_plugin_id = _internal_owner_ref_to_plugin_id(internal_executor_plugin_id)
             if internal_executor_plugin_id not in required_capabilities:
                 required_capabilities.append(internal_executor_plugin_id)
         external_executor = (

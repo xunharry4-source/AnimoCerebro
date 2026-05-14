@@ -5,13 +5,14 @@ import {
   formatBlockedReason,
   formatExecutionParty,
   formatTaskDateTime,
+  formatTaskExceptionReason,
   formatTaskVerificationMethod,
   taskEndTime,
   taskStartTime,
 } from './taskDisplay';
 import { ZentexTask } from './types';
 
-const t = (key: string) => {
+const t = (key: string, options?: Record<string, string>) => {
   const labels: Record<string, string> = {
     'tasks.assignmentStatuses.pending_dispatch': 'Pending Dispatch',
     'tasks.assignmentStatuses.assignment_pending': 'Waiting for Executor Assignment',
@@ -19,10 +20,24 @@ const t = (key: string) => {
     'tasks.assignmentStatuses.declared': 'Declared Executor, Not Bound',
     'tasks.unassigned': 'Unassigned',
     'tasks.noBlockedReason': 'No blocked reason',
+    'tasks.exceptionReasons.csvInspectionCapability': 'CSV file format and timestamp inspection',
+    'tasks.exceptionReasons.localExecutionCapability': 'local system execution',
+    'tasks.exceptionReasons.selectedExecutor': 'the selected executor',
+    'tasks.exceptionReasons.analysisWithAction': 'Reason: {{cause}} Suggested action: {{action}}',
+    'tasks.exceptionReasons.analysisCauseOnly': 'Reason: {{cause}}',
+    'tasks.exceptionReasons.designatedCapabilityUnavailable':
+      'The selected executor cannot perform {{capability}}. The task is paused until an executor with that capability is selected or enabled.',
+    'tasks.exceptionReasons.resourceGap': 'Missing {{capability}}. The task is paused until that resource is available.',
+    'tasks.verificationStatuses.internalConfigured':
+      'Internal verification is configured, but no displayable Q9 verification instruction is available',
     'tasks.verificationStatuses.enabledNoVerifier': 'Verification enabled, but no real verifier is configured',
     'tasks.verificationStatuses.notConfigured': 'No real verifier configured',
   };
-  return labels[key] || key;
+  let value = labels[key] || key;
+  for (const [name, replacement] of Object.entries(options || {})) {
+    value = value.replaceAll(`{{${name}}}`, String(replacement));
+  }
+  return value;
 };
 
 const baseTask: ZentexTask = {
@@ -106,13 +121,16 @@ describe('taskDisplay', () => {
     expect(formatExecutionParty({ ...baseTask, target_id: 'agent:reviewer' }, t as any)).toBe('agent:reviewer');
   });
 
-  it('formats verification method from real verifier configuration only', () => {
+  it('formats verification method from Q9 display instruction and hides internal verifier ids', () => {
     expect(
       formatTaskVerificationMethod(
         {
           ...baseTask,
+          metadata: {
+            q9_verification_hint: '读取 connector output_summary 与 evidence_refs，确认 CSV 文件行数和时间戳统计存在。',
+          },
           contract: {
-            verification_method: 'fake_unknown_code_path',
+            verification_method: 'q9_subtask_external_execution_evidence',
             verification: {
               enabled: true,
               verifiers: [
@@ -126,7 +144,28 @@ describe('taskDisplay', () => {
         },
         t as any,
       ),
-    ).toBe('q8_required_outcome_evidence (rule_based)');
+    ).toBe('读取 connector output_summary 与 evidence_refs，确认 CSV 文件行数和时间戳统计存在。');
+
+    expect(
+      formatTaskVerificationMethod(
+        {
+          ...baseTask,
+          contract: {
+            verification_method: 'fake_unknown_code_path',
+            verification: {
+              enabled: true,
+              verifiers: [
+                {
+                  verifier_id: 'q9_subtask_external_execution_evidence',
+                  verifier_type: 'rule_based',
+                },
+              ],
+            },
+          },
+        },
+        t as any,
+      ),
+    ).toBe('Internal verification is configured, but no displayable Q9 verification instruction is available');
 
     expect(
       formatTaskVerificationMethod(
@@ -162,5 +201,65 @@ describe('taskDisplay', () => {
     expect(canRetryTask(blockedTask)).toBe(true);
     expect(canRetryTask({ ...baseTask, status: 'todo' })).toBe(false);
     expect(formatBlockedReason({ ...blockedTask, last_error: '', metadata: {} }, t as any)).toBe('No blocked reason');
+  });
+
+  it('shows suspended task reason from real suspension and G31A metadata', () => {
+    const suspendedTask: ZentexTask = {
+      ...baseTask,
+      status: 'suspended',
+      suspension: {
+        task_id: 'task-1',
+        original_status: 'assignment_pending',
+        suspension_reason: 'G9 resource gap: mongodb_csv_inspect',
+        recovery_conditions: ['Register a connector with mongodb_csv_inspect'],
+      },
+      metadata: {
+        target_id: 'external_connector:mongodb_crud_connector',
+        g31a_assignment: {
+          status: 'suspended_resource_gap',
+          missing_resources: ['mongodb_csv_inspect'],
+          evidence: {
+            failure_reason: 'designated_external_connector_capability_not_available',
+          },
+        },
+      },
+    };
+
+    expect(formatTaskExceptionReason(suspendedTask, t as any)).toBe(
+      'The selected executor cannot perform CSV file format and timestamp inspection. The task is paused until an executor with that capability is selected or enabled.',
+    );
+    expect(formatTaskExceptionReason(suspendedTask, t as any)).not.toContain(
+      'designated_external_connector_capability_not_available',
+    );
+    expect(formatTaskExceptionReason(suspendedTask, t as any)).not.toContain('mongodb_csv_inspect');
+    expect(formatTaskExceptionReason(suspendedTask, t as any)).not.toContain('external_connector');
+  });
+
+  it('uses stored mismatch analysis and sanitizes internal identifiers', () => {
+    const suspendedTask: ZentexTask = {
+      ...baseTask,
+      status: 'suspended',
+      metadata: {
+        g31a_assignment: {
+          evidence: {
+            mismatch_analysis: {
+              root_cause:
+                'The assignment requires `mongodb_csv_inspect` to read and validate CSV file data, but external_connector:mongodb_crud_connector does not provide it.',
+              operator_action:
+                'Execute with external_connector:task-mongodb-csv-88de354c.mongodb_csv_inspect or acquire execution_local_system.',
+            },
+          },
+        },
+      },
+    };
+
+    const reason = formatTaskExceptionReason(suspendedTask, t as any);
+
+    expect(reason).toContain('Reason:');
+    expect(reason).toContain('CSV file format and timestamp inspection');
+    expect(reason).toContain('the selected executor');
+    expect(reason).not.toContain('mongodb_csv_inspect');
+    expect(reason).not.toContain('external_connector');
+    expect(reason).not.toContain('execution_local_system');
   });
 });

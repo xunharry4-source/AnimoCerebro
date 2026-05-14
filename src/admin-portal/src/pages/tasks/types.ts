@@ -50,6 +50,15 @@ export interface ZentexTask {
     executor_type: string;
     label: string;
   };
+  suspension?: {
+    task_id: string;
+    original_status: string;
+    suspension_reason: string;
+    recovery_conditions?: string[];
+    suspension_context?: Record<string, any>;
+    suspended_at?: string;
+    auto_resume_at?: string | null;
+  };
 }
 
 export interface TasksByStatus {

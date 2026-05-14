@@ -77,6 +77,8 @@ class ResourceMatcher:
     ) -> AssignmentDecision:
         task_scope = _task_scope_value(task)
         required = _dedupe([*required_capabilities, *_resource_tokens(required_resources)])
+        if task_scope == "internal":
+            required = _dedupe(_internal_owner_ref_to_capability(item) for item in required)
         designated_owner = str(designated_owner or "").strip()
         candidates = self._collect_candidates()
         if task_scope == "internal":
@@ -126,6 +128,96 @@ class ResourceMatcher:
                 )
             exact = [item for item in candidates if item.owner_ref == normalized_owner or item.executor_id == normalized_owner]
             if exact:
+                if any(item.executor_type == "external_connector" for item in exact):
+                    explicit_capabilities = _non_owner_capability_requirements(required, normalized_owner)
+                    if not explicit_capabilities:
+                        available_capabilities = [
+                            str(item.metadata.get("capability") or item.label or "").strip()
+                            for item in exact
+                            if str(item.metadata.get("capability") or item.label or "").strip()
+                        ]
+                        return self._unassigned(
+                            required=required,
+                            missing=[f"{normalized_owner}:<capability>"],
+                            candidates=exact,
+                            evidence={
+                                **evidence,
+                                "failure_reason": "external_connector_capability_not_specified",
+                                "diagnosis_source": "deterministic_guard",
+                                "llm_analysis_required": False,
+                                "mismatch_analysis": {
+                                    "selected_owner_ref": normalized_owner,
+                                    "problem": "external connector owner was specified without a concrete executable capability",
+                                    "why_blocked": (
+                                        "An external connector id only identifies the runtime owner. "
+                                        "G31A must also select a concrete capability such as mongodb_read, "
+                                        "mongodb_csv_inspect, or mongodb_csv_import before queueing a business task."
+                                    ),
+                                    "available_connector_capabilities": available_capabilities,
+                                    "required_next_step": f"Specify a concrete capability under {normalized_owner}.",
+                                },
+                            },
+                        )
+                    health_probe_requirements = [
+                        capability
+                        for capability in explicit_capabilities
+                        if _external_connector_health_probe_capability(capability)
+                    ]
+                    if health_probe_requirements and not _task_is_health_probe(task):
+                        objective = _task_objective_text(task)
+                        return self._unassigned(
+                            required=required,
+                            missing=[f"{normalized_owner}:<data_operation_capability>"],
+                            candidates=exact,
+                            evidence={
+                                **evidence,
+                                "failure_reason": "external_connector_health_probe_capability_not_business_executable",
+                                "blocked_health_probe_capabilities": health_probe_requirements,
+                                "diagnosis_source": "deterministic_guard",
+                                "llm_analysis_required": False,
+                                "mismatch_analysis": {
+                                    "selected_owner_ref": normalized_owner,
+                                    "selected_capabilities": health_probe_requirements,
+                                    "task_objective": objective,
+                                    "why_blocked": (
+                                        "The selected capability is a health/probe capability. It can only verify "
+                                        "connector connectivity and cannot execute business data work such as reading "
+                                        "CSV files, validating timestamps, or writing MongoDB records."
+                                    ),
+                                    "correct_capability_hint": (
+                                        "Use mongodb_csv_inspect for CSV format/timestamp inspection, or "
+                                        "mongodb_csv_import when validated CSV rows must be persisted to MongoDB."
+                                    ),
+                                },
+                            },
+                        )
+                    exact = [item for item in exact if _capability_match(explicit_capabilities, item.capabilities)]
+                    if not exact:
+                        if _is_pending_g31a_proposed_owner(task):
+                            capability_matches = [
+                                item
+                                for item in candidates
+                                if item.executor_type == "external_connector"
+                                and _capability_match(explicit_capabilities, item.capabilities)
+                            ]
+                            if capability_matches:
+                                selected = sorted(capability_matches, key=lambda item: item.owner_ref)[0]
+                                return self._assigned(
+                                    selected,
+                                    required=required,
+                                    candidates=capability_matches,
+                                    evidence={
+                                        **evidence,
+                                        "stale_designated_owner_ref": normalized_owner,
+                                        "owner_rebinding_reason": "g31a_proposed_owner_missing_required_capability",
+                                    },
+                                )
+                        return self._unassigned(
+                            required=required,
+                            missing=explicit_capabilities,
+                            candidates=candidates,
+                            evidence={**evidence, "failure_reason": "designated_external_connector_capability_not_available"},
+                        )
                 selected = exact[0]
                 return self._assigned(selected, required=required, candidates=exact, evidence=evidence)
             return self._unassigned(
@@ -422,6 +514,7 @@ class TaskAssignmentRouter:
         if decision.assigned:
             await self._persist_assignment(task_service, task, decision, target_status=target_status)
             return decision
+        await self._enrich_resource_gap_with_llm_analysis(task, decision)
         negotiation = await self._suspend_for_resource_gap(task_service, task, decision)
         return AssignmentDecision(
             **{**decision.__dict__, "negotiation": negotiation},
@@ -441,6 +534,7 @@ class TaskAssignmentRouter:
             designated_owner=context.get("designated_owner") or "",
         )
         if not decision.assigned:
+            await self._enrich_resource_gap_with_llm_analysis(task, decision)
             return decision
         await _maybe_await(task_service.resume_task(task.task_id, remarks="G9 recovery condition satisfied by ResourceMatcher"))
         resumed = task_service.get_task(task.task_id)
@@ -612,6 +706,68 @@ class TaskAssignmentRouter:
         )
         return negotiation
 
+    async def _enrich_resource_gap_with_llm_analysis(self, task: Any, decision: AssignmentDecision) -> None:
+        evidence = decision.evidence
+        if evidence.get("mismatch_analysis"):
+            return
+        context = {
+            "task": {
+                "task_id": getattr(task, "task_id", ""),
+                "title": getattr(task, "title", ""),
+                "task_scope": _task_scope_value(task),
+                "objective": _task_objective_text(task),
+                "target_id": getattr(task, "target_id", ""),
+                "metadata": getattr(task, "metadata", {}) if isinstance(getattr(task, "metadata", {}), dict) else {},
+            },
+            "assignment_decision": {
+                "failure_reason": evidence.get("failure_reason"),
+                "required_capabilities": decision.required_capabilities,
+                "missing_resources": decision.missing_resources,
+                "candidate_owners": decision.candidate_owners,
+                "required_owner_refs": evidence.get("required_owner_refs"),
+                "searched_asset_libraries": evidence.get("searched_asset_libraries"),
+            },
+            "available_candidates": [
+                {
+                    "owner_ref": item.owner_ref,
+                    "executor_type": item.executor_type,
+                    "executor_id": item.executor_id,
+                    "capabilities": item.capabilities,
+                    "metadata": item.metadata,
+                }
+                for item in decision.candidates[:20]
+            ],
+        }
+        evidence["diagnosis_source"] = "llm_required"
+        evidence["llm_analysis_required"] = True
+        evidence["llm_analysis_context"] = context
+        try:
+            from zentex.llm import get_llm_service
+
+            llm_service = get_llm_service()
+            result = llm_service.generate_json(
+                prompt=(
+                    "Analyze this task assignment resource gap. Return JSON with keys: root_cause, "
+                    "why_code_rules_could_not_fully_explain, required_executor_or_capability, "
+                    "operator_action, and confidence. Be specific and do not invent available tools."
+                ),
+                context=context,
+                source_module="zentex.tasks.g31a.assignment_gap_analysis",
+                invocation_phase="assignment_resource_gap_analysis",
+                temperature=0.0,
+                max_output_tokens=800,
+                metadata={"llm_mandatory": True, "resource_gap_analysis": True},
+            )
+            output = getattr(result, "output", result)
+            if isinstance(output, dict):
+                evidence["mismatch_analysis"] = output
+                evidence["diagnosis_source"] = "llm"
+                evidence["llm_analysis_required"] = False
+            else:
+                evidence["llm_analysis_error"] = f"LLM returned non-object analysis: {type(output).__name__}"
+        except Exception as exc:
+            evidence["llm_analysis_error"] = f"{type(exc).__name__}: {exc}"
+
 
 def _resource_tokens(resources: Iterable[str]) -> list[str]:
     tokens: list[str] = []
@@ -626,15 +782,53 @@ def _resource_tokens(resources: Iterable[str]) -> list[str]:
             "任务资源:",
             "能力需求：",
             "能力需求:",
-            "执行方钦定：",
-            "执行方钦定:",
         ):
             if text.startswith(prefix):
                 text = text[len(prefix):].strip()
                 break
+        if text.startswith(("执行方钦定：", "执行方钦定:")):
+            continue
+        if _is_owner_ref(text):
+            continue
         if text:
             tokens.append(text)
     return _dedupe(tokens)
+
+
+def _external_connector_health_probe_capability(capability: str) -> bool:
+    normalized = str(capability or "").strip().lower()
+    return normalized in {"mongodb_ping", "ping", "health_check", "health"} or normalized.endswith("_ping")
+
+
+def _task_is_health_probe(task: Any) -> bool:
+    task_text = _task_objective_text(task).lower()
+    health_terms = ("ping", "health", "健康", "连通", "连接", "connection")
+    return bool(task_text and any(term in task_text for term in health_terms))
+
+
+def _task_objective_text(task: Any) -> str:
+    text_parts: list[str] = []
+    for field in ("title", "remarks", "objective", "content"):
+        value = getattr(task, field, None)
+        if value:
+            text_parts.append(str(value))
+    metadata = getattr(task, "metadata", None)
+    if isinstance(metadata, dict):
+        for field in ("title", "remarks", "objective", "content"):
+            value = metadata.get(field)
+            if value:
+                text_parts.append(str(value))
+    return " ".join(text_parts)
+
+
+def _is_pending_g31a_proposed_owner(task: Any) -> bool:
+    metadata = getattr(task, "metadata", None)
+    if not isinstance(metadata, dict):
+        return False
+    return (
+        metadata.get("source") == "G31A.TaskSplitter"
+        and metadata.get("q9_plugin_binding_source") == "pending_g31a_validation"
+    )
 
 
 def _normalize_owner_ref(value: str, *, task_scope: str = "") -> str:
@@ -655,6 +849,13 @@ def _task_scope_value(task: Any) -> str:
     raw = getattr(getattr(task, "task_scope", None), "value", getattr(task, "task_scope", ""))
     value = str(raw or "").strip().lower()
     return value if value in {"internal", "external"} else ""
+
+
+def _internal_owner_ref_to_capability(value: str) -> str:
+    text = str(value or "").strip()
+    if text.lower().startswith("internal:"):
+        return text.split(":", 1)[1].strip()
+    return text
 
 
 def _is_owner_ref(value: str) -> bool:
@@ -680,6 +881,25 @@ def _required_owner_refs(required_resources: Iterable[str], *, task_scope: str) 
         if _is_owner_ref(normalized):
             refs.append(normalized)
     return _dedupe(refs)
+
+
+def _non_owner_capability_requirements(required: Iterable[str], owner_ref: str) -> list[str]:
+    owner_ref = str(owner_ref or "").strip()
+    connector_prefix = f"{owner_ref}:"
+    normalized: list[str] = []
+    for item in required or []:
+        text = str(item or "").strip()
+        if not text or text == owner_ref:
+            continue
+        if text.startswith(connector_prefix):
+            suffix = text.removeprefix(connector_prefix).strip()
+            if suffix:
+                normalized.append(suffix)
+            continue
+        if text.startswith(_OWNER_PREFIXES):
+            continue
+        normalized.append(text)
+    return _dedupe(normalized)
 
 
 def _searched_asset_libraries(task_scope: str) -> list[str]:

@@ -456,7 +456,14 @@ def _q8_task_to_web_binding(task: Any, outcome: dict[str, Any] | None) -> dict[s
         "expected_outcome": contract_payload.get("expected_outcome") or metadata.get("expected_outcome") or {},
         "success_criteria": contract_payload.get("success_criteria") or metadata.get("success_criteria") or [],
         "acceptance_conditions": contract_payload.get("acceptance_conditions") or metadata.get("acceptance_conditions") or [],
-        "verification_method": contract_payload.get("verification_method") or metadata.get("verification_method") or "",
+        "verification_method": (
+            metadata.get("q9_verification_hint")
+            or metadata.get("q9_blueprint_verification_hint")
+            or metadata.get("q9_llm_verification_method")
+            or contract_payload.get("verification_method")
+            or metadata.get("verification_method")
+            or ""
+        ),
         "risk_assessment": contract_payload.get("risk_assessment") or metadata.get("risk_assessment") or {},
         "verification_enabled": bool(verification.get("enabled")),
         "verification_strategy": str(verification.get("strategy") or ""),

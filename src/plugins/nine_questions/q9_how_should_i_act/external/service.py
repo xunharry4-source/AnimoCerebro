@@ -26,8 +26,20 @@ from zentex.common.nine_questions_shared import (
     require_transcript_store,
     safe_provider_plugin_id,
 )
+from zentex.common.observable_logging import observable_event
 
 logger = logging.getLogger(__name__)
+
+
+def _log(event: str, **fields: Any) -> None:
+    observable_event(
+        logger,
+        event,
+        component="nine_questions.q9.external",
+        question_id="q9",
+        scope="external",
+        **fields,
+    )
 
 _EXTERNAL_ACTION_DESIGN_FIELDS = {
     "action_objective",
@@ -55,7 +67,20 @@ def run_q9_external_llm_and_save(context: dict[str, Any]) -> dict[str, Any]:
     started = perf_counter()
     provider = require_model_provider(context)
     transcript_store = require_transcript_store(context)
-    request = build_q9_external_llm_request(context=_build_q9_external_upstream_context(context))
+    upstream_context = _build_q9_external_upstream_context(context)
+    _log(
+        "q9_upstream_context_loaded",
+        session_id=session_id,
+        turn_id=turn_id,
+        trace_id=trace_id,
+        upstream_source=upstream_context.get("q9_upstream_public_contract", {}).get("source")
+        if isinstance(upstream_context.get("q9_upstream_public_contract"), dict)
+        else "",
+        upstream_context_size_chars=upstream_context.get("q9_upstream_public_contract", {}).get("context_size_chars")
+        if isinstance(upstream_context.get("q9_upstream_public_contract"), dict)
+        else None,
+    )
+    request = build_q9_external_llm_request(context=upstream_context)
     caller_context = build_caller_context(
         source_module=__name__,
         invocation_phase="nine_question_q9_external_action",
@@ -81,7 +106,20 @@ def run_q9_external_llm_and_save(context: dict[str, Any]) -> dict[str, Any]:
         source=__name__,
         payload={"q9_external_llm_input": llm_input},
     )
-    logger.info("[Q9 EXTERNAL LLM INPUT] trace_id=%s payload=%s", trace_id, json_safe_payload(llm_input))
+    observable_event(
+        logger,
+        "q9_llm_input",
+        component="nine_questions.q9.external",
+        question_id="q9",
+        scope="external",
+        session_id=session_id,
+        turn_id=turn_id,
+        trace_id=trace_id,
+        decision_id=decision_id,
+        request_id=request_id,
+        provider=safe_provider_plugin_id(provider),
+        llm_input=llm_input,
+    )
     try:
         from plugins.nine_questions.q9_how_should_i_act.external.instructor_contract import (
             generate_external_action_design_with_instructor_contract,
@@ -99,7 +137,20 @@ def run_q9_external_llm_and_save(context: dict[str, Any]) -> dict[str, Any]:
                 "output_truncation_forbidden": True,
             },
         )
-        logger.info("[Q9 EXTERNAL LLM OUTPUT] trace_id=%s payload=%s", trace_id, json_safe_payload(llm_output))
+        observable_event(
+            logger,
+            "q9_llm_output",
+            component="nine_questions.q9.external",
+            question_id="q9",
+            scope="external",
+            session_id=session_id,
+            turn_id=turn_id,
+            trace_id=trace_id,
+            decision_id=decision_id,
+            request_id=request_id,
+            provider=safe_provider_plugin_id(provider),
+            llm_output=llm_output,
+        )
         persist_question_module_output(
             context,
             question_id="q9",
@@ -126,6 +177,17 @@ def run_q9_external_llm_and_save(context: dict[str, Any]) -> dict[str, Any]:
                 "elapsed_ms": int((perf_counter() - started) * 1000),
             },
         )
+        _log(
+            "q9_action_design_completed",
+            session_id=session_id,
+            turn_id=turn_id,
+            trace_id=trace_id,
+            decision_id=decision_id,
+            request_id=request_id,
+            elapsed_ms=int((perf_counter() - started) * 1000),
+            token_usage=json_safe_payload(getattr(provider, "last_token_usage", None)),
+            model=json_safe_payload(getattr(provider, "last_model_name", None)),
+        )
         return {
             "llm_input": llm_input,
             "llm_output": llm_output,
@@ -147,6 +209,16 @@ def run_q9_external_llm_and_save(context: dict[str, Any]) -> dict[str, Any]:
             },
         )
         logger.exception("[Q9 EXTERNAL LLM ERROR] trace_id=%s", trace_id)
+        _log(
+            "q9_action_design_failed",
+            session_id=session_id,
+            turn_id=turn_id,
+            trace_id=trace_id,
+            decision_id=decision_id,
+            request_id=request_id,
+            error_type=exc.__class__.__name__,
+            error_message=str(exc),
+        )
         raise
 
 

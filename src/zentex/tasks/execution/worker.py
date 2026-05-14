@@ -54,6 +54,8 @@ class WorkerConfig:
     require_approval: bool = False
     # If True, throttle execution (batch size 1, longer timeouts)
     conservative_mode: bool = False
+    # If True, delegate execution to the LangGraph/ReAct execution graph.
+    enable_react_execution: bool = False
 
 
 # ---------------------------------------------------------------------------
@@ -125,6 +127,51 @@ class TaskExecutionWorker:
         self._external_connector_service = external_connector_service
         self._agent_service = agent_service
         self._cfg = config or WorkerConfig()
+        self._react_executor: Any = None
+
+    def _resolve_cli_service(self) -> Any:
+        if self._cli_service is not None:
+            return self._cli_service
+        from zentex.cli.service import get_service as get_cli_service
+
+        service = get_cli_service()
+        if service is None or not callable(getattr(service, "list_tools", None)):
+            raise RuntimeError("zentex.cli.service.get_service() did not return a CLI service")
+        self._cli_service = service
+        return service
+
+    def _resolve_mcp_service(self) -> Any:
+        if self._mcp_service is not None:
+            return self._mcp_service
+        from zentex.mcp.service import get_service as get_mcp_service
+
+        service = get_mcp_service()
+        if service is None or not callable(getattr(service, "list_servers", None)):
+            raise RuntimeError("zentex.mcp.service.get_service() did not return an MCP service")
+        self._mcp_service = service
+        return service
+
+    def _resolve_external_connector_service(self) -> Any:
+        if self._external_connector_service is not None:
+            return self._external_connector_service
+        from zentex.external_connectors.service import get_service as get_external_connector_service
+
+        service = get_external_connector_service()
+        if service is None or not callable(getattr(service, "list_connectors", None)):
+            raise RuntimeError("zentex.external_connectors.service.get_service() did not return a connector service")
+        self._external_connector_service = service
+        return service
+
+    def _resolve_agent_service(self) -> Any:
+        if self._agent_service is not None:
+            return self._agent_service
+        from zentex.agents.service import get_service as get_agent_service
+
+        service = get_agent_service()
+        if service is None or not callable(getattr(service, "dispatch_task", None)):
+            raise RuntimeError("zentex.agents.service.get_service() did not return an agent coordination service")
+        self._agent_service = service
+        return service
 
     # ------------------------------------------------------------------
     # Public API
@@ -494,6 +541,14 @@ class TaskExecutionWorker:
             self._mark_failed(task_id, resource_recovery_block_reason)
             return "failed"
 
+        if self._cfg.enable_react_execution:
+            react_result = await self._execute_with_react(task_id)
+            if react_result.get("succeeded") is True:
+                return "succeeded"
+            if str(react_result.get("status") or "") == "suspended":
+                return "blocked"
+            return "failed"
+
         # 2. Build SubtaskIntent for the router / executor
         subtask_intent = self._build_subtask_intent(task)
 
@@ -719,6 +774,74 @@ class TaskExecutionWorker:
                 "duration_seconds": 0.0,
                 "failure_classification": "execution_error",
             }
+
+    async def _execute_with_react(self, task_id: str) -> Dict[str, Any]:
+        if self._react_executor is None:
+            from zentex.tasks.execution.langgraph_react_executor import (
+                LangGraphReactExecutor,
+                ReactExecutorConfig,
+            )
+
+            cli_service = self._cli_service
+            mcp_service = self._mcp_service
+            external_connector_service = self._external_connector_service
+            agent_service = self._agent_service
+            task = self._dao.get_task(task_id) or {}
+            metadata = task.get("metadata") if isinstance(task.get("metadata"), dict) else {}
+            executor_type = str(
+                metadata.get("executor_type")
+                or metadata.get("external_executor_type")
+                or metadata.get("executor_kind")
+                or ""
+            ).strip().lower()
+            target_id = str(task.get("target_id") or metadata.get("target_id") or "")
+            if not executor_type:
+                if target_id.startswith("cli:") or metadata.get("cli_tool_name"):
+                    executor_type = "cli"
+                elif target_id.startswith("mcp:") or metadata.get("mcp_server_id"):
+                    executor_type = "mcp"
+                elif target_id.startswith(("external_connector:", "connector:")) or metadata.get("external_connector_id"):
+                    executor_type = "external_connector"
+                elif target_id.startswith("agent:") or metadata.get("agent_id"):
+                    executor_type = "agent"
+            try:
+                if executor_type == "cli":
+                    cli_service = self._resolve_cli_service()
+                elif executor_type == "mcp":
+                    mcp_service = self._resolve_mcp_service()
+                elif executor_type == "external_connector":
+                    external_connector_service = self._resolve_external_connector_service()
+                elif executor_type == "agent":
+                    agent_service = self._resolve_agent_service()
+                    if cli_service is None:
+                        try:
+                            cli_service = self._resolve_cli_service()
+                        except Exception:
+                            cli_service = None
+                    if mcp_service is None:
+                        try:
+                            mcp_service = self._resolve_mcp_service()
+                        except Exception:
+                            mcp_service = None
+            except Exception:
+                # Let the ReAct preflight node persist the resource-unavailable failure.
+                pass
+
+            self._react_executor = LangGraphReactExecutor(
+                task_dao=self._dao,
+                task_service=self._task_service,
+                cli_service=cli_service,
+                mcp_service=mcp_service,
+                external_connector_service=external_connector_service,
+                agent_service=agent_service,
+                internal_executor=self._executor,
+                subtask_intent_builder=self._build_subtask_intent,
+                config=ReactExecutorConfig(
+                    execution_timeout_seconds=self._cfg.execution_timeout_seconds,
+                    max_attempts=self._cfg.max_attempts,
+                ),
+            )
+        return await self._react_executor.execute(task_id)
 
     @staticmethod
     def _task_model_value(task: Any, field: str) -> Any:
@@ -1026,6 +1149,8 @@ class TaskExecutionWorker:
                 return "AGENT_SCOPE_MISMATCH"
             return "AGENT_OFFLINE"
         if normalized == "external_connector":
+            if "health/probe capability" in reason_text or "concrete data operation capability" in reason_text:
+                return "CONNECTOR_CAPABILITY_MISMATCH"
             if "mutation guard" in reason_text or "dangerous filter" in reason_text or "trace marker" in reason_text:
                 return "CONNECTOR_MUTATION_GUARD_BLOCKED"
             return "CONNECTOR_UNHEALTHY"
@@ -1036,7 +1161,7 @@ class TaskExecutionWorker:
         if str(dispatch.get("executor_type") or "") != "external_connector":
             return ""
         capability = str(dispatch.get("capability") or "")
-        if capability not in {"mongodb_create", "mongodb_update", "mongodb_delete"}:
+        if capability not in {"mongodb_create", "mongodb_update", "mongodb_delete", "mongodb_csv_import"}:
             return ""
 
         arguments = dispatch.get("arguments") if isinstance(dispatch.get("arguments"), dict) else {}
@@ -1058,6 +1183,17 @@ class TaskExecutionWorker:
                 )
             return ""
 
+        if capability == "mongodb_csv_import":
+            trace_id = str(dispatch.get("trace_id") or arguments.get("trace_id") or "").strip()
+            metadata = arguments.get("metadata") if isinstance(arguments.get("metadata"), dict) else {}
+            session_id = str(arguments.get("session_id") or metadata.get("session_id") or "").strip()
+            if not trace_id or not session_id:
+                return (
+                    "MongoDB mutation guard blocked mongodb_csv_import: CSV import writes MongoDB and must include "
+                    "trace_id plus session_id trace markers for read-after-write attribution"
+                )
+            return ""
+
         filter_doc = arguments.get("filter")
         if not isinstance(filter_doc, dict) or not filter_doc:
             return f"MongoDB mutation guard blocked {capability}: dangerous filter is empty or missing"
@@ -1066,6 +1202,47 @@ class TaskExecutionWorker:
         if capability == "mongodb_delete" and bool(arguments.get("many", False)):
             return "MongoDB mutation guard blocked mongodb_delete: bulk delete requires confirmation"
         return ""
+
+    @staticmethod
+    def _external_connector_capability_guard_reason(dispatch: Dict[str, Any]) -> str:
+        capability = str(dispatch.get("capability") or "").strip().lower()
+        if capability not in {"mongodb_ping", "ping", "health_check", "health"}:
+            return ""
+        text_parts: list[str] = []
+        for value in (
+            dispatch.get("objective"),
+            dispatch.get("title"),
+            dispatch.get("task_title"),
+            dispatch.get("content"),
+            dispatch.get("remarks"),
+        ):
+            if value:
+                text_parts.append(str(value))
+        arguments = dispatch.get("arguments")
+        if isinstance(arguments, dict):
+            for key in ("objective", "title", "content", "remarks"):
+                value = arguments.get(key)
+                if value:
+                    text_parts.append(str(value))
+        task_text = " ".join(text_parts).lower()
+        health_terms = ("ping", "health", "健康", "连通", "连接", "connection")
+        if task_text and any(term in task_text for term in health_terms):
+            return ""
+        connector_id = str(dispatch.get("connector_id") or "").strip()
+        objective = str(dispatch.get("objective") or dispatch.get("title") or dispatch.get("remarks") or "").strip()
+        suggested = "mongodb_csv_inspect or mongodb_csv_import" if "csv" in task_text or "时间序列" in task_text else "a concrete data operation capability"
+        return (
+            "External connector capability mismatch: "
+            f"connector_id={connector_id or '<unknown>'}; "
+            f"selected_capability={capability}; "
+            f"selected_capability_role=health_probe_only; "
+            f"task_objective={objective or '<missing>'}; "
+            "why_blocked=health/probe capabilities can only verify connector connectivity and cannot read, parse, "
+            "validate, write, update, or delete business data; "
+            f"required_capability={suggested}; "
+            "diagnosis_source=deterministic_guard; "
+            "llm_analysis_required=false"
+        )
 
     @staticmethod
     def _external_dispatch_audit_payload(dispatch: Dict[str, Any]) -> Dict[str, Any]:
@@ -1474,10 +1651,9 @@ class TaskExecutionWorker:
 
         try:
             if executor_type == "cli":
-                if self._cli_service is None:
-                    raise RuntimeError("CliIntegrationService is not attached to TaskExecutionWorker")
+                cli_service = self._resolve_cli_service()
                 try:
-                    profile = getattr(self._cli_service, "get_usage_profile", lambda _: None)(dispatch["tool_name"])
+                    profile = getattr(cli_service, "get_usage_profile", lambda _: None)(dispatch["tool_name"])
                 except KeyError:
                     profile = None
                 if profile is not None and (
@@ -1486,7 +1662,7 @@ class TaskExecutionWorker:
                     raise RuntimeError(f"CLI tool '{dispatch['tool_name']}' is degraded and cannot be auto-dispatched")
                 if profile is not None:
                     self._validate_profile_arguments(profile, dispatch.get("arguments") or [], executor_type="cli")
-                result = await self._cli_service.execute_task(
+                result = await cli_service.execute_task(
                     task_service=self._task_service,
                     task_id=task_id,
                     trace_id=dispatch["trace_id"],
@@ -1498,10 +1674,9 @@ class TaskExecutionWorker:
                 )
                 return await self._attach_external_execution_evidence(task_id, dispatch, result)
             if executor_type == "mcp":
-                if self._mcp_service is None:
-                    raise RuntimeError("McpIntegrationService is not attached to TaskExecutionWorker")
+                mcp_service = self._resolve_mcp_service()
                 try:
-                    profile = getattr(self._mcp_service, "get_tool_usage_profile", lambda *_: None)(
+                    profile = getattr(mcp_service, "get_tool_usage_profile", lambda *_: None)(
                         dispatch["server_id"],
                         dispatch["tool_name"],
                     )
@@ -1515,7 +1690,7 @@ class TaskExecutionWorker:
                     )
                 if profile is not None:
                     self._validate_profile_arguments(profile, dispatch.get("arguments") or {}, executor_type="mcp")
-                result = await self._mcp_service.execute_task(
+                result = await mcp_service.execute_task(
                     task_service=self._task_service,
                     task_id=task_id,
                     trace_id=dispatch["trace_id"],
@@ -1651,33 +1826,42 @@ class TaskExecutionWorker:
         executor_type = dispatch["executor_type"]
         try:
             if executor_type == "cli":
-                if self._cli_service is None:
-                    return "CLI service is not attached"
                 try:
-                    health = self._cli_service.get_tool_health(dispatch["tool_name"])
+                    cli_service = self._resolve_cli_service()
+                except Exception as exc:
+                    return f"CliIntegrationService is not available through service.py: {exc}"
+                try:
+                    health = cli_service.get_tool_health(dispatch["tool_name"])
                 except KeyError:
                     return f"CLI tool {dispatch['tool_name']} not found"
                 if health.get("status") != "active" or health.get("healthy") is not True:
                     return f"CLI tool {dispatch['tool_name']} is not active and healthy: {health}"
                 return ""
             if executor_type == "mcp":
-                if self._mcp_service is None:
-                    return "MCP service is not attached"
                 try:
-                    health = self._mcp_service.get_server_health(dispatch["server_id"])
+                    mcp_service = self._resolve_mcp_service()
+                except Exception as exc:
+                    return f"McpIntegrationService is not available through service.py: {exc}"
+                try:
+                    health = mcp_service.get_server_health(dispatch["server_id"])
                 except KeyError:
                     return f"MCP server {dispatch['server_id']} not found"
                 if health.get("status") != "online" or health.get("healthy") is not True:
                     return f"MCP server {dispatch['server_id']} is not online and healthy: {health}"
-                state = next((item for item in self._mcp_service.list_servers() if item.server_id == dispatch["server_id"]), None)
+                state = next((item for item in mcp_service.list_servers() if item.server_id == dispatch["server_id"]), None)
                 if state is None or not any(tool.tool_name == dispatch["tool_name"] for tool in getattr(state, "tools", []) or []):
                     return f"MCP tool {dispatch['tool_name']} not registered for server {dispatch['server_id']}"
                 return ""
             if executor_type == "external_connector":
-                if self._external_connector_service is None:
-                    return "ExternalConnectorService is not attached"
-                connector = self._external_connector_service.get_connector(dispatch["connector_id"])
-                report = self._external_connector_service.health_check(dispatch["connector_id"])
+                try:
+                    service = self._resolve_external_connector_service()
+                except Exception as exc:
+                    return f"ExternalConnectorService is not available through service.py: {exc}"
+                capability_guard_reason = self._external_connector_capability_guard_reason(dispatch)
+                if capability_guard_reason:
+                    return capability_guard_reason
+                connector = service.get_connector(dispatch["connector_id"])
+                report = service.health_check(dispatch["connector_id"])
                 status = getattr(getattr(connector, "status", None), "value", getattr(connector, "status", None))
                 health_status = getattr(getattr(report, "health_status", None), "value", getattr(report, "health_status", None))
                 if status != "active" or health_status != "healthy":
@@ -1690,9 +1874,11 @@ class TaskExecutionWorker:
                     return mutation_guard_reason
                 return ""
             if executor_type == "agent":
-                if self._agent_service is None:
-                    return "AgentCoordinationService is not attached"
-                asset = getattr(getattr(self._agent_service, "manager", None), "get_asset", lambda _agent_id: None)(
+                try:
+                    agent_service = self._resolve_agent_service()
+                except Exception as exc:
+                    return f"AgentCoordinationService is not available through service.py: {exc}"
+                asset = getattr(getattr(agent_service, "manager", None), "get_asset", lambda _agent_id: None)(
                     dispatch["agent_id"]
                 )
                 if asset is None:
@@ -1707,12 +1893,12 @@ class TaskExecutionWorker:
                 auth_config = dict(getattr(asset, "auth_config", {}) or {})
                 if auth_config.get("type") not in {None, "", "none"} and not auth_config.get("credential_ref"):
                     return f"Agent {dispatch['agent_id']} auth_config requires credential_ref"
-                block_reason = getattr(self._agent_service, "get_dispatch_block_reason", None)
+                block_reason = getattr(agent_service, "get_dispatch_block_reason", None)
                 if callable(block_reason):
                     maybe_reason = block_reason(
                         dispatch["agent_id"],
-                        cli_service=self._cli_service,
-                        mcp_service=self._mcp_service,
+                        cli_service=self._resolve_cli_service(),
+                        mcp_service=self._resolve_mcp_service(),
                     )
                     reason = await maybe_reason if asyncio.iscoroutine(maybe_reason) else maybe_reason
                     return str(reason or "")
@@ -1731,8 +1917,12 @@ class TaskExecutionWorker:
     ) -> Optional[Dict[str, Any]]:
         executor_type = dispatch["executor_type"]
         metadata = task.get("metadata") if isinstance(task.get("metadata"), dict) else {}
-        if executor_type == "cli" and self._cli_service is not None:
-            for state in self._cli_service.list_tools():
+        if executor_type == "cli":
+            try:
+                cli_service = self._resolve_cli_service()
+            except Exception:
+                return None
+            for state in cli_service.list_tools():
                 tool_name = str(getattr(state, "command_name", "") or "").strip()
                 if not tool_name or tool_name == dispatch.get("tool_name"):
                     continue
@@ -1745,8 +1935,12 @@ class TaskExecutionWorker:
                         continue
                     candidate["replacement_authorization"] = authorization
                     return candidate
-        if executor_type == "mcp" and self._mcp_service is not None:
-            for state in self._mcp_service.list_servers():
+        if executor_type == "mcp":
+            try:
+                mcp_service = self._resolve_mcp_service()
+            except Exception:
+                return None
+            for state in mcp_service.list_servers():
                 if getattr(state, "server_id", None) == dispatch.get("server_id"):
                     continue
                 if not any(getattr(tool, "tool_name", None) == dispatch["tool_name"] for tool in getattr(state, "tools", []) or []):
@@ -1760,8 +1954,12 @@ class TaskExecutionWorker:
                         continue
                     candidate["replacement_authorization"] = authorization
                     return candidate
-        if executor_type == "external_connector" and self._external_connector_service is not None:
-            for connector in self._external_connector_service.list_connectors():
+        if executor_type == "external_connector":
+            try:
+                service = self._resolve_external_connector_service()
+            except Exception:
+                return None
+            for connector in service.list_connectors():
                 if getattr(connector, "connector_id", None) == dispatch.get("connector_id"):
                     continue
                 if not any(getattr(capability, "name", None) == dispatch["capability"] for capability in connector.capabilities):
@@ -1775,9 +1973,13 @@ class TaskExecutionWorker:
                         continue
                     candidate["replacement_authorization"] = authorization
                     return candidate
-        if executor_type == "agent" and self._agent_service is not None:
+        if executor_type == "agent":
+            try:
+                agent_service = self._resolve_agent_service()
+            except Exception:
+                return None
             requested_scope = set(metadata.get("agent_scope") or metadata.get("scope") or [])
-            for asset in getattr(self._agent_service, "list_active_agents", lambda: [])():
+            for asset in getattr(agent_service, "list_active_agents", lambda: [])():
                 if getattr(asset, "agent_id", None) == dispatch.get("agent_id"):
                     continue
                 asset_scope = set(getattr(asset, "scope", []) or [])
@@ -1864,17 +2066,16 @@ class TaskExecutionWorker:
         return reassignment
 
     async def _execute_agent_task(self, dispatch: Dict[str, Any], task_id: str) -> Dict[str, Any]:
-        if self._agent_service is None:
-            raise RuntimeError("AgentCoordinationService is not attached to TaskExecutionWorker")
+        agent_service = self._resolve_agent_service()
         payload = dict(dispatch.get("task_payload") or {})
         payload.setdefault("zentex_task_id", task_id)
-        response = await self._agent_service.dispatch_task(
+        response = await agent_service.dispatch_task(
             dispatch["agent_id"],
             payload,
             zentex_task_id=task_id,
             idempotency_key=dispatch.get("idempotency_key"),
-            cli_service=self._cli_service,
-            mcp_service=self._mcp_service,
+            cli_service=self._resolve_cli_service(),
+            mcp_service=self._resolve_mcp_service(),
         )
         succeeded = not getattr(response, "is_error", False)
         if succeeded and self._task_service is not None:
@@ -1981,8 +2182,7 @@ class TaskExecutionWorker:
         )
 
     async def _execute_external_connector_task(self, dispatch: Dict[str, Any], task_id: str) -> Dict[str, Any]:
-        if self._external_connector_service is None:
-            raise RuntimeError("ExternalConnectorService is not attached to TaskExecutionWorker")
+        service = self._resolve_external_connector_service()
 
         from zentex.external_connectors.models import ConnectorTestCallRequest
         from zentex.tasks.execution.external_result_bridge import (
@@ -1993,7 +2193,7 @@ class TaskExecutionWorker:
         connector_id = dispatch["connector_id"]
         capability = dispatch["capability"]
         expected_plugin_path = str(dispatch.get("external_plugin_path") or "").strip()
-        connector = self._external_connector_service.get_connector(connector_id)
+        connector = service.get_connector(connector_id)
         actual_plugin_path = str(connector.connection_config.get("plugin_path") or "").strip()
         if expected_plugin_path and actual_plugin_path != expected_plugin_path:
             raise RuntimeError(
@@ -2031,7 +2231,7 @@ class TaskExecutionWorker:
             executor_type="external_connector",
             executor_metadata=executor_metadata,
         )
-        invocation = self._external_connector_service.test_call(
+        invocation = service.test_call(
             connector_id,
             ConnectorTestCallRequest(
                 capability=capability,
@@ -2169,6 +2369,9 @@ class TaskExecutionWorker:
                 "trace_id": str(metadata.get("trace_id") or f"external-connector-task:{task.get('task_id')}"),
                 "connector_id": connector_id,
                 "capability": capability,
+                "title": task.get("title"),
+                "objective": metadata.get("objective") or task.get("remarks"),
+                "remarks": task.get("remarks"),
                 "external_plugin_path": metadata.get("external_plugin_path") or metadata.get("plugin_path"),
                 "arguments": arguments if isinstance(arguments, dict) else {},
             }
@@ -2255,7 +2458,96 @@ class TaskExecutionWorker:
                 },
             ),
         })
+        self._record_worker_success_outcome(
+            task_id=task_id,
+            plugin_id=plugin_id,
+            exec_result=exec_result,
+            completed_at=now_iso,
+        )
         logger.info("Task %s completed successfully via plugin %s", task_id, plugin_id)
+
+    def _record_worker_success_outcome(
+        self,
+        *,
+        task_id: str,
+        plugin_id: str,
+        exec_result: Dict[str, Any],
+        completed_at: str,
+    ) -> None:
+        if self._task_service is None:
+            raise RuntimeError("TaskManagementService is required to record worker success outcome")
+        recorder = getattr(self._task_service, "_record_task_outcome", None)
+        if not callable(recorder):
+            raise RuntimeError("TaskManagementService._record_task_outcome is required for worker success evidence")
+        latest_task = self._task_service.get_task(task_id) if callable(getattr(self._task_service, "get_task", None)) else None
+        if latest_task is None:
+            raise RuntimeError(f"Task readback missing after worker success: {task_id}")
+
+        status_value = self._status_text(self._task_model_value(latest_task, "status"))
+        dispatch_plugin_id = self._task_model_value(latest_task, "dispatch_plugin_id")
+        evidence_ref = f"worker_success:{plugin_id}:{task_id}:{completed_at}"
+        actual_outcome = {
+            "status": "success",
+            "task_id": task_id,
+            "plugin_id": plugin_id,
+            "dispatch_plugin_id": dispatch_plugin_id,
+            "duration_seconds": exec_result.get("duration_seconds"),
+            "output": exec_result.get("output"),
+            "external_execution": {
+                "executor_type": "internal_plugin",
+                "executor_id": plugin_id,
+            },
+            "evidence": {
+                "evidence_ref": evidence_ref,
+                "task_status_readback": status_value,
+                "dispatch_plugin_id_readback": dispatch_plugin_id,
+                "execution_finished_at": self._task_model_value(latest_task, "execution_finished_at"),
+            },
+        }
+        verification_result = {
+            "overall_passed": status_value == "done" and dispatch_plugin_id == plugin_id,
+            "strategy": "worker_success_readback",
+            "confidence_score": 1.0,
+            "summary": "Worker success was accepted only after task row readback confirmed DONE and dispatch plugin identity.",
+            "recommendation": "accept",
+            "verifier_results": [
+                {
+                    "verifier_id": "worker_done_status_readback",
+                    "verifier_type": "rule_based",
+                    "status": "passed" if status_value == "done" else "failed",
+                    "passed": status_value == "done",
+                    "confidence": 1.0,
+                    "summary": f"task status readback={status_value}",
+                },
+                {
+                    "verifier_id": "worker_dispatch_plugin_readback",
+                    "verifier_type": "rule_based",
+                    "status": "passed" if dispatch_plugin_id == plugin_id else "failed",
+                    "passed": dispatch_plugin_id == plugin_id,
+                    "confidence": 1.0,
+                    "summary": f"dispatch_plugin_id readback={dispatch_plugin_id}",
+                },
+            ],
+            "check_results": {
+                "task_status_done": {"passed": status_value == "done", "actual": status_value},
+                "dispatch_plugin_id_matches": {
+                    "passed": dispatch_plugin_id == plugin_id,
+                    "actual": dispatch_plugin_id,
+                    "expected": plugin_id,
+                },
+            },
+        }
+        recorder(
+            task=latest_task,
+            result={
+                "actual_outcome": actual_outcome,
+                "evidence": actual_outcome["evidence"],
+            },
+            verification_result=verification_result,
+        )
+        outcome = self._task_service.get_task_outcome(task_id) if callable(getattr(self._task_service, "get_task_outcome", None)) else None
+        if not isinstance(outcome, dict) or outcome.get("overall_passed") is not True:
+            raise RuntimeError(f"Worker success outcome readback failed: {task_id}")
 
     def _mark_failed(
         self,
@@ -2376,9 +2668,18 @@ class TaskExecutionWorker:
             or _parse_list(task.get("tags"))
         )
         confirmed_plugin_id = str(metadata.get("internal_executor_plugin_id") or metadata.get("executor_id") or "").strip()
+        target_id = str(task.get("target_id") or metadata.get("target_id") or "").strip()
+        is_internal_owner = target_id.startswith("internal:") or str(metadata.get("executor_type") or "").strip() == "internal"
+        if is_internal_owner:
+            required_capabilities = [
+                item.split(":", 1)[1].strip() if str(item).strip().lower().startswith("internal:") else str(item).strip()
+                for item in required_capabilities
+                if str(item).strip()
+            ]
+            if confirmed_plugin_id.lower().startswith("internal:"):
+                confirmed_plugin_id = confirmed_plugin_id.split(":", 1)[1].strip()
         if confirmed_plugin_id and confirmed_plugin_id not in required_capabilities:
             required_capabilities.append(confirmed_plugin_id)
-        target_id = str(task.get("target_id") or metadata.get("target_id") or "").strip()
         execution_basis = []
         if target_id:
             execution_basis.append(f"confirmed_executor={target_id}")

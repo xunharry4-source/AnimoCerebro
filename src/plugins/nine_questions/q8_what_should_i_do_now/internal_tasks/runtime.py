@@ -32,12 +32,20 @@ from zentex.common.nine_questions_shared import (
     safe_provider_plugin_id,
     start_module_run,
 )
+from zentex.common.observable_logging import observable_event
 
 logger = logging.getLogger(__name__)
 
 
-def _log(message: str) -> None:
-    logger.info("[Q8InternalTasks] %s", message)
+def _log(event: str, **fields: Any) -> None:
+    observable_event(
+        logger,
+        event,
+        component="nine_questions.q8.internal_tasks",
+        question_id="q8",
+        scope="internal",
+        **fields,
+    )
 
 
 def _dict(value: Any) -> dict[str, Any]:
@@ -343,8 +351,23 @@ def run_q8_internal_task_generation(
     if not context.get("q8_internal_objective_slice_active"):
         objective_slices = _q8_internal_objective_slices(question_snapshot)
         if objective_slices:
+            _log(
+                "q8_objective_batch_start",
+                session_id=session_id,
+                turn_id=turn_id,
+                trace_id=trace_id,
+                objective_count=len(objective_slices),
+                objective_numbers=[objective_number for objective_number, _ in objective_slices],
+            )
             objective_results: list[dict[str, Any]] = []
             for objective_number, sliced_snapshot in objective_slices:
+                _log(
+                    "q8_objective_slice_start",
+                    session_id=session_id,
+                    turn_id=turn_id,
+                    trace_id=f"{trace_id}:internal:{objective_number}",
+                    objective_number=objective_number,
+                )
                 slice_context = {**context, "q8_internal_objective_slice_active": True}
                 result = run_q8_internal_task_generation(
                     context=slice_context,
@@ -372,6 +395,14 @@ def run_q8_internal_task_generation(
                     task_profile=result,
                 )
                 objective_results.append(result)
+                _log(
+                    "q8_objective_slice_completed",
+                    session_id=session_id,
+                    turn_id=turn_id,
+                    trace_id=f"{trace_id}:internal:{objective_number}",
+                    objective_number=objective_number,
+                    task_count=len(result.get("tasks") or []),
+                )
             aggregate = _aggregate_q8_internal_results(objective_results)
             persist_question_module_output(
                 context,
@@ -383,6 +414,14 @@ def run_q8_internal_task_generation(
                 },
                 status="completed",
                 output_kind="inference",
+            )
+            _log(
+                "q8_objective_batch_completed",
+                session_id=session_id,
+                turn_id=turn_id,
+                trace_id=trace_id,
+                objective_count=len(objective_results),
+                task_count=len(aggregate.get("tasks") or []),
             )
             return aggregate
 
@@ -404,7 +443,7 @@ def run_q8_internal_task_generation(
     )
 
     try:
-        _log("START build internal Q8 LLM parameters")
+        _log("q8_llm_request_build_start", session_id=session_id, turn_id=turn_id, trace_id=scoped_trace_id)
         q2_cognitive_plugins = _q2_cognitive_plugins(question_snapshot)
         q2_functional_plugins = _q2_functional_plugins(question_snapshot)
         q7_redlines = _redline_payload(question_snapshot)
@@ -438,7 +477,17 @@ def run_q8_internal_task_generation(
             "blocked_sample": blocked_tasks,
             "q2_cognitive_plugins": q2_cognitive_plugins,
         }
-        _log(f"END build internal Q8 LLM parameters candidates={len(candidate_tasks)}")
+        _log(
+            "q8_llm_request_build_completed",
+            session_id=session_id,
+            turn_id=turn_id,
+            trace_id=scoped_trace_id,
+            candidate_count=len(candidate_tasks),
+            allowed_count=len(allowed_tasks),
+            blocked_count=len(blocked_tasks),
+            cognitive_plugin_count=len(q2_cognitive_plugins),
+            functional_plugin_count=len(q2_functional_plugins),
+        )
 
         model_name = _model_name(provider, context)
         llm_input = {
@@ -457,12 +506,19 @@ def run_q8_internal_task_generation(
                 "q8_internal_llm_input": llm_input,
             },
         )
-        logger.error(
-            "[Q8 INTERNAL LLM INPUT] trace_id=%s provider=%s model=%s payload=%s",
-            scoped_trace_id,
-            safe_provider_plugin_id(provider),
-            model_name or "unknown",
-            _json(llm_input),
+        observable_event(
+            logger,
+            "q8_llm_input",
+            component="nine_questions.q8.internal_tasks",
+            question_id="q8",
+            scope="internal",
+            session_id=session_id,
+            turn_id=turn_id,
+            trace_id=scoped_trace_id,
+            decision_id=scoped_decision_id,
+            provider=safe_provider_plugin_id(provider),
+            model=model_name or "unknown",
+            llm_input=llm_input,
         )
         from plugins.nine_questions.q8_what_should_i_do_now.internal_tasks.instructor_contract import (
             generate_internal_objective_profile_with_instructor_contract,
@@ -481,12 +537,19 @@ def run_q8_internal_task_generation(
                 "output_truncation_forbidden": True,
             },
         )
-        logger.error(
-            "[Q8 INTERNAL LLM OUTPUT] trace_id=%s provider=%s model=%s output=%s",
-            scoped_trace_id,
-            safe_provider_plugin_id(provider),
-            _model_name(provider, context) or model_name or "unknown",
-            _json(raw_result),
+        observable_event(
+            logger,
+            "q8_llm_output",
+            component="nine_questions.q8.internal_tasks",
+            question_id="q8",
+            scope="internal",
+            session_id=session_id,
+            turn_id=turn_id,
+            trace_id=scoped_trace_id,
+            decision_id=scoped_decision_id,
+            provider=safe_provider_plugin_id(provider),
+            model=_model_name(provider, context) or model_name or "unknown",
+            llm_output=raw_result,
         )
         elapsed_ms = int((perf_counter() - started) * 1000)
         tasks = normalize_q8_internal_cognitive_tasks(
@@ -543,7 +606,16 @@ def run_q8_internal_task_generation(
                 "q8_internal_llm_output": raw_result,
             },
         )
-        _log(f"END internal Q8 task generation {elapsed_ms / 1000:.3f}s tasks={len(tasks)}")
+        _log(
+            "q8_task_generation_completed",
+            session_id=session_id,
+            turn_id=turn_id,
+            trace_id=scoped_trace_id,
+            decision_id=scoped_decision_id,
+            elapsed_ms=elapsed_ms,
+            task_count=len(tasks),
+            token_usage=token_usage,
+        )
         return {
             "scope": "internal",
             "raw_result": raw_result,
@@ -587,4 +659,13 @@ def run_q8_internal_task_generation(
             },
         )
         logger.exception("[Q8 INTERNAL LLM ERROR] trace_id=%s error=%s", scoped_trace_id, exc)
+        _log(
+            "q8_task_generation_failed",
+            session_id=session_id,
+            turn_id=turn_id,
+            trace_id=scoped_trace_id,
+            decision_id=scoped_decision_id,
+            error_type=exc.__class__.__name__,
+            error_message=str(exc),
+        )
         raise

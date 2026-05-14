@@ -78,6 +78,18 @@ interface TaskLogsResponse {
   offset: number;
 }
 
+interface ReactGraphNodeRun {
+  node_id?: string;
+  attempt?: number;
+  status?: string;
+  started_at?: string;
+  finished_at?: string;
+  input?: Record<string, any>;
+  output?: Record<string, any>;
+  error?: Record<string, any> | null;
+  evidence_refs?: unknown[];
+}
+
 type TaskWorkflowNodeData = {
   title: string;
   category: string;
@@ -152,6 +164,8 @@ const firstReadableValue = (...values: unknown[]): string => {
 };
 
 const taskNodeId = (taskId: string) => `task-${taskId}`;
+const reactNodeId = (taskId: string, index: number, run: ReactGraphNodeRun) =>
+  `react-${taskId}-${index}-${String(run.node_id || 'node').replace(/[^A-Za-z0-9_-]/g, '-')}`;
 
 const statusColor = (status: string): 'default' | 'success' | 'warning' | 'error' | 'info' => {
   if (['done', 'completed'].includes(status)) return 'success';
@@ -290,6 +304,59 @@ const buildBoundaryNodeData = (
   logs: [],
 });
 
+const extractReactGraphRuns = (task: ZentexTask): ReactGraphNodeRun[] => {
+  const reactExecution = isRecord(task.metadata?.react_execution) ? task.metadata?.react_execution : {};
+  const graphRuns = Array.isArray(reactExecution.graph_runs) ? reactExecution.graph_runs : [];
+  return graphRuns.filter(isRecord).map((run) => ({
+    node_id: typeof run.node_id === 'string' ? run.node_id : undefined,
+    attempt: typeof run.attempt === 'number' ? run.attempt : undefined,
+    status: typeof run.status === 'string' ? run.status : undefined,
+    started_at: typeof run.started_at === 'string' ? run.started_at : undefined,
+    finished_at: typeof run.finished_at === 'string' ? run.finished_at : undefined,
+    input: isRecord(run.input) ? run.input : {},
+    output: isRecord(run.output) ? run.output : {},
+    error: isRecord(run.error) ? run.error : null,
+    evidence_refs: Array.isArray(run.evidence_refs) ? run.evidence_refs : [],
+  }));
+};
+
+const buildReactNodeData = (
+  task: ZentexTask,
+  run: ReactGraphNodeRun,
+  category: string,
+): TaskWorkflowNodeData => {
+  const runtimePayload = {
+    task_id: task.task_id,
+    node_id: run.node_id,
+    attempt: run.attempt,
+    status: run.status,
+    started_at: run.started_at,
+    finished_at: run.finished_at,
+    evidence_refs: run.evidence_refs,
+  };
+  const errorReason = firstReadableValue(run.error?.message, run.error?.code, run.error);
+  return {
+    title: run.node_id || 'react_node',
+    category,
+    taskId: task.task_id,
+    status: run.status || task.status,
+    executor: task.target_id || EMPTY_VALUE,
+    startedAt: formatTaskDateTime(run.started_at || null),
+    finishedAt: formatTaskDateTime(run.finished_at || null),
+    inputSummary: shortText(run.input),
+    outputSummary: shortText(run.error || run.output || run.status),
+    runtimeSummary: shortText(runtimePayload),
+    errorReason,
+    inputPayload: run.input || {},
+    outputPayload: {
+      output: run.output || {},
+      error: run.error || null,
+    },
+    runtimePayload,
+    logs: [],
+  };
+};
+
 const edgeStyle = {
   stroke: 'rgba(15,23,42,0.32)',
   strokeWidth: 1.7,
@@ -376,6 +443,7 @@ const buildWorkflowGraph = ({
   const edges: Edge[] = [];
   const tasks = [detail.task, ...(detail.subtasks || [])];
   const taskIds = new Set(tasks.map((task) => task.task_id));
+  const reactTerminalByTaskId: Record<string, string> = {};
   const startId = 'workflow-start';
   const rootId = taskNodeId(detail.task.task_id);
 
@@ -442,6 +510,39 @@ const buildWorkflowGraph = ({
     });
   });
 
+  tasks.forEach((task, taskIndex) => {
+    const graphRuns = extractReactGraphRuns(task);
+    if (graphRuns.length === 0) {
+      return;
+    }
+    const y = 520 + taskIndex * 240;
+    const taskSourceId = taskNodeId(task.task_id);
+    graphRuns.forEach((run, runIndex) => {
+      const nodeId = reactNodeId(task.task_id, runIndex, run);
+      nodes.push({
+        id: nodeId,
+        type: 'taskWorkflowNode',
+        position: { x: 390 + runIndex * 370, y },
+        data: buildReactNodeData(task, run, t('tasks.workflowReactNode')),
+        draggable: false,
+      });
+
+      edges.push({
+        id: `${runIndex === 0 ? taskSourceId : reactNodeId(task.task_id, runIndex - 1, graphRuns[runIndex - 1])}-${nodeId}`,
+        source: runIndex === 0 ? taskSourceId : reactNodeId(task.task_id, runIndex - 1, graphRuns[runIndex - 1]),
+        target: nodeId,
+        type: 'smoothstep',
+        markerEnd: { type: MarkerType.ArrowClosed, width: 18, height: 18 },
+        style: {
+          ...edgeStyle,
+          stroke: 'rgba(2,132,199,0.5)',
+        },
+        animated: ACTIVE_STATUSES.has(String(run.status || task.status)),
+      });
+      reactTerminalByTaskId[task.task_id] = nodeId;
+    });
+  });
+
   const lastColumn = subtasks.length > 0 ? 790 + Math.floor((subtasks.length - 1) / 4) * 370 : 790;
   const outcomeId = 'workflow-outcome';
   nodes.push({
@@ -468,7 +569,9 @@ const buildWorkflowGraph = ({
     draggable: false,
   });
 
-  const terminalSources = subtasks.length > 0 ? subtasks.map((subtask) => taskNodeId(subtask.task_id)) : [rootId];
+  const terminalSources = subtasks.length > 0
+    ? subtasks.map((subtask) => reactTerminalByTaskId[subtask.task_id] || taskNodeId(subtask.task_id))
+    : [reactTerminalByTaskId[detail.task.task_id] || rootId];
   terminalSources.forEach((sourceId) => {
     edges.push({
       id: `${sourceId}-${outcomeId}`,

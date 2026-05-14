@@ -43,12 +43,19 @@ from plugins.nine_questions.q8_what_should_i_do_now.modules import (
     normalize_task_state,
 )
 from zentex.nine_questions.q8_q9_boundary import validate_q8_output_boundary
+from zentex.common.observable_logging import observable_event
 
 logger = logging.getLogger(__name__)
 
 
-def _q8_realtime_log(message: str) -> None:
-    logger.info("[Q8Plugin] %s", message)
+def _q8_realtime_log(event: str, **fields: Any) -> None:
+    observable_event(
+        logger,
+        event,
+        component="nine_questions.q8.orchestrator",
+        question_id="q8",
+        **fields,
+    )
 
 
 from zentex.common.nine_questions_shared import (
@@ -613,7 +620,19 @@ class WhatShouldIDoNowPlugin(BaseModel):
         if trace_id and not context.get("trace_id"):
             context["trace_id"] = trace_id
         total_started = perf_counter()
-        _q8_realtime_log("START execute")
+        trace_id = str(context.get("trace_id") or f"q8-decision:{uuid4().hex}")
+        context["trace_id"] = trace_id
+        session_id = str(context.get("session_id") or "unknown-session")
+        turn_id = str(context.get("turn_id") or "unknown-turn")
+        request_id = str(uuid4())
+        decision_id = str(context.get("decision_id") or f"{turn_id}:{self.plugin_id}")
+        _q8_realtime_log(
+            "q8_execute_start",
+            session_id=session_id,
+            turn_id=turn_id,
+            trace_id=trace_id,
+            decision_id=decision_id,
+        )
         provider = require_model_provider(context)
         transcript_store = require_transcript_store(context)
         module_runs = bind_module_runs(context, "q8")
@@ -624,12 +643,16 @@ class WhatShouldIDoNowPlugin(BaseModel):
         )
 
         phase_started = perf_counter()
-        _q8_realtime_log("START load upstream LLM outputs via upstream accessors")
+        _q8_realtime_log("q8_upstream_load_start", session_id=session_id, turn_id=turn_id, trace_id=trace_id)
         raw_question_snapshot = _load_q8_upstream_llm_outputs(context)
         question_snapshot = _build_q8_decision_digest(raw_question_snapshot)
         _q8_realtime_log(
-            "END load upstream LLM outputs via upstream accessors "
-            f"{perf_counter() - phase_started:.3f}s keys={sorted(question_snapshot.keys())}"
+            "q8_upstream_load_completed",
+            session_id=session_id,
+            turn_id=turn_id,
+            trace_id=trace_id,
+            elapsed_ms=int((perf_counter() - phase_started) * 1000),
+            upstream_keys=sorted(question_snapshot.keys()),
         )
         snapshot_validation_run = start_module_run(
             module_runs, "q8_snapshot_validation", source="plugins.nine_questions.q8"
@@ -663,22 +686,21 @@ class WhatShouldIDoNowPlugin(BaseModel):
             module_runs, "q8_task_state_load", source="plugins.nine_questions.q8"
         )
         phase_started = perf_counter()
-        _q8_realtime_log("START normalize persistent task state")
+        _q8_realtime_log("q8_task_state_normalize_start", session_id=session_id, turn_id=turn_id, trace_id=trace_id)
         normalized_task_state = normalize_task_state(
             context.get("persistent_task_state")
         )
         _q8_realtime_log(
-            "END normalize persistent task state "
-            f"{perf_counter() - phase_started:.3f}s buckets={sorted(normalized_task_state.keys())}"
+            "q8_task_state_normalize_completed",
+            session_id=session_id,
+            turn_id=turn_id,
+            trace_id=trace_id,
+            elapsed_ms=int((perf_counter() - phase_started) * 1000),
+            task_state_buckets=sorted(normalized_task_state.keys()),
         )
         finish_module_run(task_state_load_run)
         
         plugin_service = context.get("plugin_service")
-        trace_id = str(context.get("trace_id") or f"q8-decision:{uuid4().hex}")
-        session_id = str(context.get("session_id") or "unknown-session")
-        turn_id = str(context.get("turn_id") or "unknown-turn")
-        request_id = str(uuid4())
-        decision_id = str(context.get("decision_id") or f"{turn_id}:{self.plugin_id}")
 
         functional_objectives: list[dict[str, Any]] = []
         obj_oracles: list[str] = []
@@ -694,7 +716,7 @@ class WhatShouldIDoNowPlugin(BaseModel):
             )
             raise RuntimeError("Q8 requires plugin_service for functional objective execution.")
         phase_started = perf_counter()
-        _q8_realtime_log("START execute functional objective plugins")
+        _q8_realtime_log("q8_functional_objective_plugins_start", session_id=session_id, turn_id=turn_id, trace_id=trace_id)
         functional_objectives = execute_enabled_cognitive_plugin_functionals(
             plugin_service,
             self.plugin_id,
@@ -707,8 +729,12 @@ class WhatShouldIDoNowPlugin(BaseModel):
             caller_plugin_id=self.plugin_id,
         )
         _q8_realtime_log(
-            "END execute functional objective plugins "
-            f"{perf_counter() - phase_started:.3f}s count={len(functional_objectives)}"
+            "q8_functional_objective_plugins_completed",
+            session_id=session_id,
+            turn_id=turn_id,
+            trace_id=trace_id,
+            elapsed_ms=int((perf_counter() - phase_started) * 1000),
+            result_count=len(functional_objectives),
         )
         for item in functional_objectives:
             plugin_id = str(item.get("plugin_id") or "unknown-plugin")
@@ -758,7 +784,7 @@ class WhatShouldIDoNowPlugin(BaseModel):
             raise RuntimeError("Q8 requires at least one successful objective plugin result.")
         finish_module_run(objective_chain_run)
         phase_started = perf_counter()
-        _q8_realtime_log("START normalize functional objectives and derive priority baseline")
+        _q8_realtime_log("q8_priority_derivation_start", session_id=session_id, turn_id=turn_id, trace_id=trace_id)
         normalized_functional_objectives = normalize_functional_objectives(
             [
                 {
@@ -793,10 +819,14 @@ class WhatShouldIDoNowPlugin(BaseModel):
             ],
         }
         _q8_realtime_log(
-            "END normalize functional objectives and derive priority baseline "
-            f"{perf_counter() - phase_started:.3f}s "
-            f"objectives={len(normalized_functional_objectives)} "
-            f"immediate_tasks={len(priority_baseline.get('immediate_tasks', []) or [])}"
+            "q8_priority_derivation_completed",
+            session_id=session_id,
+            turn_id=turn_id,
+            trace_id=trace_id,
+            elapsed_ms=int((perf_counter() - phase_started) * 1000),
+            objective_count=len(normalized_functional_objectives),
+            immediate_task_count=len(priority_baseline.get("immediate_tasks", []) or []),
+            configured_extra_goal_count=len(configured_extra_goals),
         )
         finish_module_run(priority_run)
 
@@ -841,7 +871,7 @@ class WhatShouldIDoNowPlugin(BaseModel):
         try:
             started = perf_counter()
             phase_started = perf_counter()
-            _q8_realtime_log("START internal_tasks module")
+            _q8_realtime_log("q8_internal_module_start", session_id=session_id, turn_id=turn_id, trace_id=trace_id)
             internal_task_result = run_q8_internal_task_generation(
                 context=context,
                 provider=provider,
@@ -857,10 +887,17 @@ class WhatShouldIDoNowPlugin(BaseModel):
                 decision_id=decision_id,
                 request_id=request_id,
             )
-            _q8_realtime_log(f"END internal_tasks module {perf_counter() - phase_started:.3f}s")
+            _q8_realtime_log(
+                "q8_internal_module_completed",
+                session_id=session_id,
+                turn_id=turn_id,
+                trace_id=trace_id,
+                elapsed_ms=int((perf_counter() - phase_started) * 1000),
+                task_count=len(internal_task_result.get("tasks") or []),
+            )
 
             phase_started = perf_counter()
-            _q8_realtime_log("START external_tasks module")
+            _q8_realtime_log("q8_external_module_start", session_id=session_id, turn_id=turn_id, trace_id=trace_id)
             external_task_result = run_q8_external_task_generation(
                 context=context,
                 provider=provider,
@@ -876,7 +913,14 @@ class WhatShouldIDoNowPlugin(BaseModel):
                 decision_id=decision_id,
                 request_id=request_id,
             )
-            _q8_realtime_log(f"END external_tasks module {perf_counter() - phase_started:.3f}s")
+            _q8_realtime_log(
+                "q8_external_module_completed",
+                session_id=session_id,
+                turn_id=turn_id,
+                trace_id=trace_id,
+                elapsed_ms=int((perf_counter() - phase_started) * 1000),
+                task_count=len(external_task_result.get("tasks") or []),
+            )
 
             elapsed_ms = int((perf_counter() - started) * 1000)
             internal_cognitive_tasks = list(internal_task_result.get("tasks") or [])
@@ -907,7 +951,7 @@ class WhatShouldIDoNowPlugin(BaseModel):
 
             # 5. Validate & Return
             phase_started = perf_counter()
-            _q8_realtime_log("START validate Q8 module orchestration result")
+            _q8_realtime_log("q8_orchestration_validation_start", session_id=session_id, turn_id=turn_id, trace_id=trace_id)
             inference = Q8InferenceResult.model_validate(result_raw)
             inferred_objective = inference.objective_profile
             inferred_queue = inference.task_queue
@@ -918,10 +962,13 @@ class WhatShouldIDoNowPlugin(BaseModel):
                 "external": external_public_output["task_plan"],
             }
             _q8_realtime_log(
-                "END validate Q8 module orchestration result "
-                f"{perf_counter() - phase_started:.3f}s "
-                f"internal_tasks={len(internal_cognitive_tasks)} "
-                f"external_tasks={len(external_execution_tasks)}"
+                "q8_orchestration_validation_completed",
+                session_id=session_id,
+                turn_id=turn_id,
+                trace_id=trace_id,
+                elapsed_ms=int((perf_counter() - phase_started) * 1000),
+                internal_task_count=len(internal_cognitive_tasks),
+                external_task_count=len(external_execution_tasks),
             )
             finish_module_run(decision_projection_run)
 
@@ -954,7 +1001,7 @@ class WhatShouldIDoNowPlugin(BaseModel):
             )
 
             phase_started = perf_counter()
-            _q8_realtime_log("START assemble Q8 module trace index")
+            _q8_realtime_log("q8_trace_index_assemble_start", session_id=session_id, turn_id=turn_id, trace_id=trace_id)
             internal_trace_payload = _q8_dict(internal_task_result.get("trace_payload"))
             external_trace_payload = _q8_dict(external_task_result.get("trace_payload"))
             trace_invocations = [
@@ -974,8 +1021,23 @@ class WhatShouldIDoNowPlugin(BaseModel):
                 "invocations": trace_invocations,
                 "elapsed_ms": elapsed_ms,
             }
-            _q8_realtime_log(f"END assemble Q8 module trace index {perf_counter() - phase_started:.3f}s")
-            _q8_realtime_log(f"END execute before return {perf_counter() - total_started:.3f}s")
+            _q8_realtime_log(
+                "q8_trace_index_assemble_completed",
+                session_id=session_id,
+                turn_id=turn_id,
+                trace_id=trace_id,
+                elapsed_ms=int((perf_counter() - phase_started) * 1000),
+                invocation_count=len(trace_invocations),
+            )
+            _q8_realtime_log(
+                "q8_execute_completed",
+                session_id=session_id,
+                turn_id=turn_id,
+                trace_id=trace_id,
+                elapsed_ms=int((perf_counter() - total_started) * 1000),
+                internal_task_count=len(internal_cognitive_tasks),
+                external_task_count=len(external_execution_tasks),
+            )
 
             result_payload = {
                 "objective": objective.model_dump(mode="json"),
@@ -1056,7 +1118,12 @@ class WhatShouldIDoNowPlugin(BaseModel):
     def run_tool(self, context: Dict[str, Any]) -> CognitiveToolResult:
         try:
             run_tool_started = perf_counter()
-            _q8_realtime_log("START run_tool")
+            _q8_realtime_log(
+                "q8_run_tool_start",
+                session_id=str(context.get("session_id") or "unknown-session"),
+                turn_id=str(context.get("turn_id") or "unknown-turn"),
+                trace_id=str(context.get("trace_id") or ""),
+            )
             result = self.execute(dict(context))
         except Exception as exc:
             logger.exception("Q8 run_tool failed")
@@ -1066,7 +1133,13 @@ class WhatShouldIDoNowPlugin(BaseModel):
         llm_trace_payload = _q8_dict(result.get("llm_trace_payload"))
         q8_execution_diagnosis = _q8_dict(result.get("q8_execution_diagnosis"))
         q8_llm_output_payload = _build_q8_llm_output_payload(result)
-        _q8_realtime_log(f"END run_tool {perf_counter() - run_tool_started:.3f}s")
+        _q8_realtime_log(
+            "q8_run_tool_completed",
+            session_id=str(context.get("session_id") or "unknown-session"),
+            turn_id=str(context.get("turn_id") or "unknown-turn"),
+            trace_id=str(context.get("trace_id") or ""),
+            elapsed_ms=int((perf_counter() - run_tool_started) * 1000),
+        )
 
         return CognitiveToolResult(
             tool_id=self.plugin_id,

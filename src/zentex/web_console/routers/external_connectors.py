@@ -20,7 +20,12 @@ router = APIRouter(prefix="/external-connectors", tags=["external-connectors"])
 def _service(request: Request) -> Any:
     app_state = getattr(request.app, "state", None)
     candidate = getattr(app_state, "external_connector_service", None) if app_state is not None else None
-    return resolve_service(candidate)
+    service = resolve_service(candidate)
+    module_log_service = getattr(app_state, "module_log_service", None) if app_state is not None else None
+    attach_module_logs = getattr(service, "attach_module_log_service", None)
+    if module_log_service is not None and callable(attach_module_logs):
+        attach_module_logs(module_log_service)
+    return service
 
 
 def _error(exc: ConnectorError) -> HTTPException:

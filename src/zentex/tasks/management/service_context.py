@@ -26,6 +26,7 @@ from zentex.tasks.decomposition.q9_blueprint_runtime import (
     q9_blueprint_designated_executors,
     q9_blueprint_lines,
     q9_blueprint_step_records,
+    q9_effective_step_capability,
     q9_executor_for_capability,
     q9_executor_for_designation,
     q9_executor_runtime_metadata,

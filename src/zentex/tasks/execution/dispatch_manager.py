@@ -1,4 +1,5 @@
 import logging
+import os
 from typing import Any, Dict, List, Optional
 
 from zentex.tasks.dispatch.router_impl import UnifiedTaskRouter
@@ -75,6 +76,9 @@ class TaskDispatchManager:
             or posture.get("operator_approval_required")
             or rhythm == "confirm_before_commit"
         )
+        react_enabled = bool(posture.get("enable_react_execution")) or str(
+            os.getenv("ZENTEX_TASK_REACT_EXECUTION", "")
+        ).strip().lower() in {"1", "true", "yes", "on"}
         
         # Adjust worker config based on Q9 posture
         config = WorkerConfig(
@@ -82,6 +86,7 @@ class TaskDispatchManager:
             max_attempts=3,
             require_approval=requires_confirmation,
             conservative_mode=bool(is_conservative),
+            enable_react_execution=react_enabled,
         )
         
         return TaskExecutionWorker(

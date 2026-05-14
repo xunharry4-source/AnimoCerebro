@@ -98,12 +98,15 @@ describe("/console/tasks frontend contract", () => {
     expect(fields).toEqual([
       "task_id",
       "title",
+      "created_at",
       "objective",
       "source_module",
       "trigger_event",
       "status",
       "actions",
     ]);
+    expect(pageSource).toContain("headerName: t('tasks.createdAt')");
+    expect(pageSource).toContain("formatTaskDateTime(row.created_at)");
     expect(pageSource).toContain("navigate(`/console/tasks/${task.task_id}`)");
     expect(pageSource).toContain("navigate(`/console/tasks/${task.task_id}/workflow`)");
     expect(pageSource).toContain("t('tasks.viewWorkflow')");
@@ -125,6 +128,10 @@ describe("/console/tasks frontend contract", () => {
     expect(workflowSource).toContain('execution_output');
     expect(workflowSource).toContain('contract');
     expect(workflowSource).toContain('metadata');
+    expect(workflowSource).toContain('metadata?.react_execution');
+    expect(workflowSource).toContain('graph_runs');
+    expect(workflowSource).toContain('buildReactNodeData');
+    expect(workflowSource).toContain("t('tasks.workflowReactNode')");
     expect(workflowSource).toContain('execution_assignment');
     expect(workflowSource).toContain("t('tasks.exceptionReason')");
   });
@@ -139,7 +146,7 @@ describe("/console/tasks frontend contract", () => {
     expect(detailSource).toContain("formatExecutionParty(subtask, t)");
     expect(detailSource).toContain("formatTaskDateTime(taskStartTime(subtask))");
     expect(detailSource).toContain("formatTaskDateTime(taskEndTime(subtask))");
-    expect(detailSource).toContain("formatSubtaskExceptionReason(subtask)");
+    expect(detailSource).toContain("formatTaskExceptionReason(subtask, t)");
     expect(detailSource).not.toContain("subtasks.length > 0 && (");
   });
 

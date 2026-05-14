@@ -1,7 +1,10 @@
 from __future__ import annotations
 
+import json
 import re
 from typing import Any, Iterable, Mapping, Sequence
+
+from zentex.tasks.decomposition.q9_blueprint_runtime import q9_g31a_verification_method
 
 
 Q9_SUBTASK_SPLITTING_VALIDATION_SYSTEM_PROMPT = """
@@ -136,7 +139,67 @@ _COMPOUND_ACTION_PATTERNS = (
 )
 
 
-def validate_q9_subtask_splitting_against_llm_output(
+async def validate_q9_subtask_splitting_against_llm_output(
+    *,
+    original_task_intent: Any,
+    q9_action_blueprint: Mapping[str, Any],
+    child_tasks: Sequence[Any],
+    available_tools_registry: Iterable[Mapping[str, Any]],
+    plan_type: str,
+    llm_service: Any = None,
+) -> dict[str, Any]:
+    """Validate physical G31A subtasks with LLM as the mandatory primary reviewer."""
+    hard_guard_report = validate_q9_subtask_splitting_hard_guards(
+        original_task_intent=original_task_intent,
+        q9_action_blueprint=q9_action_blueprint,
+        child_tasks=child_tasks,
+        available_tools_registry=available_tools_registry,
+        plan_type=plan_type,
+    )
+    llm_context = _build_llm_validation_context(
+        original_task_intent=original_task_intent,
+        q9_action_blueprint=q9_action_blueprint,
+        child_tasks=child_tasks,
+        available_tools_registry=available_tools_registry,
+        plan_type=plan_type,
+        hard_guard_report=hard_guard_report,
+    )
+    try:
+        if llm_service is None:
+            from zentex.llm import get_llm_service
+
+            llm_service = get_llm_service()
+        if llm_service is None or not callable(getattr(llm_service, "generate_json", None)):
+            raise RuntimeError("LLM MANDATORY: q9 subtask splitting validation requires llm_service.generate_json")
+        result = llm_service.generate_json(
+            prompt=(
+                "审查 Q9 ActionPlan 与已创建子任务是否合规。必须按系统提示词返回 "
+                "SubtaskSplittingValidationReport JSON。规则硬红线报告只作为证据，"
+                "不能替代你的审查结论；若硬红线发现 invalid，你的最终结论也必须 invalid。"
+            ),
+            context=llm_context,
+            source_module="zentex.tasks.q9_subtask_splitting_validation",
+            invocation_phase="q9_subtask_splitting_validation",
+            system_prompt=Q9_SUBTASK_SPLITTING_VALIDATION_SYSTEM_PROMPT,
+            temperature=0.0,
+            max_output_tokens=1800,
+            metadata={"llm_mandatory": True, "q9_subtask_splitting_validation": True},
+        )
+        llm_payload = _normalize_llm_validation_payload(getattr(result, "output", result))
+    except Exception as exc:
+        return _llm_validation_failure_report(
+            original_task_intent=original_task_intent,
+            hard_guard_report=hard_guard_report,
+            error=f"{type(exc).__name__}: {exc}",
+        )
+    return _merge_llm_and_hard_guard_reports(
+        original_task_intent=original_task_intent,
+        llm_report=llm_payload,
+        hard_guard_report=hard_guard_report,
+    )
+
+
+def validate_q9_subtask_splitting_hard_guards(
     *,
     original_task_intent: Any,
     q9_action_blueprint: Mapping[str, Any],
@@ -144,9 +207,9 @@ def validate_q9_subtask_splitting_against_llm_output(
     available_tools_registry: Iterable[Mapping[str, Any]],
     plan_type: str,
 ) -> dict[str, Any]:
-    """Validate physical G31A subtasks against the Q9 LLM ActionPlan contract."""
+    """Apply non-negotiable mechanical redlines; never substitutes for the LLM review."""
     blueprint = dict(q9_action_blueprint or {})
-    expected_steps = _expected_step_records(blueprint)
+    expected_steps = _expected_step_records(blueprint, plan_type=plan_type)
     available_owner_refs = _available_owner_refs(available_tools_registry)
     expected_executor_refs = _expected_executor_refs(blueprint)
     invalid: list[dict[str, Any]] = []
@@ -185,21 +248,39 @@ def validate_q9_subtask_splitting_against_llm_output(
                 )
             )
 
-        if expected["verification_method"] not in actual_acceptance:
+        if not actual_acceptance:
             invalid.append(
                 _violation(
                     index,
                     "fake_verification",
-                    "子任务 acceptance_criteria 未逐字继承 Q9 verification_method，无法证明执行结果验证方式符合 Q9 LLM 输出。",
+                    "子任务 acceptance_criteria 为空；G31A 必须写入基于任务状态、task_outcome 和执行证据读回的验收条件。",
                 )
             )
-        if not _has_zero_trust_verification(expected["verification_method"], child):
+        if expected.get("q9_verification_hint") and metadata.get("q9_verification_hint") != expected.get("q9_verification_hint"):
+            invalid.append(
+                _violation(
+                    index,
+                    "objective_drift",
+                    "Q9 verification hint 未作为来源提示保留在 metadata.q9_verification_hint；"
+                    "它只能用于蓝图追踪，不能作为任务中心验证方式。",
+                )
+            )
+        if not _has_zero_trust_verification(child):
             invalid.append(
                 _violation(
                     index,
                     "fake_verification",
-                    "Q9 verification_method 与 G31A 子任务合同缺少客观物理证据，"
-                    "必须使用 hash/mtime/read-after-write/exit_code/真实读回等证据。",
+                    "G31A 子任务验收条件或合同缺少客观物理证据，"
+                    "必须使用 status=done、task_outcome.overall_passed、actual_outcome、hash/mtime/read-after-write/exit_code/真实读回等证据。",
+                )
+            )
+        if not _has_enabled_real_verification_contract(child):
+            invalid.append(
+                _violation(
+                    index,
+                    "fake_verification",
+                    "子任务 contract.verification 未启用或缺少真实 verifier；"
+                    "不能只依赖 acceptance_criteria 文本冒充零信任验证。",
                 )
             )
 
@@ -247,6 +328,19 @@ def validate_q9_subtask_splitting_against_llm_output(
                     f"实际执行方 {owner_ref!r} 未匹配 Q9 指定执行方/模块 {sorted(expected_executor_refs)}。",
                 )
             )
+        if plan_type == "external" and _external_connector_owner_without_business_capability(child, expected["required_resources"]):
+            invalid.append(
+                _violation(
+                    index,
+                    "fake_execution_party",
+                    "外部 connector 子任务只指定了连接器 owner，没有指定具体可执行业务 capability；"
+                    "拆分结果必须包含该 connector registry 声明的具体业务能力，"
+                    "不能把 external_connector:<id> 当成 runtime capability。",
+                )
+            )
+        missing_dispatch_detail = _external_connector_dispatch_not_executable(child)
+        if plan_type == "external" and missing_dispatch_detail:
+            invalid.append(_violation(index, "fake_execution_party", missing_dispatch_detail))
         expected_resources = [_normalize_owner_ref(item) for item in expected["required_resources"]]
         if expected_resources and actual_resources != expected_resources:
             invalid.append(
@@ -292,7 +386,245 @@ def validate_q9_subtask_splitting_against_llm_output(
     return report
 
 
-def _expected_step_records(blueprint: Mapping[str, Any]) -> list[dict[str, Any]]:
+def _build_llm_validation_context(
+    *,
+    original_task_intent: Any,
+    q9_action_blueprint: Mapping[str, Any],
+    child_tasks: Sequence[Any],
+    available_tools_registry: Iterable[Mapping[str, Any]],
+    plan_type: str,
+    hard_guard_report: Mapping[str, Any],
+) -> dict[str, Any]:
+    return {
+        "Original_Task_Intent": _json_safe(original_task_intent),
+        "Q9_Action_Blueprint": _json_safe(q9_action_blueprint),
+        "Plan_Type": plan_type,
+        "Subtasks_To_Verify": [_task_llm_payload(task, index=index) for index, task in enumerate(child_tasks)],
+        "Available_Tools_Registry": _json_safe(list(available_tools_registry or [])),
+        "Deterministic_Hard_Guard_Findings": _json_safe(hard_guard_report),
+        "Hard_Redline_Policy": {
+            "llm_is_primary_reviewer": True,
+            "hard_guard_is_not_a_substitute_for_llm": True,
+            "if_hard_guard_invalid_final_report_must_be_invalid": True,
+            "no_rule_only_success_allowed": True,
+        },
+    }
+
+
+def _task_llm_payload(task: Any, *, index: int) -> dict[str, Any]:
+    metadata = _task_metadata(task)
+    contract = getattr(task, "contract", None)
+    assignment = getattr(task, "execution_assignment", {}) or {}
+    return {
+        "subtask_index": index,
+        "task_id": getattr(task, "task_id", None),
+        "title": getattr(task, "title", None),
+        "description": getattr(task, "description", None),
+        "status": _enum_value(getattr(task, "status", None)),
+        "target_id": getattr(task, "target_id", None),
+        "owner_ref": _task_owner_ref(task),
+        "executor_type": _task_executor_type(task),
+        "execution_assignment": _json_safe(assignment),
+        "metadata": {
+            "objective": metadata.get("objective"),
+            "q9_blueprint_step": metadata.get("q9_blueprint_step"),
+            "q9_verification_hint": metadata.get("q9_verification_hint"),
+            "acceptance_criteria": metadata.get("acceptance_criteria"),
+            "required_resources": metadata.get("required_resources"),
+            "required_capabilities": metadata.get("required_capabilities"),
+            "external_connector_id": metadata.get("external_connector_id"),
+            "external_connector_capability": metadata.get("external_connector_capability"),
+            "external_connector_arguments": metadata.get("external_connector_arguments"),
+            "g31a_assignment": metadata.get("g31a_assignment"),
+            "assignment_status": metadata.get("assignment_status"),
+        },
+        "contract": _contract_llm_payload(contract),
+    }
+
+
+def _contract_llm_payload(contract: Any) -> dict[str, Any]:
+    if contract is None:
+        return {}
+    verification = getattr(contract, "verification", None)
+    verifiers = getattr(verification, "verifiers", []) if verification is not None else []
+    return {
+        "expected_outcome": _json_safe(getattr(contract, "expected_outcome", {})),
+        "verification_method": getattr(contract, "verification_method", None),
+        "success_criteria": _json_safe(getattr(contract, "success_criteria", [])),
+        "acceptance_conditions": _json_safe(getattr(contract, "acceptance_conditions", [])),
+        "verification": {
+            "enabled": getattr(verification, "enabled", None) if verification is not None else None,
+            "strategy": _enum_value(getattr(verification, "strategy", None)) if verification is not None else None,
+            "verifiers": [
+                {
+                    "name": getattr(verifier, "name", None),
+                    "verifier_type": _enum_value(getattr(verifier, "verifier_type", None)),
+                    "expected_status": getattr(verifier, "expected_status", None),
+                    "rules": _json_safe(getattr(verifier, "rules", [])),
+                }
+                for verifier in verifiers
+            ],
+        },
+    }
+
+
+def _normalize_llm_validation_payload(payload: Any) -> dict[str, Any]:
+    if isinstance(payload, str):
+        try:
+            payload = json.loads(payload)
+        except json.JSONDecodeError as exc:
+            raise ValueError(f"LLM returned non-JSON validation payload: {exc}") from exc
+    if not isinstance(payload, Mapping):
+        raise ValueError(f"LLM returned non-object validation payload: {type(payload).__name__}")
+    root = payload.get("SubtaskSplittingValidationReport", payload)
+    if not isinstance(root, Mapping):
+        raise ValueError("LLM validation payload missing object SubtaskSplittingValidationReport")
+    invalid_subtasks = root.get("invalid_subtasks") if isinstance(root.get("invalid_subtasks"), list) else []
+    return {
+        "SubtaskSplittingValidationReport": {
+            "is_compliant": root.get("is_compliant") is True,
+            "compliance_score": _float_or_zero(root.get("compliance_score")),
+            "invalid_subtasks": [
+                _violation(
+                    _int_or_default(item.get("subtask_index"), -1) if isinstance(item, Mapping) else -1,
+                    _text(item.get("violation_type")) if isinstance(item, Mapping) else "objective_drift",
+                    _text(item.get("violation_detail")) if isinstance(item, Mapping) else _text(item),
+                )
+                for item in invalid_subtasks
+            ],
+            "improvement_suggestion": _text(root.get("improvement_suggestion")),
+            "checked_dimensions": root.get("checked_dimensions") if isinstance(root.get("checked_dimensions"), list) else [
+                "objective_alignment",
+                "execution_party_authenticity",
+                "zero_trust_verification_method",
+                "granularity_check",
+            ],
+        }
+    }
+
+
+def _merge_llm_and_hard_guard_reports(
+    *,
+    original_task_intent: Any,
+    llm_report: Mapping[str, Any],
+    hard_guard_report: Mapping[str, Any],
+) -> dict[str, Any]:
+    llm_payload = dict(llm_report.get("SubtaskSplittingValidationReport", {}))
+    hard_payload = dict(hard_guard_report.get("SubtaskSplittingValidationReport", {}))
+    llm_invalid = _list(llm_payload.get("invalid_subtasks"))
+    hard_invalid = _list(hard_payload.get("invalid_subtasks"))
+    invalid = _dedupe_violations([*llm_invalid, *hard_invalid])
+    llm_compliant = llm_payload.get("is_compliant") is True
+    hard_compliant = hard_payload.get("is_compliant") is True
+    is_compliant = llm_compliant and hard_compliant and not invalid
+    score = min(_float_or_zero(llm_payload.get("compliance_score")), _float_or_zero(hard_payload.get("compliance_score")))
+    return {
+        "SubtaskSplittingValidationReport": {
+            "is_compliant": is_compliant,
+            "compliance_score": score if is_compliant else min(score, max(0.0, 1.0 - (len(invalid) / max(1, len(invalid) + 4)))),
+            "invalid_subtasks": invalid,
+            "improvement_suggestion": (
+                llm_payload.get("improvement_suggestion")
+                or hard_payload.get("improvement_suggestion")
+                or "Q9 子任务拆分需要 LLM 主审与硬红线同时通过。"
+            ),
+            "original_task_intent": original_task_intent,
+            "checked_dimensions": [
+                "objective_alignment",
+                "execution_party_authenticity",
+                "zero_trust_verification_method",
+                "granularity_check",
+            ],
+            "validation_source": "llm_primary_with_deterministic_hard_guard",
+            "llm_required": True,
+            "llm_validation_report": _json_safe(llm_report),
+            "deterministic_hard_guard_report": _json_safe(hard_guard_report),
+        }
+    }
+
+
+def _llm_validation_failure_report(
+    *,
+    original_task_intent: Any,
+    hard_guard_report: Mapping[str, Any],
+    error: str,
+) -> dict[str, Any]:
+    hard_payload = dict(hard_guard_report.get("SubtaskSplittingValidationReport", {}))
+    invalid = [
+        *_list(hard_payload.get("invalid_subtasks")),
+        _violation(-1, "fake_verification", f"Q9 子任务拆分合规审查必须调用 LLM；LLM 审查失败，禁止规则替代 LLM：{error}"),
+    ]
+    return {
+        "SubtaskSplittingValidationReport": {
+            "is_compliant": False,
+            "compliance_score": 0.0,
+            "invalid_subtasks": _dedupe_violations(invalid),
+            "improvement_suggestion": "修复 LLM 服务或调用链后重新执行 Q9 子任务拆分；禁止用 deterministic rule gate 冒充 LLM 审查。",
+            "original_task_intent": original_task_intent,
+            "checked_dimensions": [
+                "objective_alignment",
+                "execution_party_authenticity",
+                "zero_trust_verification_method",
+                "granularity_check",
+            ],
+            "validation_source": "llm_required_failed_closed",
+            "llm_required": True,
+            "llm_error": error,
+            "deterministic_hard_guard_report": _json_safe(hard_guard_report),
+        }
+    }
+
+
+def _dedupe_violations(items: Sequence[Any]) -> list[dict[str, Any]]:
+    seen: set[tuple[int, str, str]] = set()
+    deduped: list[dict[str, Any]] = []
+    for item in items:
+        if not isinstance(item, Mapping):
+            continue
+        violation = _violation(
+            _int_or_default(item.get("subtask_index"), -1),
+            _text(item.get("violation_type")),
+            _text(item.get("violation_detail")),
+        )
+        key = (violation["subtask_index"], violation["violation_type"], violation["violation_detail"])
+        if key in seen:
+            continue
+        seen.add(key)
+        deduped.append(violation)
+    return deduped
+
+
+def _json_safe(value: Any) -> Any:
+    try:
+        json.dumps(value, ensure_ascii=False)
+        return value
+    except TypeError:
+        if isinstance(value, Mapping):
+            return {str(key): _json_safe(item) for key, item in value.items()}
+        if isinstance(value, (list, tuple, set)):
+            return [_json_safe(item) for item in value]
+        return _enum_value(value) or _text(value)
+
+
+def _enum_value(value: Any) -> Any:
+    return getattr(value, "value", value)
+
+
+def _float_or_zero(value: Any) -> float:
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return 0.0
+
+
+def _int_or_default(value: Any, default: int) -> int:
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return default
+
+
+def _expected_step_records(blueprint: Mapping[str, Any], *, plan_type: str) -> list[dict[str, Any]]:
     steps = blueprint.get("action_steps") or blueprint.get("current_action_plan") or []
     if not isinstance(steps, list):
         return []
@@ -301,18 +633,27 @@ def _expected_step_records(blueprint: Mapping[str, Any]) -> list[dict[str, Any]]
         if not isinstance(step, dict):
             text = _text(step)
             if text:
-                records.append({"title": text, "objective": text, "verification_method": "", "required_resources": [], "line": text})
+                records.append(
+                    {
+                        "title": text,
+                        "objective": text,
+                        "verification_method": q9_g31a_verification_method(plan_type),
+                        "q9_verification_hint": "",
+                        "required_resources": [],
+                        "line": text,
+                    }
+                )
             continue
         title = _text(step.get("step_description"))
         objective = _text(step.get("step_objective"))
-        verification_method = _text(step.get("verification_method"))
+        q9_verification_hint = _text(step.get("verification_method"))
         resources = [_text(item) for item in _list(step.get("involved_modules")) if _text(item)]
         line = "；".join(
             item
             for item in (
                 f"步骤说明：{title}",
                 f"步骤目标：{objective}",
-                f"验证方式：{verification_method}",
+                f"Q9检查提示：{q9_verification_hint}",
                 f"涉及模块：{', '.join(resources)}" if resources else "",
             )
             if item and not item.endswith("：")
@@ -322,7 +663,8 @@ def _expected_step_records(blueprint: Mapping[str, Any]) -> list[dict[str, Any]]
                 {
                     "title": title or line,
                     "objective": objective or line,
-                    "verification_method": verification_method,
+                    "verification_method": q9_g31a_verification_method(plan_type),
+                    "q9_verification_hint": q9_verification_hint,
                     "required_resources": resources,
                     "line": line,
                 }
@@ -389,8 +731,8 @@ def _task_executor_type(task: Any) -> str:
     return _text(metadata.get("executor_type"))
 
 
-def _has_zero_trust_verification(q9_verification_method: str, task: Any) -> bool:
-    values: list[Any] = [q9_verification_method]
+def _has_zero_trust_verification(task: Any) -> bool:
+    values: list[Any] = []
     metadata = _task_metadata(task)
     values.extend(_list(metadata.get("acceptance_criteria")))
     contract = getattr(task, "contract", None)
@@ -402,6 +744,22 @@ def _has_zero_trust_verification(q9_verification_method: str, task: Any) -> bool
         if isinstance(expected_outcome, Mapping):
             values.extend(expected_outcome.values())
     return any(_is_zero_trust_verification(_text(value)) for value in values)
+
+
+def _has_enabled_real_verification_contract(task: Any) -> bool:
+    contract = getattr(task, "contract", None)
+    verification = getattr(contract, "verification", None) if contract is not None else None
+    if verification is None or getattr(verification, "enabled", False) is not True:
+        return False
+    verifiers = getattr(verification, "verifiers", []) or []
+    if not verifiers:
+        return False
+    for verifier in verifiers:
+        verifier_type = getattr(verifier, "verifier_type", "")
+        verifier_type_value = getattr(verifier_type, "value", verifier_type)
+        if _text(verifier_type_value) in {"rule_based", "log_audit", "automated_test", "combined"}:
+            return True
+    return False
 
 
 def _is_verified_resource_gap(task: Any) -> bool:
@@ -430,6 +788,51 @@ def _resource_gap_missing_resources(task: Any) -> list[Any]:
         if resources:
             return resources
     return _list(metadata.get("required_resources"))
+
+
+def _external_connector_owner_without_business_capability(task: Any, expected_resources: Sequence[Any]) -> bool:
+    metadata = _task_metadata(task)
+    executor_type = _task_executor_type(task)
+    owner_ref = _task_owner_ref(task)
+    if executor_type != "external_connector" and not owner_ref.startswith("external_connector:"):
+        return False
+    capabilities = [_text(item) for item in _list(metadata.get("required_capabilities")) if _text(item)]
+    capability = _text(metadata.get("external_connector_capability") or metadata.get("connector_capability"))
+    if capability and not _normalize_owner_ref(capability).startswith(_OWNER_PREFIXES):
+        return False
+    if any(item and not _normalize_owner_ref(item).startswith(_OWNER_PREFIXES) for item in capabilities):
+        return False
+    resources = [_text(item) for item in expected_resources if _text(item)]
+    return bool(resources) and all(_normalize_owner_ref(item).startswith(("external_connector:", "connector:")) for item in resources)
+
+
+def _external_connector_dispatch_not_executable(task: Any) -> str:
+    metadata = _task_metadata(task)
+    executor_type = _task_executor_type(task)
+    owner_ref = _task_owner_ref(task)
+    if executor_type != "external_connector" and not owner_ref.startswith("external_connector:"):
+        return ""
+    connector_id = _text(metadata.get("external_connector_id") or metadata.get("connector_id"))
+    capability = _text(metadata.get("external_connector_capability") or metadata.get("connector_capability") or metadata.get("capability"))
+    if not connector_id:
+        return "外部 connector 子任务缺少 external_connector_id，worker 无法构造真实 dispatch。"
+    if not capability or _normalize_owner_ref(capability).startswith(_OWNER_PREFIXES):
+        return "外部 connector 子任务缺少具体 external_connector_capability，worker 无法调用 registry 声明的业务能力。"
+    arguments = metadata.get("external_connector_arguments")
+    if arguments is None:
+        arguments = metadata.get("connector_arguments")
+    if arguments is None:
+        arguments = metadata.get("arguments")
+    if capability in {"mongodb_csv_inspect", "mongodb_csv_import"}:
+        if not isinstance(arguments, Mapping):
+            return f"{capability} 子任务缺少 external_connector_arguments，无法定位真实 CSV 输入。"
+        has_csv_input = any(_text(arguments.get(key)) for key in ("csv_path", "directory_path"))
+        csv_paths = arguments.get("csv_paths")
+        if isinstance(csv_paths, list) and any(_text(item) for item in csv_paths):
+            has_csv_input = True
+        if not has_csv_input:
+            return f"{capability} 子任务缺少 csv_path/csv_paths/directory_path，不能调度到真实 CSV 检查连接器。"
+    return ""
 
 
 def _invalid_execution_refs(values: list[Any]) -> list[str]:

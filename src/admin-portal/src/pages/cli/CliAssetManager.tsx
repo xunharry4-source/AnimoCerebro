@@ -359,10 +359,21 @@ export default function CliAssetManager() {
     {
       field: "actions",
       headerName: t("common.actions"),
-      minWidth: 340,
+      minWidth: 430,
       sortable: false,
       renderCell: (params) => (
         <Stack direction="row" spacing={1}>
+          <Button
+            size="small"
+            startIcon={<ArticleIcon />}
+            onClick={() =>
+              navigate(
+                `/console/cli-tools/function-logs?function_key=${encodeURIComponent((params.row as CliToolItem).command_name)}`,
+              )
+            }
+          >
+            查看日志
+          </Button>
           <Button size="small" startIcon={<PowerSettingsNewIcon />} onClick={() => void updateToolActivation(params.row as CliToolItem, "activate")}>
             激活
           </Button>
@@ -401,8 +412,8 @@ export default function CliAssetManager() {
           </Typography>
         </Box>
         <Stack direction="row" spacing={1}>
-          <Button variant="outlined" startIcon={<ArticleIcon />} onClick={() => navigate("/console/module-logs/cli-tools")}>
-            {t("moduleLogs.view")}
+          <Button variant="outlined" startIcon={<ArticleIcon />} onClick={() => navigate("/console/cli-tools/function-logs")}>
+            功能运行日志
           </Button>
           <Button variant="contained" startIcon={<AddIcon />} onClick={() => setOpenRegister(true)}>
             {t("cli.registerNewTool")}
