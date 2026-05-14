@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 
+from zentex.tasks.execution.completion_envelope import build_completion_envelope
 from zentex.tasks.execution.graph_state import ExecutionGraphState, with_failure
 from zentex.tasks.execution.persistence import append_graph_node_io, mark_react_terminal, utc_now
 
@@ -13,6 +14,13 @@ async def complete_node(state: ExecutionGraphState) -> ExecutionGraphState:
     task_id = str(state.get("task_id"))
     attempt = state.get("current_attempt") if isinstance(state.get("current_attempt"), dict) else {}
     attempt_result = attempt.get("result") if isinstance(attempt.get("result"), dict) else {}
+    completion_envelope = build_completion_envelope(
+        task_id=task_id,
+        run_id=str(state.get("run_id")),
+        attempt=attempt,
+        context=state.get("context") or {},
+        observations=state.get("observations") or [],
+    )
     if (state.get("verification_result") or {}).get("passed") is not True:
         return with_failure(state, phase="complete_failed", failure_type="verification_failed", failure_code="VERIFICATION_MISSING", message="Cannot complete without a passing verification result")
 
@@ -20,17 +28,17 @@ async def complete_node(state: ExecutionGraphState) -> ExecutionGraphState:
         "succeeded": True,
         "status": "completed",
         "task_center_synchronized": bool(attempt_result.get("task_center_synchronized")),
-        "actual_outcome": attempt_result,
+        "actual_outcome": completion_envelope["actual_outcome"],
+        "raw_executor_result": attempt_result,
+        "external_execution": completion_envelope["external_execution"],
+        "evidence": completion_envelope["evidence"],
         "verification_result": state.get("verification_result"),
         "finished_at": utc_now(),
     }
     if not result["task_center_synchronized"] and task_service is not None and callable(getattr(task_service, "complete_task_with_verification", None)):
         completion = await task_service.complete_task_with_verification(
             task_id,
-            result={
-                "actual_outcome": attempt_result,
-                "evidence": {"react_run_id": state.get("run_id"), "observations": state.get("observations") or []},
-            },
+            result=completion_envelope,
             remarks="LangGraph ReAct execution completed",
         )
         result["completion"] = completion
@@ -39,10 +47,8 @@ async def complete_node(state: ExecutionGraphState) -> ExecutionGraphState:
             await _ensure_task_outcome_readback(
                 task_service=task_service,
                 task_id=task_id,
-                attempt_result=attempt_result,
+                completion_envelope=completion_envelope,
                 verification_result=state.get("verification_result") or {},
-                react_run_id=str(state.get("run_id")),
-                observations=state.get("observations") or [],
             )
     elif task_dao is not None:
         task_dao.update_task(
@@ -82,10 +88,8 @@ async def _ensure_task_outcome_readback(
     *,
     task_service: object,
     task_id: str,
-    attempt_result: dict,
+    completion_envelope: dict,
     verification_result: dict,
-    react_run_id: str,
-    observations: list,
 ) -> None:
     get_outcome = getattr(task_service, "get_task_outcome", None)
     if callable(get_outcome) and isinstance(get_outcome(task_id), dict):
@@ -99,13 +103,7 @@ async def _ensure_task_outcome_readback(
         raise RuntimeError(f"Task readback missing after ReAct completion: {task_id}")
     recorder(
         task=latest_task,
-        result={
-            "actual_outcome": attempt_result,
-            "evidence": {
-                "react_run_id": react_run_id,
-                "observation_count": len(observations),
-            },
-        },
+        result=completion_envelope,
         verification_result={
             **verification_result,
             "overall_passed": bool(verification_result.get("overall_passed", verification_result.get("passed"))),

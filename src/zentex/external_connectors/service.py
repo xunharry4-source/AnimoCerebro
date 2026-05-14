@@ -538,6 +538,11 @@ class ExternalConnectorService:
         self._record_invocation(invocation)
         return invocation
 
+    def execute_capability(self, connector_id: str, payload: dict[str, Any]) -> dict[str, Any]:
+        from zentex.external_connectors.capability_execution import execute_connector_capability
+
+        return execute_connector_capability(self, connector_id, payload)
+
     def history(self, connector_id: str) -> list[ConnectorInvocationRecord]:
         self.get_connector(connector_id)
         return list(self._history.get(connector_id, []))
@@ -1025,13 +1030,13 @@ class ExternalConnectorService:
             for key, value in arguments.items()
         }
 
-    def _record_invocation(self, invocation: ConnectorInvocationRecord) -> None:
+    def _record_invocation(self, invocation: ConnectorInvocationRecord, *, invocation_type: str = "test_call") -> None:
         self._history.setdefault(invocation.connector_id, []).append(invocation)
         self._registry_store.append_runtime_log(
             "external_connector",
             invocation.connector_id,
             capability_name=invocation.capability,
-            invocation_type="test_call",
+            invocation_type=invocation_type,
             status=invocation.status,
             request={"input_summary": invocation.input_summary},
             response=invocation.model_dump(mode="json"),
