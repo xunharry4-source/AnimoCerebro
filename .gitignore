@@ -1,5 +1,6 @@
 /venv/
 /src/admin-portal/node_modules/
+/.idea/
 /.idea/inspectionProfiles/profiles_settings.xml
 /.idea/inspectionProfiles/Project_Default.xml
 /.idea/.gitignore
@@ -67,6 +68,11 @@ Thumbs.db
 # Playwright
 /playwright_tmp/
 /screenshots/
+/Agent/data/
+/Agent/screenshots/
+/Agent/scratch/
+/Agent/community_rules_cache/
+/Agent/testdata/agent_generated_data.csv
 # Test artifacts
 .pytest_cache/
 .coverage
